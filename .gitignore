@@ -1,0 +1,23 @@
+# Secrets — NEVER commit
+.env
+
+# Output files — generated, not source
+output/
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+*.log

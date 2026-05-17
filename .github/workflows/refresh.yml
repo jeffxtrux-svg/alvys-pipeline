@@ -1,0 +1,55 @@
+# Alvys data refresh — runs 3x/day, writes Alvys_Master.xlsx
+#
+# PHASE 2 — Do not enable until Phase 1 (local run) works correctly.
+# To enable: uncomment the `on.schedule` block below.
+
+name: Refresh Alvys data
+
+on:
+  # Manual trigger from the Actions tab — use this to test
+  workflow_dispatch:
+
+  # ---- ENABLE FOR PHASE 2 ----
+  # Cron times are in UTC. Adjust for Central time as needed.
+  # Below = 6am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
+  #
+  # schedule:
+  #   - cron: '0 12 * * *'   # 6am CT (winter) / 7am CT (DST)
+  #   - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
+  #   - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Alvys pull
+        env:
+          ALVYS_CLIENT_ID: ${{ secrets.ALVYS_CLIENT_ID }}
+          ALVYS_CLIENT_SECRET: ${{ secrets.ALVYS_CLIENT_SECRET }}
+          ALVYS_START_DATE: '2024-01-01'
+          OUTPUT_DIR: output
+        run: python -m src.main
+
+      # PHASE 3 — OneDrive upload step will go here.
+      # For Phase 2, output is uploaded as a workflow artifact you can
+      # download manually from the Actions tab.
+      - name: Upload Alvys_Master as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alvys-master-${{ github.run_number }}
+          path: output/Alvys_Master.xlsx
+          retention-days: 7
