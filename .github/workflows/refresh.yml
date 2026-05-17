@@ -14,9 +14,9 @@ on:
   # Below = 6am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
   #
   # schedule:
-  #   - cron: '0 12 * * *'   8am CT (winter) / 9am CT (DST)
-  #   - cron: '0 18 * * *'   11pm CT (winter) / 12pm CT (DST)
-  #   - cron: '0 0 * * *'    3pm CT (winter) / 4pm CT (DST)
+  #   - cron: '0 12 * * *'   8am CT (winter) / 8am CT (DST)
+  #   - cron: '0 18 * * *'   11am CT (winter) / 11am CT (DST)
+  #   - cron: '0 0 * * *'    3pm CT (winter) / 3pm CT (DST)
 
 jobs:
   refresh:
