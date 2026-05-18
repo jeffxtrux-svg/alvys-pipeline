@@ -479,7 +479,7 @@ LOADS_COLUMNS = [
     ("Empty Dispatch Mileage",              _from_trip("EmptyMileage.Distance.Value")),
     ("Total Dispatch Mileage",              _from_trip("TotalMileage.Distance.Value")),
     ("Customer Revenue",                    "CustomerRate.Amount"),
-    ("Driver Rate",                         _from_trip("TripValue.Amount")),
+    ("Driver Rate",                         None),
     ("Load Lane",                           _load_lane),
     ("Load Status",                         "Status"),
     ("First Pick Status",                   "Stops.first.Status"),
