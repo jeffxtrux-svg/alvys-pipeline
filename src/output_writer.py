@@ -1,6 +1,6 @@
 """
 Write the three DataFrames (Loads, Trips, Fuel) into a single .xlsx file
-with the same sheet structure as Alvys_Master.xlsx.
+matching the schema (and column data formats) of the original Alvys_Master.xlsx.
 """
 from __future__ import annotations
 
@@ -19,23 +19,24 @@ log = logging.getLogger(__name__)
 #   2024-08-01T07:00:00-05:00
 #   2024-08-01T07:00:00+00:00
 #   2024-08-01 07:00:00
+#   2024-08-01T07:00:00Z
 ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)?)?$")
 
 
-def _convert_iso_date_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+def _reformat_iso_date_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
     """
-    Find columns whose string values look like ISO 8601 dates and convert
-    them to pandas datetime, so openpyxl writes Excel datetime cells (not text).
+    Find columns whose string values are ISO 8601 dates and reformat them
+    to MM-DD-YYYY HH:MM text (matching the original Alvys_Master.xlsx format),
+    or MM-DD-YYYY if the time component is exactly midnight.
 
-    Power BI and Excel can then treat these columns as real dates for slicers,
-    filters, and date-axis charts.
+    The original Power BI Power Query is built around this text format and
+    handles the text-to-date conversion internally.
 
     Strategy:
-      • Only consider object-dtype columns
+      • Only consider object/str dtype columns
       • Sample up to 50 non-null values
-      • If at least 70% of sampled values match the ISO pattern, convert
-      • Use UTC parsing then convert to America/Chicago and strip tz
-        (matches the user's local time, which is how the manual file worked)
+      • If at least 70% match ISO pattern, convert
+      • Parse as Central time, output as text
     """
     converted = []
     for col in df.columns:
@@ -50,14 +51,25 @@ def _convert_iso_date_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame
             continue
         try:
             parsed = pd.to_datetime(df[col], errors="coerce", utc=True)
-            # Convert to Central time, then drop tz info (Excel doesn't support tz)
-            df[col] = parsed.dt.tz_convert("America/Chicago").dt.tz_localize(None)
-            converted.append(col)
+            local = parsed.dt.tz_convert("America/Chicago")
+
+            # If every non-null value has midnight time, use date-only format.
+            # Otherwise include HH:MM. (Matches original Alvys export quirk.)
+            non_null = local.dropna()
+            if len(non_null) > 0 and (
+                (non_null.dt.hour == 0).all() and (non_null.dt.minute == 0).all()
+            ):
+                df[col] = local.dt.strftime("%m-%d-%Y").where(local.notna(), None)
+                fmt = "date-only"
+            else:
+                df[col] = local.dt.strftime("%m-%d-%Y %H:%M").where(local.notna(), None)
+                fmt = "date+time"
+            converted.append(f"{col} ({fmt})")
         except (TypeError, ValueError) as e:
-            log.warning("  %s: couldn't convert column %r as dates: %s",
+            log.warning("  %s: couldn't reformat column %r as dates: %s",
                         sheet_name, col, e)
     if converted:
-        log.info("  %s: converted %d columns to datetime: %s",
+        log.info("  %s: reformatted %d date columns: %s",
                  sheet_name, len(converted), ", ".join(converted))
     return df
 
@@ -70,25 +82,17 @@ def write_master_xlsx(
 ) -> None:
     """
     Write Loads/Trips/Fuel sheets in the same order as the original
-    Alvys_Master.xlsx (Fuel first, then Loads, then Trips — confirmed
-    from inspection of the source file).
+    Alvys_Master.xlsx (Fuel first, then Loads, then Trips).
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     log.info("Writing %s", output_path)
-    log.info("Converting ISO date strings to datetime cells…")
-    fuel_df  = _convert_iso_date_columns(fuel_df,  "Fuel")
-    loads_df = _convert_iso_date_columns(loads_df, "Loads")
-    trips_df = _convert_iso_date_columns(trips_df, "Trips")
+    log.info("Reformatting ISO date strings to MM-DD-YYYY text…")
+    fuel_df  = _reformat_iso_date_columns(fuel_df,  "Fuel")
+    loads_df = _reformat_iso_date_columns(loads_df, "Loads")
+    trips_df = _reformat_iso_date_columns(trips_df, "Trips")
 
-    # Apply explicit datetime format so Power Query / Power BI recognizes
-    # these columns as Date/DateTime (not as raw numeric serial values).
-    with pd.ExcelWriter(
-        output_path,
-        engine="openpyxl",
-        datetime_format="mm/dd/yyyy hh:mm:ss",
-        date_format="mm/dd/yyyy",
-    ) as writer:
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         fuel_df.to_excel(writer, sheet_name="Fuel", index=False)
         loads_df.to_excel(writer, sheet_name="Loads", index=False)
         trips_df.to_excel(writer, sheet_name="Trips", index=False)
