@@ -39,7 +39,8 @@ def _convert_iso_date_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame
     """
     converted = []
     for col in df.columns:
-        if df[col].dtype != object:
+        # Accept both legacy object dtype and newer str dtype in pandas 2.x
+        if df[col].dtype.kind not in ("O",) and str(df[col].dtype) != "str":
             continue
         sample = df[col].dropna().astype(str).head(50)
         if len(sample) == 0:
