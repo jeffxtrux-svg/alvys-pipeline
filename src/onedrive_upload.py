@@ -179,7 +179,8 @@ def main():
     client_id = get_required("AZURE_CLIENT_ID")
     client_secret = get_required("AZURE_CLIENT_SECRET")
     user_upn = get_required("ONEDRIVE_USER_UPN")
-    folder_path = os.environ.get("ONEDRIVE_FOLDER_PATH", "Alvys").strip("/")
+    folder_path = os.environ.get("ONEDRIVE_FOLDER_PATH", "").strip("/")
+    target_filename = os.environ.get("ONEDRIVE_TARGET_FILENAME", "Alvys_Master.xlsx")
 
     output_dir = Path(os.environ.get("OUTPUT_DIR", "output"))
     file_path = output_dir / "Alvys_Master.xlsx"
@@ -200,7 +201,7 @@ def main():
         token=token,
         user_upn=user_upn,
         folder_path=folder_path,
-        filename="Alvys_Master.xlsx",
+        filename=target_filename,
         file_path=file_path,
     )
 
