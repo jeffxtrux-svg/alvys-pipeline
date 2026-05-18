@@ -36,11 +36,14 @@ ISO_DATE_PATTERN = re.compile(
 
 def _format_iso_as_text(value: str) -> str:
     """
-    Convert one ISO date/datetime string to the format used by the original
-    Alvys_Master.xlsx file:
-      • Midnight UTC values  → "MM-DD-YYYY"
-      • Datetime values      → "MM-DD-YYYY HH:MM"  (Central time)
-      • Unparseable values   → returned unchanged
+    Convert one ISO date/datetime string to MM-DD-YYYY date-only text.
+
+    The original Alvys_Master.xlsx wrote date columns as date-only strings
+    (e.g., "04-30-2026"), and Power Query's "Changed Type" step is configured
+    to parse them as Date — NOT DateTime. If we leave a time component on the
+    string (e.g., "04-30-2026 13:00"), Power Query fails to convert the cell
+    and marks it as an error. So we always strip the time, regardless of
+    whether the source value had one.
     """
     if value is None or value == "":
         return value
@@ -50,13 +53,13 @@ def _format_iso_as_text(value: str) -> str:
         return value
     if pd.isna(ts):
         return value
-    # If the source value is at midnight UTC, treat as a calendar date and
-    # DO NOT timezone-convert (otherwise "2025-08-15" becomes "2025-08-14 19:00").
+    # Always return date-only. If the source had a non-midnight UTC time,
+    # we just take the calendar date (interpreted as the date in UTC for
+    # midnight values, or in Central time for real timestamps).
     if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
         return ts.strftime("%m-%d-%Y")
-    # Otherwise convert to Central time and format with time.
     local = ts.tz_convert("America/Chicago")
-    return local.strftime("%m-%d-%Y %H:%M")
+    return local.strftime("%m-%d-%Y")
 
 
 def _reformat_iso_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
