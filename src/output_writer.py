@@ -33,29 +33,49 @@ ISO_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)?)?$"
 )
 
+# Matches "human-readable" Alvys date formats with optional time components:
+#   04-30-2026
+#   04-30-2026 13:00
+#   04-29-2026 @ 17:02
+#   04/29/2026 @ 22:22
+HUMAN_DATE_PATTERN = re.compile(
+    r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}(\s+@?\s*\d{1,2}:\d{2})?$"
+)
+
 
 def _format_iso_as_text(value: str) -> str:
     """
-    Convert one ISO date/datetime string to MM-DD-YYYY date-only text.
+    Convert one date/datetime string to MM-DD-YYYY date-only text.
 
     The original Alvys_Master.xlsx wrote date columns as date-only strings
     (e.g., "04-30-2026"), and Power Query's "Changed Type" step is configured
     to parse them as Date — NOT DateTime. If we leave a time component on the
-    string (e.g., "04-30-2026 13:00"), Power Query fails to convert the cell
-    and marks it as an error. So we always strip the time, regardless of
-    whether the source value had one.
+    string (e.g., "04-30-2026 13:00" or "04-30-2026 @ 13:00"), Power Query
+    fails to convert the cell and marks it as an error. So we always strip
+    the time, regardless of whether the source value had one.
+
+    Handles both ISO 8601 strings (from the Alvys API) and human-readable
+    MM-DD-YYYY / MM/DD/YYYY strings (from column_mappings transformations).
     """
     if value is None or value == "":
         return value
+
+    # Handle human-readable formats first: "04-30-2026", "04-30-2026 13:00",
+    # "04-29-2026 @ 17:02", "04/29/2026 @ 22:22"
+    if HUMAN_DATE_PATTERN.match(value):
+        # Extract just the date portion (everything before any space)
+        date_part = value.split()[0]
+        # Normalize separator to "-" for MM-DD-YYYY output
+        date_part = date_part.replace("/", "-")
+        return date_part
+
+    # Otherwise treat as ISO 8601 and parse via pandas
     try:
         ts = pd.to_datetime(value, utc=True, errors="coerce")
     except (TypeError, ValueError):
         return value
     if pd.isna(ts):
         return value
-    # Always return date-only. If the source had a non-midnight UTC time,
-    # we just take the calendar date (interpreted as the date in UTC for
-    # midnight values, or in Central time for real timestamps).
     if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
         return ts.strftime("%m-%d-%Y")
     local = ts.tz_convert("America/Chicago")
@@ -77,7 +97,10 @@ def _reformat_iso_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         sample = df[col].dropna().astype(str).head(50)
         if len(sample) == 0:
             continue
-        matches = sum(1 for v in sample if ISO_DATE_PATTERN.match(v))
+        matches = sum(
+            1 for v in sample
+            if ISO_DATE_PATTERN.match(v) or HUMAN_DATE_PATTERN.match(v)
+        )
         if matches < len(sample) * 0.7:
             continue
 
