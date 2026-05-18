@@ -80,7 +80,14 @@ def write_master_xlsx(
     loads_df = _convert_iso_date_columns(loads_df, "Loads")
     trips_df = _convert_iso_date_columns(trips_df, "Trips")
 
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+    # Apply explicit datetime format so Power Query / Power BI recognizes
+    # these columns as Date/DateTime (not as raw numeric serial values).
+    with pd.ExcelWriter(
+        output_path,
+        engine="openpyxl",
+        datetime_format="mm/dd/yyyy hh:mm:ss",
+        date_format="mm/dd/yyyy",
+    ) as writer:
         fuel_df.to_excel(writer, sheet_name="Fuel", index=False)
         loads_df.to_excel(writer, sheet_name="Loads", index=False)
         trips_df.to_excel(writer, sheet_name="Trips", index=False)
