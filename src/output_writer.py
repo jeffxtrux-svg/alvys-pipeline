@@ -94,7 +94,10 @@ def _reformat_iso_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
         # Only consider object/string columns
         if df[col].dtype.kind != "O" and str(df[col].dtype) != "str":
             continue
-        sample = df[col].dropna().astype(str).head(50)
+        # Drop NaN and empty strings before sampling — columns with sparse data
+        # (mostly empty) would otherwise fail the 70%-match threshold below.
+        sample = df[col].dropna().astype(str)
+        sample = sample[sample != ""].head(50)
         if len(sample) == 0:
             continue
         matches = sum(
