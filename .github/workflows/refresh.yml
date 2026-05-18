@@ -1,7 +1,4 @@
-# Alvys data refresh — runs 3x/day, writes Alvys_Master.xlsx
-#
-# PHASE 2 — Do not enable until Phase 1 (local run) works correctly.
-# To enable: uncomment the `on.schedule` block below.
+# Alvys data refresh — runs 3x/day, writes Alvys_Master.xlsx to OneDrive
 
 name: Refresh Alvys data
 
@@ -9,14 +6,12 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
-  # ---- ENABLE FOR PHASE 2 ----
   # Cron times are in UTC. Adjust for Central time as needed.
   # Below = 6am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
-  #
-  # schedule:
-  #   - cron: '0 12 * * *'   8am CT (winter) / 8am CT (DST)
-  #   - cron: '0 18 * * *'   11am CT (winter) / 11am CT (DST)
-  #   - cron: '0 0 * * *'    3pm CT (winter) / 3pm CT (DST)
+  schedule:
+    - cron: '0 12 * * *'   # 6am CT (winter) / 7am CT (DST)
+    - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
+    - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
 
 jobs:
   refresh:
@@ -44,10 +39,20 @@ jobs:
           OUTPUT_DIR: output
         run: python -m src.main
 
-      # PHASE 3 — OneDrive upload step will go here.
-      # For Phase 2, output is uploaded as a workflow artifact you can
-      # download manually from the Actions tab.
+      - name: Upload to OneDrive
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_FOLDER_PATH: "11 - Pipeline"
+          OUTPUT_DIR: output
+        run: python -m src.onedrive_upload
+
+      # Belt-and-suspenders: also upload as a workflow artifact, so the file
+      # is downloadable from the Actions tab even if OneDrive upload had issues.
       - name: Upload Alvys_Master as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: alvys-master-${{ github.run_number }}
