@@ -45,7 +45,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          ONEDRIVE_FOLDER_PATH:ONEDRIVE_FOLDER_PATH: ""
+          ONEDRIVE_FOLDER_PATH: ""
           ONEDRIVE_TARGET_FILENAME: "Alvys Master.xlsx"
           OUTPUT_DIR: output
         run: python -m src.onedrive_upload
