@@ -153,43 +153,44 @@ def _driver1_rate_via_trip_or_zero(rate_type: str):
     return fn
 
 
-# Common naming variants for "Line Haul" — Alvys hasn't documented the exact
-# RateType string, so we try the most likely names in order.
-_LINE_HAUL_NAMES = ("Line Haul", "Linehaul", "LineHaul", "Line-Haul", "Loaded")
+# RateType values that we surface in separate columns (Carrier Advances,
+# Carrier Detention, etc.). These are EXCLUDED from "Driver Rate" so the
+# Driver Rate column contains only base/line-haul pay — matching the manual
+# master's interpretation of the column.
+_ACCESSORIAL_RATE_TYPES = {"Advances", "Detention", "Lumper", "Other Accessorials"}
 
 
-def _driver1_line_haul_via_trip(record: dict):
-    """For Loads: hop to joined trip, find Driver1's Line Haul rate. Returns
-    0 if no matching RateType found. The line-haul rate is the driver's base
-    pay (excluding accessorials), which is what the manual master's "Driver
-    Rate" column tracks."""
+def _sum_driver1_base_rates(rates: list) -> float:
+    """Sum every rate in a Driver1.Rates list EXCEPT the known accessorials
+    (which appear in their own columns). Returns 0 if input is unusable."""
+    if not isinstance(rates, list):
+        return 0
+    total = 0
+    for r in rates:
+        if not isinstance(r, dict):
+            continue
+        if r.get("RateType") in _ACCESSORIAL_RATE_TYPES:
+            continue
+        rate = r.get("Rate")
+        if isinstance(rate, (int, float)):
+            total += rate
+    return total
+
+
+def _driver1_base_pay_via_trip(record: dict):
+    """For Loads: hop to joined trip, sum Driver1's base pay (everything
+    EXCEPT accessorials). Mirrors how the manual master's Driver Rate is
+    populated for X-Trux/XFreight loads. X-Linx brokered loads typically
+    have no Driver1, so this returns 0 — which matches the manual."""
     trip = trip_for_load(record)
     if not trip:
         return 0
-    rates = _get_nested(trip, "Driver1.Rates")
-    if not isinstance(rates, list):
-        return 0
-    for name in _LINE_HAUL_NAMES:
-        for r in rates:
-            if isinstance(r, dict) and r.get("RateType") == name:
-                rate = r.get("Rate")
-                if rate is not None:
-                    return rate
-    return 0
+    return _sum_driver1_base_rates(_get_nested(trip, "Driver1.Rates"))
 
 
-def _driver1_line_haul(record: dict):
-    """Same as above but for Trip records (no load→trip hop needed)."""
-    rates = _get_nested(record, "Driver1.Rates")
-    if not isinstance(rates, list):
-        return 0
-    for name in _LINE_HAUL_NAMES:
-        for r in rates:
-            if isinstance(r, dict) and r.get("RateType") == name:
-                rate = r.get("Rate")
-                if rate is not None:
-                    return rate
-    return 0
+def _driver1_base_pay(record: dict):
+    """For Trip records: sum Driver1's base pay (no load→trip hop needed)."""
+    return _sum_driver1_base_rates(_get_nested(record, "Driver1.Rates"))
 
 
 # --- Office name resolution -------------------------------------------------
@@ -520,7 +521,7 @@ LOADS_COLUMNS = [
     ("Empty Dispatch Mileage",              _from_trip("EmptyMileage.Distance.Value")),
     ("Total Dispatch Mileage",              _from_trip("TotalMileage.Distance.Value")),
     ("Customer Revenue",                    "CustomerRate.Amount"),
-    ("Driver Rate",                         _driver1_line_haul_via_trip),
+    ("Driver Rate",                         _driver1_base_pay_via_trip),
     ("Load Lane",                           _load_lane),
     ("Load Status",                         "Status"),
     ("First Pick Status",                   "Stops.first.Status"),
