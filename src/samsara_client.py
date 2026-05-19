@@ -208,16 +208,54 @@ class SamsaraClient:
         return []
 
     def fetch_dvirs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
-        """Driver Vehicle Inspection Reports (pre/post-trip inspections)."""
+        """Driver Vehicle Inspection Reports — uses POST (GET not allowed per API v2025.10)."""
         log.info("Fetching DVIRs %s → %s…", start.date(), end.date())
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
-        for path in ["/fleet/dvirs", "/fleet/maintenance/dvirs"]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("Total DVIRs: %d (from %s)", len(items), path)
-                return items
-        log.info("Total DVIRs: 0")
-        return []
+        url = f"{BASE_URL}/fleet/dvirs"
+        all_items: list[dict] = []
+        req_body: dict = {
+            "startTime": _iso(start),
+            "endTime": _iso(end),
+            "limit": PAGE_LIMIT,
+        }
+        page_num = 0
+        while True:
+            try:
+                resp = self._session.post(
+                    url, headers=self._headers(), json=req_body, timeout=120
+                )
+                if resp.status_code != 200:
+                    log.error("POST /fleet/dvirs failed [%d]: %s", resp.status_code, resp.text[:500])
+                resp.raise_for_status()
+            except requests.HTTPError as e:
+                code = e.response.status_code if e.response is not None else "?"
+                log.warning("POST /fleet/dvirs → HTTP %s — skipping", code)
+                break
+            except Exception as e:
+                log.warning("POST /fleet/dvirs → %s — skipping", e)
+                break
+
+            payload = resp.json()
+            data = payload.get("data", [])
+            if isinstance(data, list):
+                all_items.extend(data)
+                page_num += 1
+                log.info("  page %d: %d records (running: %d)", page_num, len(data), len(all_items))
+                if not data:
+                    break
+            else:
+                break
+
+            pagination = payload.get("pagination", {})
+            if not pagination.get("hasNextPage", False):
+                break
+            cursor = pagination.get("endCursor")
+            if not cursor:
+                break
+            req_body["after"] = cursor
+            time.sleep(0.1)
+
+        log.info("Total DVIRs: %d", len(all_items))
+        return all_items
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
         """IFTA fuel & mileage report for a given month. Tries multiple known paths."""
