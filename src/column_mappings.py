@@ -170,21 +170,103 @@ def _driver1_rate_via_trip_or_zero(rate_type: str):
 # exists.
 
 
-def _extract_v2_rate(rates_v2, *candidate_keys: str) -> float:
-    """RatesV2 is a structured object like:
-        {"perTripRate": {"rate": ...}, "loadedMilesRate": {"rate": ...}}
-    Try each candidate key (camelCase/PascalCase variants), return the
-    inner .rate / .Rate. Returns 0 if no key matches or no rate found."""
-    if not isinstance(rates_v2, dict):
+def _ci_field(d, *names):
+    """Case-insensitive field accessor. Returns first match found."""
+    if not isinstance(d, dict):
+        return None
+    for name in names:
+        if name in d:
+            return d[name]
+        nlow = name.lower()
+        for k, v in d.items():
+            if isinstance(k, str) and k.lower() == nlow:
+                return v
+    return None
+
+
+def _tiered_mileage_pay(tier_obj, miles: float) -> float:
+    """Calculate total pay for a tiered mileage rate.
+
+    V2 schema (per Alvys): `loadedMilesRate.tiers[]` where each tier has
+    `miles` (threshold) and `rate` (per-mile pay). For a single tier with
+    miles=0, this is a flat rate. For multiple tiers, we treat `miles` as
+    the LOWER bound of the bracket (the rate applies to miles from this
+    threshold up to the next tier's threshold).
+
+    Most drivers have a single flat tier — multi-tier handling is
+    written but uncommon.
+    """
+    if not isinstance(tier_obj, dict):
         return 0
-    for key in candidate_keys:
-        sub = rates_v2.get(key)
-        if isinstance(sub, dict):
-            for rk in ("rate", "Rate", "amount", "Amount"):
-                v = sub.get(rk)
-                if isinstance(v, (int, float)):
-                    return v
-    return 0
+    tiers = _ci_field(tier_obj, "tiers")
+    if not isinstance(tiers, list) or not tiers:
+        # No tiers — try a top-level `rate` field as a fallback
+        flat = _ci_field(tier_obj, "rate", "Rate")
+        if isinstance(flat, (int, float)):
+            return flat * miles
+        return 0
+
+    if not isinstance(miles, (int, float)) or miles <= 0:
+        return 0
+
+    # Sort tiers by their `miles` threshold ascending
+    parsed = []
+    for t in tiers:
+        if not isinstance(t, dict):
+            continue
+        threshold = _ci_field(t, "miles", "Miles")
+        rate = _ci_field(t, "rate", "Rate")
+        if not isinstance(threshold, (int, float)):
+            threshold = 0
+        if not isinstance(rate, (int, float)):
+            continue
+        parsed.append((threshold, rate))
+    if not parsed:
+        return 0
+    parsed.sort(key=lambda x: x[0])
+
+    # Single tier shortcut (most common)
+    if len(parsed) == 1:
+        return parsed[0][1] * miles
+
+    # Multi-tier: each tier covers miles from its threshold to next threshold
+    total = 0
+    for i, (threshold, rate) in enumerate(parsed):
+        next_threshold = parsed[i + 1][0] if i + 1 < len(parsed) else float("inf")
+        miles_in_bracket = max(0, min(miles, next_threshold) - threshold)
+        total += rate * miles_in_bracket
+    return total
+
+
+def _v2_loaded_pay(rates_v2_list, loaded_miles: float) -> float:
+    """Sum loaded-mile pay across all rate policies in ratesV2[]. Per
+    Alvys, each entry can have its own `loadedMilesRate.tiers[]`. We
+    iterate the list and add pay from any entry that has loaded-mile
+    rates configured."""
+    if not isinstance(rates_v2_list, list):
+        return 0
+    total = 0
+    for policy in rates_v2_list:
+        if not isinstance(policy, dict):
+            continue
+        loaded_obj = _ci_field(policy, "loadedMilesRate", "LoadedMilesRate")
+        if loaded_obj:
+            total += _tiered_mileage_pay(loaded_obj, loaded_miles)
+    return total
+
+
+def _v2_empty_pay(rates_v2_list, empty_miles: float) -> float:
+    """Same as _v2_loaded_pay but for emptyMilesRate."""
+    if not isinstance(rates_v2_list, list):
+        return 0
+    total = 0
+    for policy in rates_v2_list:
+        if not isinstance(policy, dict):
+            continue
+        empty_obj = _ci_field(policy, "emptyMilesRate", "EmptyMilesRate")
+        if empty_obj:
+            total += _tiered_mileage_pay(empty_obj, empty_miles)
+    return total
 
 
 def _extract_legacy_rate(rates_list, rate_type: str) -> float:
@@ -200,40 +282,32 @@ def _extract_legacy_rate(rates_list, rate_type: str) -> float:
 
 
 def _mileage_pay_from_trip(trip: dict) -> float:
-    """Return total driver mileage pay = (Loaded Rate × Loaded Miles)
-    + (Empty Rate × Empty Miles). Returns 0 when no driver pay info."""
-    rates_v2 = _get_nested(trip, "Driver1.RatesV2")
-    rates_legacy = _get_nested(trip, "Driver1.Rates")
-
-    # Prefer V2, but field names are guesses since we don't have a real sample
-    # yet. Try multiple plausible naming variants.
-    loaded_rate = _extract_v2_rate(
-        rates_v2,
-        "loadedMilesRate", "LoadedMilesRate",
-        "perLoadedMileRate", "PerLoadedMileRate",
-        "loadedMileRate", "LoadedMileRate",
-    )
-    empty_rate = _extract_v2_rate(
-        rates_v2,
-        "emptyMilesRate", "EmptyMilesRate",
-        "perEmptyMileRate", "PerEmptyMileRate",
-        "emptyMileRate", "EmptyMileRate",
-    )
-
-    # Fall back to legacy Rates when V2 didn't yield anything (older trips).
-    if loaded_rate == 0 and empty_rate == 0:
-        loaded_rate = _extract_legacy_rate(rates_legacy, "Loaded Miles")
-        empty_rate = _extract_legacy_rate(rates_legacy, "Empty Miles")
-
-    if loaded_rate == 0 and empty_rate == 0:
-        return 0
-
+    """Return total driver mileage pay = loaded-mile pay + empty-mile pay.
+    Reads from Driver1.RatesV2[] first (modern, tiered, list-of-policies),
+    falls back to Driver1.Rates (legacy flat list) when V2 is absent.
+    Returns 0 when no driver pay info exists at all."""
     loaded_miles = _get_nested(trip, "LoadedMileage.Distance.Value") or 0
     empty_miles = _get_nested(trip, "EmptyMileage.Distance.Value") or 0
     if not isinstance(loaded_miles, (int, float)):
         loaded_miles = 0
     if not isinstance(empty_miles, (int, float)):
         empty_miles = 0
+
+    rates_v2 = _get_nested(trip, "Driver1.RatesV2")
+    pay = 0
+    has_v2 = isinstance(rates_v2, list) and len(rates_v2) > 0
+    if has_v2:
+        pay = _v2_loaded_pay(rates_v2, loaded_miles) + _v2_empty_pay(rates_v2, empty_miles)
+
+    if pay > 0:
+        return pay
+
+    # V2 absent or didn't yield mileage rates — fall back to legacy flat rates.
+    rates_legacy = _get_nested(trip, "Driver1.Rates")
+    loaded_rate = _extract_legacy_rate(rates_legacy, "Loaded Miles")
+    empty_rate = _extract_legacy_rate(rates_legacy, "Empty Miles")
+    if loaded_rate == 0 and empty_rate == 0:
+        return 0
     return (loaded_rate * loaded_miles) + (empty_rate * empty_miles)
 
 

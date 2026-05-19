@@ -97,15 +97,16 @@ def main() -> int:
             log.info("Wrote sample %s record → %s", name, sample_path)
 
     # --- Debug: inventory Driver1.Rates AND Driver1.RatesV2 structures ---
-    # The legacy Rates is a list of {RateType, Rate}. The new RatesV2 is a
-    # structured object with named rate sub-objects (per Alvys support).
-    # We log both so the column_mappings extractor can target the right
-    # field names.
+    # Legacy Rates: list of {RateType, Rate} entries.
+    # RatesV2: list of policy objects, each with optional perTripRate,
+    #   loadedMilesRate (tiered), emptyMilesRate (tiered), etc.
+    # We log structure of both so column_mappings can target real fields.
     from collections import Counter
     rate_type_counts: Counter = Counter()
     sample_rates_by_type: dict = {}
-    ratesv2_key_counts: Counter = Counter()
-    ratesv2_samples: dict = {}
+    v2_top_level_key_counts: Counter = Counter()
+    v2_policy_name_counts: Counter = Counter()
+    v2_full_samples: list = []  # up to 3 full V2 list samples
     trips_with_v2 = 0
     trips_with_legacy = 0
     for trip in raw_trips:
@@ -124,12 +125,18 @@ def main() -> int:
                     if rt not in sample_rates_by_type:
                         sample_rates_by_type[rt] = r
         v2 = d1.get("RatesV2")
-        if isinstance(v2, dict) and v2:
+        if isinstance(v2, list) and v2:
             trips_with_v2 += 1
-            for k, v in v2.items():
-                ratesv2_key_counts[k] += 1
-                if k not in ratesv2_samples:
-                    ratesv2_samples[k] = v
+            for policy in v2:
+                if not isinstance(policy, dict):
+                    continue
+                pname = policy.get("policyName") or policy.get("PolicyName")
+                if pname:
+                    v2_policy_name_counts[pname] += 1
+                for k in policy.keys():
+                    v2_top_level_key_counts[k] += 1
+            if len(v2_full_samples) < 3:
+                v2_full_samples.append(v2)
     log.info("=" * 60)
     log.info("Driver1 rates inventory across %d trips:", len(raw_trips))
     log.info("  %d trips have legacy Rates, %d have RatesV2",
@@ -140,11 +147,12 @@ def main() -> int:
         sample = sample_rates_by_type.get(rt, {})
         log.info("  %5d trips: RateType=%r  sample=%s",
                  count, rt, json.dumps(sample, default=str)[:200])
-    log.info("RatesV2 (Driver1.RatesV2) keys:")
-    for k, count in ratesv2_key_counts.most_common():
-        sample = ratesv2_samples.get(k, {})
-        log.info("  %5d trips have key=%r  sample=%s",
-                 count, k, json.dumps(sample, default=str)[:300])
+    log.info("RatesV2 top-level keys (across all policies):")
+    for k, count in v2_top_level_key_counts.most_common():
+        log.info("  %5d occurrences of key=%r", count, k)
+    log.info("RatesV2 policyName breakdown:")
+    for pn, count in v2_policy_name_counts.most_common():
+        log.info("  %5d trips use policy=%r", count, pn)
     rate_inventory_path = debug_dir / "driver1_rate_types.json"
     with open(rate_inventory_path, "w") as f:
         json.dump({
@@ -152,8 +160,9 @@ def main() -> int:
             "trips_with_ratesv2": trips_with_v2,
             "legacy_rate_type_counts": dict(rate_type_counts),
             "legacy_rate_type_samples": {k: v for k, v in sample_rates_by_type.items()},
-            "ratesv2_key_counts": dict(ratesv2_key_counts),
-            "ratesv2_key_samples": {k: v for k, v in ratesv2_samples.items()},
+            "v2_top_level_key_counts": dict(v2_top_level_key_counts),
+            "v2_policy_name_counts": dict(v2_policy_name_counts),
+            "v2_full_samples": v2_full_samples,
         }, f, indent=2, default=str)
     log.info("Wrote rate inventory → %s", rate_inventory_path)
 
