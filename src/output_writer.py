@@ -40,42 +40,12 @@ HUMAN_DATE_PATTERN = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Per-column date format rules — derived from profiling the manual master.
-# Format codes:
-#   date_only        → MM-DD-YYYY                  (e.g. 05-15-2026)
-#   date_time_at     → MM-DD-YYYY @ HH:MM          (e.g. 05-15-2026 @ 13:13)
-#   date_time_space  → MM-DD-YYYY HH:MM            (e.g. 05-19-2026 08:00)
-#   iso_full         → 2026-05-26T08:00:00Z       (passed through, no reformat)
-#   time_only        → HH:MM                        (e.g. 08:00)
-# Default for any date column not listed → date_only (matches the manual's
-# default for un-special-cased date columns).
+# Date format rule: ALL date columns are written as MM-DD-YYYY (date-only,
+# no time component). Power Query's existing "Changed Type" step is
+# configured as `type date` — passing "MM-DD-YYYY @ HH:MM" or any string
+# with a time suffix causes per-row type-conversion errors. So we strip
+# time uniformly. Date columns are detected automatically by sampling.
 # ---------------------------------------------------------------------------
-COLUMN_DATE_FORMATS: dict[str, dict[str, str]] = {
-    "Loads": {
-        "First Pick Arrived":           "date_time_at",
-        "First Pick Departed":          "date_time_at",
-        "Last Drop Arrived":            "date_time_at",
-        "Last Drop Departed":           "date_time_at",
-        "Location Update":              "date_time_at",
-        "Last Check Call":              "date_time_at",
-        "Pickup Window Begin (FCFS)":   "date_time_space",
-        "Pickup Window End (FCFS)":     "date_time_space",
-        "Pickup Window (APPT)":         "date_time_space",
-        "Delivery Window Begin (FCFS)": "iso_full",
-        "Delivery Window End (FCFS)":   "iso_full",
-        "Delivery Window (APPT)":       "iso_full",
-    },
-    "Trips": {
-        "Pick Appt.":                   "time_only",
-        "Drop Appt.":                   "time_only",
-        "Location Update":              "date_time_at",
-        "Last Check Call":              "date_time_at",
-        "Age":                          "iso_full",
-        "Carrier Invoice Due Date":     "iso_full",
-        "Dispatched Date":              "iso_full",
-    },
-    "Fuel": {},
-}
 
 # Columns whose values are business numbers (Load #, Truck, etc.). They come
 # back from Alvys / lookup tables as strings, but the manual master stores
@@ -99,54 +69,26 @@ def _parse_iso(value: str) -> pd.Timestamp | None:
     return ts
 
 
-def _format_value(value, fmt: str):
-    """Format one cell value according to the column's format rule.
-
-    Returns the value unchanged if it isn't a string or doesn't match an
-    expected date pattern. `iso_full` is a pass-through: the Alvys API
-    already returns ISO strings, so we leave them alone.
+def _format_as_date_only(value):
+    """Format one cell value as MM-DD-YYYY date-only text. Returns value
+    unchanged if it isn't a string or isn't recognizably a date.
     """
     if value is None or value == "":
         return value
     if not isinstance(value, str):
         return value
-    if fmt == "iso_full":
-        return value
 
-    # Handle Alvys "human" format first ("04-30-2026 @ 13:00", etc.)
+    # Alvys "human" formats — keep just the date portion.
     if HUMAN_DATE_PATTERN.match(value):
-        # Try to extract date + time parts and re-emit in the requested fmt.
-        parts = re.split(r"\s+@?\s*", value, maxsplit=1)
-        date_part = parts[0].replace("/", "-")
-        time_part = parts[1] if len(parts) > 1 else None
+        date_part = value.split()[0].replace("/", "-")
+        return date_part
 
-        if fmt == "date_only":
-            return date_part
-        if fmt == "time_only":
-            return time_part or value
-        if time_part is None:
-            # No time component to render; emit date-only regardless of fmt.
-            return date_part
-        if fmt == "date_time_at":
-            return f"{date_part} @ {time_part}"
-        if fmt == "date_time_space":
-            return f"{date_part} {time_part}"
-        return value
-
-    # ISO 8601 path: parse, convert to America/Chicago, then format.
+    # ISO 8601 path: parse, convert to America/Chicago, emit MM-DD-YYYY.
     ts = _parse_iso(value)
     if ts is None:
         return value
     local = ts.tz_convert("America/Chicago")
-    if fmt == "date_only":
-        return local.strftime("%m-%d-%Y")
-    if fmt == "date_time_at":
-        return local.strftime("%m-%d-%Y @ %H:%M")
-    if fmt == "date_time_space":
-        return local.strftime("%m-%d-%Y %H:%M")
-    if fmt == "time_only":
-        return local.strftime("%H:%M")
-    return value
+    return local.strftime("%m-%d-%Y")
 
 
 def _looks_like_date_column(series: pd.Series) -> bool:
@@ -163,31 +105,27 @@ def _looks_like_date_column(series: pd.Series) -> bool:
 
 
 def _apply_date_formats(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
-    """Apply per-column date format rules. Columns not in the explicit map
-    that look like date columns default to date_only (MM-DD-YYYY)."""
-    rules = COLUMN_DATE_FORMATS.get(sheet_name, {})
-    reformatted: list[tuple[str, str]] = []
+    """Reformat every date-like column to MM-DD-YYYY text. Date columns
+    are detected by sampling — at least 70% of non-empty values must
+    match an ISO 8601 or Alvys human date pattern."""
+    reformatted: list[str] = []
 
     for col in df.columns:
         if df[col].dtype.kind != "O" and str(df[col].dtype) != "str":
             continue
-        explicit = rules.get(col)
-        if explicit is None:
-            # Auto-detect: only reformat if the column looks date-like.
-            if not _looks_like_date_column(df[col]):
-                continue
-            fmt = "date_only"
-        else:
-            fmt = explicit
+        if not _looks_like_date_column(df[col]):
+            continue
         df[col] = df[col].apply(
-            lambda v, f=fmt: _format_value(v, f) if isinstance(v, str) else v
+            lambda v: _format_as_date_only(v) if isinstance(v, str) else v
         )
-        reformatted.append((col, fmt))
+        reformatted.append(col)
 
     if reformatted:
-        log.info("  %s: formatted %d date columns", sheet_name, len(reformatted))
-        for col, fmt in reformatted:
-            log.debug("    %-35s → %s", col, fmt)
+        log.info(
+            "  %s: reformatted %d date columns → MM-DD-YYYY",
+            sheet_name, len(reformatted),
+        )
+        log.debug("    columns: %s", ", ".join(reformatted))
     return df
 
 
