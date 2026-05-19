@@ -153,34 +153,57 @@ def _driver1_rate_via_trip_or_zero(rate_type: str):
     return fn
 
 
-# Alvys Driver1.Rates entries are per-unit ($/mile, $/stop, $/hour) — NOT
-# totals. The trip's TripValue.Amount field already contains the SUM of all
-# (rate × units), so we use that for total driver pay rather than calculating
-# from each rate type. The one nuance: for brokered loads (X-Linx) there's no
-# company driver, so Driver1.Rates is empty and TripValue.Amount represents
-# the carrier's pay, not driver pay. Treat those as 0 to match how the manual
-# master reports Driver Rate.
-def _driver_rate_via_trip(record: dict):
-    """For Loads: hop to joined trip, return trip's total driver pay. Returns
-    0 when the trip has no Driver1 rates (brokered loads where TripValue
-    represents carrier pay, not driver pay)."""
-    trip = trip_for_load(record)
-    if not trip:
-        return 0
+# Driver Rate = mileage pay only (loaded + empty), matching how the manual
+# master reports it ($1.55/mile target). Calculated per trip as:
+#
+#     (Loaded Miles rate × LoadedMileage) + (Empty Miles rate × EmptyMileage)
+#
+# This DELIBERATELY excludes "Per Extra Stop" and "Per Hour" accessorials
+# (which are tracked in their own columns: Carrier Detention, etc.) and
+# excludes brokered loads with no Driver1.Rates.
+#
+# Caveat: Alvys returns the driver's CURRENT per-mile rate from Driver1.Rates,
+# not the rate locked at trip-settlement time. Historical trips are computed
+# as if they earned today's rate. This matches how the manual master is
+# computed and is acceptable since per-mile rates rarely change drastically.
+def _mileage_pay_from_trip(trip: dict) -> float:
+    """Calculate driver mileage pay from a Trip record. Returns 0 if no
+    Driver1.Rates entries (brokered/non-driven loads)."""
     rates = _get_nested(trip, "Driver1.Rates")
     if not isinstance(rates, list) or len(rates) == 0:
         return 0
-    amount = _get_nested(trip, "TripValue.Amount")
-    return amount if isinstance(amount, (int, float)) else 0
+    loaded_rate = empty_rate = 0
+    for r in rates:
+        if not isinstance(r, dict):
+            continue
+        rt = r.get("RateType")
+        rate = r.get("Rate")
+        if not isinstance(rate, (int, float)):
+            continue
+        if rt == "Loaded Miles":
+            loaded_rate = rate
+        elif rt == "Empty Miles":
+            empty_rate = rate
+    loaded_miles = _get_nested(trip, "LoadedMileage.Distance.Value") or 0
+    empty_miles = _get_nested(trip, "EmptyMileage.Distance.Value") or 0
+    if not isinstance(loaded_miles, (int, float)):
+        loaded_miles = 0
+    if not isinstance(empty_miles, (int, float)):
+        empty_miles = 0
+    return (loaded_rate * loaded_miles) + (empty_rate * empty_miles)
+
+
+def _driver_rate_via_trip(record: dict):
+    """For Loads: hop to joined trip, return mileage pay (loaded + empty)."""
+    trip = trip_for_load(record)
+    if not trip:
+        return 0
+    return _mileage_pay_from_trip(trip)
 
 
 def _driver_rate_from_trip(record: dict):
-    """For Trip records: same logic, no load→trip hop needed."""
-    rates = _get_nested(record, "Driver1.Rates")
-    if not isinstance(rates, list) or len(rates) == 0:
-        return 0
-    amount = _get_nested(record, "TripValue.Amount")
-    return amount if isinstance(amount, (int, float)) else 0
+    """For Trip records: return mileage pay directly."""
+    return _mileage_pay_from_trip(record)
 
 
 # --- Office name resolution -------------------------------------------------
