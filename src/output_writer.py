@@ -241,9 +241,6 @@ def write_master_xlsx(
     loads_df = _coerce_int_columns(loads_df, "Loads")
     trips_df = _coerce_int_columns(trips_df, "Trips")
 
-    if 'Driver Rate' in loads_df.columns:
-        loads_df['Driver Rate'] = loads_df['Driver Rate'].fillna(0).round(0).astype(int)
-
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         fuel_df.to_excel(writer,  sheet_name="Fuel",  index=False)
         loads_df.to_excel(writer, sheet_name="Loads", index=False)
