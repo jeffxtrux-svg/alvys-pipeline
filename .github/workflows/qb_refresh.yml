@@ -62,7 +62,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
           QB_OUTPUT_DIR: output/quickbooks
         run: python -m src.qb_onedrive_upload
 
