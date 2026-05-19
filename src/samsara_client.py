@@ -113,18 +113,31 @@ class SamsaraClient:
     # ------------------------------------------------------------------
 
     def fetch_vehicle_stats(self) -> list[dict]:
-        """Current odometer, fuel %, engine state, GPS for all vehicles."""
-        log.info("Fetching vehicle stats…")
-        types = ",".join([
-            "obdOdometerMeters",
-            "fuelPercents",
-            "engineStates",
-            "gpsOdometerMeters",
-            "syntheticEngineSeconds",
-        ])
-        items = self._safe_get("/fleet/vehicles/stats", {"types": types})
-        log.info("Total vehicle stat records: %d", len(items))
-        return items
+        """Current odometer, fuel %, engine state, GPS for all vehicles.
+
+        Samsara limits to 4 stat types per request — we make two calls and
+        merge the results by vehicle ID.
+        """
+        log.info("Fetching vehicle stats (batch 1/2: odometer + fuel + engine + GPS)…")
+        batch1 = self._safe_get("/fleet/vehicles/stats", {
+            "types": "obdOdometerMeters,fuelPercents,engineStates,gpsOdometerMeters",
+        })
+        log.info("Fetching vehicle stats (batch 2/2: engine seconds)…")
+        batch2 = self._safe_get("/fleet/vehicles/stats", {
+            "types": "syntheticEngineSeconds",
+        })
+
+        # Merge batch2 into batch1 by vehicle id
+        b2_by_id = {r.get("id"): r for r in batch2}
+        for rec in batch1:
+            extra = b2_by_id.get(rec.get("id"), {})
+            for k, v in extra.items():
+                if k not in rec:
+                    rec[k] = v
+
+        combined = batch1 if batch1 else batch2
+        log.info("Total vehicle stat records: %d", len(combined))
+        return combined
 
     def fetch_locations(self) -> list[dict]:
         """Current GPS position for all vehicles."""
@@ -146,17 +159,29 @@ class SamsaraClient:
     # Time-range data
     # ------------------------------------------------------------------
 
-    def fetch_trips(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
-        """Trip records for all vehicles in the given UTC window."""
+    def fetch_trips(
+        self,
+        start: datetime.datetime,
+        end: datetime.datetime,
+        vehicle_ids: list[str] | None = None,
+    ) -> list[dict]:
+        """Trip records fetched per vehicle (Samsara requires a vehicle ID in path)."""
         log.info("Fetching trips %s → %s…", start.date(), end.date())
+        if not vehicle_ids:
+            log.warning("No vehicle IDs provided — skipping trips")
+            return []
+
         params = {"startTime": _iso(start), "endTime": _iso(end)}
-        for path in ["/fleet/vehicles/trips", "/fleet/trips"]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("Total trips: %d (from %s)", len(items), path)
-                return items
-        log.info("Total trips: 0")
-        return []
+        all_trips: list[dict] = []
+        for vid in vehicle_ids:
+            trips = self._safe_get(f"/fleet/vehicles/{vid}/trips", params)
+            for t in trips:
+                t.setdefault("vehicleId", vid)
+            all_trips.extend(trips)
+            time.sleep(0.05)
+
+        log.info("Total trips: %d", len(all_trips))
+        return all_trips
 
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -19,6 +20,18 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from src.samsara_client import SamsaraClient
+
+# openpyxl rejects ASCII control chars (except tab/LF/CR) embedded in strings
+_ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip illegal Excel characters from all string cells."""
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].apply(
+            lambda v: _ILLEGAL_CHARS.sub("", v) if isinstance(v, str) else v
+        )
+    return df
 
 
 def setup_logging() -> None:
@@ -63,6 +76,7 @@ def write_samsara_xlsx(sheets: dict[str, pd.DataFrame], output_path: Path) -> No
             if df.empty:
                 log.warning("  %s: no data — writing placeholder sheet", sheet_name)
                 df = pd.DataFrame({"(no data retrieved)": []})
+            df = _sanitize_df(df)
             # Excel sheet names max 31 chars
             safe_name = sheet_name[:31]
             df.to_excel(writer, sheet_name=safe_name, index=False)
@@ -114,7 +128,8 @@ def main() -> int:
     log.info("=" * 60)
     log.info("Step 5/9: Trips (%d days)", days_back)
     log.info("=" * 60)
-    raw_trips = client.fetch_trips(start_long, now)
+    vehicle_ids = [v["id"] for v in raw_vehicles if "id" in v]
+    raw_trips = client.fetch_trips(start_long, now, vehicle_ids)
 
     log.info("=" * 60)
     log.info("Step 6/9: Safety Events (%d days)", days_back)
