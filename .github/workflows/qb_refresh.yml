@@ -1,0 +1,75 @@
+# QuickBooks data refresh — runs 3x/day, writes QB_*.xlsx files to OneDrive/QuickBooks/
+#
+# Refresh tokens rotate on every run (QB requirement). The new token is written
+# back to GitHub Secrets via gh CLI using GH_PAT. If rotation fails, the old
+# token stays valid for ~100 days before expiring.
+#
+# GitHub Secrets required:
+#   QB_CLIENT_ID, QB_CLIENT_SECRET
+#   QB_XTRUX_REFRESH_TOKEN, QB_TRUKWAY_REFRESH_TOKEN, QB_XLINX_REFRESH_TOKEN
+#   QB_NJ_TRAILERS_REFRESH_TOKEN, QB_NJ_PROPERTIES_REFRESH_TOKEN  (add when ready)
+#   GH_PAT  — Personal Access Token with repo scope (for secret rotation)
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET  (shared with Alvys)
+#   ONEDRIVE_USER_UPN
+
+name: Refresh QuickBooks data
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Offset 30 min from Alvys runs to avoid overlap
+    # 6:30am, 12:30pm, 6:30pm Central (UTC-5 DST / UTC-6 standard)
+    - cron: '30 12 * * *'   # 6:30am CT (DST) / 7:30am CT (standard)
+    - cron: '30 18 * * *'   # 12:30pm CT (DST) / 1:30pm CT (standard)
+    - cron: '30 0 * * *'    # 6:30pm CT (DST) / 7:30pm CT (standard)
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull QuickBooks data
+        env:
+          QB_CLIENT_ID: ${{ secrets.QB_CLIENT_ID }}
+          QB_CLIENT_SECRET: ${{ secrets.QB_CLIENT_SECRET }}
+          QB_XTRUX_REFRESH_TOKEN: ${{ secrets.QB_XTRUX_REFRESH_TOKEN }}
+          QB_TRUKWAY_REFRESH_TOKEN: ${{ secrets.QB_TRUKWAY_REFRESH_TOKEN }}
+          QB_XLINX_REFRESH_TOKEN: ${{ secrets.QB_XLINX_REFRESH_TOKEN }}
+          QB_NJ_TRAILERS_REALM_ID: ""
+          QB_NJ_TRAILERS_REFRESH_TOKEN: ${{ secrets.QB_NJ_TRAILERS_REFRESH_TOKEN }}
+          QB_NJ_PROPERTIES_REALM_ID: ""
+          QB_NJ_PROPERTIES_REFRESH_TOKEN: ${{ secrets.QB_NJ_PROPERTIES_REFRESH_TOKEN }}
+          QB_OUTPUT_DIR: output/quickbooks
+          # GH_PAT used by gh CLI to rotate refresh tokens back into Secrets
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: python -m src.qb_main
+
+      - name: Upload QB files to OneDrive
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          QB_OUTPUT_DIR: output/quickbooks
+        run: python -m src.qb_onedrive_upload
+
+      - name: Upload output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qb-data-${{ github.run_number }}
+          path: output/quickbooks/
+          retention-days: 7
