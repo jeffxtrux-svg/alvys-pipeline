@@ -442,14 +442,13 @@ def _carrier_invoice_field_via_load(field_names: list[str]):
 
 
 # ===========================================================================
-# LOADS — 108 columns
+# LOADS — 107 columns
 # ===========================================================================
 LOADS_COLUMNS = [
     ("First Pick Arrived",                  "Stops.first.ArrivedAt"),
     ("First Pick Departed",                 "Stops.first.DepartedAt"),
     ("Last Drop Arrived",                   "Stops.last.ArrivedAt"),
     ("Last Drop Departed",                  "Stops.last.DepartedAt"),
-    ("Posted Carrier Rate",                 _zero_default("PostedCarrierRate")),
     ("Carrier External Compliance Status",  None),
     ("Customer Miles",                      "CustomerMileage.Distance.Value"),
     ("Account Manager",                     _user_via_customer(["AccountManagerId", "AccountManager.Id"])),
@@ -557,7 +556,7 @@ LOADS_COLUMNS = [
 
 
 # ===========================================================================
-# TRIPS — 94 columns
+# TRIPS — 93 columns
 # ===========================================================================
 TRIPS_COLUMNS = [
     ("Carrier External Compliance Status",  None),
@@ -585,7 +584,6 @@ TRIPS_COLUMNS = [
     ("Customer",                            _from_load("CustomerName")),
     ("Customer Freight Charge",             _from_load("CustomerRate.Amount")),
     ("Contract Name",                       _from_load("ContractName")),
-    ("Posted Carrier Rate",                 _zero_default_via_load("PostedCarrierRate")),
     ("Stops",                               "Stops"),
     ("Loaded Miles",                        "LoadedMileage.Distance.Value"),
     ("Loaded Dispatch Mileage",             "LoadedMileage.Distance.Value"),
@@ -658,9 +656,12 @@ TRIPS_COLUMNS = [
 
 
 # ===========================================================================
-# FUEL — 28 columns
+# FUEL — 29 columns
+# Leading blank-header column mirrors the original Alvys_Master.xlsx; Power BI's
+# existing Power Query expects it at position 1 even though it carries no data.
 # ===========================================================================
 FUEL_COLUMNS = [
+    ("",                                    None),
     ("Transaction Id",                      "TransactionId"),
     ("Card #",                              _fuel_card_field("CardNumber")),
     ("Deduct Transaction",                  _fuel_card_field("DeductFuel")),
