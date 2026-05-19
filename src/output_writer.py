@@ -2,16 +2,14 @@
 Write the three DataFrames (Loads, Trips, Fuel) into a single .xlsx file
 matching the EXACT formatting of the original Alvys_Master.xlsx.
 
-The original file (before this pipeline existed) stored date columns as TEXT
-strings in MM-DD-YYYY format (e.g., "04-30-2026") or MM-DD-YYYY HH:MM format
-(e.g., "04-30-2026 07:00"). The user's existing Power BI report has Power
-Query "Changed Type" steps that convert those text strings into proper Date
-type internally — which is what makes the between-slicers work.
+The original file stores date columns in several different text formats —
+not one consistent style. Power Query's existing "Changed Type" steps were
+authored against those exact formats. So we replicate the manual file's
+per-column format on a column-by-column basis (see COLUMN_DATE_FORMATS).
 
-If we write datetimes as native Excel datetime cells, Power BI's auto-detect
-reads them as decimal numbers (the underlying Excel date serial), which
-breaks all the existing visuals. So we mirror the original file's approach:
-text dates that Power Query can convert.
+We also coerce specific text-numeric columns back to integers where they
+parse cleanly, since the manual file has them as Excel number cells (Power
+Query then leaves them as Whole Number).
 """
 from __future__ import annotations
 
@@ -23,101 +21,201 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-# Matches ISO 8601-style date / datetime strings:
+# Matches ISO 8601 timestamps the Alvys API returns:
 #   2024-08-01
 #   2024-08-01T07:00:00
 #   2024-08-01T07:00:00.123
 #   2024-08-01T07:00:00-05:00 / +00:00 / Z
-#   2024-08-01 07:00:00
 ISO_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)?)?$"
 )
 
-# Matches "human-readable" Alvys date formats with optional time components:
-#   04-30-2026
+# Matches "human-readable" Alvys dates we may also see in the source:
+#   04-30-2026 / 04/30/2026
 #   04-30-2026 13:00
 #   04-29-2026 @ 17:02
-#   04/29/2026 @ 22:22
 HUMAN_DATE_PATTERN = re.compile(
     r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}(\s+@?\s*\d{1,2}:\d{2})?$"
 )
 
 
-def _format_iso_as_text(value: str) -> str:
-    """
-    Convert one date/datetime string to MM-DD-YYYY date-only text.
+# ---------------------------------------------------------------------------
+# Per-column date format rules — derived from profiling the manual master.
+# Format codes:
+#   date_only        → MM-DD-YYYY                  (e.g. 05-15-2026)
+#   date_time_at     → MM-DD-YYYY @ HH:MM          (e.g. 05-15-2026 @ 13:13)
+#   date_time_space  → MM-DD-YYYY HH:MM            (e.g. 05-19-2026 08:00)
+#   iso_full         → 2026-05-26T08:00:00Z       (passed through, no reformat)
+#   time_only        → HH:MM                        (e.g. 08:00)
+# Default for any date column not listed → date_only (matches the manual's
+# default for un-special-cased date columns).
+# ---------------------------------------------------------------------------
+COLUMN_DATE_FORMATS: dict[str, dict[str, str]] = {
+    "Loads": {
+        "First Pick Arrived":           "date_time_at",
+        "First Pick Departed":          "date_time_at",
+        "Last Drop Arrived":            "date_time_at",
+        "Last Drop Departed":           "date_time_at",
+        "Location Update":              "date_time_at",
+        "Last Check Call":              "date_time_at",
+        "Pickup Window Begin (FCFS)":   "date_time_space",
+        "Pickup Window End (FCFS)":     "date_time_space",
+        "Pickup Window (APPT)":         "date_time_space",
+        "Delivery Window Begin (FCFS)": "iso_full",
+        "Delivery Window End (FCFS)":   "iso_full",
+        "Delivery Window (APPT)":       "iso_full",
+    },
+    "Trips": {
+        "Pick Appt.":                   "time_only",
+        "Drop Appt.":                   "time_only",
+        "Location Update":              "date_time_at",
+        "Last Check Call":              "date_time_at",
+        "Age":                          "iso_full",
+        "Carrier Invoice Due Date":     "iso_full",
+        "Dispatched Date":              "iso_full",
+    },
+    "Fuel": {},
+}
 
-    The original Alvys_Master.xlsx wrote date columns as date-only strings
-    (e.g., "04-30-2026"), and Power Query's "Changed Type" step is configured
-    to parse them as Date — NOT DateTime. If we leave a time component on the
-    string (e.g., "04-30-2026 13:00" or "04-30-2026 @ 13:00"), Power Query
-    fails to convert the cell and marks it as an error. So we always strip
-    the time, regardless of whether the source value had one.
+# Columns whose values are business numbers (Load #, Truck, etc.). They come
+# back from Alvys / lookup tables as strings, but the manual master stores
+# them as Excel number cells. We coerce each cell to int where it parses
+# cleanly; otherwise we leave the original string intact.
+INT_COERCE_COLUMNS: dict[str, list[str]] = {
+    "Loads": ["Load #", "Order #", "Truck", "Trailer"],
+    "Trips": ["Trip #", "Order #", "Truck", "Trailer"],
+    "Fuel":  [],
+}
 
-    Handles both ISO 8601 strings (from the Alvys API) and human-readable
-    MM-DD-YYYY / MM/DD/YYYY strings (from column_mappings transformations).
-    """
-    if value is None or value == "":
-        return value
 
-    # Handle human-readable formats first: "04-30-2026", "04-30-2026 13:00",
-    # "04-29-2026 @ 17:02", "04/29/2026 @ 22:22"
-    if HUMAN_DATE_PATTERN.match(value):
-        # Extract just the date portion (everything before any space)
-        date_part = value.split()[0]
-        # Normalize separator to "-" for MM-DD-YYYY output
-        date_part = date_part.replace("/", "-")
-        return date_part
-
-    # Otherwise treat as ISO 8601 and parse via pandas
+def _parse_iso(value: str) -> pd.Timestamp | None:
+    """Parse an ISO 8601 string from the Alvys API. Returns None on failure."""
     try:
         ts = pd.to_datetime(value, utc=True, errors="coerce")
     except (TypeError, ValueError):
-        return value
+        return None
     if pd.isna(ts):
+        return None
+    return ts
+
+
+def _format_value(value, fmt: str):
+    """Format one cell value according to the column's format rule.
+
+    Returns the value unchanged if it isn't a string or doesn't match an
+    expected date pattern. `iso_full` is a pass-through: the Alvys API
+    already returns ISO strings, so we leave them alone.
+    """
+    if value is None or value == "":
         return value
-    if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
-        return ts.strftime("%m-%d-%Y")
+    if not isinstance(value, str):
+        return value
+    if fmt == "iso_full":
+        return value
+
+    # Handle Alvys "human" format first ("04-30-2026 @ 13:00", etc.)
+    if HUMAN_DATE_PATTERN.match(value):
+        # Try to extract date + time parts and re-emit in the requested fmt.
+        parts = re.split(r"\s+@?\s*", value, maxsplit=1)
+        date_part = parts[0].replace("/", "-")
+        time_part = parts[1] if len(parts) > 1 else None
+
+        if fmt == "date_only":
+            return date_part
+        if fmt == "time_only":
+            return time_part or value
+        if time_part is None:
+            # No time component to render; emit date-only regardless of fmt.
+            return date_part
+        if fmt == "date_time_at":
+            return f"{date_part} @ {time_part}"
+        if fmt == "date_time_space":
+            return f"{date_part} {time_part}"
+        return value
+
+    # ISO 8601 path: parse, convert to America/Chicago, then format.
+    ts = _parse_iso(value)
+    if ts is None:
+        return value
     local = ts.tz_convert("America/Chicago")
-    return local.strftime("%m-%d-%Y")
+    if fmt == "date_only":
+        return local.strftime("%m-%d-%Y")
+    if fmt == "date_time_at":
+        return local.strftime("%m-%d-%Y @ %H:%M")
+    if fmt == "date_time_space":
+        return local.strftime("%m-%d-%Y %H:%M")
+    if fmt == "time_only":
+        return local.strftime("%H:%M")
+    return value
 
 
-def _reformat_iso_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
-    """
-    Find every column whose string values are mostly ISO 8601 timestamps,
-    and reformat them as MM-DD-YYYY / MM-DD-YYYY HH:MM text strings —
-    matching the original Alvys_Master.xlsx file.
-    """
-    reformatted: list[str] = []
+def _looks_like_date_column(series: pd.Series) -> bool:
+    """Heuristic: at least 70% of non-empty values look like a date/datetime."""
+    sample = series.dropna().astype(str)
+    sample = sample[sample != ""].head(50)
+    if len(sample) == 0:
+        return False
+    matches = sum(
+        1 for v in sample
+        if ISO_DATE_PATTERN.match(v) or HUMAN_DATE_PATTERN.match(v)
+    )
+    return matches >= len(sample) * 0.7
+
+
+def _apply_date_formats(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+    """Apply per-column date format rules. Columns not in the explicit map
+    that look like date columns default to date_only (MM-DD-YYYY)."""
+    rules = COLUMN_DATE_FORMATS.get(sheet_name, {})
+    reformatted: list[tuple[str, str]] = []
 
     for col in df.columns:
-        # Only consider object/string columns
         if df[col].dtype.kind != "O" and str(df[col].dtype) != "str":
             continue
-        # Drop NaN and empty strings before sampling — columns with sparse data
-        # (mostly empty) would otherwise fail the 70%-match threshold below.
-        sample = df[col].dropna().astype(str)
-        sample = sample[sample != ""].head(50)
-        if len(sample) == 0:
-            continue
-        matches = sum(
-            1 for v in sample
-            if ISO_DATE_PATTERN.match(v) or HUMAN_DATE_PATTERN.match(v)
-        )
-        if matches < len(sample) * 0.7:
-            continue
-
+        explicit = rules.get(col)
+        if explicit is None:
+            # Auto-detect: only reformat if the column looks date-like.
+            if not _looks_like_date_column(df[col]):
+                continue
+            fmt = "date_only"
+        else:
+            fmt = explicit
         df[col] = df[col].apply(
-            lambda v: _format_iso_as_text(v) if isinstance(v, str) else v
+            lambda v, f=fmt: _format_value(v, f) if isinstance(v, str) else v
         )
-        reformatted.append(col)
+        reformatted.append((col, fmt))
 
     if reformatted:
-        log.info(
-            "  %s: reformatted %d ISO date columns → MM-DD-YYYY text",
-            sheet_name, len(reformatted),
-        )
-        log.info("    columns: %s", ", ".join(reformatted))
+        log.info("  %s: formatted %d date columns", sheet_name, len(reformatted))
+        for col, fmt in reformatted:
+            log.debug("    %-35s → %s", col, fmt)
+    return df
+
+
+def _coerce_int_columns(df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+    """For columns that are business numbers in the manual, convert each cell
+    to int where it parses cleanly. Non-numeric values stay as their original
+    string (matches manual where e.g. 'Order #' has both ints and strings)."""
+    cols = INT_COERCE_COLUMNS.get(sheet_name, [])
+    for col in cols:
+        if col not in df.columns:
+            continue
+        def _cell_to_int(v):
+            if v is None or v == "" or (isinstance(v, float) and pd.isna(v)):
+                return v
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, int):
+                return v
+            if isinstance(v, float):
+                return int(v) if v.is_integer() else v
+            s = str(v).strip()
+            if s.lstrip("-").isdigit():
+                try:
+                    return int(s)
+                except ValueError:
+                    return v
+            return v
+        df[col] = df[col].apply(_cell_to_int)
     return df
 
 
@@ -127,21 +225,22 @@ def write_master_xlsx(
     fuel_df: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """
-    Write Loads/Trips/Fuel sheets in the same order as the original
-    Alvys_Master.xlsx (Fuel first, then Loads, then Trips).
-
-    Date columns are written as text in MM-DD-YYYY (or MM-DD-YYYY HH:MM)
-    format — exactly like the original file. Power BI's existing Changed
-    Type steps will convert these to Date type internally.
-    """
+    """Write Loads/Trips/Fuel sheets matching the manual Alvys_Master.xlsx
+    exactly: sheet order (Fuel, Loads, Trips), per-column date formats, and
+    integer coercion for the business-number columns."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     log.info("Writing %s", output_path)
-    log.info("Reformatting ISO date strings to match original file format…")
-    fuel_df  = _reformat_iso_columns(fuel_df,  "Fuel")
-    loads_df = _reformat_iso_columns(loads_df, "Loads")
-    trips_df = _reformat_iso_columns(trips_df, "Trips")
+    log.info("Applying per-column date formats…")
+    fuel_df  = _apply_date_formats(fuel_df,  "Fuel")
+    loads_df = _apply_date_formats(loads_df, "Loads")
+    trips_df = _apply_date_formats(trips_df, "Trips")
+
+    log.info("Coercing business-number columns to int…")
+    fuel_df  = _coerce_int_columns(fuel_df,  "Fuel")
+    loads_df = _coerce_int_columns(loads_df, "Loads")
+    trips_df = _coerce_int_columns(trips_df, "Trips")
+
     if 'Driver Rate' in loads_df.columns:
         loads_df['Driver Rate'] = loads_df['Driver Rate'].fillna(0).round(0).astype(int)
 

@@ -107,7 +107,9 @@ def _appointments_verified(record: dict):
     if not isinstance(stops, list) or not stops:
         return None
     confirmed = [s.get("AppointmentConfirmed") for s in stops if isinstance(s, dict)]
-    return all(confirmed) if confirmed else None
+    if not confirmed:
+        return None
+    return "Verified" if all(confirmed) else "Unverified"
 
 
 def _zero(record: dict):
@@ -454,7 +456,7 @@ LOADS_COLUMNS = [
     ("Account Manager",                     _user_via_customer(["AccountManagerId", "AccountManager.Id"])),
     ("Carrier All-in Rate",                 _from_trip("TripValue.Amount")),
     ("Brokerage Status",                    "BrokerageStatus"),
-    ("Date Imported",                       "CreatedAt"),
+    ("Date Imported",                       None),
     ("Load Weight",                         "Weight"),
     ("Customer Sales Agent",                _name_from_id("users", "CustomerSalesAgentId")),
     ("Carrier Sales Agent",                 _carrier_sales_agent_load),
@@ -508,7 +510,7 @@ LOADS_COLUMNS = [
     ("Time Left",                           None),                                   # UI-only
     ("Location Update",                     None),                                   # UI-only
     ("Customer Payments",                   "TotalPaid.Amount"),
-    ("Customer Payment Date",               "PaidAt"),
+    ("Customer Payment Date",               None),
     ("Invoice Age",                         None),                                   # UI-computed
     ("Customer Due Date",                   _customer_invoice_field(["DueDate", "CustomerDueDate", "PaymentDueDate"])),
     ("Factoring Payments",                  _zero),                                  # cosmetic — always 0
@@ -561,7 +563,7 @@ LOADS_COLUMNS = [
 TRIPS_COLUMNS = [
     ("Carrier External Compliance Status",  None),
     ("Brokerage Status",                    _from_load("BrokerageStatus")),
-    ("Date Imported",                       _from_load("CreatedAt")),
+    ("Date Imported",                       None),
     ("Account Manager",                     _user_via_customer_via_load(["AccountManagerId", "AccountManager.Id"])),
     ("Carrier Sales Agent",                 None),
     ("Customer Service Representative",     _user_via_customer_via_load(["CustomerServiceRepresentativeId", "CSRId", "CustomerServiceRepId"])),
