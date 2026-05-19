@@ -96,39 +96,66 @@ def main() -> int:
                 json.dump(records[0], f, indent=2, default=str)
             log.info("Wrote sample %s record → %s", name, sample_path)
 
-    # --- Debug: inventory unique RateType values from Driver1.Rates ---
-    # This tells us the canonical name(s) Alvys uses (e.g. "Line Haul" vs
-    # "Linehaul") so the Driver Rate / Carrier Accessorials accessors can
-    # target the right RateType. Logged + persisted to debug dir.
+    # --- Debug: inventory Driver1.Rates AND Driver1.RatesV2 structures ---
+    # The legacy Rates is a list of {RateType, Rate}. The new RatesV2 is a
+    # structured object with named rate sub-objects (per Alvys support).
+    # We log both so the column_mappings extractor can target the right
+    # field names.
     from collections import Counter
     rate_type_counts: Counter = Counter()
     sample_rates_by_type: dict = {}
+    ratesv2_key_counts: Counter = Counter()
+    ratesv2_samples: dict = {}
+    trips_with_v2 = 0
+    trips_with_legacy = 0
     for trip in raw_trips:
-        rates = trip.get("Driver1", {}).get("Rates") if isinstance(trip.get("Driver1"), dict) else None
-        if not isinstance(rates, list):
+        d1 = trip.get("Driver1") if isinstance(trip.get("Driver1"), dict) else None
+        if not d1:
             continue
-        for r in rates:
-            if not isinstance(r, dict):
-                continue
-            rt = r.get("RateType")
-            if rt is not None:
-                rate_type_counts[rt] += 1
-                if rt not in sample_rates_by_type:
-                    sample_rates_by_type[rt] = r
+        legacy = d1.get("Rates")
+        if isinstance(legacy, list) and legacy:
+            trips_with_legacy += 1
+            for r in legacy:
+                if not isinstance(r, dict):
+                    continue
+                rt = r.get("RateType")
+                if rt is not None:
+                    rate_type_counts[rt] += 1
+                    if rt not in sample_rates_by_type:
+                        sample_rates_by_type[rt] = r
+        v2 = d1.get("RatesV2")
+        if isinstance(v2, dict) and v2:
+            trips_with_v2 += 1
+            for k, v in v2.items():
+                ratesv2_key_counts[k] += 1
+                if k not in ratesv2_samples:
+                    ratesv2_samples[k] = v
     log.info("=" * 60)
-    log.info("Driver1.Rates inventory across %d trips:", len(raw_trips))
+    log.info("Driver1 rates inventory across %d trips:", len(raw_trips))
+    log.info("  %d trips have legacy Rates, %d have RatesV2",
+             trips_with_legacy, trips_with_v2)
     log.info("=" * 60)
+    log.info("Legacy Rates (Driver1.Rates) RateType breakdown:")
     for rt, count in rate_type_counts.most_common():
         sample = sample_rates_by_type.get(rt, {})
-        log.info("  %5d trips have RateType=%r  sample=%s",
+        log.info("  %5d trips: RateType=%r  sample=%s",
                  count, rt, json.dumps(sample, default=str)[:200])
+    log.info("RatesV2 (Driver1.RatesV2) keys:")
+    for k, count in ratesv2_key_counts.most_common():
+        sample = ratesv2_samples.get(k, {})
+        log.info("  %5d trips have key=%r  sample=%s",
+                 count, k, json.dumps(sample, default=str)[:300])
     rate_inventory_path = debug_dir / "driver1_rate_types.json"
     with open(rate_inventory_path, "w") as f:
         json.dump({
-            "counts": dict(rate_type_counts),
-            "samples": {k: v for k, v in sample_rates_by_type.items()},
+            "trips_with_legacy": trips_with_legacy,
+            "trips_with_ratesv2": trips_with_v2,
+            "legacy_rate_type_counts": dict(rate_type_counts),
+            "legacy_rate_type_samples": {k: v for k, v in sample_rates_by_type.items()},
+            "ratesv2_key_counts": dict(ratesv2_key_counts),
+            "ratesv2_key_samples": {k: v for k, v in ratesv2_samples.items()},
         }, f, indent=2, default=str)
-    log.info("Wrote rate-type inventory → %s", rate_inventory_path)
+    log.info("Wrote rate inventory → %s", rate_inventory_path)
 
     # --- Transform ---
     log.info("=" * 60)

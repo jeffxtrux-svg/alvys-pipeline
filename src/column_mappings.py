@@ -158,32 +158,76 @@ def _driver1_rate_via_trip_or_zero(rate_type: str):
 #
 #     (Loaded Miles rate × LoadedMileage) + (Empty Miles rate × EmptyMileage)
 #
-# This DELIBERATELY excludes "Per Extra Stop" and "Per Hour" accessorials
-# (which are tracked in their own columns: Carrier Detention, etc.) and
-# excludes brokered loads with no Driver1.Rates.
+# Per Alvys support: read rates from Driver1.RatesV2 (new structured field).
+# The legacy Driver1.Rates array can be empty or outdated for newer trips —
+# that's exactly the May-2026 anomaly we saw (newer trips had V2 only).
+# We fall back to legacy Rates only when V2 is absent, for backwards
+# compatibility with older trips that pre-date the V2 rollout.
 #
-# Caveat: Alvys returns the driver's CURRENT per-mile rate from Driver1.Rates,
-# not the rate locked at trip-settlement time. Historical trips are computed
-# as if they earned today's rate. This matches how the manual master is
-# computed and is acceptable since per-mile rates rarely change drastically.
-def _mileage_pay_from_trip(trip: dict) -> float:
-    """Calculate driver mileage pay from a Trip record. Returns 0 if no
-    Driver1.Rates entries (brokered/non-driven loads)."""
-    rates = _get_nested(trip, "Driver1.Rates")
-    if not isinstance(rates, list) or len(rates) == 0:
+# Caveat: Alvys returns the driver's CURRENT per-mile rate, not the rate
+# locked at trip-settlement time. Historical trips are computed as if they
+# earned today's rate. Per Alvys API team, no historically-locked field
+# exists.
+
+
+def _extract_v2_rate(rates_v2, *candidate_keys: str) -> float:
+    """RatesV2 is a structured object like:
+        {"perTripRate": {"rate": ...}, "loadedMilesRate": {"rate": ...}}
+    Try each candidate key (camelCase/PascalCase variants), return the
+    inner .rate / .Rate. Returns 0 if no key matches or no rate found."""
+    if not isinstance(rates_v2, dict):
         return 0
-    loaded_rate = empty_rate = 0
-    for r in rates:
-        if not isinstance(r, dict):
-            continue
-        rt = r.get("RateType")
-        rate = r.get("Rate")
-        if not isinstance(rate, (int, float)):
-            continue
-        if rt == "Loaded Miles":
-            loaded_rate = rate
-        elif rt == "Empty Miles":
-            empty_rate = rate
+    for key in candidate_keys:
+        sub = rates_v2.get(key)
+        if isinstance(sub, dict):
+            for rk in ("rate", "Rate", "amount", "Amount"):
+                v = sub.get(rk)
+                if isinstance(v, (int, float)):
+                    return v
+    return 0
+
+
+def _extract_legacy_rate(rates_list, rate_type: str) -> float:
+    """Old Driver1.Rates is a list of {RateType, Rate, ...} dicts."""
+    if not isinstance(rates_list, list):
+        return 0
+    for r in rates_list:
+        if isinstance(r, dict) and r.get("RateType") == rate_type:
+            rate = r.get("Rate")
+            if isinstance(rate, (int, float)):
+                return rate
+    return 0
+
+
+def _mileage_pay_from_trip(trip: dict) -> float:
+    """Return total driver mileage pay = (Loaded Rate × Loaded Miles)
+    + (Empty Rate × Empty Miles). Returns 0 when no driver pay info."""
+    rates_v2 = _get_nested(trip, "Driver1.RatesV2")
+    rates_legacy = _get_nested(trip, "Driver1.Rates")
+
+    # Prefer V2, but field names are guesses since we don't have a real sample
+    # yet. Try multiple plausible naming variants.
+    loaded_rate = _extract_v2_rate(
+        rates_v2,
+        "loadedMilesRate", "LoadedMilesRate",
+        "perLoadedMileRate", "PerLoadedMileRate",
+        "loadedMileRate", "LoadedMileRate",
+    )
+    empty_rate = _extract_v2_rate(
+        rates_v2,
+        "emptyMilesRate", "EmptyMilesRate",
+        "perEmptyMileRate", "PerEmptyMileRate",
+        "emptyMileRate", "EmptyMileRate",
+    )
+
+    # Fall back to legacy Rates when V2 didn't yield anything (older trips).
+    if loaded_rate == 0 and empty_rate == 0:
+        loaded_rate = _extract_legacy_rate(rates_legacy, "Loaded Miles")
+        empty_rate = _extract_legacy_rate(rates_legacy, "Empty Miles")
+
+    if loaded_rate == 0 and empty_rate == 0:
+        return 0
+
     loaded_miles = _get_nested(trip, "LoadedMileage.Distance.Value") or 0
     empty_miles = _get_nested(trip, "EmptyMileage.Distance.Value") or 0
     if not isinstance(loaded_miles, (int, float)):
