@@ -153,44 +153,34 @@ def _driver1_rate_via_trip_or_zero(rate_type: str):
     return fn
 
 
-# RateType values that we surface in separate columns (Carrier Advances,
-# Carrier Detention, etc.). These are EXCLUDED from "Driver Rate" so the
-# Driver Rate column contains only base/line-haul pay — matching the manual
-# master's interpretation of the column.
-_ACCESSORIAL_RATE_TYPES = {"Advances", "Detention", "Lumper", "Other Accessorials"}
-
-
-def _sum_driver1_base_rates(rates: list) -> float:
-    """Sum every rate in a Driver1.Rates list EXCEPT the known accessorials
-    (which appear in their own columns). Returns 0 if input is unusable."""
-    if not isinstance(rates, list):
-        return 0
-    total = 0
-    for r in rates:
-        if not isinstance(r, dict):
-            continue
-        if r.get("RateType") in _ACCESSORIAL_RATE_TYPES:
-            continue
-        rate = r.get("Rate")
-        if isinstance(rate, (int, float)):
-            total += rate
-    return total
-
-
-def _driver1_base_pay_via_trip(record: dict):
-    """For Loads: hop to joined trip, sum Driver1's base pay (everything
-    EXCEPT accessorials). Mirrors how the manual master's Driver Rate is
-    populated for X-Trux/XFreight loads. X-Linx brokered loads typically
-    have no Driver1, so this returns 0 — which matches the manual."""
+# Alvys Driver1.Rates entries are per-unit ($/mile, $/stop, $/hour) — NOT
+# totals. The trip's TripValue.Amount field already contains the SUM of all
+# (rate × units), so we use that for total driver pay rather than calculating
+# from each rate type. The one nuance: for brokered loads (X-Linx) there's no
+# company driver, so Driver1.Rates is empty and TripValue.Amount represents
+# the carrier's pay, not driver pay. Treat those as 0 to match how the manual
+# master reports Driver Rate.
+def _driver_rate_via_trip(record: dict):
+    """For Loads: hop to joined trip, return trip's total driver pay. Returns
+    0 when the trip has no Driver1 rates (brokered loads where TripValue
+    represents carrier pay, not driver pay)."""
     trip = trip_for_load(record)
     if not trip:
         return 0
-    return _sum_driver1_base_rates(_get_nested(trip, "Driver1.Rates"))
+    rates = _get_nested(trip, "Driver1.Rates")
+    if not isinstance(rates, list) or len(rates) == 0:
+        return 0
+    amount = _get_nested(trip, "TripValue.Amount")
+    return amount if isinstance(amount, (int, float)) else 0
 
 
-def _driver1_base_pay(record: dict):
-    """For Trip records: sum Driver1's base pay (no load→trip hop needed)."""
-    return _sum_driver1_base_rates(_get_nested(record, "Driver1.Rates"))
+def _driver_rate_from_trip(record: dict):
+    """For Trip records: same logic, no load→trip hop needed."""
+    rates = _get_nested(record, "Driver1.Rates")
+    if not isinstance(rates, list) or len(rates) == 0:
+        return 0
+    amount = _get_nested(record, "TripValue.Amount")
+    return amount if isinstance(amount, (int, float)) else 0
 
 
 # --- Office name resolution -------------------------------------------------
@@ -521,7 +511,7 @@ LOADS_COLUMNS = [
     ("Empty Dispatch Mileage",              _from_trip("EmptyMileage.Distance.Value")),
     ("Total Dispatch Mileage",              _from_trip("TotalMileage.Distance.Value")),
     ("Customer Revenue",                    "CustomerRate.Amount"),
-    ("Driver Rate",                         _driver1_base_pay_via_trip),
+    ("Driver Rate",                         _driver_rate_via_trip),
     ("Load Lane",                           _load_lane),
     ("Load Status",                         "Status"),
     ("First Pick Status",                   "Stops.first.Status"),
@@ -618,7 +608,7 @@ TRIPS_COLUMNS = [
     ("Trip #",                              "TripNumber"),
     ("Order #",                             "OrderNumber"),
     ("Customer Revenue",                    _from_load("CustomerRate.Amount")),
-    ("Driver Rate",                         "TripValue.Amount"),
+    ("Driver Rate",                         _driver_rate_from_trip),
     ("Reason Not Complete",                 _from_load("ReasonNotComplete")),
     ("Trip Status",                         "Status"),
     ("Load Status",                         _from_load("Status")),
