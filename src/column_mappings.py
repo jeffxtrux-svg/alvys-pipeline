@@ -153,6 +153,45 @@ def _driver1_rate_via_trip_or_zero(rate_type: str):
     return fn
 
 
+# Common naming variants for "Line Haul" — Alvys hasn't documented the exact
+# RateType string, so we try the most likely names in order.
+_LINE_HAUL_NAMES = ("Line Haul", "Linehaul", "LineHaul", "Line-Haul", "Loaded")
+
+
+def _driver1_line_haul_via_trip(record: dict):
+    """For Loads: hop to joined trip, find Driver1's Line Haul rate. Returns
+    0 if no matching RateType found. The line-haul rate is the driver's base
+    pay (excluding accessorials), which is what the manual master's "Driver
+    Rate" column tracks."""
+    trip = trip_for_load(record)
+    if not trip:
+        return 0
+    rates = _get_nested(trip, "Driver1.Rates")
+    if not isinstance(rates, list):
+        return 0
+    for name in _LINE_HAUL_NAMES:
+        for r in rates:
+            if isinstance(r, dict) and r.get("RateType") == name:
+                rate = r.get("Rate")
+                if rate is not None:
+                    return rate
+    return 0
+
+
+def _driver1_line_haul(record: dict):
+    """Same as above but for Trip records (no load→trip hop needed)."""
+    rates = _get_nested(record, "Driver1.Rates")
+    if not isinstance(rates, list):
+        return 0
+    for name in _LINE_HAUL_NAMES:
+        for r in rates:
+            if isinstance(r, dict) and r.get("RateType") == name:
+                rate = r.get("Rate")
+                if rate is not None:
+                    return rate
+    return 0
+
+
 # --- Office name resolution -------------------------------------------------
 # Maps InvoiceAs / TenderAs raw values to the Office name format used in the
 # original Power BI source. The /offices endpoint doesn't exist in this Alvys
@@ -481,7 +520,7 @@ LOADS_COLUMNS = [
     ("Empty Dispatch Mileage",              _from_trip("EmptyMileage.Distance.Value")),
     ("Total Dispatch Mileage",              _from_trip("TotalMileage.Distance.Value")),
     ("Customer Revenue",                    "CustomerRate.Amount"),
-    ("Driver Rate",                         _from_trip("TripValue.Amount")),
+    ("Driver Rate",                         _driver1_line_haul_via_trip),
     ("Load Lane",                           _load_lane),
     ("Load Status",                         "Status"),
     ("First Pick Status",                   "Stops.first.Status"),

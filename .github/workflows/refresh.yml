@@ -52,10 +52,12 @@ jobs:
 
       # Belt-and-suspenders: also upload as a workflow artifact, so the file
       # is downloadable from the Actions tab even if OneDrive upload had issues.
-      - name: Upload Alvys_Master as artifact
+      # Includes _debug/ folder with sample JSON records and rate-type
+      # inventory — useful for diagnosing column-mapping issues.
+      - name: Upload output folder as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: alvys-master-${{ github.run_number }}
-          path: output/Alvys_Master.xlsx
+          path: output/
           retention-days: 7

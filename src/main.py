@@ -96,6 +96,40 @@ def main() -> int:
                 json.dump(records[0], f, indent=2, default=str)
             log.info("Wrote sample %s record → %s", name, sample_path)
 
+    # --- Debug: inventory unique RateType values from Driver1.Rates ---
+    # This tells us the canonical name(s) Alvys uses (e.g. "Line Haul" vs
+    # "Linehaul") so the Driver Rate / Carrier Accessorials accessors can
+    # target the right RateType. Logged + persisted to debug dir.
+    from collections import Counter
+    rate_type_counts: Counter = Counter()
+    sample_rates_by_type: dict = {}
+    for trip in raw_trips:
+        rates = trip.get("Driver1", {}).get("Rates") if isinstance(trip.get("Driver1"), dict) else None
+        if not isinstance(rates, list):
+            continue
+        for r in rates:
+            if not isinstance(r, dict):
+                continue
+            rt = r.get("RateType")
+            if rt is not None:
+                rate_type_counts[rt] += 1
+                if rt not in sample_rates_by_type:
+                    sample_rates_by_type[rt] = r
+    log.info("=" * 60)
+    log.info("Driver1.Rates inventory across %d trips:", len(raw_trips))
+    log.info("=" * 60)
+    for rt, count in rate_type_counts.most_common():
+        sample = sample_rates_by_type.get(rt, {})
+        log.info("  %5d trips have RateType=%r  sample=%s",
+                 count, rt, json.dumps(sample, default=str)[:200])
+    rate_inventory_path = debug_dir / "driver1_rate_types.json"
+    with open(rate_inventory_path, "w") as f:
+        json.dump({
+            "counts": dict(rate_type_counts),
+            "samples": {k: v for k, v in sample_rates_by_type.items()},
+        }, f, indent=2, default=str)
+    log.info("Wrote rate-type inventory → %s", rate_inventory_path)
+
     # --- Transform ---
     log.info("=" * 60)
     log.info("Transforming records")
