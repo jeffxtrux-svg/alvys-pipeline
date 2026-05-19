@@ -603,7 +603,12 @@ LOADS_COLUMNS = [
     ("Trailer",                             _name_from_id_via_trip("trailers", "Trailer.Id")),
     ("Customer Freight Charge",             "CustomerRate.Amount"),
     ("Contract Name",                       "ContractName"),
-    ("Carrier Rate",                        _from_trip("TripValue.Amount")),
+    # Per Alvys API team: outside carrier rate is at trip.Carrier.Rate.Amount.
+    # TripValue.Amount was wrong — that's the total trip value including
+    # driver pay for company trucks (X-TRUX). For brokered X-LINX loads, the
+    # Carrier object exists; for X-TRUX/XFreight company-driven loads, there
+    # is no Carrier object and this returns None (empty in Excel).
+    ("Carrier Rate",                        _from_trip("Carrier.Rate.Amount")),
     ("Dispatcher",                          _name_from_id_via_trip("users", "DispatcherId")),
     ("Time Left",                           None),                                   # UI-only
     ("Location Update",                     None),                                   # UI-only
@@ -710,7 +715,8 @@ TRIPS_COLUMNS = [
     ("Owner Operator",                      _name_from_id("drivers", "OwnerOperator.Id")),
     ("Truck",                               _name_from_id("trucks", "Truck.Id")),
     ("Trailer",                             _name_from_id("trailers", "Trailer.Id")),
-    ("Carrier Rate",                        "TripValue.Amount"),
+    # Per Alvys API team: see comment on the Loads version of this column.
+    ("Carrier Rate",                        "Carrier.Rate.Amount"),
     ("Trip Value",                          "TripValue.Amount"),
     ("Location",                            None),                                   # UI real-time
     ("Next Stop",                           None),                                   # UI real-time

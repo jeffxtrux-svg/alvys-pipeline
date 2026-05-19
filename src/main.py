@@ -157,6 +157,34 @@ def main() -> int:
         }, f, indent=2, default=str)
     log.info("Wrote rate inventory → %s", rate_inventory_path)
 
+    # --- Debug: inventory trip.Carrier field structure ---
+    # Brokered (X-LINX) trips have a Carrier object whose Rate.Amount we
+    # use for "Carrier Rate". X-TRUX trips don't. Log key counts + a sample
+    # so we can verify the field path is right.
+    carrier_key_counts: Counter = Counter()
+    carrier_sample = None
+    trips_with_carrier = 0
+    for trip in raw_trips:
+        c = trip.get("Carrier") if isinstance(trip.get("Carrier"), dict) else None
+        if not c:
+            continue
+        trips_with_carrier += 1
+        for k in c.keys():
+            carrier_key_counts[k] += 1
+        if carrier_sample is None:
+            carrier_sample = c
+    log.info("=" * 60)
+    log.info("trip.Carrier inventory: %d of %d trips have a Carrier object",
+             trips_with_carrier, len(raw_trips))
+    log.info("=" * 60)
+    for k, count in carrier_key_counts.most_common():
+        log.info("  %5d trips have Carrier.%s", count, k)
+    if carrier_sample is not None:
+        carrier_path = debug_dir / "sample_trip_carrier.json"
+        with open(carrier_path, "w") as f:
+            json.dump(carrier_sample, f, indent=2, default=str)
+        log.info("Wrote first Carrier sample → %s", carrier_path)
+
     # --- Transform ---
     log.info("=" * 60)
     log.info("Transforming records")
