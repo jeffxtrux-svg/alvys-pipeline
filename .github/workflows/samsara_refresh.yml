@@ -1,0 +1,67 @@
+# Samsara data refresh — runs 3x/day, writes Samsara_Master.xlsx to OneDrive
+
+name: Refresh Samsara data
+
+on:
+  # Manual trigger from the Actions tab — use this to test
+  workflow_dispatch:
+
+  # Same UTC schedule as Alvys: 6am, 12pm, 6pm Central
+  schedule:
+    - cron: '0 12 * * *'   # 6am CT (winter) / 7am CT (DST)
+    - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
+    - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull Samsara data
+        env:
+          SAMSARA_API_TOKEN: ${{ secrets.SAMSARA_API_TOKEN }}
+          SAMSARA_DAYS_BACK: '90'
+          SAMSARA_OUTPUT_DIR: output/samsara
+        run: python -m src.samsara_main
+
+      - name: Upload to OneDrive
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SAMSARA_OUTPUT_DIR: output/samsara
+        run: python -m src.samsara_onedrive_upload
+
+      - name: Check diagnostics and send alerts
+        # Requires Mail.Send Application permission on the Azure app registration.
+        # See src/samsara_alerts.py docstring for setup instructions.
+        env:
+          SAMSARA_API_TOKEN: ${{ secrets.SAMSARA_API_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ALERT_FROM_UPN: jeff@xfreight.net
+          ALERT_TO_EMAILS: ${{ secrets.ALERT_TO_EMAILS }}
+        run: python -m src.samsara_alerts
+
+      - name: Upload output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: samsara-master-${{ github.run_number }}
+          path: output/samsara/
+          retention-days: 7
