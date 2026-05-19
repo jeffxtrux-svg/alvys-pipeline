@@ -35,7 +35,7 @@ class SamsaraClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Token {self._token}",
+            "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
         }
 
@@ -149,57 +149,59 @@ class SamsaraClient:
     def fetch_trips(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Trip records for all vehicles in the given UTC window."""
         log.info("Fetching trips %s → %s…", start.date(), end.date())
-        # Try ISO 8601 first (newer API); fall back to ms if needed
-        items = self._safe_get("/fleet/trips", {
-            "startTime": _iso(start),
-            "endTime": _iso(end),
-        })
-        if not items:
-            items = self._safe_get("/fleet/trips", {
-                "startMs": _ms(start),
-                "endMs": _ms(end),
-            })
-        log.info("Total trips: %d", len(items))
-        return items
+        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        for path in ["/fleet/vehicles/trips", "/fleet/trips"]:
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Total trips: %d (from %s)", len(items), path)
+                return items
+        log.info("Total trips: 0")
+        return []
 
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""
         log.info("Fetching safety events %s → %s…", start.date(), end.date())
-        items = self._safe_get("/safety/events", {
-            "startTime": _iso(start),
-            "endTime": _iso(end),
-        })
-        log.info("Total safety events: %d", len(items))
-        return items
+        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        for path in ["/fleet/safety/events", "/safety/events"]:
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Total safety events: %d (from %s)", len(items), path)
+                return items
+        log.info("Total safety events: 0")
+        return []
 
     def fetch_hos_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """ELD / Hours of Service log entries."""
         log.info("Fetching HOS logs %s → %s…", start.date(), end.date())
-        items = self._safe_get("/fleet/hos/logs", {
-            "startMs": _ms(start),
-            "endMs": _ms(end),
-        })
-        log.info("Total HOS log entries: %d", len(items))
-        return items
+        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        for path in ["/fleet/hos/logs", "/fleet/drivers/hos-logs"]:
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Total HOS log entries: %d (from %s)", len(items), path)
+                return items
+        log.info("Total HOS log entries: 0")
+        return []
 
     def fetch_dvirs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Driver Vehicle Inspection Reports (pre/post-trip inspections)."""
         log.info("Fetching DVIRs %s → %s…", start.date(), end.date())
-        items = self._safe_get("/fleet/maintenance/dvirs", {
-            "startMs": _ms(start),
-            "endMs": _ms(end),
-        })
-        log.info("Total DVIRs: %d", len(items))
-        return items
+        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        for path in ["/fleet/dvirs", "/fleet/maintenance/dvirs"]:
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Total DVIRs: %d (from %s)", len(items), path)
+                return items
+        log.info("Total DVIRs: 0")
+        return []
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
         """IFTA fuel & mileage report for a given month. Tries multiple known paths."""
         log.info("Fetching IFTA %d-%02d…", year, month)
         params = {"year": year, "month": month}
         for path in [
+            "/fleet/reports/ifta/vehicles",
             "/fleet/ifta/vehicle-reports",
             "/fleet/ifta/summaries",
-            "/fleet/ifta/summary",
         ]:
             items = self._safe_get(path, params)
             if items:
