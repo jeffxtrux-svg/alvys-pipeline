@@ -15,6 +15,7 @@ next, all feeding one OneDrive folder that Power BI reads from.
 | 3     | Upload output to OneDrive via Microsoft Graph| 🔜 Next               |
 | 4     | Add Samsara connector                        | 🔜 Future             |
 | 5     | Add QuickBooks (5 companies) connector       | 🔜 Future             |
+| 6     | Combine OneDrive reports → Google Sheet KPI dashboard (3x/day) | ✅ Built — see `docs/google_sheet_setup.md` |
 
 ---
 
