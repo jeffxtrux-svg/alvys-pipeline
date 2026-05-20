@@ -1,14 +1,12 @@
 # Combine OneDrive reports → Google Sheet (X-Freight KPI Dashboard)
 #
-# Runs 3x/day at 8:30am, 12:00pm, 15:30pm Central. Reads xlsx files from
+# Runs 3x/day at 8:30am, 1:00pm, 3:30pm Central. Reads xlsx files from
 # OneDrive (root Alvys Master, /QuickBooks, /Samsara) and rebuilds tabs in
 # the Google Sheet identified by GOOGLE_SHEET_ID, plus a formula-driven
 # Dashboard tab.
 #
-# Note: the 12:00pm run fires 30 minutes BEFORE the QuickBooks refresh
-# (qb_refresh.yml at 12:30pm CT). At 12:00pm the QB tabs reflect the
-# previous day's 6:30pm pull. Acceptable, but if you want the noon run to
-# see fresh QB data, push this cron to 13:00 CT or move QB earlier.
+# The 1:00pm CT slot runs AFTER QuickBooks' 12:30pm CT refresh, so all
+# three sources (Alvys/Samsara 12pm + QB 12:30pm) are fresh by then.
 #
 # GitHub Secrets required:
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET (shared with Alvys/QB/Samsara)
@@ -28,9 +26,9 @@ on:
     # 8:30am CT
     - cron: '30 13 * * *'   # 8:30am CT (DST)
     - cron: '30 14 * * *'   # 8:30am CT (standard)
-    # 12:00pm CT
-    - cron: '0 17 * * *'    # 12:00pm CT (DST)
-    - cron: '0 18 * * *'    # 12:00pm CT (standard)
+    # 1:00pm CT
+    - cron: '0 18 * * *'    # 1:00pm CT (DST)
+    - cron: '0 19 * * *'    # 1:00pm CT (standard)
     # 3:30pm CT
     - cron: '30 20 * * *'   # 3:30pm CT (DST)
     - cron: '30 21 * * *'   # 3:30pm CT (standard)
