@@ -19,6 +19,7 @@ Each connector has its own workflow in `.github/workflows/`. All three:
 | `refresh.yml` (Alvys) | pull → OneDrive upload → artifact | `0 12,18,0 * * *` |
 | `samsara_refresh.yml` | pull → OneDrive upload → **alerts** → artifact | `0 12,18,0 * * *` |
 | `qb_refresh.yml` | pull (+token rotation) → OneDrive upload → artifact | `30 12,18,0 * * *` |
+| `scorecard_email.yml` | read OneDrive files → compute KPIs → email daily scorecard | `0 13 * * *` (1×/day) |
 
 The cron times map to roughly **6am / 12pm / 6pm Central**. QuickBooks is offset
 30 minutes to avoid overlapping with the Alvys/Samsara runs. (Cron is fixed UTC,
