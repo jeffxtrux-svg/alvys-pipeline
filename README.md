@@ -14,7 +14,49 @@ next, all feeding one OneDrive folder that Power BI reads from.
 | 2     | GitHub Actions runs it 3x/day                | 🔧 Workflow included, disabled |
 | 3     | Upload output to OneDrive via Microsoft Graph| 🔜 Next               |
 | 4     | Add Samsara connector                        | 🔜 Future             |
-| 5     | Add QuickBooks (5 companies) connector       | 🔜 Future             |
+| 5     | QuickBooks hub (5 companies, reports + KPIs) | ✅ Built              |
+
+### QuickBooks hub
+
+`src/qb_main.py` pulls from all 5 XFreight entities (X-Trux Inc, Truk-Way
+Leasing, X-Linx Inc, N&J Trailers, N&J Properties) and writes one Excel file
+per report into `output/quickbooks/`, then `src/qb_onedrive_upload.py` pushes
+them to OneDrive/QuickBooks. The GitHub Actions workflow
+`.github/workflows/qb_refresh.yml` runs the full hub 3x/day and rotates each
+company's refresh token back into Secrets after every run.
+
+Files produced:
+
+| File                             | Contents                                              |
+|----------------------------------|-------------------------------------------------------|
+| `QB_ProfitAndLoss.xlsx`          | Stacked P&L for all 5 companies, current fiscal year  |
+| `QB_ProfitAndLossDetail.xlsx`    | Line-item P&L                                         |
+| `QB_BalanceSheet.xlsx`           | Balance sheet snapshot                                |
+| `QB_BalanceSheetDetail.xlsx`     | Line-item balance sheet                               |
+| `QB_CashFlow.xlsx`               | Cash flow statement                                   |
+| `QB_GeneralLedger.xlsx`          | Full GL                                               |
+| `QB_TrialBalance.xlsx`           | Trial balance                                         |
+| `QB_AgedReceivableDetail.xlsx`   | AR aging                                              |
+| `QB_AgedPayableDetail.xlsx`      | AP aging                                              |
+| `QB_TransactionList.xlsx`        | All transactions                                      |
+| `QB_Customers.xlsx`              | Customer master                                       |
+| `QB_Vendors.xlsx`                | Vendor master                                         |
+| `QB_Accounts.xlsx`               | Chart of accounts                                     |
+| `QB_KPIs.xlsx`                   | **Computed KPIs per company + consolidated XFreight** |
+
+`QB_KPIs.xlsx` is long-format (`Company, Period, Category, Metric, Value,
+Unit`) with 5 categories — Revenue & Profitability, Balance Sheet,
+Liquidity & Leverage, Cash Flow, AR/AP — covering:
+
+- Revenue, gross/operating/net margin, **operating ratio** (trucking-specific)
+- Total assets/liabilities/equity, current & quick & cash ratios, D/E
+- Working capital, ROA, ROE
+- Operating/investing/financing cash flow, op cash flow as % of revenue
+- DSO, DPO, AR/AP aging totals
+
+The `XFreight (Consolidated)` row set sums absolute totals across all 5
+entities and recomputes ratios on the consolidated basis (ratios are not
+averaged — that would be misleading).
 
 ---
 

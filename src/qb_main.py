@@ -30,7 +30,21 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from .qb_client import QBClient
-from .qb_reports import ENTITY_QUERIES, REPORT_CONFIGS, fetch_entity, fetch_report
+from .qb_kpis import (
+    build_kpi_dataframe,
+    extract_bs,
+    extract_cashflow,
+    extract_pl,
+    _aging_grand_total,
+    _period_label,
+)
+from .qb_reports import (
+    ENTITY_QUERIES,
+    REPORT_CONFIGS,
+    fetch_entity,
+    fetch_report_raw,
+    parse_report,
+)
 
 log = logging.getLogger("qb_main")
 
@@ -120,6 +134,7 @@ def main() -> None:
 
     report_dfs: dict[str, list[pd.DataFrame]] = {r: [] for r in REPORT_CONFIGS}
     entity_dfs: dict[str, list[pd.DataFrame]] = {e: [] for e in ENTITY_QUERIES}
+    kpi_extractions: list[dict] = []
 
     for company in _companies():
         refresh_token = os.environ.get(company["token_env"], "")
@@ -139,8 +154,15 @@ def main() -> None:
             refresh_token=refresh_token,
         )
 
+        # Pull each report once as raw JSON, then fan out to (a) the flat
+        # DataFrame and (b) the KPI extractor — avoids double API calls.
+        raw_reports: dict[str, dict] = {}
         for report_name in REPORT_CONFIGS:
-            df = fetch_report(client, report_name, company["name"])
+            raw = fetch_report_raw(client, report_name, company["name"])
+            if raw is None:
+                continue
+            raw_reports[report_name] = raw
+            df = parse_report(raw, company["name"])
             if df is not None:
                 report_dfs[report_name].append(df)
 
@@ -148,6 +170,23 @@ def main() -> None:
             df = fetch_entity(client, entity, company["name"])
             if df is not None:
                 entity_dfs[entity].append(df)
+
+        # Gather KPI inputs for this company. Missing reports → zeros (safe).
+        pl_raw = raw_reports.get("ProfitAndLoss")
+        bs_raw = raw_reports.get("BalanceSheet")
+        cf_raw = raw_reports.get("CashFlow")
+        ar_raw = raw_reports.get("AgedReceivableDetail")
+        ap_raw = raw_reports.get("AgedPayableDetail")
+        period = _period_label(pl_raw or bs_raw or cf_raw or {})
+        kpi_extractions.append({
+            "company": company["name"],
+            "period":  period,
+            "pl":      extract_pl(pl_raw),
+            "bs":      extract_bs(bs_raw),
+            "cf":      extract_cashflow(cf_raw),
+            "ar":      _aging_grand_total(ar_raw),
+            "ap":      _aging_grand_total(ap_raw),
+        })
 
         if client.new_refresh_token:
             rotate_secret(company["secret_name"], client.new_refresh_token)
@@ -160,6 +199,10 @@ def main() -> None:
 
     for entity, dfs in entity_dfs.items():
         write_excel(dfs, output_dir / f"QB_{entity}s.xlsx")
+
+    # KPI roll-up: per-company + consolidated XFreight
+    kpi_df = build_kpi_dataframe(kpi_extractions)
+    write_excel([kpi_df], output_dir / "QB_KPIs.xlsx")
 
     log.info("All done ✓")
 
