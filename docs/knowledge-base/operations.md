@@ -27,10 +27,10 @@ python -m src.qb_onedrive_upload       # uploads all QB_*.xlsx
 python -m src.samsara_alerts           # checks faults/DVIRs, emails if needed
 ```
 
-> **`.env` is incomplete.** `.env.example` only covers Alvys + the Samsara token
-> + alert recipients. To run uploads or QuickBooks locally you must also add the
-> shared Graph vars (`AZURE_*`, `ONEDRIVE_USER_UPN`) and the QB vars. See the
-> full table in [automation-and-secrets.md](./automation-and-secrets.md).
+> **Credentials:** `.env.example` lists every variable for all three
+> connectors, the OneDrive uploads, and the alerts — copy it to `.env` and fill
+> in real values. The full reference table is in
+> [automation-and-secrets.md](./automation-and-secrets.md).
 
 ## Run / inspect in GitHub Actions
 

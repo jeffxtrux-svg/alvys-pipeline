@@ -94,11 +94,9 @@ without it (it just logs a warning and the old token keeps working ~100 days).
 | `ONEDRIVE_FOLDER_PATH` | — | — | Alvys destination folder (`""` = root) |
 | `ONEDRIVE_TARGET_FILENAME` | — | — | Alvys filename override |
 
-> **Heads-up:** `.env.example` only documents the Alvys + Samsara-token + alert
-> variables. The Azure/OneDrive and QuickBooks variables are **not** in it yet.
-> For a full local run of every connector you'll need to add the shared Graph
-> vars and the QB vars by hand. Updating `.env.example` to be complete is a good
-> first contribution.
+> **Local runs:** `.env.example` documents every variable above — copy it to
+> `.env` and fill in real values. The QuickBooks and Microsoft Graph / OneDrive
+> blocks are required for those connectors and their uploads.
 
 ## Enabling / disabling the schedule
 

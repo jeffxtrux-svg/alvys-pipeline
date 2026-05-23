@@ -122,8 +122,8 @@ alvys-pipeline/
 
 ## Reality check (state of the world, May 2026)
 
-The top-level `README.md` describes Samsara and QuickBooks as "future" phases.
-**That is out of date** — all three connectors and the OneDrive upload are
-built and wired into GitHub Actions workflows. This knowledge base reflects the
-*actual current state* of the code. When in doubt, trust the code and this KB
-over the top-level README.
+All three connectors (Alvys, Samsara, QuickBooks), the shared OneDrive upload,
+the Samsara alerts, and the 3×/day GitHub Actions schedules are **built and
+live**. QuickBooks runs 3 of its 5 companies today (the N&J pair await API
+access). The Power BI API-direct path is a working proof of concept, not yet at
+full column parity. When in doubt, trust the code and this KB.
