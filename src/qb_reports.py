@@ -133,7 +133,8 @@ def _parse_rows(
 # Public fetch functions
 # ---------------------------------------------------------------------------
 
-def fetch_report(client: QBClient, report_name: str, company_name: str) -> pd.DataFrame | None:
+def fetch_report_raw(client: QBClient, report_name: str, company_name: str) -> dict | None:
+    """Fetch a report and return the raw JSON. Used by both DataFrame parser and KPI extractor."""
     config = REPORT_CONFIGS.get(report_name)
     if not config:
         log.warning("Unknown report: %s", report_name)
@@ -141,11 +142,14 @@ def fetch_report(client: QBClient, report_name: str, company_name: str) -> pd.Da
 
     log.info("  %-25s %s", report_name, company_name)
     try:
-        data = client.get(config["path"], config["params"])
+        return client.get(config["path"], config["params"])
     except Exception as exc:
         log.error("  FAILED %s / %s: %s", report_name, company_name, exc)
         return None
 
+
+def parse_report(data: dict, company_name: str) -> pd.DataFrame:
+    """Flatten a raw report JSON into a DataFrame with Company/Report_Period/Report_Basis columns."""
     col_titles = _col_titles(data)
     rows = data.get("Rows", {}).get("Row", [])
     records = _parse_rows(rows, col_titles, company_name)
@@ -159,6 +163,13 @@ def fetch_report(client: QBClient, report_name: str, company_name: str) -> pd.Da
               f"{header.get('StartPeriod', '')} – {header.get('EndPeriod', '')}")
     df.insert(2, "Report_Basis", header.get("ReportBasis", ""))
     return df
+
+
+def fetch_report(client: QBClient, report_name: str, company_name: str) -> pd.DataFrame | None:
+    data = fetch_report_raw(client, report_name, company_name)
+    if data is None:
+        return None
+    return parse_report(data, company_name)
 
 
 def fetch_entity(client: QBClient, entity: str, company_name: str) -> pd.DataFrame | None:
