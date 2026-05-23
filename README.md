@@ -6,6 +6,12 @@ Pulls Loads, Trips, and Fuel data from the Alvys API and produces an
 Designed to grow into a multi-source hub: Alvys today, Samsara and QuickBooks
 next, all feeding one OneDrive folder that Power BI reads from.
 
+> **📚 Full knowledge base:** for the complete, up-to-date picture of how all
+> three connectors, the OneDrive upload, the automation, and Power BI fit
+> together, start at [`docs/knowledge-base/`](docs/knowledge-base/README.md).
+> (The phase table below is the original Alvys-only quick-start; Samsara and
+> QuickBooks are now built too — the knowledge base reflects current state.)
+
 ## Status
 
 | Phase | What it does                                  | Status                |
