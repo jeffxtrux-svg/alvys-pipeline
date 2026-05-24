@@ -52,9 +52,10 @@ TARGET_DEADHEAD = 0.075
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
 
+# Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
-    "Dispatched Date", "Invoiced Date", "Delivered", "Delivery Date",
-    "Created", "Scheduled Pickup", "Scheduled Delivery",
+    "Scheduled Pickup", "Dispatched Date", "Invoiced Date", "Delivered",
+    "Delivery Date", "Created", "Scheduled Delivery",
 ]
 
 # ----------------------------------------------------------------------
@@ -167,9 +168,10 @@ def _windows() -> dict[str, pd.Timestamp]:
 # ----------------------------------------------------------------------
 def _alvys_metrics(sub: pd.DataFrame) -> dict:
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    loaded = _col_any(sub, ["Loaded Miles", "Loaded Dispatch Mileage"]).sum()
-    empty = _col_any(sub, ["Empty Miles", "Empty Dispatch Mileage"]).sum()
-    total_col = _col_any(sub, ["Total Dispatch Mileage", "Total Miles", "Total Mileage"])
+    loaded = _col_any(sub, ["Loaded Mileage", "Loaded Miles", "Loaded Dispatch Mileage"]).sum()
+    empty = _col_any(sub, ["Empty Mileage", "Empty Miles", "Empty Dispatch Mileage"]).sum()
+    # "Dispatch Mileage" is the model's total-dispatch-mileage column (Power BI Rev/Mile & Dead Head basis).
+    total_col = _col_any(sub, ["Dispatch Mileage", "Total Dispatch Mileage", "Total Miles", "Total Mileage"])
     total = total_col.sum() if total_col.notna().any() else (loaded + empty)
     # Gross margin = revenue - (driver + carrier). Fuel is already inside those rates.
     driver = _col(sub, "Driver Rate").fillna(0)
