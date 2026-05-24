@@ -203,7 +203,7 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
     # RPM and deadhead are asset-carrier metrics — compute an X-Trux/XFreight-only
     # variant (exclude X-Linx brokerage) for those tiles.
-    office_col = _find_col(loads, ["office", "invoice as", "tender as"])
+    office_col = _find_col(loads, ["invoice as", "invoiced as", "office", "tender as"])
     if office_col:
         is_asset = loads[office_col].map(_entity_group) == "X-Trux"
         a_loads, a_dates = loads[is_asset], dates[is_asset]
@@ -232,7 +232,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     loads = sheets.get("Loads")
     if loads is None or loads.empty:
         return {}
-    office_col = _find_col(loads, ["office", "invoice as", "tender as"])
+    office_col = _find_col(loads, ["invoice as", "invoiced as", "office", "tender as"])
     if not office_col:
         return {}
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
@@ -249,6 +249,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None}
             continue
         revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+        # Fuel is already embedded in driver rate / carrier rate — do not add it again.
         driver = _col(rows, "Driver Rate").fillna(0)
         carrier = _col_any(rows, ["Carrier Rate", "Posted Carrier Rate"]).fillna(0)
         cost = float((driver + carrier).sum())
