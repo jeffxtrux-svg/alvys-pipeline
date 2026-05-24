@@ -11,7 +11,7 @@ Alvys/Samsara/QB APIs → Python pipeline → Excel files → OneDrive → Power
 ```
 
 This is what the GitHub Actions workflows do 3×/day. Power BI is pointed at the
-OneDrive files (`Alvys Master 2026.xlsx`, `/Samsara/Samsara Master.xlsx`,
+OneDrive files (`Alvys Master.xlsx`, `/Samsara/Samsara Master.xlsx`,
 `/QuickBooks/QB_*.xlsx`) and refreshes from whatever the latest upload wrote.
 
 - **Pro:** Power BI setup is trivial (connect to a OneDrive file); no API
