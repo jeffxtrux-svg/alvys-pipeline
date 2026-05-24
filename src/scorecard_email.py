@@ -609,10 +609,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
     ar31_tile = _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
+    _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
+    _dc = [v for v in (_xt.get("driver"), _xl.get("carrier")) if _isnum(v)]
+    pay_tile = _tile("Driver + carrier pay &middot; MTD", money(sum(_dc) if _dc else None),
+                     _pill("X-Trux driver + X-Linx carrier", "mute"))
     t1 = (_tile("Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
+          + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
-          + _tile("Net income &middot; YTD", money(co.get("net")), _pill("QuickBooks", "mute"))
-          + empty_td)
+          + _tile("Net income &middot; YTD", money(co.get("net")), _pill("QuickBooks", "mute")))
     t2 = (_tile("Loads &middot; 7d", num(w7.get("loads")), "")
           + _tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
                   "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
@@ -662,32 +666,27 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                      + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD"))
 
     # Revenue / cost / margin by entity (Alvys 2026, MTD). XFreight folded into X-Trux.
-    # The column right of Revenue is the entity's direct rate: X-Trux = driver rate,
-    # X-Linx = carrier rate.
     entity_rows = ""
-    tot_rev = tot_rate = tot_marg = 0.0
+    tot_rev = tot_cost = tot_marg = 0.0
     for ent in ENTITY_ORDER:
         e = (alvys_entities or {}).get(ent, {})
-        rev = e.get("revenue")
-        rate = e.get("driver") if ent == "X-Trux" else e.get("carrier")
-        mk = (rev - rate) if (_isnum(rev) and _isnum(rate)) else e.get("margin")
-        mpct = (mk / rev) if (_isnum(rev) and rev and _isnum(mk)) else None
+        mk = e.get("margin")
         label = ent + (" (incl. XFreight)" if ent == "X-Trux" else " (brokerage)")
         entity_rows += _tr(
-            [label, money(rev), money(rate), money(mk), pct(mpct)],
+            [label, money(e.get("revenue")), money(e.get("cost")), money(mk), pct(e.get("margin_pct"))],
             ["left", "right", "right", "right", "right"],
             [None, None, None, ("bad" if (_isnum(mk) and mk < 0) else "good"), None])
-        if _isnum(rev):
-            tot_rev += rev
-        if _isnum(rate):
-            tot_rate += rate
+        if _isnum(e.get("revenue")):
+            tot_rev += e["revenue"]
+        if _isnum(e.get("cost")):
+            tot_cost += e["cost"]
         if _isnum(mk):
             tot_marg += mk
     total_pct = (tot_marg / tot_rev) if tot_rev else None
     entity_total = (
         f"<tr><td style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>Total</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_rev or None)}</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_rate or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_cost or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
@@ -702,8 +701,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{t1}</tr><tr>{t2}</tr><tr>{t3}</tr>"
-            f"{_section('Revenue / rate / margin by entity &middot; MTD')}"
-            f"{_table(['Entity', 'Revenue', 'Driver / carrier rate', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
+            f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
+            f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
