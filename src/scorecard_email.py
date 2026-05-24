@@ -171,10 +171,11 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     empty = _col_any(sub, ["Empty Miles", "Empty Dispatch Mileage"]).sum()
     total_col = _col_any(sub, ["Total Dispatch Mileage", "Total Miles", "Total Mileage"])
     total = total_col.sum() if total_col.notna().any() else (loaded + empty)
-    margin_col = _col(sub, "Gross Margin")
-    margin = margin_col.sum() if margin_col.notna().any() else (
-        revenue - _col(sub, "Driver Rate").sum()
-    )
+    # Gross margin = revenue - (driver + carrier). Fuel is already inside those rates.
+    driver = _col(sub, "Driver Rate").fillna(0)
+    carrier = _col_any(sub, ["Carrier Rate", "Posted Carrier Rate"]).fillna(0)
+    cost = float((driver + carrier).sum())
+    margin = revenue - cost
     return {
         "loads": len(sub),
         "revenue": revenue if revenue else None,
