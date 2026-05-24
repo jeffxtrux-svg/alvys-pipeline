@@ -639,10 +639,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _pill("X-Trux", "mute"))
                 + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
+    margin_tile = _tile("XFreight Margin &middot; MTD", money(wmtd.get("margin")), _pill("revenue &minus; cost", "mute"))
     t1 = (_tile("XFreight Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + pay_tile
-          + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
-          + loads_tile)
+          + margin_tile
+          + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), ""))
+    t1b = loads_tile + empty_td + empty_td + empty_td
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -718,7 +720,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{_section('XFreight Overview')}"
-            f"<tr>{t1}</tr>"
+            f"<tr>{t1}</tr><tr>{t1b}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr>"
