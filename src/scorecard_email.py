@@ -628,24 +628,27 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                    + _tile("Carrier cost &middot; MTD", money(_xl_carrier), _pill("X-Linx", "mute"))
                    + _tile("Margin &middot; MTD", money(_xl_margin), _pill("X-Linx", "mute"))
                    + _tile("Margin % &middot; MTD", pct(_xl_mpct), _pill("X-Linx", "mute")))
-    # X-Trux (asset) overview tiles: revenue, driver cost, margin, margin %.
+    # X-Trux (asset) overview: revenue + mileage, driver cost + loads, rev/mile, rev/load.
     _xt_rev, _xt_driver = _xt.get("revenue"), _xt.get("driver")
-    _xt_margin = (_xt_rev - _xt_driver) if (_isnum(_xt_rev) and _isnum(_xt_driver)) else _xt.get("margin")
-    _xt_mpct = (_xt_margin / _xt_rev) if (_isnum(_xt_rev) and _xt_rev and _isnum(_xt_margin)) else None
-    xtrux_tiles = (_tile("Total revenue &middot; MTD", money(_xt_rev), _pill("X-Trux", "mute"))
-                   + _tile("Driver cost &middot; MTD", money(_xt_driver), _pill("X-Trux", "mute"))
-                   + _tile("Margin &middot; MTD", money(_xt_margin), _pill("X-Trux", "mute"))
-                   + _tile("Margin % &middot; MTD", pct(_xt_mpct), _pill("X-Trux", "mute")))
+    _xt_loads, _xt_miles = _xt.get("loads"), fleet.get("miles")
+    _xt_rpm = (_xt_rev / _xt_miles) if (_isnum(_xt_rev) and _isnum(_xt_miles) and _xt_miles) else None
+    _xt_rpl = (_xt_rev / _xt_loads) if (_isnum(_xt_rev) and _isnum(_xt_loads) and _xt_loads) else None
+    xtrux_r1 = (_tile("Total revenue &middot; MTD", money(_xt_rev), _pill("X-Trux", "mute"))
+                + _tile("Driver cost &middot; MTD", money(_xt_driver), _pill("X-Trux", "mute"))
+                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _pill("X-Trux", "mute"))
+                + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
+    xtrux_r2 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _pill("X-Trux + XFreight", "mute"))
+                + _tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))
+                + empty_td + empty_td)
     t1 = (_tile("XFreight Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
           + loads_tile)
-    t2 = (_tile("X-Trux Mileage &middot; MTD", num(fleet.get("miles")), _pill("X-Trux + XFreight", "mute"))
-          + _tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
+    t2 = (_tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
                   "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
           + _tile("Deadhead &middot; 7d", pct(w7a.get("deadhead")),
                   "X-Trux/XFreight &middot; &le;7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
-          + empty_td)
+          + empty_td + empty_td)
     t3 = (_tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
           + _tile("Miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
           + empty_td + empty_td)
@@ -728,7 +731,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"<tr>{t2}</tr><tr>{t3}</tr>"
-            f"{_section('X-Trux Overview')}<tr>{xtrux_tiles}</tr>"
+            f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr>"
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
