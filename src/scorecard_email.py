@@ -620,6 +620,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
     loads_tile = _tile("XFreight Loads &middot; MTD", num(_xf_loads),
                        _pill("X-Trux + X-Linx revenue loads", "mute"))
+    # X-Linx (brokerage) overview tiles: revenue, carrier cost, margin, margin %.
+    _xl_rev, _xl_carrier = _xl.get("revenue"), _xl.get("carrier")
+    _xl_margin = (_xl_rev - _xl_carrier) if (_isnum(_xl_rev) and _isnum(_xl_carrier)) else _xl.get("margin")
+    _xl_mpct = (_xl_margin / _xl_rev) if (_isnum(_xl_rev) and _xl_rev and _isnum(_xl_margin)) else None
+    xlinx_tiles = (_tile("Total revenue &middot; MTD", money(_xl_rev), _pill("X-Linx", "mute"))
+                   + _tile("Carrier cost &middot; MTD", money(_xl_carrier), _pill("X-Linx", "mute"))
+                   + _tile("Margin &middot; MTD", money(_xl_margin), _pill("X-Linx", "mute"))
+                   + _tile("Margin % &middot; MTD", pct(_xl_mpct), _pill("X-Linx", "mute")))
     t1 = (_tile("XFreight Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
@@ -707,11 +715,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"{_section('XFreight Overview')}"
+            f"{_section('X-Trux Overview')}"
             f"<tr>{t1}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"<tr>{t2}</tr><tr>{t3}</tr>"
+            f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
