@@ -263,7 +263,9 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         if rows.empty:
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None}
             continue
-        revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+        rev_series = _col_any(rows, ["Customer Revenue", "Revenue"])
+        revenue = rev_series.sum()
+        rev_loads = int((rev_series.fillna(0) > 0).sum())  # revenue loads only
         # Fuel is already embedded in driver rate / carrier rate — do not add it again.
         driver = _col(rows, "Driver Rate").fillna(0)
         carrier = _col_any(rows, ["Carrier Rate", "Posted Carrier Rate"]).fillna(0)
@@ -277,6 +279,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "margin_pct": (margin / revenue) if revenue else None,
             "driver": driver_sum or None,
             "carrier": carrier_sum or None,
+            "loads": rev_loads,
         }
     return out
 
@@ -614,16 +617,19 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _dc = [v for v in (_xt.get("driver"), _xl.get("carrier")) if _isnum(v)]
     pay_tile = _tile("XFreight Cost W/O Office &middot; MTD", money(sum(_dc) if _dc else None),
                      _pill("X-Trux driver + X-Linx carrier", "mute"))
+    _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
+    loads_tile = _tile("XFreight Loads &middot; MTD", num(_xf_loads),
+                       _pill("X-Trux + X-Linx revenue loads", "mute"))
     t1 = (_tile("XFreight Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
-          + _tile("Total miles &middot; MTD", num(fleet.get("miles")), _pill("X-Trux/XFreight", "mute")))
+          + loads_tile)
     t2 = (_tile("Loads &middot; 7d", num(w7.get("loads")), "")
           + _tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
                   "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
           + _tile("Deadhead &middot; 7d", pct(w7a.get("deadhead")),
                   "X-Trux/XFreight &middot; &le;7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
-          + empty_td)
+          + _tile("Total miles &middot; MTD", num(fleet.get("miles")), _pill("X-Trux/XFreight", "mute")))
     t3 = (_tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
           + _tile("Miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
           + empty_td + empty_td)
