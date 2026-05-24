@@ -641,14 +641,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
           + loads_tile)
-    t2 = (_tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
-                  "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
-          + _tile("Deadhead &middot; 7d", pct(w7a.get("deadhead")),
-                  "X-Trux/XFreight &middot; &le;7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
-          + empty_td + empty_td)
-    t3 = (_tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
-          + _tile("Miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
-          + empty_td + empty_td)
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -727,7 +719,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<tr>{t1}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
-            f"<tr>{t2}</tr><tr>{t3}</tr>"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr>"
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
