@@ -266,13 +266,16 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         # Fuel is already embedded in driver rate / carrier rate — do not add it again.
         driver = _col(rows, "Driver Rate").fillna(0)
         carrier = _col_any(rows, ["Carrier Rate", "Posted Carrier Rate"]).fillna(0)
-        cost = float((driver + carrier).sum())
+        driver_sum, carrier_sum = float(driver.sum()), float(carrier.sum())
+        cost = driver_sum + carrier_sum
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
             "margin": margin if revenue else None,
             "margin_pct": (margin / revenue) if revenue else None,
+            "driver": driver_sum or None,
+            "carrier": carrier_sum or None,
         }
     return out
 
@@ -606,6 +609,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
     ar31_tile = _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
+    _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
+    _dc_parts = [v for v in (_xt.get("driver"), _xl.get("carrier")) if _isnum(v)]
+    dc_total = sum(_dc_parts) if _dc_parts else None
+    pay_tile = _tile("Driver + carrier pay &middot; MTD", money(dc_total),
+                     _pill("X-Trux driver + X-Linx carrier", "mute"))
     t1 = (_tile("Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
           + _tile("Net income &middot; YTD", money(co.get("net")), _pill("QuickBooks", "mute"))
@@ -696,7 +704,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<tr>{t1}</tr><tr>{t2}</tr><tr>{t3}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
-            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
+            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}{pay_tile}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
