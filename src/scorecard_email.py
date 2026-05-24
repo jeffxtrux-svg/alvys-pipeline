@@ -208,6 +208,20 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         is_asset = loads[office_col].map(_entity_group) == "X-Trux"
         a_loads, a_dates = loads[is_asset], dates[is_asset]
         out["asset"] = {key: _alvys_metrics(a_loads[a_dates >= start]) for key, start in win_specs}
+        # Fleet metrics (X-Trux/XFreight, MTD): active trucks + miles per truck.
+        a_mtd = a_loads[a_dates >= w["mtd"]]
+        truck_col = _find_col(a_loads, ["truck"])
+        active = None
+        if truck_col:
+            tv = a_mtd[truck_col].dropna().astype(str).str.strip()
+            tv = tv[(tv != "") & (tv.str.lower() != "nan") & (tv != "0")]
+            active = int(tv.nunique())
+        miles_mtd = out["asset"]["mtd"]["miles"]
+        out["fleet"] = {
+            "active_trucks": active,
+            "miles": miles_mtd,
+            "miles_per_truck": (miles_mtd / active) if (active and miles_mtd) else None,
+        }
     return out
 
 
@@ -589,17 +603,21 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
     wmtd = (alvys or {}).get("mtd", {})
     w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight only
 
+    fleet = (alvys or {}).get("fleet", {})
+    empty_td = "<td width='25%' style='padding:6px;'></td>"
     t1 = (_tile("Revenue · MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + _tile("Gross margin · MTD", pct(wmtd.get("margin_pct")), "")
-          + _tile("Operating ratio · YTD", pct(co.get("op_ratio")),
-                  _pill("target &lt;95%", _flag_kind(co.get("op_ratio"), TARGET_OR, True)))
+          + _tile("Net income · YTD", money(co.get("net")), _pill("QuickBooks", "mute"))
           + _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad")))
     t2 = (_tile("Loads · 7d", num(w7.get("loads")), "")
           + _tile("Revenue / mile · 7d", rpm(w7a.get("rpm")),
                   "X-Trux/XFreight · goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
           + _tile("Deadhead · 7d", pct(w7a.get("deadhead")),
                   "X-Trux/XFreight · ≤7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
-          + _tile("Net income · YTD", money(co.get("net")), ""))
+          + _tile("Total miles · MTD", num(fleet.get("miles")), _pill("X-Trux/XFreight", "mute")))
+    t3 = (_tile("Active trucks · MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
+          + _tile("Miles / truck · MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
+          + empty_td + empty_td)
 
     # AR 6-month trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -674,7 +692,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
             f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"<tr>{t1}</tr><tr>{t2}</tr>"
+            f"<tr>{t1}</tr><tr>{t2}</tr><tr>{t3}</tr>"
             f"{_section('Receivables trend &mdash; AR balance, 6-month')}<tr>{ar_chart}{ar_insight}</tr>"
             f"{_section('Revenue / cost / margin by entity · MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
