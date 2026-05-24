@@ -605,10 +605,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
+    ar31_tile = _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
     t1 = (_tile("Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
           + _tile("Net income &middot; YTD", money(co.get("net")), _pill("QuickBooks", "mute"))
-          + _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad")))
+          + empty_td)
     t2 = (_tile("Loads &middot; 7d", num(w7.get("loads")), "")
           + _tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
                   "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
@@ -695,7 +696,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<tr>{t1}</tr><tr>{t2}</tr><tr>{t3}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
-            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar_chart}{ap_chart}</tr>"
+            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
