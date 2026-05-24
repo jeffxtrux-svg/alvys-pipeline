@@ -214,8 +214,8 @@ def _month_end_dates(n: int = 6) -> list[tuple[str, str, str]]:
     return out
 
 
-def _grand_total_ar(records: list[dict], col_titles: list[str]) -> float | None:
-    """Sum each customer's Total column (Data rows) → grand-total open AR."""
+def _grand_total(records: list[dict], col_titles: list[str]) -> float | None:
+    """Sum each row's Total column (Data rows) → grand total."""
     total_col = next((t for t in col_titles if t.strip().lower() == "total"), None)
     if total_col is None and col_titles:
         total_col = col_titles[-1]
@@ -246,6 +246,29 @@ def fetch_ar_history(client: QBClient, company_name: str, months: int = 6) -> pd
             "AsOf": ym,
             "AsOfDate": as_of,
             "Month": label,
-            "Total_AR": _grand_total_ar(recs, col_titles),
+            "Total_AR": _grand_total(recs, col_titles),
+        })
+    return pd.DataFrame(rows) if rows else None
+
+
+def fetch_ap_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
+    """Total open AP as of each of the last ``months`` month-ends, one row each."""
+    log.info("  %-25s %s", "AP history", company_name)
+    rows: list[dict] = []
+    for label, as_of, ym in _month_end_dates(months):
+        try:
+            data = client.get("reports/AgedPayables",
+                              {"report_date": as_of, "minorversion": 75})
+        except Exception as exc:
+            log.warning("    AP history %s %s failed: %s", company_name, ym, exc)
+            continue
+        col_titles = _col_titles(data)
+        recs = _parse_rows(data.get("Rows", {}).get("Row", []), col_titles, company_name)
+        rows.append({
+            "Company": company_name,
+            "AsOf": ym,
+            "AsOfDate": as_of,
+            "Month": label,
+            "Total_AP": _grand_total(recs, col_titles),
         })
     return pd.DataFrame(rows) if rows else None

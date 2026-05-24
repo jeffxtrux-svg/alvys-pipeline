@@ -319,9 +319,9 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 def _ar_bucket(section: str) -> str | None:
     s = str(section).lower()
     if "31" in s and "60" in s:
-        return "31–60"
+        return "31&ndash;60"
     if "61" in s and "90" in s:
-        return "61–90"
+        return "61&ndash;90"
     if "91" in s or "and over" in s or ("over" in s and "90" in s):
         return "91+"
     return None  # Current / 1-30 excluded
@@ -336,7 +336,7 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
     num_col = _find_col(df, ["num", "invoice", "transaction #"])
 
     rows: list[dict] = []
-    totals = {"31–60": 0.0, "61–90": 0.0, "91+": 0.0}
+    totals = {"31&ndash;60": 0.0, "61&ndash;90": 0.0, "91+": 0.0}
     for _, r in data.iterrows():
         bucket = _ar_bucket(r.get("Section", ""))
         if bucket is None:
@@ -353,14 +353,14 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
             "amount": float(amt),
             "bucket": bucket,
         })
-    rows.sort(key=lambda x: ({"31–60": 0, "61–90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
+    rows.sort(key=lambda x: ({"31&ndash;60": 0, "61&ndash;90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
     return {"rows": rows, "totals": totals, "total31": sum(totals.values())}
 
 
-def compute_ar_history(df: pd.DataFrame | None) -> tuple[list[str], list[float]]:
-    if df is None or df.empty or "AsOf" not in df.columns:
+def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR") -> tuple[list[str], list[float]]:
+    if df is None or df.empty or "AsOf" not in df.columns or value_col not in df.columns:
         return [], []
-    g = df.groupby("AsOf")["Total_AR"].apply(
+    g = df.groupby("AsOf")[value_col].apply(
         lambda s: pd.to_numeric(s, errors="coerce").sum()
     )
     g = g.sort_index().tail(6)
@@ -597,7 +597,7 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # ----------------------------------------------------------------------
 # Page builders
 # ----------------------------------------------------------------------
-def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str) -> str:
+def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -605,38 +605,38 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
 
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
-    t1 = (_tile("Revenue · MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
-          + _tile("Gross margin · MTD", pct(wmtd.get("margin_pct")), "")
-          + _tile("Net income · YTD", money(co.get("net")), _pill("QuickBooks", "mute"))
+    t1 = (_tile("Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
+          + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
+          + _tile("Net income &middot; YTD", money(co.get("net")), _pill("QuickBooks", "mute"))
           + _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad")))
-    t2 = (_tile("Loads · 7d", num(w7.get("loads")), "")
-          + _tile("Revenue / mile · 7d", rpm(w7a.get("rpm")),
-                  "X-Trux/XFreight · goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
-          + _tile("Deadhead · 7d", pct(w7a.get("deadhead")),
-                  "X-Trux/XFreight · ≤7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
-          + _tile("Total miles · MTD", num(fleet.get("miles")), _pill("X-Trux/XFreight", "mute")))
-    t3 = (_tile("Active trucks · MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
-          + _tile("Miles / truck · MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
+    t2 = (_tile("Loads &middot; 7d", num(w7.get("loads")), "")
+          + _tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
+                  "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
+          + _tile("Deadhead &middot; 7d", pct(w7a.get("deadhead")),
+                  "X-Trux/XFreight &middot; &le;7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
+          + _tile("Total miles &middot; MTD", num(fleet.get("miles")), _pill("X-Trux/XFreight", "mute")))
+    t3 = (_tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
+          + _tile("Miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
           + empty_td + empty_td)
 
-    # AR 6-month trend
+    # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
-    ar_chart = _bar_chart("AR receivable balance", ar_labels, ar_vals,
-                          "total open AR by month-end · *as-of", fmt=money_m)
-    trend_txt = ""
-    if ar_vals:
-        delta = ar_vals[-1] - ar_vals[0]
-        dirw = "up" if delta > 0 else "down"
-        k = "bad" if delta > 0 else "good"
-        trend_txt = (f"AR moved from <b>{money_m(ar_vals[0])}</b> to <b>{money_m(ar_vals[-1])}</b> "
-                     f"over six months ({dirw} {money_m(abs(delta))}). "
-                     + ("Receivables growing faster than collections &mdash; watch the 91+ bucket."
-                        if delta > 0 else "Collections keeping pace."))
-    else:
-        trend_txt = "Month-end AR history pending (QuickBooks AR snapshots)."
-    ar_insight = (f"<td valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;"
-                  f"background:#fbfdff;padding:14px;'><div style='font-size:12px;font-weight:800;color:{NAVY};"
-                  f"margin-bottom:6px;'>Read</div><div style='font-size:13px;color:{INK};line-height:1.5;'>{trend_txt}</div></div></td>")
+    ap_labels, ap_vals = ap_hist if ap_hist else ([], [])
+    ar_chart = _bar_chart("AR &mdash; receivable balance", ar_labels, ar_vals,
+                          "total open AR by month-end &middot; *as-of", fmt=money_m)
+    ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
+                          "total open AP by month-end &middot; *as-of", fmt=money_m)
+
+    def _dir(vals, noun):
+        if not vals:
+            return f"{noun} history pending."
+        delta = vals[-1] - vals[0]
+        return (f"{noun} {'up' if delta > 0 else 'down'} {money_m(abs(delta))} over 6 months "
+                f"({money_m(vals[0])} &rarr; {money_m(vals[-1])}).")
+    ar_rising = bool(ar_vals and ar_vals[-1] > ar_vals[0])
+    ar_insight = _dir(ar_vals, "AR") + " " + _dir(ap_vals, "AP")
+    if ar_rising:
+        ar_insight += " Receivables growing &mdash; watch the 91+ bucket."
 
     # Safety tiles + trend charts
     sf = (samsara or {})
@@ -653,9 +653,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
     def chart(metric, title, sub):
         ml = tr.get(metric)
         return _bar_chart(title, ml[0] if ml else [], ml[1] if ml else [], sub)
-    safety_charts = (chart("events", "Safety events", "per month · *MTD")
-                     + chart("hos", "HOS violations", "per month · *MTD")
-                     + chart("dvir", "DVIR defects", "reported/mo · *MTD"))
+    safety_charts = (chart("events", "Safety events", "per month &middot; *MTD")
+                     + chart("hos", "HOS violations", "per month &middot; *MTD")
+                     + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD"))
 
     # Revenue / cost / margin by entity (Alvys 2026, MTD). XFreight folded into X-Trux.
     entity_rows = ""
@@ -683,7 +683,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
     bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
-              f"deadhead {pct(w7a.get('deadhead'))} (goal ≤7.5%, X-Trux/XFreight). "
+              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
 
@@ -693,10 +693,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{t1}</tr><tr>{t2}</tr><tr>{t3}</tr>"
-            f"{_section('Receivables trend &mdash; AR balance, 6-month')}<tr>{ar_chart}{ar_insight}</tr>"
-            f"{_section('Revenue / cost / margin by entity · MTD')}"
+            f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
-            f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD · X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
+            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar_chart}{ap_chart}</tr>"
+            f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
+            f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
@@ -746,12 +747,12 @@ def build_page2(samsara, date_str) -> str:
     coach_rows = rows_coach()
     coach_count = coach_rows.count("<tr>")
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h · X-Trux / XFreight fleet', 2, date_str)}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 2, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"<tr>{_tile('Safety events · 24h', num(w('events')), '')}"
-            f"{_tile('HOS violations · 24h', num(w('hos')), '')}"
-            f"{_tile('Open DVIR defects · 24h', num(w('dvir')), '')}"
-            f"{_tile('Coaching flagged · 24h', num(coach_count), '')}</tr>"
+            f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
+            f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
+            f"{_tile('Open DVIR defects &middot; 24h', num(w('dvir')), '')}"
+            f"{_tile('Coaching flagged &middot; 24h', num(coach_count), '')}</tr>"
             f"{_section('HOS violations &mdash; last 24h')}"
             f"{_table(['Driver', 'Time', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], rows_hos())}"
             f"{_section('Safety events &mdash; last 24h')}"
@@ -779,17 +780,17 @@ def build_page3(qb_ar, date_str) -> str:
                  f"border-top:2px solid {LINE};'>{money(total31)}</td><td style='border-top:2px solid {LINE};'></td></tr>")
     return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 3, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"<tr>{_tile('31&ndash;60 days', money(totals.get('31–60')), _pill('watch', 'warn'))}"
-            f"{_tile('61&ndash;90 days', money(totals.get('61–90')), _pill('escalate', 'warn'))}"
+            f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
+            f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
             f"{_tile('91+ days', money(totals.get('91+')), _pill('collections', 'bad'))}"
             f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>"
-            f"{_section('Overdue invoices (31+ days) by customer · as of ' + date_str)}"
+            f"{_section('Overdue invoices (31+ days) by customer &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], rows + total_row)}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
 
 
-def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, missing) -> str:
+def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -797,8 +798,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, missing) 
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
     wrap = lambda inner: f"<div style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
-    return (f"<!doctype html><html><body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str))}{pb}"
+    return (f"<!doctype html><html><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+            f"<body style='margin:0;background:#eef2f7;{FONT}'>"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}"
             f"</body></html>")
@@ -807,14 +810,15 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, missing) 
 # ----------------------------------------------------------------------
 # Orchestration (testable without network)
 # ----------------------------------------------------------------------
-def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, samsara_sheets, missing) -> str:
+def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
     qb_ar = compute_qb_ar_detail(next(iter(ar_sheets.values()))) if ar_sheets else {}
-    ar_hist = compute_ar_history(next(iter(ar_hist_sheets.values()))) if ar_hist_sheets else ([], [])
+    ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR") if ar_hist_sheets else ([], [])
+    ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
-    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, missing)
+    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing)
 
 
 # ----------------------------------------------------------------------
@@ -878,9 +882,10 @@ def main() -> int:
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
     ar_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AR_History.xlsx", missing, "QB AR history")
+    ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
 
-    html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, samsara_sheets, missing)
+    html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
     return 0
