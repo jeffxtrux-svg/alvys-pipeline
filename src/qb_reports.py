@@ -12,6 +12,7 @@ stacked into a single file per report type for Power BI.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 from typing import Any
 
@@ -180,3 +181,71 @@ def fetch_entity(client: QBClient, entity: str, company_name: str) -> pd.DataFra
     df = pd.json_normalize(items)
     df.insert(0, "Company", company_name)
     return df
+
+
+# ---------------------------------------------------------------------------
+# AR month-end history (for the scorecard's 6-month receivables trend)
+# ---------------------------------------------------------------------------
+
+def _month_end_dates(n: int = 6) -> list[tuple[str, str, str]]:
+    """Last ``n`` months as (label, as_of YYYY-MM-DD, ym YYYY-MM), oldest first.
+
+    Completed months use the last calendar day; the current month uses today
+    (an as-of / month-to-date snapshot).
+    """
+    today = datetime.date.today()
+    months: list[tuple[int, int]] = []
+    y, m = today.year, today.month
+    for _ in range(n):
+        months.append((y, m))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    months.reverse()
+
+    out: list[tuple[str, str, str]] = []
+    for yy, mm in months:
+        if yy == today.year and mm == today.month:
+            as_of = today
+        else:
+            nxt = datetime.date(yy + 1, 1, 1) if mm == 12 else datetime.date(yy, mm + 1, 1)
+            as_of = nxt - datetime.timedelta(days=1)
+        out.append((as_of.strftime("%b"), as_of.isoformat(), f"{yy}-{mm:02d}"))
+    return out
+
+
+def _grand_total_ar(records: list[dict], col_titles: list[str]) -> float | None:
+    """Sum each customer's Total column (Data rows) → grand-total open AR."""
+    total_col = next((t for t in col_titles if t.strip().lower() == "total"), None)
+    if total_col is None and col_titles:
+        total_col = col_titles[-1]
+    if not total_col:
+        return None
+    values = pd.to_numeric(
+        pd.Series([r.get(total_col) for r in records if r.get("Row_Type") == "Data"]),
+        errors="coerce",
+    ).dropna()
+    return float(values.sum()) if len(values) else 0.0
+
+
+def fetch_ar_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
+    """Total open AR as of each of the last ``months`` month-ends, one row each."""
+    log.info("  %-25s %s", "AR history", company_name)
+    rows: list[dict] = []
+    for label, as_of, ym in _month_end_dates(months):
+        try:
+            data = client.get("reports/AgedReceivables",
+                              {"report_date": as_of, "minorversion": 75})
+        except Exception as exc:
+            log.warning("    AR history %s %s failed: %s", company_name, ym, exc)
+            continue
+        col_titles = _col_titles(data)
+        recs = _parse_rows(data.get("Rows", {}).get("Row", []), col_titles, company_name)
+        rows.append({
+            "Company": company_name,
+            "AsOf": ym,
+            "AsOfDate": as_of,
+            "Month": label,
+            "Total_AR": _grand_total_ar(recs, col_titles),
+        })
+    return pd.DataFrame(rows) if rows else None

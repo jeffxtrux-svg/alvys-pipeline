@@ -30,7 +30,13 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from .qb_client import QBClient
-from .qb_reports import ENTITY_QUERIES, REPORT_CONFIGS, fetch_entity, fetch_report
+from .qb_reports import (
+    ENTITY_QUERIES,
+    REPORT_CONFIGS,
+    fetch_ar_history,
+    fetch_entity,
+    fetch_report,
+)
 
 log = logging.getLogger("qb_main")
 
@@ -120,6 +126,7 @@ def main() -> None:
 
     report_dfs: dict[str, list[pd.DataFrame]] = {r: [] for r in REPORT_CONFIGS}
     entity_dfs: dict[str, list[pd.DataFrame]] = {e: [] for e in ENTITY_QUERIES}
+    ar_history_dfs: list[pd.DataFrame] = []
 
     for company in _companies():
         refresh_token = os.environ.get(company["token_env"], "")
@@ -149,6 +156,10 @@ def main() -> None:
             if df is not None:
                 entity_dfs[entity].append(df)
 
+        ar_hist = fetch_ar_history(client, company["name"])
+        if ar_hist is not None:
+            ar_history_dfs.append(ar_hist)
+
         if client.new_refresh_token:
             rotate_secret(company["secret_name"], client.new_refresh_token)
 
@@ -160,6 +171,8 @@ def main() -> None:
 
     for entity, dfs in entity_dfs.items():
         write_excel(dfs, output_dir / f"QB_{entity}s.xlsx")
+
+    write_excel(ar_history_dfs, output_dir / "QB_AR_History.xlsx")
 
     log.info("All done ✓")
 
