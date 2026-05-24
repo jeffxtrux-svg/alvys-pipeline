@@ -30,8 +30,9 @@ so the Central clock time shifts by an hour across daylight-saving changes.)
 - **Alvys** pins `ALVYS_START_DATE: '2024-01-01'` and sets
   `ONEDRIVE_TARGET_FILENAME: "Alvys Master.xlsx"` (space, to match Power BI) with
   `ONEDRIVE_FOLDER_PATH: ""` (OneDrive root).
-- **Samsara** sets `SAMSARA_DAYS_BACK: '90'` and runs the alerts step with
-  `ALERT_FROM_UPN: jeff@xfreight.net` + `ALERT_TO_EMAILS` from secrets.
+- **Samsara** sets `SAMSARA_DAYS_BACK: '90'` and `SAMSARA_SAFETY_DAYS_BACK: '190'`
+  and runs the alerts step with `ALERT_FROM_UPN: jeff@xfreight.net` +
+  `ALERT_TO_EMAILS` from secrets.
 - **QuickBooks** passes `GH_TOKEN: ${{ secrets.GH_PAT }}` so `gh secret set` can
   rotate refresh tokens, and leaves `QB_NJ_*_REALM_ID` empty until those
   companies are onboarded.
@@ -60,7 +61,8 @@ set inline in the workflow YAML.
 | Variable | Secret? | Required | Default | Purpose |
 |----------|---------|----------|---------|---------|
 | `SAMSARA_API_TOKEN` | ✅ | ✅ | — | Samsara API token |
-| `SAMSARA_DAYS_BACK` | — | — | `90` | trip/safety/DVIR window |
+| `SAMSARA_DAYS_BACK` | — | — | `90` | trips window |
+| `SAMSARA_SAFETY_DAYS_BACK` | — | — | `190` | safety / DVIR / HOS-violation window (covers "previous 6 months") |
 | `SAMSARA_OUTPUT_DIR` | — | — | `output/samsara` | output location |
 | `ALERT_FROM_UPN` | — | — | `jeff@xfreight.net` | mailbox to send alerts from |
 | `ALERT_TO_EMAILS` | ✅ | — | = `ALERT_FROM_UPN` | comma-separated recipients |

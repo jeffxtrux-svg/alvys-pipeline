@@ -33,7 +33,7 @@ Cursor-based (`_get_pages`): read `data` from the response, then follow
 a missing scope on the token degrades one data type to empty rather than killing
 the whole run.
 
-## What it fetches (the 9 steps)
+## What it fetches (the 10 steps)
 
 `samsara_main.py` runs these in order, then flattens each to a sheet:
 
@@ -45,12 +45,28 @@ the whole run.
 | 4 | `fetch_locations` | `/fleet/vehicles/locations` | current GPS |
 | 5 | `fetch_trips` | `/fleet/vehicles/{id}/trips` | **per-vehicle** loop |
 | 6 | `fetch_safety_events` | `/fleet/safety/events` → `/safety/events` | first path that returns data |
-| 7 | `fetch_hos_logs` | `/fleet/hos/logs` → `/fleet/drivers/hos-logs` | Hours-of-Service (30-day window) |
-| 8 | `fetch_dvirs` | `POST /fleet/dvirs` | inspections; **POST, not GET** |
-| 9 | `fetch_ifta` | tries 3 IFTA paths | last 3 months, one sheet each |
+| 7 | `fetch_hos_logs` | `/fleet/hos/logs` → `/fleet/drivers/hos-logs` | duty-status **logs** (30-day window) |
+| 8 | `fetch_hos_violations` | `/fleet/hos/violations` (+ 2 fallbacks) | actual **violations** (not logs); ~190-day window |
+| 9 | `fetch_dvirs` | `POST /fleet/dvirs` | inspections; **POST, not GET** |
+| 10 | `fetch_ifta` | tries 3 IFTA paths | last 3 months, one sheet each |
 
-Two **time windows** are used: a long window (default 90 days, via
-`SAMSARA_DAYS_BACK`) for trips/safety/DVIRs, and a fixed 30-day window for HOS.
+Three **time windows** are used: a long window (default 90 days, via
+`SAMSARA_DAYS_BACK`) for trips; a separate ~190-day window
+(`SAMSARA_SAFETY_DAYS_BACK`) for safety events / DVIRs / HOS violations so the
+scorecard's "previous 6 months" view has history; and a fixed 30-day window for
+HOS logs.
+
+### Derived / cleaned sheets
+
+`json_normalize` can't flatten nested arrays, so two data types get post-processed:
+
+- **`DVIR_Defects`** — one row per defect (`Unit, Driver, Defect, Resolved,
+  Reported, …`), exploded from the `defects[]` array (same field shape
+  `samsara_alerts.py` reads). The raw `DVIRs` sheet is still written too.
+- **`SafetyEvents`** gains clean `Event Type` / `Severity` / `Driver Name` /
+  `Unit` columns decoded from the `behaviorLabels[]` array; `HOS_Violations`
+  gains `Driver Name` / `Violation Type`. Timestamps are normalized from
+  epoch-ms or ISO via `_ts_to_str`.
 
 ### Gotchas worth knowing
 
@@ -103,7 +119,8 @@ If either is found, it builds an HTML table and sends mail via **Microsoft Graph
 
 ## Common tasks
 
-- **Pull a longer history** → set `SAMSARA_DAYS_BACK`.
+- **Pull a longer history** → set `SAMSARA_DAYS_BACK` (trips) and/or
+  `SAMSARA_SAFETY_DAYS_BACK` (safety / DVIR / HOS violations, default 190).
 - **A data type is empty** → almost always an API-token scope problem; the log
   line `GET … → HTTP 4xx — skipping (check API token scope)` tells you which.
 - **Alerts not arriving** → confirm `Mail.Send` consent and that

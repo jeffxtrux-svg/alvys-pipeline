@@ -207,6 +207,28 @@ class SamsaraClient:
         log.info("Total HOS log entries: 0")
         return []
 
+    def fetch_hos_violations(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
+        """HOS *violations* (driving/shift/break/cycle-limit breaches).
+
+        Distinct from fetch_hos_logs: logs are raw duty-status entries; this
+        returns the actual rule violations. Tries the documented endpoint plus
+        fallbacks, matching the connector's endpoint-discovery pattern.
+        Requires the token's Hours-of-Service scope.
+        """
+        log.info("Fetching HOS violations %s → %s…", start.date(), end.date())
+        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        for path in [
+            "/fleet/hos/violations",
+            "/fleet/drivers/hos-violations",
+            "/fleet/hos-violations",
+        ]:
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Total HOS violations: %d (from %s)", len(items), path)
+                return items
+        log.info("Total HOS violations: 0")
+        return []
+
     def fetch_dvirs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Driver Vehicle Inspection Reports — uses POST (GET not allowed per API v2025.10)."""
         log.info("Fetching DVIRs %s → %s…", start.date(), end.date())
