@@ -640,12 +640,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
           + loads_tile)
-    t2 = (_tile("Loads &middot; 7d", num(w7.get("loads")), "")
+    t2 = (_tile("X-Trux Mileage &middot; MTD", num(fleet.get("miles")), _pill("X-Trux + XFreight", "mute"))
           + _tile("Revenue / mile &middot; 7d", rpm(w7a.get("rpm")),
                   "X-Trux/XFreight &middot; goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
           + _tile("Deadhead &middot; 7d", pct(w7a.get("deadhead")),
                   "X-Trux/XFreight &middot; &le;7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
-          + _tile("Total miles &middot; MTD", num(fleet.get("miles")), _pill("X-Trux/XFreight", "mute")))
+          + empty_td)
     t3 = (_tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux/XFreight", "mute"))
           + _tile("Miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux/XFreight", "mute"))
           + empty_td + empty_td)
