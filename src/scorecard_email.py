@@ -198,9 +198,16 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
         dates = dates.loc[loads.index]
     w = _windows()
-    out = {}
-    for key, start in (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"])):
-        out[key] = _alvys_metrics(loads[dates >= start])
+    win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
+    out = {key: _alvys_metrics(loads[dates >= start]) for key, start in win_specs}
+
+    # RPM and deadhead are asset-carrier metrics — compute an X-Trux/XFreight-only
+    # variant (exclude X-Linx brokerage) for those tiles.
+    office_col = _find_col(loads, ["office", "invoice as", "tender as"])
+    if office_col:
+        is_asset = loads[office_col].map(_entity_group) == "X-Trux"
+        a_loads, a_dates = loads[is_asset], dates[is_asset]
+        out["asset"] = {key: _alvys_metrics(a_loads[a_dates >= start]) for key, start in win_specs}
     return out
 
 
@@ -579,6 +586,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
+    w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight only
 
     t1 = (_tile("Revenue · MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + _tile("Gross margin · MTD", pct(wmtd.get("margin_pct")), "")
@@ -586,10 +594,10 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
                   _pill("target &lt;95%", _flag_kind(co.get("op_ratio"), TARGET_OR, True)))
           + _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad")))
     t2 = (_tile("Loads · 7d", num(w7.get("loads")), "")
-          + _tile("Revenue / mile · 7d", rpm(w7.get("rpm")),
-                  "goal $2.33 " + _pill("RPM", _flag_kind(w7.get("rpm"), TARGET_RPM, False)))
-          + _tile("Deadhead · 7d", pct(w7.get("deadhead")),
-                  "goal ≤7.5% " + _pill("DH", _flag_kind(w7.get("deadhead"), TARGET_DEADHEAD, True)))
+          + _tile("Revenue / mile · 7d", rpm(w7a.get("rpm")),
+                  "X-Trux/XFreight · goal $2.33 " + _pill("RPM", _flag_kind(w7a.get("rpm"), TARGET_RPM, False)))
+          + _tile("Deadhead · 7d", pct(w7a.get("deadhead")),
+                  "X-Trux/XFreight · ≤7.5% " + _pill("DH", _flag_kind(w7a.get("deadhead"), TARGET_DEADHEAD, True)))
           + _tile("Net income · YTD", money(co.get("net")), ""))
 
     # AR 6-month trend
@@ -655,8 +663,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, samsara, date_str
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
-    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7.get('rpm'))} (goal $2.33), "
-              f"deadhead {pct(w7.get('deadhead'))} (goal ≤7.5%). "
+    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
+              f"deadhead {pct(w7a.get('deadhead'))} (goal ≤7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
 
