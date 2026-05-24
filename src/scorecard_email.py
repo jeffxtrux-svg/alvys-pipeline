@@ -611,9 +611,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ar31_tile = _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
     _dc = [v for v in (_xt.get("driver"), _xl.get("carrier")) if _isnum(v)]
-    pay_tile = _tile("Driver + carrier pay &middot; MTD", money(sum(_dc) if _dc else None),
+    pay_tile = _tile("XFreight Cost W/O Office &middot; MTD", money(sum(_dc) if _dc else None),
                      _pill("X-Trux driver + X-Linx carrier", "mute"))
-    t1 = (_tile("Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
+    t1 = (_tile("XFreight Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
           + pay_tile
           + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), "")
           + _tile("Net income &middot; YTD", money(co.get("net")), _pill("QuickBooks", "mute")))
