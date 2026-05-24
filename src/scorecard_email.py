@@ -624,11 +624,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                        _pill("X-Trux + X-Linx revenue loads", "mute"))
     # X-Linx (brokerage) overview tiles: revenue, carrier cost, margin, margin %.
     _xl_rev, _xl_carrier = _xl.get("revenue"), _xl.get("carrier")
+    _xl_loads = _xl.get("loads")
     _xl_margin = (_xl_rev - _xl_carrier) if (_isnum(_xl_rev) and _isnum(_xl_carrier)) else _xl.get("margin")
     _xl_mpct = (_xl_margin / _xl_rev) if (_isnum(_xl_rev) and _xl_rev and _isnum(_xl_margin)) else None
-    xlinx_tiles = (_tile("Total revenue &middot; MTD", money(_xl_rev), _pill("X-Linx", "mute"))
-                   + _tile("Carrier cost &middot; MTD", money(_xl_carrier), _pill("X-Linx", "mute"))
-                   + _tile("Margin &middot; MTD", money(_xl_margin), _pill("X-Linx", "mute"))
+    _xl_rpl = (_xl_rev / _xl_loads) if (_isnum(_xl_rev) and _isnum(_xl_loads) and _xl_loads) else None
+    _xl_mpl = (_xl_margin / _xl_loads) if (_isnum(_xl_margin) and _isnum(_xl_loads) and _xl_loads) else None
+    xlinx_tiles = (_tile("Total loads &middot; MTD", num(_xl_loads), _pill("X-Linx", "mute"))
+                   + _tile("Revenue / load &middot; MTD", money(_xl_rpl), _pill("X-Linx", "mute"))
+                   + _tile("Margin / load &middot; MTD", money(_xl_mpl), _pill("X-Linx", "mute"))
                    + _tile("Margin % &middot; MTD", pct(_xl_mpct), _pill("X-Linx", "mute")))
     # X-Trux (asset) overview: mileage, loads, revenue/mile, revenue/load.
     _xt_rev = _xt.get("revenue")
