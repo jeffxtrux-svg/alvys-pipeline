@@ -18,7 +18,7 @@ Required env (same Azure app as the rest of the pipeline):
 Optional:
     SCORECARD_FROM_UPN         mailbox to send from (default = ONEDRIVE_USER_UPN)
     SCORECARD_TO_EMAILS        comma-separated recipients (default jeff@xfreight.net)
-    SCORECARD_ALVYS_PATH       default "Alvys Master.xlsx"
+    SCORECARD_ALVYS_PATH       default "Alvys Master 2026.xlsx"
     SCORECARD_QB_DIR           default "QuickBooks"
     SCORECARD_SAMSARA_PATH     default "Samsara/Samsara Master.xlsx"
 """
@@ -337,7 +337,7 @@ def main() -> int:
     from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
-    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master.xlsx")
+    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")
 

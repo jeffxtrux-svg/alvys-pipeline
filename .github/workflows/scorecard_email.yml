@@ -40,4 +40,5 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
           SCORECARD_TO_EMAILS: jeff@xfreight.net
+          SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
         run: python -m src.scorecard_email
