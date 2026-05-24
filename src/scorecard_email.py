@@ -363,7 +363,9 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
             "bucket": bucket,
         })
     rows.sort(key=lambda x: ({"31&ndash;60": 0, "61&ndash;90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
-    return {"rows": rows, "totals": totals, "total31": sum(totals.values())}
+    total_ar = pd.to_numeric(data[amt_col], errors="coerce").dropna().sum() if amt_col in data.columns else None
+    return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
+            "total_ar": float(total_ar) if _isnum(total_ar) else None}
 
 
 def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR") -> tuple[list[str], list[float]]:
@@ -510,6 +512,15 @@ def _tile(label, value, sub):
             f"<div style='font-size:12px;color:{MUTE};'>{sub}</div></div></td>")
 
 
+def _tile_div(label, value, sub):
+    """Tile body without the <td> wrapper, for stacking two tiles in one cell."""
+    return (f"<div style='background:{TILEBG};border:1px solid {LINE};border-radius:10px;"
+            f"padding:14px 14px 12px;margin-bottom:12px;'>"
+            f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
+            f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
+            f"<div style='font-size:12px;color:{MUTE};'>{sub}</div></div>")
+
+
 def _mwtile(label, v24, v7, vmtd, hk="mute"):
     hb = {"good": GOODBG, "warn": WARNBG, "bad": BADBG, "mute": "#eef2f7"}[hk]
     hf = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": MUTE}[hk]
@@ -614,7 +625,10 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
-    ar31_tile = _tile("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
+    recv_left = ("<td width='25%' valign='top' style='padding:6px;'>"
+                 + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("all open AR", "mute"))
+                 + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
+                 + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
     _dc = [v for v in (_xt.get("driver"), _xl.get("carrier")) if _isnum(v)]
     pay_tile = _tile("XFreight Cost W/O Office &middot; MTD", money(sum(_dc) if _dc else None),
@@ -728,7 +742,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr>"
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
-            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{ar31_tile}{ar_chart}{ap_chart}</tr>"
+            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
