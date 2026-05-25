@@ -507,7 +507,7 @@ def _pill(t, k):
 
 def _tile(label, value, sub):
     return (f"<td width='25%' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
-            f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;'>"
+            f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;min-height:84px;'>"
             f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
             f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
             f"<div style='font-size:12px;color:{MUTE};'>{sub}</div></div></td>")
@@ -516,7 +516,7 @@ def _tile(label, value, sub):
 def _tile_div(label, value, sub):
     """Tile body without the <td> wrapper, for stacking two tiles in one cell."""
     return (f"<div style='background:{TILEBG};border:1px solid {LINE};border-radius:10px;"
-            f"padding:14px 14px 12px;margin-bottom:12px;'>"
+            f"padding:14px 14px 12px;margin-bottom:12px;min-height:84px;'>"
             f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
             f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
             f"<div style='font-size:12px;color:{MUTE};'>{sub}</div></div>")
