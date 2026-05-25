@@ -31,11 +31,13 @@ Optional:
 from __future__ import annotations
 
 import io
+import json
 import logging
 import numbers
 import os
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -51,6 +53,12 @@ TARGET_RPM = 2.33
 TARGET_DEADHEAD = 0.075
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
+
+# Settlement week: Wednesday 3:00 PM (America/Chicago) to the following Wed 2:59 PM.
+SETTLEMENT_TZ = ZoneInfo("America/Chicago")
+SETTLEMENT_WEEKDAY = 2   # Mon=0 ... Wed=2
+SETTLEMENT_HOUR = 15     # 3:00 PM
+SETTLEMENT_WEEKS = 4     # rolling weeks shown on the driver-mileage page
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
@@ -572,7 +580,7 @@ def _header(sub, pg, date_str):
             f"<td style='padding:18px 24px;'><div style='color:#fff;font-size:20px;font-weight:800;letter-spacing:1px;'>XFREIGHT</div>"
             f"<div style='color:#9fb3c8;font-size:13px;margin-top:2px;'>{sub}</div></td>"
             f"<td align='right' style='padding:18px 24px;color:#9fb3c8;font-size:13px;'>{date_str}<br>"
-            f"<span style='color:#637b94;font-size:11px;'>Page {pg} of 3</span></td></tr></table>")
+            f"<span style='color:#637b94;font-size:11px;'>Page {pg} of 4</span></td></tr></table>")
 
 
 def _th(cells, al):
@@ -613,6 +621,134 @@ def _flag_kind(value, target, lower_is_better) -> str:
         return "mute"
     good = value <= target if lower_is_better else value >= target
     return "good" if good else "bad"
+
+
+# ----------------------------------------------------------------------
+# Driver mileage by settlement week (Wed 3pm CST), from the Trips sheet.
+# Trips are the right grain: one load can have several legs, each with its own
+# driver / truck / mileage. Actual pickup & delivery times live inside the
+# JSON-serialized "Stops" column (arrived/departed are not flat columns).
+# ----------------------------------------------------------------------
+def _settlement_weeks(now: pd.Timestamp, n: int) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """n rolling weeks, newest first. Week 0 = current (Wed 3pm -> now)."""
+    days_since_wed = (now.weekday() - SETTLEMENT_WEEKDAY) % 7
+    cur = (now.normalize() - pd.Timedelta(days=days_since_wed)) + pd.Timedelta(hours=SETTLEMENT_HOUR)
+    if cur > now:                       # before 3pm on a Wednesday -> use last week's boundary
+        cur -= pd.Timedelta(days=7)
+    return [(cur - pd.Timedelta(days=7 * k), cur - pd.Timedelta(days=7 * (k - 1))) for k in range(n)]
+
+
+def _ci_get(d, key):
+    if not isinstance(d, dict):
+        return None
+    if key in d:
+        return d[key]
+    kl = key.lower()
+    for k, v in d.items():
+        if isinstance(k, str) and k.lower() == kl:
+            return v
+    return None
+
+
+def _parse_stops(cell) -> list:
+    if isinstance(cell, list):
+        return cell
+    if not isinstance(cell, str) or not cell.strip():
+        return []
+    try:
+        v = json.loads(cell)
+        return v if isinstance(v, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
+def _to_chi(val) -> pd.Timestamp:
+    """Parse a timestamp and express it in America/Chicago (tz-naive)."""
+    ts = pd.to_datetime(val, errors="coerce")
+    if ts is None or pd.isna(ts):
+        return pd.NaT
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(SETTLEMENT_TZ).tz_localize(None)
+    return ts
+
+
+def _stop_at(stops: list, which: str):
+    if not stops:
+        return None
+    return stops[0] if which == "first" else stops[-1]
+
+
+def _stop_time(stops: list, which: str) -> pd.Timestamp:
+    st = _stop_at(stops, which)
+    return _to_chi(_ci_get(st, "DepartedAt") or _ci_get(st, "ArrivedAt"))
+
+
+def _stop_place(stops: list, which: str, row, prefix: str) -> str:
+    st = _stop_at(stops, which)
+    addr = _ci_get(st, "Address")
+    city = _ci_get(addr, "City") or row.get(f"{prefix} City")
+    state = _ci_get(addr, "State") or row.get(f"{prefix} State")
+    city = "" if (city is None or str(city).lower() == "nan") else str(city).strip()
+    state = "" if (state is None or str(state).lower() == "nan") else str(state).strip()
+    return f"{city}, {state}".strip(", ") or "?"
+
+
+def compute_driver_weeks(alvys_sheets, n: int = SETTLEMENT_WEEKS, now: pd.Timestamp | None = None) -> dict | None:
+    if not alvys_sheets:
+        return None
+    trips = alvys_sheets.get("Trips")
+    if trips is None or trips.empty:
+        log.warning("Alvys Trips sheet missing/empty — driver mileage page skipped")
+        return None
+    now = now or pd.Timestamp.now()
+    weeks = _settlement_weeks(now, n)
+    oldest = weeks[-1][0]
+
+    acc: dict[str, dict] = {}
+    for _, row in trips.iterrows():
+        status = str(row.get("Load Status", row.get("Trip Status", ""))).lower()
+        if status == "cancelled":
+            continue
+        driver = str(row.get("Driver 1", "") or "").strip()
+        if not driver or driver.lower() == "nan":
+            continue
+        stops = _parse_stops(row.get("Stops"))
+        drop_t = _stop_time(stops, "last")
+        if pd.isna(drop_t) or drop_t < oldest or drop_t >= weeks[0][1]:
+            continue                                   # undelivered or outside the 4-week window
+        k = next((i for i, (s, e) in enumerate(weeks) if s <= drop_t < e), None)
+        if k is None:
+            continue
+        miles = pd.to_numeric(row.get("Total Dispatch Mileage"), errors="coerce")
+        miles = float(miles) if pd.notna(miles) else 0.0
+        truck = str(row.get("Truck", "") or "").strip()
+
+        a = acc.setdefault(driver, {"trucks": set(), "miles": [0.0] * n, "start": None, "end": None})
+        a["miles"][k] += miles
+        if truck and truck.lower() != "nan":
+            a["trucks"].add(truck)
+        if k == 0:                                      # current week: track first pickup / last delivery
+            pick_t = _stop_time(stops, "first")
+            if pd.notna(pick_t) and (a["start"] is None or pick_t < a["start"][0]):
+                a["start"] = (pick_t, _stop_place(stops, "first", row, "Pick"))
+            if a["end"] is None or drop_t > a["end"][0]:
+                a["end"] = (drop_t, _stop_place(stops, "last", row, "Drop"))
+
+    rows = []
+    for driver, a in acc.items():
+        total = sum(a["miles"])
+        if total <= 0:
+            continue
+        rows.append({
+            "driver": driver,
+            "trucks": ", ".join(sorted(a["trucks"], key=lambda t: (len(t), t))) or "—",
+            "miles": a["miles"],
+            "total": total,
+            "start": a["start"],
+            "end": a["end"],
+        })
+    rows.sort(key=lambda r: r["total"], reverse=True)
+    return {"weeks": weeks, "now": now, "rows": rows}
 
 
 # ----------------------------------------------------------------------
@@ -844,7 +980,88 @@ def build_page3(qb_ar, date_str) -> str:
             f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
 
 
-def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing) -> str:
+def build_page4(driver_weeks, date_str) -> str:
+    header = _header('Driver Mileage by Settlement Week', 4, date_str)
+    footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+              f"Settlement week = Wednesday 3:00 PM &rarr; the following Wednesday 2:59 PM (America/Chicago). "
+              f"Trips bucketed by actual delivery time; start &amp; end use actual pickup / delivery times. "
+              f"In-progress (undelivered) trips are excluded. Source: Alvys Trips.</div>")
+    if not driver_weeks or not driver_weeks.get("rows"):
+        return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_section('Driver mileage by settlement week &middot; rolling 4 weeks')}"
+                f"<tr><td colspan='4' style='padding:14px 6px;color:{MUTE};font-size:12.5px;'>"
+                f"No delivered trips in the last 4 settlement weeks (or the Trips sheet was unavailable).</td></tr>"
+                f"{footer}")
+
+    weeks, now, rows = driver_weeks["weeks"], driver_weeks["now"], driver_weeks["rows"]
+    n = len(weeks)
+
+    def _md(ts):
+        return f"{ts.month}/{ts.day}"
+
+    def _mdhm(ts):
+        return f"{ts.month}/{ts.day} {ts.strftime('%H:%M')}"
+
+    def _wk_name(k):
+        return "This wk" if k == 0 else ("Last wk" if k == 1 else f"{k} wks ago")
+
+    def _wk_range(k):
+        s, e = weeks[k]
+        last = now if k == 0 else (e - pd.Timedelta(days=1))
+        return f"{_md(s)}&ndash;{_md(last)}"
+
+    order = list(range(n - 1, -1, -1))                 # oldest -> current (left to right)
+    headers, aligns = ["Driver", "Truck(s)"], ["left", "left"]
+    for k in order:
+        tint = ACCENT if k == 0 else MUTE
+        headers.append(f"{_wk_name(k)}<br><span style='font-weight:400;color:{tint};'>{_wk_range(k)}</span>")
+        aligns.append("right")
+    headers += ["Total", "Start &rarr; End &middot; this wk"]
+    aligns += ["right", "left"]
+
+    body, wk_tot = "", [0.0] * n
+    for r in rows:
+        cells, al, acc = [r["driver"], r["trucks"]], ["left", "left"], [None, None]
+        for k in order:
+            mi = r["miles"][k]
+            wk_tot[k] += mi
+            cells.append(num(mi) if mi else "&middot;")
+            al.append("right")
+            acc.append(None)
+        cells.append(num(r["total"]))
+        al.append("right")
+        acc.append("mute")
+        s, e = r["start"], r["end"]
+        if s or e:
+            sp = f"{s[1]} {_mdhm(s[0])}" if s else "?"
+            ep = f"{e[1]} {_mdhm(e[0])}" if e else "?"
+            cells.append(f"{sp} &rarr; {ep}")
+        else:
+            cells.append("&middot;")
+        al.append("left")
+        acc.append(None)
+        body += _tr(cells, al, acc)
+
+    tcells = ["Total", f"{len(rows)} drivers"] + [num(wk_tot[k]) for k in order] + [num(sum(wk_tot)), ""]
+    total_row = "<tr>" + "".join(
+        f"<td align='{a}' style='padding:8px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{c}</td>"
+        for c, a in zip(tcells, aligns)) + "</tr>"
+
+    drivers_n = len(rows)
+    avg4 = (sum(wk_tot) / drivers_n) if drivers_n else None
+    tiles = (_tile("Drivers &middot; 4 wks", num(drivers_n), _pill("with delivered miles", "mute"))
+             + _tile("Miles &middot; this wk", num(wk_tot[0]), _pill("Wed 3pm &rarr; now", "mute"))
+             + _tile("Miles &middot; last wk", num(wk_tot[1] if n > 1 else 0.0), _pill("prior settlement wk", "mute"))
+             + _tile("Avg miles / driver &middot; 4 wks", num(avg4), _pill("rolling", "mute")))
+
+    return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Driver mileage by settlement week &middot; delivered miles, rolling 4 weeks')}"
+            f"{_table(headers, aligns, body + total_row)}"
+            f"{footer}")
+
+
+def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, driver_weeks, missing) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -857,7 +1074,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
-            f"{wrap(build_page3(qb_ar, date_str))}"
+            f"{wrap(build_page3(qb_ar, date_str))}{pb}"
+            f"{wrap(build_page4(driver_weeks, date_str))}"
             f"</body></html>")
 
 
@@ -872,7 +1090,8 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR") if ar_hist_sheets else ([], [])
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
-    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing)
+    driver_weeks = compute_driver_weeks(alvys_sheets) if alvys_sheets else None
+    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, driver_weeks, missing)
 
 
 # ----------------------------------------------------------------------
