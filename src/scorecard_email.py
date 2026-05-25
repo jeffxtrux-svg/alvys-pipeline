@@ -1361,14 +1361,44 @@ def main() -> int:
     token = get_token(tenant, client, secret)
     missing: list[str] = []
 
-    alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
-    pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
-    ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
-    ar_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AR_History.xlsx", missing, "QB AR history")
-    ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
-    samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
-    # SambaSafety is optional — don't flag it as "missing" if the export isn't set up yet.
-    samba_sheets = _safe_read(token, upn, samba_path, [], "SambaSafety Master")
+    # Each spec: (label, OneDrive path, required?). Optional files don't count as
+    # "missing" in the report banner, but still show in the preflight summary.
+    specs = [
+        ("Alvys Master 2026", alvys_path, True),
+        ("QB P&L", f"{qb_dir}/QB_ProfitAndLoss.xlsx", True),
+        ("QB AR aging", f"{qb_dir}/QB_AgedReceivableDetail.xlsx", True),
+        ("QB AR history", f"{qb_dir}/QB_AR_History.xlsx", True),
+        ("QB AP history", f"{qb_dir}/QB_AP_History.xlsx", True),
+        ("Samsara Master", samsara_path, True),
+        ("SambaSafety Master", samba_path, False),
+    ]
+    read: dict[str, object] = {}
+    for label, path, required in specs:
+        read[label] = _safe_read(token, upn, path, missing if required else [], label)
+
+    # Preflight summary — tells you on the very first run which OneDrive files
+    # were found vs. missing, so a wrong path is obvious immediately.
+    n_found = sum(1 for label, _p, _r in specs if read[label] is not None)
+    log.info("OneDrive preflight: %d of %d expected files found", n_found, len(specs))
+    for label, path, required in specs:
+        sheets = read[label]
+        if sheets is not None:
+            rows = sum(len(df) for df in sheets.values())
+            log.info("  FOUND    %-20s %s  (%d sheet(s), %d rows)", label, path, len(sheets), rows)
+        elif required:
+            log.warning("  MISSING  %-20s %s  (required)", label, path)
+        else:
+            log.info("  absent   %-20s %s  (optional)", label, path)
+    if missing:
+        log.warning("Required files missing: %s — those sections will be blank.", ", ".join(missing))
+
+    alvys_sheets = read["Alvys Master 2026"]
+    pnl_sheets = read["QB P&L"]
+    ar_sheets = read["QB AR aging"]
+    ar_hist_sheets = read["QB AR history"]
+    ap_hist_sheets = read["QB AP history"]
+    samsara_sheets = read["Samsara Master"]
+    samba_sheets = read["SambaSafety Master"]
 
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets,
                         missing, sambasafety_sheets=samba_sheets)
