@@ -159,6 +159,18 @@ def upload_file(
     return last_resp.json() if last_resp else {}
 
 
+def download_file(token: str, user_upn: str, path: str) -> bytes:
+    """Download a file's raw bytes from a user's OneDrive by path."""
+    headers = {"Authorization": f"Bearer {token}"}
+    user_enc = quote(user_upn, safe="@.")
+    url = f"{GRAPH}/users/{user_enc}/drive/root:/{_enc_path(path.strip('/'))}:/content"
+    resp = requests.get(url, headers=headers, timeout=180)
+    if resp.status_code != 200:
+        log.error("Download %s failed [%s]: %s", path, resp.status_code, resp.text[:300])
+        resp.raise_for_status()
+    return resp.content
+
+
 def get_required(key: str) -> str:
     val = os.environ.get(key)
     if not val:

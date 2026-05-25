@@ -1,0 +1,44 @@
+# Daily KPI scorecard email — reads the latest pipeline outputs from OneDrive,
+# computes the key metrics + executive overview, and emails them.
+#
+# Reads only (no API pulls) so it never touches the QuickBooks token rotation.
+# Runs after the morning data refresh.
+#
+# GitHub Secrets required (shared with the rest of the pipeline):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+# The Azure app needs Mail.Send (already used by the Samsara alert job).
+
+name: Daily KPI Scorecard Email
+
+on:
+  workflow_dispatch:
+  schedule:
+    # ~7am CST / 8am CDT — ~1 hour after the morning Alvys/Samsara/QB refresh
+    - cron: '0 13 * * *'
+
+jobs:
+  scorecard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build and send scorecard
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+        run: python -m src.scorecard_email

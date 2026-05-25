@@ -1,0 +1,6 @@
+# Your business content lives on OneDrive, NOT GitHub.
+# Only the reusable scaffold (CLAUDE.md, README, templates, empty index) is
+# committed. Everything ingested from OneDrive stays out of git.
+_build/
+raw/*
+!raw/README.md

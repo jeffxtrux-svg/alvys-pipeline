@@ -6,15 +6,25 @@ Pulls Loads, Trips, and Fuel data from the Alvys API and produces an
 Designed to grow into a multi-source hub: Alvys today, Samsara and QuickBooks
 next, all feeding one OneDrive folder that Power BI reads from.
 
+> **📚 Full knowledge base:** for the complete, up-to-date picture of how all
+> three connectors, the OneDrive upload, the automation, and Power BI fit
+> together, start at [`docs/knowledge-base/`](docs/knowledge-base/README.md).
+> The quick-start below covers the Alvys local run; the knowledge base covers
+> everything else.
+
 ## Status
 
 | Phase | What it does                                  | Status                |
 |-------|----------------------------------------------|-----------------------|
-| 1     | Pull Alvys → write Excel locally             | ✅ Built (you are here)|
-| 2     | GitHub Actions runs it 3x/day                | 🔧 Workflow included, disabled |
-| 3     | Upload output to OneDrive via Microsoft Graph| 🔜 Next               |
-| 4     | Add Samsara connector                        | 🔜 Future             |
-| 5     | Add QuickBooks (5 companies) connector       | 🔜 Future             |
+| 1     | Pull Alvys → write Excel locally             | ✅ Built              |
+| 2     | GitHub Actions runs it 3x/day                | ✅ Built (schedule active) |
+| 3     | Upload output to OneDrive via Microsoft Graph| ✅ Built              |
+| 4     | Add Samsara connector (+ fault/DVIR alerts)  | ✅ Built              |
+| 5     | Add QuickBooks (5 companies) connector        | ✅ Built (3 of 5 companies live; N&J pair pending API access) |
+| 6     | Power BI reads Alvys API directly (skip Excel)| 🔧 Proof of concept ([powerbi/](powerbi/SETUP.md)) |
+
+See [`docs/knowledge-base/automation-and-secrets.md`](docs/knowledge-base/automation-and-secrets.md)
+for the full per-connector workflow and secrets reference.
 
 ---
 
