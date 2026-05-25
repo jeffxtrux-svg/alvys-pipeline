@@ -653,14 +653,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _xt_loads, _xt_miles = _xt.get("loads"), fleet.get("miles")
     _xt_rpm = (_xt_rev / _xt_miles) if (_isnum(_xt_rev) and _isnum(_xt_miles) and _xt_miles) else None
     _xt_rpl = (_xt_rev / _xt_loads) if (_isnum(_xt_rev) and _isnum(_xt_loads) and _xt_loads) else None
-    xtrux_r1 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _pill("X-Trux + XFreight", "mute"))
-                + _tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))
-                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _pill("X-Trux", "mute"))
-                + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
     _xt_asset = ((alvys or {}).get("asset") or {}).get("mtd", {})
-    xtrux_r2 = (_tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
-                      "goal &le;7.5% " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
-                + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
+    xtrux_r1 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _pill("X-Trux + XFreight", "mute"))
+                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _pill("X-Trux", "mute"))
+                + _tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
+                        "goal &le;7.5% " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+                + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute")))
+    xtrux_r2 = (_tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))
+                + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute"))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
     margin_tile = _tile("XFreight Margin &middot; MTD", money(wmtd.get("margin")), _pill("revenue &minus; cost", "mute"))
