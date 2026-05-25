@@ -1,4 +1,8 @@
-"""Upload Alvys_Master.xlsx to OneDrive via Microsoft Graph API.
+"""Upload the Alvys master workbook to OneDrive via Microsoft Graph API.
+
+The local file is produced as Alvys_Master.xlsx and uploaded to OneDrive as
+ONEDRIVE_TARGET_FILENAME (default "Alvys Master 2026.xlsx"), which is the name
+the scorecard email reads.
 
 Uses the OAuth2 client credentials flow with Application permissions
 (Files.ReadWrite.All) granted to the `alvys-pipeline` app registration
@@ -192,7 +196,7 @@ def main():
     client_secret = get_required("AZURE_CLIENT_SECRET")
     user_upn = get_required("ONEDRIVE_USER_UPN")
     folder_path = os.environ.get("ONEDRIVE_FOLDER_PATH", "").strip("/")
-    target_filename = os.environ.get("ONEDRIVE_TARGET_FILENAME", "Alvys_Master.xlsx")
+    target_filename = os.environ.get("ONEDRIVE_TARGET_FILENAME", "Alvys Master 2026.xlsx")
 
     output_dir = Path(os.environ.get("OUTPUT_DIR", "output"))
     file_path = output_dir / "Alvys_Master.xlsx"

@@ -1,4 +1,4 @@
-# Alvys data refresh — runs 3x/day, writes Alvys_Master.xlsx to OneDrive
+# Alvys data refresh — runs 3x/day, writes "Alvys Master 2026.xlsx" to OneDrive
 
 name: Refresh Alvys data
 
@@ -46,7 +46,7 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
           ONEDRIVE_FOLDER_PATH: ""
-          ONEDRIVE_TARGET_FILENAME: "Alvys Master.xlsx"
+          ONEDRIVE_TARGET_FILENAME: "Alvys Master 2026.xlsx"
           OUTPUT_DIR: output
         run: python -m src.onedrive_upload
 
