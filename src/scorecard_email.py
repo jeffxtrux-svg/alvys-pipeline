@@ -168,10 +168,10 @@ def _windows() -> dict[str, pd.Timestamp]:
 # ----------------------------------------------------------------------
 def _alvys_metrics(sub: pd.DataFrame) -> dict:
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    loaded = _col_any(sub, ["Loaded Mileage", "Loaded Miles", "Loaded Dispatch Mileage"]).sum()
-    empty = _col_any(sub, ["Empty Mileage", "Empty Miles", "Empty Dispatch Mileage"]).sum()
-    # "Dispatch Mileage" is the model's total-dispatch-mileage column (Power BI Rev/Mile & Dead Head basis).
-    total_col = _col_any(sub, ["Dispatch Mileage", "Total Dispatch Mileage", "Total Miles", "Total Mileage"])
+    loaded = _col_any(sub, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
+    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
+    # Power BI's "Dispatch Mileage" basis = the Total Dispatch Mileage column (Rev/Mile & Dead Head %).
+    total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"])
     total = total_col.sum() if total_col.notna().any() else (loaded + empty)
     # Gross margin = revenue - (driver + carrier). Fuel is already inside those rates.
     driver = _col(sub, "Driver Rate").fillna(0)
