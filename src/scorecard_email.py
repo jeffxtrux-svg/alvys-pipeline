@@ -58,6 +58,12 @@ ALVYS_DATE_CANDIDATES = [
     "Delivery Date", "Created", "Scheduled Delivery",
 ]
 
+# Power BI's report groups by the "Office" slicer (subsidiary: XFreight / X-Linx /
+# X-Trux), so prefer the Office column. Invoice As / Tender As are billing-entity
+# fallbacks that can differ from Office for brokered loads invoiced under another
+# subsidiary — grouping by those would misfile that revenue into the wrong entity.
+OFFICE_COL_NEEDLES = ["office", "invoice as", "invoiced as", "tender as"]
+
 # ----------------------------------------------------------------------
 # Formatting helpers (always return a safe string)
 # ----------------------------------------------------------------------
@@ -229,7 +235,7 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
         dates = dates.loc[loads.index]
     trips, tdates = _prep_trips(sheets)
-    toffice = _find_col(trips, ["invoice as", "invoiced as", "office", "tender as"]) if trips is not None else None
+    toffice = _find_col(trips, OFFICE_COL_NEEDLES) if trips is not None else None
     w = _windows()
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
 
@@ -245,7 +251,7 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
     # RPM and deadhead are asset-carrier metrics — compute an X-Trux/XFreight-only
     # variant (exclude X-Linx brokerage) for those tiles.
-    office_col = _find_col(loads, ["invoice as", "invoiced as", "office", "tender as"])
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         is_asset = loads[office_col].map(_entity_group) == "X-Trux"
         a_loads, a_dates = loads[is_asset], dates[is_asset]
@@ -293,7 +299,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     loads = sheets.get("Loads")
     if loads is None or loads.empty:
         return {}
-    office_col = _find_col(loads, ["invoice as", "invoiced as", "office", "tender as"])
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if not office_col:
         return {}
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
@@ -308,7 +314,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     # Power BI; revenue and load count stay load-level from the Loads tab above.
     trips, tdates = _prep_trips(sheets)
     tsub = trips[tdates >= _windows()[window_key]] if trips is not None else None
-    toffice = _find_col(tsub, ["invoice as", "invoiced as", "office", "tender as"]) if tsub is not None else None
+    toffice = _find_col(tsub, OFFICE_COL_NEEDLES) if tsub is not None else None
     tgroups = tsub[toffice].map(_entity_group) if (tsub is not None and toffice) else None
 
     out: dict[str, dict] = {}
@@ -320,7 +326,9 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             continue
         rev_series = _col_any(rows, ["Customer Revenue", "Revenue"])
         revenue = rev_series.sum()
-        rev_loads = int((rev_series.fillna(0) > 0).sum())  # revenue loads only
+        # Match Power BI's "Loads" count: every (non-cancelled) load in the window,
+        # not just those that booked revenue. PBI's Margin-per-Bill divides by this.
+        n_loads = len(rows)
         # Cost basis = the Trips "Driver Rate" column (payout to the truck), matching
         # Power BI's Margin = Customer Revenue - Driver Rate. For brokered (X-Linx)
         # trips that column already holds the carrier payout, so the separate Carrier
@@ -333,7 +341,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "cost": cost or None,
             "margin": margin if revenue else None,
             "margin_pct": (margin / revenue) if revenue else None,
-            "loads": rev_loads,
+            "loads": n_loads,
         }
     return out
 
@@ -687,7 +695,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                      _pill("driver rate (X-Trux + X-Linx)", "mute"))
     _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
     loads_tile = _tile("XFreight Loads &middot; MTD", num(_xf_loads),
-                       _pill("X-Trux + X-Linx revenue loads", "mute"))
+                       _pill("X-Trux + X-Linx loads", "mute"))
     # X-Linx (brokerage) overview tiles: revenue, cost (driver rate), margin, margin %.
     _xl_rev, _xl_cost = _xl.get("revenue"), _xl.get("cost")
     _xl_loads = _xl.get("loads")
