@@ -326,6 +326,11 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 
 
 # --- AR aging detail (page 3, 31+ only) --------------------------------
+# Customer/vendor names excluded from AR aging tables and totals.
+# Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
+_AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
+
+
 def _ar_bucket(section: str) -> str | None:
     s = str(section).lower()
     if "31" in s and "60" in s:
@@ -344,6 +349,13 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
     date_col = _find_col(df, ["date"])
     due_col = _find_col(df, ["due"])
     num_col = _find_col(df, ["num", "invoice", "transaction #"])
+
+    # Build a boolean mask excluding customers in _AR_DETAIL_EXCLUDE.
+    if cust_col and cust_col in data.columns and _AR_DETAIL_EXCLUDE:
+        excl_mask = data[cust_col].astype(str).str.strip().str.lower().apply(
+            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE)
+        )
+        data = data[~excl_mask]
 
     rows: list[dict] = []
     totals = {"31&ndash;60": 0.0, "61&ndash;90": 0.0, "91+": 0.0}
