@@ -214,11 +214,30 @@ def _month_end_dates(n: int = 6) -> list[tuple[str, str, str]]:
     return out
 
 
+def _name_col(col_titles: list[str]) -> str | None:
+    """Find the customer/vendor name column in a QB aging detail report.
+
+    QB aging reports lead with the entity name — the column title is often blank
+    (ColTitle=""), so we look for 'name', 'customer', or 'vendor' first, then
+    fall back to the first column.
+    """
+    for t in col_titles:
+        if any(k in t.strip().lower() for k in ("name", "customer", "vendor")):
+            return t
+    return col_titles[0] if col_titles else None
+
+
+# Names excluded from AR/AP history totals (internal entities, intercompany
+# balances, or companies whose numbers would distort the scorecard trend).
+_AR_AP_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
+
+
 def _sum_open_balance(records: list[dict], col_titles: list[str]) -> float:
     """Sum the open-balance column across all Data rows in a Detail aging report.
 
     Tries columns named 'open balance' first, then falls back to the last
     column.  Works for both AgedReceivableDetail and AgedPayableDetail.
+    Names in ``_AR_AP_EXCLUDE`` (case-insensitive) are skipped.
     """
     amt_col = next(
         (t for t in col_titles if "open balance" in t.strip().lower()), None
@@ -227,8 +246,20 @@ def _sum_open_balance(records: list[dict], col_titles: list[str]) -> float:
         amt_col = col_titles[-1] if col_titles else None
     if not amt_col:
         return 0.0
+
+    name_col = _name_col(col_titles)
+
+    def _include(r: dict) -> bool:
+        if r.get("Row_Type") != "Data":
+            return False
+        if name_col and _AR_AP_EXCLUDE:
+            entity = str(r.get(name_col, "")).strip().lower()
+            if any(entity.startswith(excl) for excl in _AR_AP_EXCLUDE):
+                return False
+        return True
+
     values = pd.to_numeric(
-        pd.Series([r.get(amt_col) for r in records if r.get("Row_Type") == "Data"]),
+        pd.Series([r.get(amt_col) for r in records if _include(r)]),
         errors="coerce",
     ).dropna()
     return float(values.sum()) if len(values) else 0.0
