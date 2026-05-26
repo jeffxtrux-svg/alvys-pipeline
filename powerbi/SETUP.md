@@ -1,120 +1,224 @@
-# Direct-to-Alvys Power BI Setup
+# XFreight Report API — Setup Guide
 
-This folder contains Power Query M code that lets Power BI call the Alvys API
-directly — replacing the Excel intermediate file. Use this when you want to
-eliminate the OneDrive lock issues and the iterate-pipeline-then-refresh
-cycle.
+Connect the full 29-page XFreight Report to live Alvys data (no Excel file needed).
 
-## Architecture comparison
+## What you're building
 
 ```
-OLD: Alvys API → Python pipeline → Excel (OneDrive) → Power BI → Visuals
-NEW: Alvys API → Power BI (Power Query) → Visuals
+Alvys API  →  Power Query (M)  →  Loads / Trips / Fuel tables
+                                    ↓
+                         29-page Power BI Report
+                         (all KPIs, charts, gauges, driver pages, fuel)
 ```
 
-## What you need
+The finished file is **`XFreight Report API.pbix`** — already built and waiting
+in OneDrive → XFreight - Claude Working Files → 02 - Power BI.
 
-- **Power BI Desktop** (Windows)
-- Your Alvys **Client ID** and **Client Secret** (same ones in the GitHub
-  Actions secrets — find them in Alvys → Settings → API/Integrations)
-- 15–30 minutes for first-time setup
+---
 
-## One-time setup in Power BI Desktop
+## Prerequisites
 
-### 1. Open the existing report
+- **Power BI Desktop** (Windows) — free from Microsoft Store
+- Your Alvys **Client ID** and **Client Secret**
+  (Alvys → Settings → API/Integrations)
+- OneDrive synced so you can open the .pbix locally
 
-Open `XFreight Report Connected.pbix` (or whichever .pbix you want to
-convert) in Power BI Desktop.
+---
 
-### 2. Create parameters for credentials
+## Step 1 — Open the pre-built file
 
-**Home → Transform data → Manage Parameters → New Parameter**:
+Open `XFreight Report API.pbix` in Power BI Desktop.
 
-| Name              | Type   | Suggested values | Current value          |
-|-------------------|--------|------------------|------------------------|
-| `AlvysClientId`     | Text   | Any value        | (paste your client ID)  |
-| `AlvysClientSecret` | Text   | Any value        | (paste your secret)     |
-| `AlvysStartDate`    | Text   | Any value        | `2024-01-01`           |
+You'll see all 29 pages but the visuals will show **"Data source error"** or
+**"Can't load data"** — that's expected. The visual layout is there; we just
+need to wire up the data.
 
-### 3. Paste in the queries
+---
 
-Still in Power Query Editor:
+## Step 2 — Create Alvys credential parameters
 
+**Home → Transform data → Manage Parameters → New Parameter** (repeat 3×):
+
+| Name               | Type | Current value              |
+|--------------------|------|----------------------------|
+| `AlvysClientId`    | Text | (paste your Client ID)     |
+| `AlvysClientSecret`| Text | (paste your Client Secret) |
+| `AlvysStartDate`   | Text | `2024-01-01`               |
+
+> Tip: Set AlvysStartDate to the oldest data you want. Farther back = longer
+> first refresh. `2024-01-01` is a good starting point.
+
+---
+
+## Step 3 — Paste the Power Query M queries
+
+Still in Power Query Editor (**Home → Transform data**):
+
+### Order matters — paste in this sequence:
+
+#### 3a. SharedHelpers
 1. **Home → New Source → Blank Query**
-2. **Home → Advanced Editor**
-3. Replace the entire contents with the code from `queries/_SharedHelpers.pq`
-4. Click Done. Rename the query (left panel) to **`SharedHelpers`**
-5. Repeat for `Loads.pq` (rename to `Loads`), `Trips.pq` (rename `Trips`),
-   `Fuel.pq` (rename `Fuel`)
+2. **Advanced Editor** → replace everything with contents of `queries/_SharedHelpers.pq`
+3. Rename query to **`SharedHelpers`**
 
-### 4. Replace the existing data source
+#### 3b. Drivers (lookup)
+1. New Blank Query → Advanced Editor → paste `queries/Drivers.pq`
+2. Rename to **`Drivers`**
 
-Power BI is currently reading these tables from the Excel file. To swap to
-the API:
+#### 3c. Trucks (lookup)
+1. New Blank Query → Advanced Editor → paste `queries/Trucks.pq`
+2. Rename to **`Trucks`**
 
-- Right-click the OLD `Loads` query → **Delete**. Confirm.
-- The new `Loads` query you pasted in step 3 now drives every visual that
-  used to point at the old one. **Same name = same connection point.**
-- Repeat for `Trips` and `Fuel`.
+#### 3d. Users (lookup)
+1. New Blank Query → Advanced Editor → paste `queries/Users.pq`
+2. Rename to **`Users`**
 
-### 5. Apply Changes + close Power Query Editor
+#### 3e. Trips
+1. New Blank Query → Advanced Editor → paste `queries/Trips.pq`
+2. Rename to **`Trips`**
 
-Power BI will run all the queries. First refresh takes ~5–10 minutes
-depending on history depth.
+#### 3f. Loads
+1. New Blank Query → Advanced Editor → paste `queries/Loads.pq`
+2. Rename to **`Loads`**
 
-### 6. Save the .pbix and publish
+#### 3g. Fuel
+1. New Blank Query → Advanced Editor → paste `queries/Fuel.pq`
+2. Rename to **`Fuel`**
 
-**File → Save As** → give it a new name like `XFreight Report API.pbix`.
-Don't overwrite the existing one until you've confirmed visuals work.
+#### 3h. Delete the old placeholder queries
+If Power BI brought over any old queries from the original PBIX, right-click
+and delete them. Keep only the 7 new ones above.
 
-## Scheduling refreshes (Power BI Service)
+---
 
-Once you publish to Power BI Service:
+## Step 4 — Close & Apply
 
-1. **Workspace → Datasets → ⋯ → Settings**
-2. Under **Data source credentials**, click **Edit credentials**
-3. Authentication = **Anonymous** (we're using a bearer token, not Microsoft auth)
-4. **Skip test connection** if it complains; the token is fetched at refresh time
-5. Under **Scheduled refresh**, turn on and set 3× daily (matching the old
-   workflow)
+**Home → Close & Apply** — Power BI will run all queries.
 
-No on-prem gateway needed — Alvys API is a public cloud endpoint.
+First refresh takes **5–15 minutes** depending on data volume.
+You'll see a progress spinner. Let it finish.
+
+---
+
+## Step 5 — Create goal/parameter tables
+
+These power the KPI gauge visuals on the XFreight and Page 2 pages.
+
+**Modeling → New Parameter (What-If)** — create 8 parameters:
+
+| Table Name           | Min  | Max       | Step     | Default  |
+|----------------------|------|-----------|----------|----------|
+| Goal Revenue Linx    | 0    | 5,000,000 | 50,000   | 600,000  |
+| Goal Margin % Linx   | 0    | 1         | 0.01     | 0.18     |
+| Goal Revenue Trux    | 0    | 2,000,000 | 25,000   | 350,000  |
+| Goal Margin % Trux   | 0    | 1         | 0.01     | 0.25     |
+| Empty Mileage Goal % | 0    | 1         | 0.01     | 0.15     |
+| Margin %             | 0    | 1         | 0.005    | 0.20     |
+| Days in Month        | 1    | 31        | 1        | 21       |
+| Days Worked          | 0    | 31        | 1        | 1        |
+
+> Power BI auto-creates a measure (e.g. "Goal Revenue Linx Value") for each
+> parameter — you can ignore those, but **do not delete the tables**.
+
+---
+
+## Step 6 — Create the WeekTable
+
+For the **Report Delivery Date** page, you need a date dimension table.
+
+**Modeling → New Table**, paste:
+
+```dax
+WeekTable =
+ADDCOLUMNS(
+    CALENDAR(DATE(2023,1,1), TODAY()),
+    "WeekLabel",
+        "WE " & FORMAT(
+            [Date] + (7 - WEEKDAY([Date], 2)),
+            "M/D"
+        ),
+    "WeekEnd",
+        [Date] + (7 - WEEKDAY([Date], 2))
+)
+```
+
+Then create a relationship:
+**Modeling → Manage relationships → New**
+- `WeekTable[WeekEnd]` → `Loads[Scheduled Delivery]`  (Many-to-one, Single direction)
+
+---
+
+## Step 7 — Add DAX Measures
+
+Open `queries/DAX_Measures.dax` — it contains all the measures for KPIs,
+projections, delivery-date page, and fuel.
+
+**Modeling → New Measure** — paste each measure block individually.
+
+> Tip: Create a blank calculation table to hold all measures cleanly:
+> `Modeling → New Table → _Measures = {1}` then hide the `Value` column.
+> Put all your new measures in that table using the measure's table dropdown.
+
+---
+
+## Step 8 — Verify relationships
+
+**Modeling → Manage relationships** — confirm:
+
+| From                    | To                       | Cardinality |
+|-------------------------|--------------------------|-------------|
+| Trips[Load #]           | Loads[Load #]            | Many → One  |
+| WeekTable[WeekEnd]      | Loads[Scheduled Delivery]| Many → One  |
+
+Power BI may auto-detect these. If not, create them manually.
+
+---
+
+## Step 9 — Save & Publish
+
+1. **File → Save As** → `XFreight Report API.pbix` (confirm overwrite or new name)
+2. **Home → Publish** → select your workspace
+3. In Power BI Service → your dataset → **Settings → Scheduled refresh**
+   - Turn on refresh, set 3× daily (matching the old Excel pipeline cadence)
+   - Authentication: **Anonymous** (token is fetched at query time)
+
+---
+
+## Troubleshooting
+
+### "Expression.Error: The name 'SharedHelpers' wasn't recognized"
+Paste SharedHelpers *first*, before any other query.
+
+### "Expression.Error: The name 'Trips' wasn't recognized" (in Loads.pq)
+Paste Trips *before* Loads. The Loads query joins to Trips.
+
+### Drivers/Trucks query returns empty
+Check that your API credentials are correct and that the `/drivers` and
+`/trucks` endpoints are accessible with your subscription.
+
+### Gauge visuals show blank
+Goal parameter tables need to be created (Step 5). The gauge `Target Value`
+is bound to `Loads[X-Linx Rev Goal]` which is a measure reading from those tables.
+
+### Refresh takes too long
+Narrow `AlvysStartDate` (e.g. `2025-01-01`). You can always go back further
+after confirming things work.
+
+---
 
 ## File map
 
 ```
 powerbi/
-├── SETUP.md                       # This file
+├── SETUP.md                         ← This file
 └── queries/
-    ├── _SharedHelpers.pq          # OAuth + paginated fetch (all queries use this)
-    ├── Loads.pq                   # Loads table
-    ├── Trips.pq                   # Trips table
-    └── Fuel.pq                    # Fuel table
+    ├── _SharedHelpers.pq            ← OAuth + paginated fetch
+    ├── Drivers.pq                   ← Id → name lookup
+    ├── Trucks.pq                    ← Id → number lookup
+    ├── Users.pq                     ← Id → name lookup
+    ├── Loads.pq                     ← Loads table (full column set)
+    ├── Trips.pq                     ← Trips table (full column set)
+    ├── Fuel.pq                      ← Fuel table
+    ├── GoalTables.pq                ← Instructions for goal parameters
+    └── DAX_Measures.dax             ← All KPI measures (copy-paste)
 ```
-
-## Current scope
-
-**Phase 1 (proof of concept):** the most important columns (the 76 actually
-used by visuals) are mapped. Other columns return null. This is intentional
-— prove the architecture works before grinding through every column.
-
-**Phase 2 (full coverage):** add the remaining ~150 columns to exactly match
-the existing Excel schema. Mechanical work once the foundation is solid.
-
-## Troubleshooting
-
-**"Failed to refresh: Authentication error"**
-- Verify `AlvysClientId` / `AlvysClientSecret` parameter values are correct
-- Try regenerating credentials in Alvys → Settings → API/Integrations
-
-**"DataSource.Error: We couldn't authenticate with..."**
-- In Power BI Service: Dataset settings → Data source credentials → Edit →
-  set Authentication to **Anonymous** (we handle bearer token in code).
-
-**A column shows wrong values**
-- Compare with the Python pipeline output (which we know matches the manual
-  master). The M code mirrors the same logic; if they diverge, file a bug.
-
-**Refresh is slow on initial run**
-- Expected. 2+ years of trips/loads is a lot of paginated API calls. The
-  first run is the slowest; incremental refresh can speed up later runs.

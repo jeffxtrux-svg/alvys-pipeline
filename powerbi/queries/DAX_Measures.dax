@@ -1,0 +1,261 @@
+// =============================================================================
+// DAX Measures — XFreight Report API
+//
+// Paste each measure into Power BI Desktop: Modeling → New Measure
+// Organize them in a dedicated table called "Measures" (create a blank
+// table: Modeling → New Table → Measures = {1} then hide the column).
+//
+// Measures reference the "Loads", "Trips", and "Fuel" tables produced
+// by the Power Query setup. They replicate the logic in the Connected report.
+// =============================================================================
+
+
+// ---------------------------------------------------------------------------
+// LOADS — Revenue & Margin
+// ---------------------------------------------------------------------------
+
+Total Customer Revenue =
+    SUM(Loads[Customer Revenue])
+
+Total Driver Rate =
+    SUM(Loads[Driver Rate])
+
+Total Carrier Rate =
+    SUM(Loads[Carrier Rate])
+
+Total Gross Margin =
+    SUM(Loads[Gross Margin])
+
+Gross Margin % =
+    DIVIDE(
+        SUM(Loads[Gross Margin]),
+        SUM(Loads[Customer Revenue]),
+        0
+    )
+
+Load Count =
+    COUNTROWS(
+        FILTER(Loads, Loads[Load Status] <> "Cancelled")
+    )
+
+Load Count All =
+    COUNTROWS(Loads)
+
+Avg Revenue Per Load =
+    DIVIDE([Total Customer Revenue], [Load Count], 0)
+
+
+// ---------------------------------------------------------------------------
+// LOADS — Mileage
+// ---------------------------------------------------------------------------
+
+Total Loaded Miles =
+    SUM(Loads[Loaded Dispatch Mileage])
+
+Total Empty Miles =
+    SUM(Loads[Empty Dispatch Mileage])
+
+Total Miles =
+    SUM(Loads[Total Dispatch Mileage])
+
+Empty Mile % =
+    DIVIDE(
+        SUM(Loads[Empty Dispatch Mileage]),
+        SUM(Loads[Total Dispatch Mileage]),
+        0
+    )
+
+Avg Revenue Per Mile =
+    DIVIDE(
+        SUM(Loads[Customer Revenue]),
+        SUM(Loads[Total Dispatch Mileage]),
+        0
+    )
+
+Avg Loaded RPM =
+    DIVIDE(
+        SUM(Loads[Customer Revenue]),
+        SUM(Loads[Loaded Dispatch Mileage]),
+        0
+    )
+
+Driver Rate Per Mile =
+    DIVIDE(
+        SUM(Loads[Driver Rate]),
+        SUM(Loads[Total Dispatch Mileage]),
+        0
+    )
+
+
+// ---------------------------------------------------------------------------
+// TRIPS — equivalent measures (for Trip-based pages)
+// ---------------------------------------------------------------------------
+
+Trip Count =
+    COUNTROWS(
+        FILTER(Trips, Trips[Trip Status] <> "Cancelled")
+    )
+
+Trips Revenue =
+    SUM(Trips[Customer Revenue])
+
+Trips Driver Rate =
+    SUM(Trips[Driver Rate])
+
+Trips Carrier Rate =
+    SUM(Trips[Carrier Rate])
+
+Trips Gross Margin =
+    SUM(Trips[Gross Margin])
+
+Trips Gross Margin % =
+    DIVIDE(
+        SUM(Trips[Gross Margin]),
+        SUM(Trips[Customer Revenue]),
+        0
+    )
+
+Trips Total Miles =
+    SUM(Trips[Total Dispatch Mileage])
+
+Trips Loaded Miles =
+    SUM(Trips[Loaded Dispatch Mileage])
+
+Trips Empty Miles =
+    SUM(Trips[Empty Dispatch Mileage])
+
+Trips Empty Mile % =
+    DIVIDE(
+        SUM(Trips[Empty Dispatch Mileage]),
+        SUM(Trips[Total Dispatch Mileage]),
+        0
+    )
+
+Trips Avg RPM =
+    DIVIDE(
+        SUM(Trips[Customer Revenue]),
+        SUM(Trips[Total Dispatch Mileage]),
+        0
+    )
+
+Trips Avg Loaded RPM =
+    DIVIDE(
+        SUM(Trips[Customer Revenue]),
+        SUM(Trips[Loaded Dispatch Mileage]),
+        0
+    )
+
+
+// ---------------------------------------------------------------------------
+// GOALS — sourced from What-If parameter slicers
+// (These references assume you created Goal tables using GENERATESERIES)
+// ---------------------------------------------------------------------------
+
+X-Linx Rev Goal =
+    SELECTEDVALUE('Goal Revenue Linx'[Goal Revenue Linx], 600000)
+
+X-Linx Margin % Goal =
+    SELECTEDVALUE('Goal Margin % Linx'[Goal Margin % Linx], 0.18)
+
+X-Trux Rev Goal =
+    SELECTEDVALUE('Goal Revenue Trux'[Goal Revenue Trux], 350000)
+
+X-Trux Margin % Goal =
+    SELECTEDVALUE('Goal Margin % Trux'[Goal Margin % Trux], 0.25)
+
+Empty Mileage Goal % =
+    SELECTEDVALUE('Empty Mileage Goal %'[Empty Mileage Goal %], 0.15)
+
+Days in Month =
+    SELECTEDVALUE('Days in Month'[Days in Month], 21)
+
+Days Worked =
+    SELECTEDVALUE('Days Worked'[Days Worked], 1)
+
+Manual Margin =
+    SELECTEDVALUE('Margin %'[Margin %], 0.20)
+
+
+// ---------------------------------------------------------------------------
+// PROJECTIONS — extrapolate current pace to full month
+// ---------------------------------------------------------------------------
+
+Projected Revenue Linx =
+    DIVIDE(
+        CALCULATE([Total Customer Revenue], Loads[Tender As] = "X-Linx, Inc."),
+        [Days Worked]
+    ) * [Days in Month]
+
+Projected Revenue Trux =
+    DIVIDE(
+        CALCULATE([Total Customer Revenue], Loads[Tender As] = "X-Trux, Inc"),
+        [Days Worked]
+    ) * [Days in Month]
+
+Projected Gross Margin =
+    DIVIDE([Total Gross Margin], [Days Worked]) * [Days in Month]
+
+Projected Load Count =
+    DIVIDE([Load Count], [Days Worked]) * [Days in Month]
+
+
+// ---------------------------------------------------------------------------
+// DELIVERY DATE page — week-bucket measures (requires WeekTable)
+// ---------------------------------------------------------------------------
+// These use a WeekTable with columns: Date, WeekLabel, WeekEnd
+// Relate WeekTable[Date] ↔ Loads[Scheduled Delivery] (many-to-one)
+
+Load Count DeliveryDate =
+    CALCULATE(
+        COUNTROWS(Loads),
+        Loads[Load Status] <> "Cancelled"
+    )
+
+Total Miles DeliveryDate =
+    SUM(Loads[Total Dispatch Mileage])
+
+Customer Rate DeliveryDate LOADS =
+    SUM(Loads[Customer Revenue])
+
+Carrier Rate DeliveryDate TRIPS =
+    CALCULATE(SUM(Trips[Carrier Rate]))
+
+Trip Value DeliveryDate TRIPS =
+    CALCULATE(SUM(Trips[Trip Value]))
+
+Gross Margin DeliveryDate =
+    SUM(Loads[Gross Margin])
+
+Gross Margin % (DeliveryDate) =
+    DIVIDE([Gross Margin DeliveryDate], [Customer Rate DeliveryDate LOADS], 0)
+
+Avg Loaded RPM DeliveryDate =
+    DIVIDE(
+        SUM(Loads[Customer Revenue]),
+        SUM(Loads[Loaded Dispatch Mileage]),
+        0
+    )
+
+Avg Total RPM Delivery Date =
+    DIVIDE(
+        SUM(Loads[Customer Revenue]),
+        SUM(Loads[Total Dispatch Mileage]),
+        0
+    )
+
+
+// ---------------------------------------------------------------------------
+// FUEL
+// ---------------------------------------------------------------------------
+
+Total Fuel Gallons =
+    SUM(Fuel[Quantity])
+
+Total Fuel Cost =
+    SUM(Fuel[Net Total])
+
+Avg PPU =
+    DIVIDE(SUM(Fuel[Net Total]), SUM(Fuel[Quantity]), 0)
+
+Avg Discount PPU =
+    AVERAGE(Fuel[Discount PPU])

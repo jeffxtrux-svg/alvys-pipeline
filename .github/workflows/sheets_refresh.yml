@@ -1,0 +1,51 @@
+# XFreight KPI → Google Sheets refresh
+# Pulls from Alvys, QuickBooks, and Samsara and writes all tabs to the KPI Dashboard sheet.
+
+name: Refresh Google Sheets KPI Dashboard
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: '0 13 * * *'   # 7am CT (DST) / 8am CT (standard) — morning refresh
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write GCP credentials to temp file
+        run: echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > /tmp/gcp-sa.json
+
+      - name: Run Sheets pipeline
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: /tmp/gcp-sa.json
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+          ALVYS_CLIENT_ID: ${{ secrets.ALVYS_CLIENT_ID }}
+          ALVYS_CLIENT_SECRET: ${{ secrets.ALVYS_CLIENT_SECRET }}
+          SAMSARA_API_TOKEN: ${{ secrets.SAMSARA_API_TOKEN }}
+          QB_CLIENT_ID: ${{ secrets.QB_CLIENT_ID }}
+          QB_CLIENT_SECRET: ${{ secrets.QB_CLIENT_SECRET }}
+          QB_XTRUX_REFRESH_TOKEN: ${{ secrets.QB_XTRUX_REFRESH_TOKEN }}
+          QB_TRUKWAY_REFRESH_TOKEN: ${{ secrets.QB_TRUKWAY_REFRESH_TOKEN }}
+          QB_XLINX_REFRESH_TOKEN: ${{ secrets.QB_XLINX_REFRESH_TOKEN }}
+          QB_NJ_TRAILERS_REFRESH_TOKEN: ${{ secrets.QB_NJ_TRAILERS_REFRESH_TOKEN }}
+          QB_NJ_PROPERTIES_REFRESH_TOKEN: ${{ secrets.QB_NJ_PROPERTIES_REFRESH_TOKEN }}
+          QB_NJ_TRAILERS_REALM_ID: ${{ secrets.QB_NJ_TRAILERS_REALM_ID }}
+          QB_NJ_PROPERTIES_REALM_ID: ${{ secrets.QB_NJ_PROPERTIES_REALM_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHEETS_START_DATE: '2024-01-01'
+        run: python -m src.sheets_main
