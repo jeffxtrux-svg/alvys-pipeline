@@ -28,8 +28,10 @@ so the Central clock time shifts by an hour across daylight-saving changes.)
 ### Per-workflow notable env wiring
 
 - **Alvys** pins `ALVYS_START_DATE: '2024-01-01'` and sets
-  `ONEDRIVE_TARGET_FILENAME: "Alvys Master.xlsx"` (space, to match Power BI) with
-  `ONEDRIVE_FOLDER_PATH: ""` (OneDrive root).
+  `ONEDRIVE_TARGET_FILENAME: "Alvys Pipeline.xlsx"` with
+  `ONEDRIVE_FOLDER_PATH: ""` (OneDrive root). This name must stay distinct from
+  the hand-maintained `Alvys Master 2026.xlsx` that the Power BI report reads —
+  reusing that name would overwrite the manual workbook on every run.
 - **Samsara** sets `SAMSARA_DAYS_BACK: '90'` and `SAMSARA_SAFETY_DAYS_BACK: '190'`
   and runs the alerts step with `ALERT_FROM_UPN: jeff@xfreight.net` +
   `ALERT_TO_EMAILS` from secrets.

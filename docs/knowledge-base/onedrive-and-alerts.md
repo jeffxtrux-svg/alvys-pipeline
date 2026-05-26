@@ -45,15 +45,18 @@ its own `main()`.
 
 | Connector | Upload script | OneDrive location | Filename written |
 |-----------|---------------|-------------------|------------------|
-| Alvys | `src.onedrive_upload` | root (`ONEDRIVE_FOLDER_PATH=""`) | `Alvys Master.xlsx` * |
+| Alvys | `src.onedrive_upload` | root (`ONEDRIVE_FOLDER_PATH=""`) | `Alvys Pipeline.xlsx` * |
 | Samsara | `src.samsara_onedrive_upload` | `/Samsara` | `Samsara Master.xlsx` |
 | QuickBooks | `src.qb_onedrive_upload` | `/QuickBooks` | each `QB_*.xlsx` |
 
 \* The Alvys filename is configurable via `ONEDRIVE_TARGET_FILENAME` (defaults to
-`Alvys_Master.xlsx` in code, but the workflow sets it to `Alvys Master.xlsx`,
-with a space, to match what the Power BI report expects). Note the local file is
-always written as `Alvys_Master.xlsx`; the space-named version only exists in
-OneDrive.
+`Alvys_Master.xlsx` in code; the workflow sets it to `Alvys Pipeline.xlsx`). The
+local file is always written as `Alvys_Master.xlsx`; the OneDrive copy uses the
+configured name. **Do not point this at `Alvys Master 2026.xlsx`** — that is the
+hand-maintained workbook the Power BI report reads, and the upload uses
+`conflictBehavior: replace`, so a shared name overwrites the manual file. The
+daily scorecard email reads `Alvys Master 2026.xlsx` directly, not the pipeline
+upload.
 
 ## Environment variables for the upload layer
 

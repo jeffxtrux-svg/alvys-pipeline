@@ -46,7 +46,10 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
           ONEDRIVE_FOLDER_PATH: ""
-          ONEDRIVE_TARGET_FILENAME: "Alvys Master 2026.xlsx"
+          # Distinct name — must NOT collide with the hand-maintained
+          # "Alvys Master 2026.xlsx" that the Power BI report reads, or the
+          # pipeline's computed data would overwrite the manual workbook.
+          ONEDRIVE_TARGET_FILENAME: "Alvys Pipeline.xlsx"
           OUTPUT_DIR: output
         run: python -m src.onedrive_upload
 

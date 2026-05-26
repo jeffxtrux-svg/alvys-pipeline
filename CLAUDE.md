@@ -125,9 +125,13 @@ token lasts ~100 days.
 `.env.example` documents every variable for all connectors, both uploads, and
 the alerts/scorecard — copy to `.env` for local runs; the same values live in
 GitHub Secrets for CI. Notable defaults: Alvys `ALVYS_START_DATE` defaults to
-today − 425d (CI pins `2024-01-01`); Alvys CI uploads as `"Alvys Master.xlsx"`
-(with a space) to match the Power BI report. The full secret-by-secret reference
-is in `docs/knowledge-base/automation-and-secrets.md`.
+today − 425d (CI pins `2024-01-01`); Alvys CI uploads its computed output to
+OneDrive as `"Alvys Pipeline.xlsx"`. **This must stay distinct from
+`"Alvys Master 2026.xlsx"`, the hand-maintained workbook the Power BI report
+reads — a shared name would make the pipeline overwrite the manual file.** The
+daily scorecard email reads that same manual `"Alvys Master 2026.xlsx"` (not the
+pipeline output) so its KPIs match the report. The full secret-by-secret
+reference is in `docs/knowledge-base/automation-and-secrets.md`.
 
 ## Documentation map
 
