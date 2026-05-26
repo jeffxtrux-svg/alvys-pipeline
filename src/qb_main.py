@@ -158,13 +158,16 @@ def main() -> None:
             if df is not None:
                 entity_dfs[entity].append(df)
 
-        ar_hist = fetch_ar_history(client, company["name"])
-        if ar_hist is not None:
-            ar_history_dfs.append(ar_hist)
+        # AR/AP history is only meaningful for the revenue entities.
+        # Truk-Way Leasing is an internal cost entity — exclude it from the trend charts.
+        if company["name"] != "Truk-Way Leasing":
+            ar_hist = fetch_ar_history(client, company["name"])
+            if ar_hist is not None:
+                ar_history_dfs.append(ar_hist)
 
-        ap_hist = fetch_ap_history(client, company["name"])
-        if ap_hist is not None:
-            ap_history_dfs.append(ap_hist)
+            ap_hist = fetch_ap_history(client, company["name"])
+            if ap_hist is not None:
+                ap_history_dfs.append(ap_hist)
 
         if client.new_refresh_token:
             rotate_secret(company["secret_name"], client.new_refresh_token)
