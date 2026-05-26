@@ -179,10 +179,12 @@ def _alvys_metrics(loads_sub: pd.DataFrame, trips_sub: pd.DataFrame | None = Non
     # Power BI's "Dispatch Mileage" basis = the Total Dispatch Mileage column (Rev/Mile & Dead Head %).
     total_col = _col_any(cost_src, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"])
     total = total_col.sum() if total_col.notna().any() else (loaded + empty)
-    # Gross margin = revenue - (driver + carrier). Fuel is already inside those rates.
-    driver = _col(cost_src, "Driver Rate").fillna(0)
-    carrier = _col_any(cost_src, ["Carrier Rate", "Posted Carrier Rate"]).fillna(0)
-    cost = float((driver + carrier).sum())
+    # Margin = revenue - Driver Rate, matching Power BI. The Trips "Driver Rate"
+    # column is the full payout to whoever moved the load (company driver on asset
+    # trips, carrier on brokered trips), so it is the entire cost basis — the
+    # separate Carrier Rate column is NOT added (that would double-count brokered
+    # trips, whose payout already lives in Driver Rate).
+    cost = float(_col(cost_src, "Driver Rate").fillna(0).sum())
     margin = revenue - cost
     return {
         "loads": len(loads_sub),
@@ -319,20 +321,18 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         rev_series = _col_any(rows, ["Customer Revenue", "Revenue"])
         revenue = rev_series.sum()
         rev_loads = int((rev_series.fillna(0) > 0).sum())  # revenue loads only
-        # Fuel is already embedded in driver rate / carrier rate — do not add it again.
+        # Cost basis = the Trips "Driver Rate" column (payout to the truck), matching
+        # Power BI's Margin = Customer Revenue - Driver Rate. For brokered (X-Linx)
+        # trips that column already holds the carrier payout, so the separate Carrier
+        # Rate column is not added.
         cost_src = trows if (trows is not None and not trows.empty) else rows
-        driver = _col(cost_src, "Driver Rate").fillna(0)
-        carrier = _col_any(cost_src, ["Carrier Rate", "Posted Carrier Rate"]).fillna(0)
-        driver_sum, carrier_sum = float(driver.sum()), float(carrier.sum())
-        cost = driver_sum + carrier_sum
+        cost = float(_col(cost_src, "Driver Rate").fillna(0).sum())
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
             "margin": margin if revenue else None,
             "margin_pct": (margin / revenue) if revenue else None,
-            "driver": driver_sum or None,
-            "carrier": carrier_sum or None,
             "loads": rev_loads,
         }
     return out
@@ -682,16 +682,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                  + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
-    _dc = [v for v in (_xt.get("driver"), _xl.get("carrier")) if _isnum(v)]
+    _dc = [v for v in (_xt.get("cost"), _xl.get("cost")) if _isnum(v)]
     pay_tile = _tile("XFreight Cost W/O Office &middot; MTD", money(sum(_dc) if _dc else None),
-                     _pill("X-Trux driver + X-Linx carrier", "mute"))
+                     _pill("driver rate (X-Trux + X-Linx)", "mute"))
     _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
     loads_tile = _tile("XFreight Loads &middot; MTD", num(_xf_loads),
                        _pill("X-Trux + X-Linx revenue loads", "mute"))
-    # X-Linx (brokerage) overview tiles: revenue, carrier cost, margin, margin %.
-    _xl_rev, _xl_carrier = _xl.get("revenue"), _xl.get("carrier")
+    # X-Linx (brokerage) overview tiles: revenue, cost (driver rate), margin, margin %.
+    _xl_rev, _xl_cost = _xl.get("revenue"), _xl.get("cost")
     _xl_loads = _xl.get("loads")
-    _xl_margin = (_xl_rev - _xl_carrier) if (_isnum(_xl_rev) and _isnum(_xl_carrier)) else _xl.get("margin")
+    _xl_margin = (_xl_rev - _xl_cost) if (_isnum(_xl_rev) and _isnum(_xl_cost)) else _xl.get("margin")
     _xl_mpct = (_xl_margin / _xl_rev) if (_isnum(_xl_rev) and _xl_rev and _isnum(_xl_margin)) else None
     _xl_rpl = (_xl_rev / _xl_loads) if (_isnum(_xl_rev) and _isnum(_xl_loads) and _xl_loads) else None
     _xl_mpl = (_xl_margin / _xl_loads) if (_isnum(_xl_margin) and _isnum(_xl_loads) and _xl_loads) else None
