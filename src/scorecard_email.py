@@ -474,8 +474,13 @@ def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int 
 
     rev = pd.to_numeric(sub[rev_col], errors="coerce").fillna(0) if rev_col else pd.Series(0.0, index=sub.index)
     today = pd.Timestamp.now().normalize()
-    del_col = _find_col(sub, ["scheduled delivery", "delivery date", "delivered"])
-    delivered = pd.to_datetime(sub[del_col], errors="coerce") if del_col else pd.Series(pd.NaT, index=sub.index)
+    # Prefer actual last-stop arrival; fall back per-row to Scheduled Delivery when
+    # an arrival timestamp is missing (or the column isn't in the file yet).
+    act_col = _find_col(sub, ["actual delivery", "arrived"])
+    sched_col = _find_col(sub, ["scheduled delivery", "delivery date"])
+    delivered = pd.to_datetime(sub[act_col], errors="coerce") if act_col else pd.Series(pd.NaT, index=sub.index)
+    if sched_col:
+        delivered = delivered.fillna(pd.to_datetime(sub[sched_col], errors="coerce"))
     days = (today - delivered).dt.days
     loadno_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number", "load id"])
 
@@ -1425,8 +1430,9 @@ def build_page5(uninv, date_str) -> str:
             f"{_table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'], ['left', 'left', 'left', 'left', 'right', 'right'], body + more)}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
-            f"QuickBooks-vs-Alvys AR gap. X-Trux Inc + X-Linx Inc (JW Logistics excluded); "
-            f"&lsquo;Delivered&rsquo; uses Scheduled Delivery. Source: Alvys API (Loads, via the pipeline file).</div>")
+            f"QuickBooks-vs-Alvys AR gap. X-Trux Inc + X-Linx Inc (JW Logistics excluded); &lsquo;Delivered&rsquo; "
+            f"is the actual last-stop arrival (Scheduled Delivery if arrival is missing). "
+            f"Source: Alvys API (Loads, via the pipeline file).</div>")
 
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,

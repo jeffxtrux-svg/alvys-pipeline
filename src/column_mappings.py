@@ -731,6 +731,9 @@ LOADS_COLUMNS = [
     ("Created",                             "CreatedAt"),
     ("Invoicing Method",                    _customer_field(["InvoicingMethod", "InvoiceMethod", "PreferredInvoicingMethod"])),
     ("Contract Lane Type",                  "ContractLaneType"),
+    # Actual delivery = last stop's arrival time (vs Scheduled Delivery above).
+    # Used by the scorecard's "delivered, not yet invoiced" page.
+    ("Actual Delivery",                     "Stops.last.ArrivedAt"),
 ]
 
 
