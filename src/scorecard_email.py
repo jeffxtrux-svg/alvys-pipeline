@@ -367,6 +367,14 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
 
+    # Scope to X-Trux (incl. XFreight) + X-Linx so it reconciles with the QB AR,
+    # which is limited to the X-Trux Inc / X-Linx Inc company files.
+    office_col = _find_col(sub, OFFICE_COL_NEEDLES)
+    if office_col:
+        sub = sub[sub[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+    if sub.empty:
+        return {}
+
     rev     = pd.to_numeric(sub[rev_col],  errors="coerce").fillna(0)
     paid    = pd.to_numeric(sub[paid_col], errors="coerce").fillna(0)
     balance = (rev - paid).clip(lower=0)
@@ -446,6 +454,13 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 # Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
 _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 
+# QuickBooks company files that have an Alvys (TMS) counterpart. All AR reporting
+# and the QB-vs-Alvys reconciliation are scoped to these two so the two systems
+# compare like-for-like; the other QB companies (Truk-Way Leasing, N&J Trailers,
+# N&J Properties) have no Alvys equivalent. Matched case-insensitively on the
+# "Company" column. The Alvys side folds the XFreight office into X-Trux.
+_AR_COMPANIES: frozenset[str] = frozenset({"x-trux inc", "x-linx inc"})
+
 
 def _ar_bucket(section: str) -> str | None:
     s = str(section).lower()
@@ -465,6 +480,11 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
     date_col = _find_col(df, ["date"])
     due_col = _find_col(df, ["due"])
     num_col = _find_col(df, ["num", "invoice", "transaction #"])
+    company_col = _find_col(df, ["company"])
+
+    # Scope to the X-Trux Inc / X-Linx Inc company files (drop Truk-Way, N&J).
+    if company_col and company_col in data.columns:
+        data = data[data[company_col].astype(str).str.strip().str.lower().isin(_AR_COMPANIES)]
 
     # Build a boolean mask excluding customers in _AR_DETAIL_EXCLUDE.
     if cust_col and cust_col in data.columns and _AR_DETAIL_EXCLUDE:
@@ -497,9 +517,30 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
             "total_ar": float(total_ar) if _isnum(total_ar) else None}
 
 
-def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR") -> tuple[list[str], list[float]]:
+def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
+    """Compare total open AR for X-Trux + X-Linx between QuickBooks (system of
+    record) and Alvys (operational TMS). A persistent gap flags a fixable sync
+    issue — invoices/payments booked in one system but not yet the other.
+
+    Returns {} unless both totals are available.
+    """
+    qb = qb_ar.get("total_ar") if qb_ar else None
+    alvys = alvys_ar.get("total") if alvys_ar else None
+    if not _isnum(qb) or not _isnum(alvys):
+        return {}
+    delta = qb - alvys
+    base = max(abs(qb), abs(alvys), 1.0)
+    pct_var = abs(delta) / base
+    kind = "good" if pct_var <= 0.01 else "warn" if pct_var <= 0.05 else "bad"
+    return {"qb": qb, "alvys": alvys, "delta": delta, "pct": pct_var, "kind": kind}
+
+
+def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR",
+                            companies: frozenset[str] | None = None) -> tuple[list[str], list[float]]:
     if df is None or df.empty or "AsOf" not in df.columns or value_col not in df.columns:
         return [], []
+    if companies is not None and "Company" in df.columns:
+        df = df[df["Company"].astype(str).str.strip().str.lower().isin(companies)]
     g = df.groupby("AsOf")[value_col].apply(
         lambda s: pd.to_numeric(s, errors="coerce").sum()
     )
@@ -928,7 +969,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
     recv_left = ("<td width='25%' valign='top' style='padding:6px;'>"
-                 + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("all open AR", "mute"))
+                 + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("X-Trux + X-Linx", "mute"))
                  + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
@@ -979,7 +1020,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
     ap_labels, ap_vals = ap_hist if ap_hist else ([], [])
     ar_chart = _bar_chart("AR &mdash; receivable balance", ar_labels, ar_vals,
-                          "total open AR by month-end &middot; *as-of", fmt=money_m)
+                          "open AR by month-end &middot; X-Trux + X-Linx &middot; *as-of", fmt=money_m)
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
@@ -1048,6 +1089,27 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         + _tile("Alvys AR &middot; 61+ days", money(_aar_61plus or None), _pill("collections", "bad"))
     ) if aar.get("total") else ""
 
+    # AR reconciliation — QuickBooks (system of record) vs Alvys (TMS), X-Trux + X-Linx.
+    recon = compute_ar_reconciliation(qb_ar, alvys_ar)
+    recon_row = recon_note = ""
+    if recon:
+        _d = recon["delta"]
+        _dir_word = "more" if _d >= 0 else "less"
+        recon_row = (
+            _tile("QuickBooks AR", money(recon["qb"]), _pill("system of record", "mute"))
+            + _tile("Alvys AR", money(recon["alvys"]), _pill("operational / TMS", "mute"))
+            + _tile("Variance &middot; QB &minus; Alvys", money(abs(_d)),
+                    _pill(pct(recon["pct"]) + " of AR", recon["kind"]))
+            + empty_td)
+        if recon["kind"] == "good":
+            recon_note = ("QuickBooks and Alvys agree on open AR within 1% "
+                          f"({money(abs(_d))} apart) &mdash; receivables are in sync.")
+        else:
+            recon_note = (f"QuickBooks shows {money(abs(_d))} {_dir_word} open AR than Alvys "
+                          f"({pct(recon['pct'])} of the balance). A gap usually means invoices "
+                          "or payments booked in one system but not yet the other &mdash; "
+                          "reconcile X-Trux + X-Linx to clear it.")
+
     bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
@@ -1082,8 +1144,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            + (f"{_section('Alvys AR &mdash; aging by due date &middot; all open invoices')}<tr>{alvys_ar_row}</tr>"
+            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
                if alvys_ar_row else "")
+            + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
+               f"{_brief(recon_note, recon['kind'])}"
+               if recon_row else "")
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
@@ -1171,10 +1236,11 @@ def build_page3(qb_ar, date_str) -> str:
             f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
             f"{_tile('91+ days', money(totals.get('91+')), _pill('collections', 'bad'))}"
             f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>"
-            f"{_section('Overdue invoices (31+ days) by customer &middot; as of ' + date_str)}"
+            f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], rows + total_row)}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
+            f"Current and 1&ndash;30 day balances omitted by request. X-Trux Inc + X-Linx Inc only. "
+            f"Source: QuickBooks A/R Aging Detail.</div>")
 
 
 def build_page4(mileage, date_str) -> str:
@@ -1273,7 +1339,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
     qb_ar = compute_qb_ar_detail(next(iter(ar_sheets.values()))) if ar_sheets else {}
-    ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR") if ar_hist_sheets else ([], [])
+    ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR", _AR_COMPANIES) if ar_hist_sheets else ([], [])
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
