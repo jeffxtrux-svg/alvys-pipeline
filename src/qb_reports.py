@@ -214,27 +214,68 @@ def _month_end_dates(n: int = 6) -> list[tuple[str, str, str]]:
     return out
 
 
-def _grand_total(records: list[dict], col_titles: list[str]) -> float | None:
-    """Sum each row's Total column (Data rows) → grand total."""
-    total_col = next((t for t in col_titles if t.strip().lower() == "total"), None)
-    if total_col is None and col_titles:
-        total_col = col_titles[-1]
-    if not total_col:
-        return None
+def _name_col(col_titles: list[str]) -> str | None:
+    """Find the customer/vendor name column in a QB aging detail report.
+
+    QB aging reports lead with the entity name — the column title is often blank
+    (ColTitle=""), so we look for 'name', 'customer', or 'vendor' first, then
+    fall back to the first column.
+    """
+    for t in col_titles:
+        if any(k in t.strip().lower() for k in ("name", "customer", "vendor")):
+            return t
+    return col_titles[0] if col_titles else None
+
+
+# Names excluded from AR/AP history totals (internal entities, intercompany
+# balances, or companies whose numbers would distort the scorecard trend).
+_AR_AP_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
+
+
+def _sum_open_balance(records: list[dict], col_titles: list[str]) -> float:
+    """Sum the open-balance column across all Data rows in a Detail aging report.
+
+    Tries columns named 'open balance' first, then falls back to the last
+    column.  Works for both AgedReceivableDetail and AgedPayableDetail.
+    Names in ``_AR_AP_EXCLUDE`` (case-insensitive) are skipped.
+    """
+    amt_col = next(
+        (t for t in col_titles if "open balance" in t.strip().lower()), None
+    )
+    if amt_col is None:
+        amt_col = col_titles[-1] if col_titles else None
+    if not amt_col:
+        return 0.0
+
+    name_col = _name_col(col_titles)
+
+    def _include(r: dict) -> bool:
+        if r.get("Row_Type") != "Data":
+            return False
+        if name_col and _AR_AP_EXCLUDE:
+            entity = str(r.get(name_col, "")).strip().lower()
+            if any(entity.startswith(excl) for excl in _AR_AP_EXCLUDE):
+                return False
+        return True
+
     values = pd.to_numeric(
-        pd.Series([r.get(total_col) for r in records if r.get("Row_Type") == "Data"]),
+        pd.Series([r.get(amt_col) for r in records if _include(r)]),
         errors="coerce",
     ).dropna()
     return float(values.sum()) if len(values) else 0.0
 
 
 def fetch_ar_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
-    """Total open AR as of each of the last ``months`` month-ends, one row each."""
+    """Total open AR as of each of the last ``months`` month-ends, one row each.
+
+    Uses AgedReceivableDetail (not the summary) so the open-balance column is
+    always present and parseable.
+    """
     log.info("  %-25s %s", "AR history", company_name)
     rows: list[dict] = []
     for label, as_of, ym in _month_end_dates(months):
         try:
-            data = client.get("reports/AgedReceivables",
+            data = client.get("reports/AgedReceivableDetail",
                               {"report_date": as_of, "minorversion": 75})
         except Exception as exc:
             log.warning("    AR history %s %s failed: %s", company_name, ym, exc)
@@ -246,18 +287,22 @@ def fetch_ar_history(client: QBClient, company_name: str, months: int = 6) -> pd
             "AsOf": ym,
             "AsOfDate": as_of,
             "Month": label,
-            "Total_AR": _grand_total(recs, col_titles),
+            "Total_AR": _sum_open_balance(recs, col_titles),
         })
     return pd.DataFrame(rows) if rows else None
 
 
 def fetch_ap_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
-    """Total open AP as of each of the last ``months`` month-ends, one row each."""
+    """Total open AP as of each of the last ``months`` month-ends, one row each.
+
+    Uses AgedPayableDetail (not the summary) so the open-balance column is
+    always present and parseable.
+    """
     log.info("  %-25s %s", "AP history", company_name)
     rows: list[dict] = []
     for label, as_of, ym in _month_end_dates(months):
         try:
-            data = client.get("reports/AgedPayables",
+            data = client.get("reports/AgedPayableDetail",
                               {"report_date": as_of, "minorversion": 75})
         except Exception as exc:
             log.warning("    AP history %s %s failed: %s", company_name, ym, exc)
@@ -269,6 +314,6 @@ def fetch_ap_history(client: QBClient, company_name: str, months: int = 6) -> pd
             "AsOf": ym,
             "AsOfDate": as_of,
             "Month": label,
-            "Total_AP": _grand_total(recs, col_titles),
+            "Total_AP": _sum_open_balance(recs, col_titles),
         })
     return pd.DataFrame(rows) if rows else None

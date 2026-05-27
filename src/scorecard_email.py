@@ -349,6 +349,72 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
 # ----------------------------------------------------------------------
 # QuickBooks financial KPIs
 # ----------------------------------------------------------------------
+def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
+    """Compute AR aging from Alvys pipeline Loads: balance = Customer Revenue − Customer Payments.
+
+    Requires the pipeline-generated file (not the hand-maintained master) because
+    it carries the Customer Payments (TotalPaid.Amount) column.  Returns {} if
+    required columns are absent or no outstanding balance exists.
+
+    Age buckets are days past the Customer Due Date (negative/zero = still current).
+    """
+    if not sheets:
+        return {}
+    loads = sheets.get("Loads")
+    if loads is None or loads.empty:
+        return {}
+
+    rev_col  = _find_col(loads, ["customer revenue", "revenue"])
+    paid_col = _find_col(loads, ["customer payments", "payments", "total paid"])
+    due_col  = _find_col(loads, ["customer due date", "due date"])
+    inv_col  = _find_col(loads, ["invoiced date", "invoice date"])
+
+    if not rev_col or not paid_col:
+        return {}   # can't compute balance without payment data
+
+    sub = loads.copy()
+    if "Load Status" in sub.columns:
+        sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+
+    rev     = pd.to_numeric(sub[rev_col],  errors="coerce").fillna(0)
+    paid    = pd.to_numeric(sub[paid_col], errors="coerce").fillna(0)
+    balance = (rev - paid).clip(lower=0)
+
+    has_bal = balance > 0.01
+    if not has_bal.any():
+        return {}
+
+    sub     = sub[has_bal].copy()
+    balance = balance[has_bal]
+
+    today = pd.Timestamp.now().normalize()
+    if due_col and due_col in sub.columns:
+        due = pd.to_datetime(sub[due_col], errors="coerce")
+    elif inv_col and inv_col in sub.columns:
+        due = pd.to_datetime(sub[inv_col], errors="coerce") + pd.Timedelta(days=30)
+    else:
+        return {"total": float(balance.sum())}
+
+    age = (today - due).dt.days.fillna(0).clip(lower=0).astype(int)
+
+    current = float(balance[age == 0].sum())
+    d1_30   = float(balance[(age >= 1)  & (age <= 30)].sum())
+    d31_60  = float(balance[(age >= 31) & (age <= 60)].sum())
+    d61_90  = float(balance[(age >= 61) & (age <= 90)].sum())
+    d91plus = float(balance[age >= 91].sum())
+    total   = float(balance.sum())
+
+    return {
+        "total":   total,
+        "current": current,
+        "d1_30":   d1_30,
+        "d31_60":  d31_60,
+        "d61_90":  d61_90,
+        "d91plus": d91plus,
+        "overdue": d1_30 + d31_60 + d61_90 + d91plus,
+    }
+
+
 def compute_qb_pnl(df: pd.DataFrame) -> dict:
     label = "Account" if "Account" in df.columns else df.columns[-2]
     amount = "Total" if "Total" in df.columns else df.columns[-1]
@@ -385,6 +451,11 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 
 
 # --- AR aging detail (page 3, 31+ only) --------------------------------
+# Customer/vendor names excluded from AR aging tables and totals.
+# Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
+_AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
+
+
 def _ar_bucket(section: str) -> str | None:
     s = str(section).lower()
     if "31" in s and "60" in s:
@@ -403,6 +474,13 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
     date_col = _find_col(df, ["date"])
     due_col = _find_col(df, ["due"])
     num_col = _find_col(df, ["num", "invoice", "transaction #"])
+
+    # Build a boolean mask excluding customers in _AR_DETAIL_EXCLUDE.
+    if cust_col and cust_col in data.columns and _AR_DETAIL_EXCLUDE:
+        excl_mask = data[cust_col].astype(str).str.strip().str.lower().apply(
+            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE)
+        )
+        data = data[~excl_mask]
 
     rows: list[dict] = []
     totals = {"31&ndash;60": 0.0, "61&ndash;90": 0.0, "91+": 0.0}
@@ -677,7 +755,7 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # ----------------------------------------------------------------------
 # Page builders
 # ----------------------------------------------------------------------
-def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str) -> str:
+def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -690,12 +768,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                  + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
-    _dc = [v for v in (_xt.get("cost"), _xl.get("cost")) if _isnum(v)]
-    pay_tile = _tile("XFreight Cost W/O Office &middot; MTD", money(sum(_dc) if _dc else None),
-                     _pill("driver rate (X-Trux + X-Linx)", "mute"))
+    # Top-line tiles: X-Trux/XFreight only — matches Power BI's default XFreight + X-Trux view.
+    # cost = the Trips Driver Rate (Power BI's "Driver Rate" column).
+    pay_tile = _tile("Driver Rate &middot; MTD", money(_xt.get("cost")),
+                     _pill("X-Trux + XFreight", "mute"))
     _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
-    loads_tile = _tile("XFreight Loads &middot; MTD", num(_xf_loads),
-                       _pill("X-Trux + X-Linx loads", "mute"))
+    loads_tile = _tile("X-Trux Loads &middot; MTD", num(_xt.get("loads")),
+                       _pill("X-Trux + XFreight", "mute"))
     # X-Linx (brokerage) overview tiles: revenue, cost (driver rate), margin, margin %.
     _xl_rev, _xl_cost = _xl.get("revenue"), _xl.get("cost")
     _xl_loads = _xl.get("loads")
@@ -722,11 +801,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
-    margin_tile = _tile("XFreight Margin &middot; MTD", money(wmtd.get("margin")), _pill("revenue &minus; cost", "mute"))
-    t1 = (_tile("XFreight Revenue &middot; MTD", money(wmtd.get("revenue")), _pill("Alvys 2026", "mute"))
+    margin_tile = _tile("XFreight Margin &middot; MTD", money(_xt.get("margin")), _pill("X-Trux + XFreight", "mute"))
+    t1 = (_tile("XFreight Revenue &middot; MTD", money(_xt.get("revenue")), _pill("X-Trux + XFreight", "mute"))
           + pay_tile
           + margin_tile
-          + _tile("Gross margin &middot; MTD", pct(wmtd.get("margin_pct")), ""))
+          + _tile("Gross margin &middot; MTD", pct(_xt.get("margin_pct")), ""))
     t1b = loads_tile + empty_td + empty_td + empty_td
 
     # AR & AP 6-month balance trend
@@ -792,6 +871,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
+    # Alvys AR aging tiles (from pipeline file — has Customer Payments column).
+    aar = alvys_ar or {}
+    _aar_61plus = (aar.get("d61_90") or 0) + (aar.get("d91plus") or 0)
+    alvys_ar_row = (
+        _tile("Alvys AR &middot; Current", money(aar.get("current")), _pill("not overdue", "mute"))
+        + _tile("Alvys AR &middot; 1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"))
+        + _tile("Alvys AR &middot; 31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"))
+        + _tile("Alvys AR &middot; 61+ days", money(_aar_61plus or None), _pill("collections", "bad"))
+    ) if aar.get("total") else ""
+
     bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
@@ -810,10 +899,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
-            f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-            f"Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
+            + (f"{_section('Alvys AR &mdash; aging by due date &middot; all open invoices')}<tr>{alvys_ar_row}</tr>"
+               if alvys_ar_row else "")
+            + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
+            + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
+            + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+            + f"Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
 
 
 def build_page2(samsara, date_str) -> str:
@@ -903,7 +994,7 @@ def build_page3(qb_ar, date_str) -> str:
             f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
 
 
-def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing) -> str:
+def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing, alvys_ar=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -914,7 +1005,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}"
             f"</body></html>")
@@ -923,7 +1014,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # ----------------------------------------------------------------------
 # Orchestration (testable without network)
 # ----------------------------------------------------------------------
-def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing) -> str:
+def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
+                 alvys_pipeline_sheets=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
@@ -931,7 +1023,8 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR") if ar_hist_sheets else ([], [])
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
-    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing)
+    alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing, alvys_ar=alvys_ar)
 
 
 # ----------------------------------------------------------------------
@@ -985,6 +1078,7 @@ def main() -> int:
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
     alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
+    alvys_pipeline_path = os.environ.get("SCORECARD_ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")
 
@@ -992,13 +1086,15 @@ def main() -> int:
     missing: list[str] = []
 
     alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
+    alvys_pipeline_sheets = _safe_read(token, upn, alvys_pipeline_path, missing, "Alvys Pipeline")
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
     ar_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AR_History.xlsx", missing, "QB AR history")
     ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
 
-    html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing)
+    html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
+                        alvys_pipeline_sheets=alvys_pipeline_sheets)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
     return 0
