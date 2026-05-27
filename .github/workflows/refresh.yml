@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
 
   # Cron times are in UTC. Adjust for Central time as needed.
-  # Below = 6am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
+  # Below = 5am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
   schedule:
-    - cron: '0 12 * * *'   # 6am CT (winter) / 7am CT (DST)
+    - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
     - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
     - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
 
