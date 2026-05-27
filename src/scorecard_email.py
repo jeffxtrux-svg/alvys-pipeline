@@ -172,28 +172,24 @@ def _windows() -> dict[str, pd.Timestamp]:
 # ----------------------------------------------------------------------
 # Alvys operational KPIs (from the manual Alvys Master 2026 file)
 # ----------------------------------------------------------------------
-def _alvys_metrics(loads_sub: pd.DataFrame, trips_sub: pd.DataFrame | None = None) -> dict:
-    # Revenue and load count are load-level, so they come from the Loads tab.
-    revenue = _col_any(loads_sub, ["Customer Revenue", "Revenue"]).sum()
-    # Driver Rate and mileage come from the Trips tab — one row per trip, summed
-    # across every trip of a load — to match Power BI. The Loads tab only carries a
-    # single primary trip's mileage-pay/mileage, which undercounts multi-trip loads.
-    # Fall back to the Loads subset if the Trips tab is unavailable.
-    cost_src = trips_sub if (trips_sub is not None and not trips_sub.empty) else loads_sub
-    loaded = _col_any(cost_src, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
-    empty = _col_any(cost_src, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
+def _alvys_metrics(sub: pd.DataFrame) -> dict:
+    # Everything comes from the Loads tab. Power BI's report sums the Loads
+    # columns directly — Driver Rate = SUM(Loads[Driver Rate]) and the mileage
+    # measures = SUM(Loads[... Dispatch Mileage]) — and the Loads "Driver Rate"
+    # column already holds each load's full settled pay (all its trips
+    # aggregated), so no Trips summation is needed to match the report.
+    revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
+    loaded = _col_any(sub, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
+    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
     # Power BI's "Dispatch Mileage" basis = the Total Dispatch Mileage column (Rev/Mile & Dead Head %).
-    total_col = _col_any(cost_src, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"])
+    total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"])
     total = total_col.sum() if total_col.notna().any() else (loaded + empty)
-    # Margin = revenue - Driver Rate, matching Power BI. The Trips "Driver Rate"
-    # column is the full payout to whoever moved the load (company driver on asset
-    # trips, carrier on brokered trips), so it is the entire cost basis — the
-    # separate Carrier Rate column is NOT added (that would double-count brokered
-    # trips, whose payout already lives in Driver Rate).
-    cost = float(_col(cost_src, "Driver Rate").fillna(0).sum())
+    # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
+    # NOT added: the Driver Rate column is the full payout per load already.
+    cost = float(_col(sub, "Driver Rate").fillna(0).sum())
     margin = revenue - cost
     return {
-        "loads": len(loads_sub),
+        "loads": len(sub),
         "revenue": revenue if revenue else None,
         "miles": total if total else None,
         "empty": empty if empty else None,
@@ -202,25 +198,6 @@ def _alvys_metrics(loads_sub: pd.DataFrame, trips_sub: pd.DataFrame | None = Non
         "margin": margin if margin else None,
         "margin_pct": (margin / revenue) if revenue else None,
     }
-
-
-def _prep_trips(sheets: dict[str, pd.DataFrame] | None) -> tuple[pd.DataFrame | None, pd.Series | None]:
-    """Cancelled-excluded Trips tab + its date series, or (None, None) if absent.
-
-    The Trips tab shares the pipeline's TRIPS_COLUMNS layout, so the same date /
-    office matchers used for Loads apply unchanged.
-    """
-    if not sheets:
-        return None, None
-    trips = sheets.get("Trips")
-    if trips is None:
-        key = next((k for k in sheets if "trip" in str(k).lower()), None)
-        trips = sheets.get(key) if key else None
-    if trips is None or trips.empty:
-        return None, None
-    if "Load Status" in trips.columns:
-        trips = trips[trips["Load Status"].astype(str).str.lower() != "cancelled"]
-    return trips, _dates(trips, ALVYS_DATE_CANDIDATES)
 
 
 def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
@@ -234,20 +211,9 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if "Load Status" in loads.columns:
         loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
         dates = dates.loc[loads.index]
-    trips, tdates = _prep_trips(sheets)
-    toffice = _find_col(trips, OFFICE_COL_NEEDLES) if trips is not None else None
     w = _windows()
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
-
-    def trips_for(start, asset=False):
-        if trips is None:
-            return None
-        m = tdates >= start
-        if asset and toffice:
-            m = m & (trips[toffice].map(_entity_group) == "X-Trux")
-        return trips[m]
-
-    out = {key: _alvys_metrics(loads[dates >= start], trips_for(start)) for key, start in win_specs}
+    out = {key: _alvys_metrics(loads[dates >= start]) for key, start in win_specs}
 
     # RPM and deadhead are asset-carrier metrics — compute an X-Trux/XFreight-only
     # variant (exclude X-Linx brokerage) for those tiles.
@@ -255,18 +221,13 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if office_col:
         is_asset = loads[office_col].map(_entity_group) == "X-Trux"
         a_loads, a_dates = loads[is_asset], dates[is_asset]
-        out["asset"] = {key: _alvys_metrics(a_loads[a_dates >= start], trips_for(start, asset=True)) for key, start in win_specs}
+        out["asset"] = {key: _alvys_metrics(a_loads[a_dates >= start]) for key, start in win_specs}
         # Fleet metrics (X-Trux/XFreight, MTD): active trucks + miles per truck.
-        # Count trucks that actually ran trips this month (Trips tab), matching the
-        # Trips-based mileage; fall back to the Loads subset if Trips is unavailable.
         a_mtd = a_loads[a_dates >= w["mtd"]]
-        truck_src = trips_for(w["mtd"], asset=True)
-        if truck_src is None or truck_src.empty:
-            truck_src = a_mtd
-        truck_col = _find_col(truck_src, ["truck"])
+        truck_col = _find_col(a_loads, ["truck"])
         active = None
         if truck_col:
-            tv = truck_src[truck_col].dropna().astype(str).str.strip()
+            tv = a_mtd[truck_col].dropna().astype(str).str.strip()
             tv = tv[(tv != "") & (tv.str.lower() != "nan") & (tv != "0")]
             active = int(tv.nunique())
         miles_mtd = out["asset"]["mtd"]["miles"]
@@ -310,31 +271,20 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
-    # Driver/carrier cost is summed from the Trips tab (one row per trip) to match
-    # Power BI; revenue and load count stay load-level from the Loads tab above.
-    trips, tdates = _prep_trips(sheets)
-    tsub = trips[tdates >= _windows()[window_key]] if trips is not None else None
-    toffice = _find_col(tsub, OFFICE_COL_NEEDLES) if tsub is not None else None
-    tgroups = tsub[toffice].map(_entity_group) if (tsub is not None and toffice) else None
-
     out: dict[str, dict] = {}
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
-        trows = tsub[tgroups == ent] if (tsub is not None and tgroups is not None) else None
-        if rows.empty and (trows is None or trows.empty):
+        if rows.empty:
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None}
             continue
-        rev_series = _col_any(rows, ["Customer Revenue", "Revenue"])
-        revenue = rev_series.sum()
+        revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
         # Match Power BI's "Loads" count: every (non-cancelled) load in the window,
         # not just those that booked revenue. PBI's Margin-per-Bill divides by this.
         n_loads = len(rows)
-        # Cost basis = the Trips "Driver Rate" column (payout to the truck), matching
-        # Power BI's Margin = Customer Revenue - Driver Rate. For brokered (X-Linx)
-        # trips that column already holds the carrier payout, so the separate Carrier
-        # Rate column is not added.
-        cost_src = trows if (trows is not None and not trows.empty) else rows
-        cost = float(_col(cost_src, "Driver Rate").fillna(0).sum())
+        # Cost = SUM(Loads[Driver Rate]); margin = Customer Revenue - Driver Rate,
+        # matching Power BI. The Loads "Driver Rate" column already holds each load's
+        # full settled payout, so Carrier Rate is not added separately.
+        cost = float(_col(rows, "Driver Rate").fillna(0).sum())
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
@@ -769,7 +719,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
     # Top-line tiles: X-Trux/XFreight only — matches Power BI's default XFreight + X-Trux view.
-    # cost = the Trips Driver Rate (Power BI's "Driver Rate" column).
+    # cost = SUM(Loads[Driver Rate]) — Power BI's "Driver Rate" column.
     pay_tile = _tile("Driver Rate &middot; MTD", money(_xt.get("cost")),
                      _pill("X-Trux + XFreight", "mute"))
     _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
