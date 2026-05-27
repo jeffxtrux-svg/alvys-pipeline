@@ -18,8 +18,8 @@ on:
   workflow_dispatch:
   schedule:
     # Offset 30 min from Alvys runs to avoid overlap
-    # 6:30am, 12:30pm, 6:30pm Central (UTC-5 DST / UTC-6 standard)
-    - cron: '30 12 * * *'   # 6:30am CT (DST) / 7:30am CT (standard)
+    # 5:30am, 12:30pm, 6:30pm Central (UTC-5 DST / UTC-6 standard)
+    - cron: '30 11 * * *'   # 5:30am CT (standard) / 6:30am CT (DST)
     - cron: '30 18 * * *'   # 12:30pm CT (DST) / 1:30pm CT (standard)
     - cron: '30 0 * * *'    # 6:30pm CT (DST) / 7:30pm CT (standard)
 

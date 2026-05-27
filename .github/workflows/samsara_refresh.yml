@@ -6,9 +6,9 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
-  # Same UTC schedule as Alvys: 6am, 12pm, 6pm Central
+  # Same UTC schedule as Alvys: 5am, 12pm, 6pm Central
   schedule:
-    - cron: '0 12 * * *'   # 6am CT (winter) / 7am CT (DST)
+    - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
     - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
     - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
 
