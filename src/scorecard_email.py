@@ -347,7 +347,11 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     it carries the Customer Payments (TotalPaid.Amount) column.  Returns {} if
     required columns are absent or no outstanding balance exists.
 
-    Age buckets are days past the Customer Due Date (negative/zero = still current).
+    Mirrors QuickBooks' AR basis: only loads that carry an issued customer invoice
+    (Invoiced Date present) are counted — un-invoiced loads are revenue, not yet a
+    receivable in the books. Age buckets are days past the Customer Due Date
+    (negative/zero = still current), falling back to Invoiced Date + 30d (net-30)
+    for an invoiced load with no explicit due date.
     """
     if not sheets:
         return {}
@@ -382,6 +386,13 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
             lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE))
         sub = sub[~excl]
 
+    # Match QuickBooks' AR basis: count only loads with an issued customer invoice
+    # (Invoiced Date present). Un-invoiced loads aren't a receivable in the books
+    # yet, so QB never ages them — including them previously dumped large balances
+    # into "Current" and overstated the Alvys figure vs QB.
+    if inv_col and inv_col in sub.columns:
+        sub = sub[pd.to_datetime(sub[inv_col], errors="coerce").notna()]
+
     if sub.empty:
         return {}
 
@@ -397,12 +408,13 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     balance = balance[has_bal]
 
     today = pd.Timestamp.now().normalize()
-    if due_col and due_col in sub.columns:
-        due = pd.to_datetime(sub[due_col], errors="coerce")
-    elif inv_col and inv_col in sub.columns:
-        due = pd.to_datetime(sub[inv_col], errors="coerce") + pd.Timedelta(days=30)
-    else:
-        return {"total": float(balance.sum())}
+    due = (pd.to_datetime(sub[due_col], errors="coerce")
+           if due_col and due_col in sub.columns
+           else pd.Series(pd.NaT, index=sub.index))
+    # QB ages by due date; for an invoiced load missing an explicit due date, fall
+    # back to Invoiced Date + 30d (net-30) so it still ages instead of reading current.
+    if inv_col and inv_col in sub.columns:
+        due = due.fillna(pd.to_datetime(sub[inv_col], errors="coerce") + pd.Timedelta(days=30))
 
     age = (today - due).dt.days.fillna(0).clip(lower=0).astype(int)
 
