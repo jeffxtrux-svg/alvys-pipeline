@@ -98,6 +98,14 @@ def num(x) -> str:
     return f"{x:,.0f}" if _isnum(x) else "n/a"
 
 
+def _cell(v) -> str:
+    """Stringify a cell, mapping pandas nulls (which str() turns into 'nan') to ''."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
+
+
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce")
@@ -431,8 +439,8 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     rows61: list[dict] = []
     for idx in sub.index[mask61]:
         rows61.append({
-            "customer": str(sub.at[idx, cust_col]) if cust_col else "",
-            "load": str(sub.at[idx, loadno_col]) if loadno_col else "",
+            "customer": _cell(sub.at[idx, cust_col]) if cust_col else "",
+            "load": _cell(sub.at[idx, loadno_col]) if loadno_col else "",
             "days": int(age.at[idx]),
             "amount": float(balance.at[idx]),
         })
@@ -503,8 +511,8 @@ def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int 
         d = days.get(idx)
         dv = delivered.get(idx)
         rows.append({
-            "load": str(sub.at[idx, loadno_col]) if loadno_col else "",
-            "customer": str(sub.at[idx, cust_col]) if cust_col else "",
+            "load": _cell(sub.at[idx, loadno_col]) if loadno_col else "",
+            "customer": _cell(sub.at[idx, cust_col]) if cust_col else "",
             "entity": (_entity_group(sub.at[idx, office_col]) or "") if office_col else "",
             "delivered": dv.strftime("%m/%d/%Y") if pd.notna(dv) else "",
             "days": int(d) if pd.notna(d) else None,
@@ -1241,7 +1249,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     if rows61:
         body61 = ""
         for r in rows61:
-            body61 += _tr([r["customer"], r["load"], str(r["days"]), money(r["amount"])],
+            cust = r["customer"] or "&mdash; (no customer name)"
+            body61 += _tr([cust, r["load"], str(r["days"]), money(r["amount"])],
                           ["left", "left", "right", "right"], [None, None, "bad", None])
         n61 = (alvys_ar or {}).get("d61plus_n", len(rows61))
         if n61 > len(rows61):
@@ -1466,7 +1475,8 @@ def build_page5(uninv, date_str) -> str:
         dd = r["days"] or 0
         k = "bad" if dd >= 14 else ("warn" if dd >= 7 else None)
         days_txt = str(r["days"]) if r["days"] is not None else "&ndash;"
-        body += _tr([r["load"], r["customer"], r["entity"], r["delivered"], days_txt, money(r["revenue"])],
+        cust = r["customer"] or "&mdash; (no customer name)"
+        body += _tr([r["load"], cust, r["entity"], r["delivered"], days_txt, money(r["revenue"])],
                     ["left", "left", "left", "left", "right", "right"],
                     [None, None, None, None, k, None])
     shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
