@@ -85,3 +85,38 @@ and uniform beats clever here.
   target `ONEDRIVE_USER_UPN` doesn't have a provisioned OneDrive.
 - **Alerts never send but uploads work** → `Mail.Send` consent is missing (it's a
   separate permission from file access).
+
+## Scorecard Alvys KPIs — must mirror the Power BI report
+
+The daily brief's Alvys numbers (revenue, driver rate, margin, mileage, the
+per-entity table) are computed in `src/scorecard_email.py` and **must match the
+Power BI XFreight Report**, whose measures are defined in
+`powerbi/queries/DAX_Measures.dax`. The contract, verified to the dollar against
+`Alvys Master 2026.xlsx` for closed months:
+
+- **Read the Loads tab columns directly.** Driver Rate = `SUM(Loads[Driver Rate])`
+  and mileage = `SUM(Loads[... Dispatch Mileage])`. The Loads `Driver Rate` column
+  already holds each load's *full settled pay* (all its trips aggregated) — do
+  **not** reconstruct it by summing the Trips tab (that lands close but not exact)
+  and do **not** add `Carrier Rate` (the payout already lives in Driver Rate).
+- **Margin = Customer Revenue − Driver Rate.** Margin % = margin ÷ revenue.
+- **Group by the `Office` column** (the report's slicer: XFreight / X-Linx /
+  X-Trux), not `Invoice As` — they differ for brokered loads invoiced under
+  another subsidiary. XFreight + X-Trux are reported as one "X-Trux" line.
+- **"Loads" counts every non-cancelled load** in the window, not just
+  revenue-bearing ones (matches the report's Loads / Margin-per-Bill).
+- Month-to-date is **partial**: late-month loads carry booked revenue before
+  driver pay settles, so MTD margin reads high until they close. Only closed
+  months are exact.
+
+**Verify before changing this code:** run the offline parity check against a copy
+of the workbook and compare to the report's monthly rows —
+
+```bash
+python -m src.scorecard_email --check "Alvys Master 2026.xlsx"
+```
+
+and run the contract tests: `python tests/test_scorecard_alvys.py`. A missing or
+renamed Loads column makes the KPI code silently read `$0` (→ 100% margin); the
+`_alvys_health` checks surface that as a "Data check" banner on the email and a
+log warning, but the parity check is the real guardrail.
