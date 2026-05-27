@@ -1187,7 +1187,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     recon_row = recon_note = ""
     if recon:
         _d = recon["delta"]
-        _dir_word = "more" if _d >= 0 else "less"
         recon_row = (
             _tile("QuickBooks AR", money(recon["qb"]), _pill("system of record", "mute"))
             + _tile("Alvys AR", money(recon["alvys"]), _pill("operational / TMS", "mute"))
@@ -1197,11 +1196,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         if recon["kind"] == "good":
             recon_note = ("QuickBooks and Alvys agree on open AR within 1% "
                           f"({money(abs(_d))} apart) &mdash; receivables are in sync.")
+        elif _d < 0:
+            recon_note = (f"QuickBooks shows {money(abs(_d))} less open AR than Alvys "
+                          f"({pct(recon['pct'])} of the balance). The likely cause is customer "
+                          "payments applied in QuickBooks that haven&rsquo;t synced back to Alvys &mdash; "
+                          "paid invoices drop out of QB&rsquo;s AR but still read open in the TMS, "
+                          "piling into the older buckets. Spot-check the oldest Alvys balances against QB.")
         else:
-            recon_note = (f"QuickBooks shows {money(abs(_d))} {_dir_word} open AR than Alvys "
-                          f"({pct(recon['pct'])} of the balance). A gap usually means invoices "
-                          "or payments booked in one system but not yet the other &mdash; "
-                          "reconcile X-Trux + X-Linx to clear it.")
+            recon_note = (f"QuickBooks shows {money(abs(_d))} more open AR than Alvys "
+                          f"({pct(recon['pct'])} of the balance) &mdash; likely invoices posted to "
+                          "QuickBooks that Alvys hasn&rsquo;t billed or recorded yet. "
+                          "Reconcile X-Trux + X-Linx to clear it.")
 
     bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
