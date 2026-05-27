@@ -758,13 +758,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                  + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
-    # Top-line tiles: X-Trux/XFreight only — matches Power BI's default XFreight + X-Trux view.
-    # cost = SUM(Loads[Driver Rate]) — Power BI's "Driver Rate" column.
-    pay_tile = _tile("Driver Rate &middot; MTD", money(_xt.get("cost")),
-                     _pill("X-Trux + XFreight", "mute"))
+    # Top-line tiles = whole company (X-Trux + X-Linx), matching the entity table's Total row.
+    _co_rev = (_xt.get("revenue") or 0) + (_xl.get("revenue") or 0)
+    _co_cost = (_xt.get("cost") or 0) + (_xl.get("cost") or 0)
+    _co_margin = (_xt.get("margin") or 0) + (_xl.get("margin") or 0)
+    _co_mpct = (_co_margin / _co_rev) if _co_rev else None
     _xf_loads = (_xt.get("loads") or 0) + (_xl.get("loads") or 0)
-    loads_tile = _tile("X-Trux Loads &middot; MTD", num(_xt.get("loads")),
-                       _pill("X-Trux + XFreight", "mute"))
+    pay_tile = _tile("XFreight Cost &middot; MTD", money(_co_cost or None),
+                     _pill("X-Trux + X-Linx", "mute"))
+    loads_tile = _tile("XFreight Loads &middot; MTD", num(_xf_loads or None),
+                       _pill("X-Trux + X-Linx", "mute"))
     # X-Linx (brokerage) overview tiles: revenue, cost (driver rate), margin, margin %.
     _xl_rev, _xl_cost = _xl.get("revenue"), _xl.get("cost")
     _xl_loads = _xl.get("loads")
@@ -791,11 +794,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
-    margin_tile = _tile("XFreight Margin &middot; MTD", money(_xt.get("margin")), _pill("X-Trux + XFreight", "mute"))
-    t1 = (_tile("XFreight Revenue &middot; MTD", money(_xt.get("revenue")), _pill("X-Trux + XFreight", "mute"))
+    margin_tile = _tile("XFreight Margin &middot; MTD", money(_co_margin or None), _pill("revenue &minus; cost", "mute"))
+    t1 = (_tile("XFreight Revenue &middot; MTD", money(_co_rev or None), _pill("X-Trux + X-Linx", "mute"))
           + pay_tile
           + margin_tile
-          + _tile("Gross margin &middot; MTD", pct(_xt.get("margin_pct")), ""))
+          + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     t1b = loads_tile + empty_td + empty_td + empty_td
 
     # AR & AP 6-month balance trend
