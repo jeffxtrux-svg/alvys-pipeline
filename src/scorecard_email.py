@@ -457,6 +457,14 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         d["oldest_days"] = max(d["oldest_days"], int(age.at[idx]))
     rows91c = sorted(cust91.values(), key=lambda r: r["amount"], reverse=True)
 
+    # Open AR rolled up by customer (for the QB-vs-Alvys reconciliation by customer).
+    by_customer: dict[str, dict] = {}
+    if cust_col:
+        for idx in sub.index:
+            nm = _cell(sub.at[idx, cust_col])
+            d = by_customer.setdefault(_norm_name(nm), {"name": nm, "amount": 0.0})
+            d["amount"] += float(balance.at[idx])
+
     return {
         "total":   total,
         "current": current,
@@ -469,6 +477,7 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         "d61plus_n":     len(rows61),
         "d61plus_total": d61_90 + d91plus,
         "d91plus_customers": rows91c,
+        "by_customer":   by_customer,
     }
 
 
@@ -653,8 +662,19 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
         })
     rows.sort(key=lambda x: ({"31&ndash;60": 0, "61&ndash;90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
     total_ar = pd.to_numeric(data[amt_col], errors="coerce").dropna().sum() if amt_col in data.columns else None
+
+    # Open AR rolled up by customer across ALL buckets (for the QB-vs-Alvys reconciliation).
+    by_customer: dict[str, dict] = {}
+    if cust_col and cust_col in data.columns:
+        amts = pd.to_numeric(data[amt_col], errors="coerce").fillna(0)
+        for name, amt in zip(data[cust_col].astype(str), amts):
+            key = _norm_name(name)
+            d = by_customer.setdefault(key, {"name": name.strip(), "amount": 0.0})
+            d["amount"] += float(amt)
+
     return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
-            "total_ar": float(total_ar) if _isnum(total_ar) else None}
+            "total_ar": float(total_ar) if _isnum(total_ar) else None,
+            "by_customer": by_customer}
 
 
 def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
@@ -673,6 +693,31 @@ def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict
     pct_var = abs(delta) / base
     kind = "good" if pct_var <= 0.01 else "warn" if pct_var <= 0.05 else "bad"
     return {"qb": qb, "alvys": alvys, "delta": delta, "pct": pct_var, "kind": kind}
+
+
+def compute_ar_customer_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
+    """Per-customer QB-vs-Alvys open-AR reconciliation. Joins the two by normalized
+    customer name and returns one row per customer with QB AR, Alvys AR, and the
+    delta (QB − Alvys). Rows sum exactly to the headline variance; a one-sided row
+    (only QB or only Alvys) usually means the customer is spelled differently in the
+    two systems. Sorted by largest absolute delta first."""
+    qb_by = (qb_ar or {}).get("by_customer") or {}
+    al_by = (alvys_ar or {}).get("by_customer") or {}
+    if not qb_by and not al_by:
+        return {}
+    rows: list[dict] = []
+    for key in set(qb_by) | set(al_by):
+        qb_amt = float(qb_by.get(key, {}).get("amount", 0.0))
+        al_amt = float(al_by.get(key, {}).get("amount", 0.0))
+        if abs(qb_amt) < 0.01 and abs(al_amt) < 0.01:
+            continue
+        name = (al_by.get(key) or qb_by.get(key) or {}).get("name") or "(no customer name)"
+        rows.append({"customer": name, "qb": qb_amt, "alvys": al_amt, "delta": qb_amt - al_amt})
+    rows.sort(key=lambda r: abs(r["delta"]), reverse=True)
+    return {"rows": rows,
+            "qb_total": sum(r["qb"] for r in rows),
+            "alvys_total": sum(r["alvys"] for r in rows),
+            "delta_total": sum(r["delta"] for r in rows)}
 
 
 def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR",
@@ -973,7 +1018,7 @@ def _wk_label(start: pd.Timestamp) -> str:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 6
+PAGE_COUNT = 7
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -1530,6 +1575,51 @@ def build_page6(alvys_ar, date_str) -> str:
             f"see the page-1 AR reconciliation note. Source: Alvys API (Loads, via the pipeline file).</div>")
 
 
+def build_page7(qb_ar, alvys_ar, date_str) -> str:
+    rec = compute_ar_customer_reconciliation(qb_ar, alvys_ar) or {}
+    rows = rec.get("rows", [])
+    LIMIT = 30
+    shown = rows[:LIMIT]
+    n_gap = sum(1 for r in rows if abs(r["delta"]) >= 1.0)
+
+    def _signed(d):
+        return ("&minus;" + money(abs(d))) if d < 0 else money(d)
+
+    tiles = (_tile("Net variance &middot; QB &minus; Alvys", _signed(rec.get("delta_total") or 0), _pill("all customers", "bad"))
+             + _tile("Customers with a gap", num(n_gap), _pill("QB &ne; Alvys", "warn"))
+             + _tile("Largest gap", _signed(shown[0]["delta"]) if shown else "n/a",
+                     _pill((shown[0]["customer"][:20] if shown else ""), "mute"))
+             + "<td width='25%' style='padding:6px;'></td>")
+
+    body = ""
+    for r in shown:
+        d = r["delta"]
+        qb_txt = money(r["qb"]) if abs(r["qb"]) >= 0.01 else "&mdash;"
+        al_txt = money(r["alvys"]) if abs(r["alvys"]) >= 0.01 else "&mdash;"
+        k = "bad" if d < 0 else "warn"
+        body += _tr([r["customer"] or "&mdash; (no customer name)", qb_txt, al_txt, _signed(d)],
+                    ["left", "right", "right", "right"], [None, None, None, k])
+    body += (f"<tr><td style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>Total</td>"
+             f"<td align='right' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(rec.get('qb_total'))}</td>"
+             f"<td align='right' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(rec.get('alvys_total'))}</td>"
+             f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};border-top:2px solid {LINE};'>{_signed(rec.get('delta_total') or 0)}</td></tr>")
+    if len(rows) > LIMIT:
+        body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                 f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
+
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 7, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
+            f"{_table(['Customer', 'QuickBooks', 'Alvys', 'Variance'], ['left', 'right', 'right', 'right'], body)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Open AR per customer, QuickBooks vs Alvys (X-Trux + X-Linx, JW excluded). Variance = QB &minus; Alvys; "
+            f"a negative (red) value means Alvys shows more open AR &mdash; most often invoices already paid in QB but "
+            f"not synced back. Rows sum to the page-1 variance. Customers joined by name; a one-sided row can be the "
+            f"same customer spelled differently in the two systems. True bill-by-bill matching needs a shared invoice "
+            f"number (not in the Alvys feed today). Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
@@ -1547,7 +1637,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
             f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
-            f"{wrap(build_page6(alvys_ar, date_str))}"
+            f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
