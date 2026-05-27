@@ -30,7 +30,9 @@ Optional:
 """
 from __future__ import annotations
 
+import ast
 import io
+import json
 import logging
 import numbers
 import os
@@ -616,10 +618,182 @@ def _detail_rows(df: pd.DataFrame, dates: pd.Series, fields: list[tuple]) -> lis
 
 
 # ----------------------------------------------------------------------
+# Driver mileage by settlement week (Page 4)
+# ----------------------------------------------------------------------
+# Settlement week runs Wed 3:00 PM -> following Wed 2:59 PM, America/Chicago.
+CHI_TZ = "America/Chicago"
+SETTLEMENT_WEEKS = 4
+SETTLEMENT_DOW = 2   # Wednesday (Mon=0)
+SETTLEMENT_HOUR = 15  # 3:00 PM
+
+
+def _parse_alvys_dt(series: pd.Series) -> pd.Series:
+    """Parse Alvys timestamps to tz-aware America/Chicago.
+
+    Handles the manual workbook's local 'MM-DD-YYYY @ HH:MM' (naive Central) and
+    any ISO tz-aware values (e.g. '...Z'), which are converted from their zone.
+    """
+    raw = series.astype(str).str.strip()
+    cleaned = raw.str.replace(" @ ", " ", regex=False).str.replace("@", " ", regex=False).str.strip()
+    dt = pd.to_datetime(cleaned, format="%m-%d-%Y %H:%M", errors="coerce")
+    dt = dt.dt.tz_localize(CHI_TZ, ambiguous=False, nonexistent="shift_forward")
+    bad = dt.isna() & raw.notna() & (raw.str.lower() != "nan") & (raw != "")
+    if bad.any():
+        iso = pd.to_datetime(raw[bad], errors="coerce", utc=True).dt.tz_convert(CHI_TZ)
+        dt.loc[bad] = iso
+    return dt
+
+
+def _settlement_starts(now: pd.Timestamp, n: int = SETTLEMENT_WEEKS) -> list[pd.Timestamp]:
+    """The n week-start boundaries (Wed 3pm Chicago), oldest first, ending with
+    the week that currently contains `now`."""
+    days_since = (now.weekday() - SETTLEMENT_DOW) % 7
+    cur = (now - pd.Timedelta(days=days_since)).normalize() + pd.Timedelta(hours=SETTLEMENT_HOUR)
+    if cur > now:
+        cur -= pd.Timedelta(weeks=1)
+    return [cur - pd.Timedelta(weeks=k) for k in range(n)][::-1]
+
+
+def _city(city, state) -> str:
+    c = "" if city is None or pd.isna(city) else str(city).strip()
+    s = "" if state is None or pd.isna(state) else str(state).strip()
+    return f"{c}, {s}".strip(", ") if (c or s) else ""
+
+
+def _ci_get(d, key):
+    """Case-insensitive dict lookup (Alvys stop dicts use PascalCase keys)."""
+    if not isinstance(d, dict):
+        return None
+    for k, v in d.items():
+        if str(k).lower() == key.lower():
+            return v
+    return None
+
+
+def _parse_stops(cell):
+    """From a Trips `Stops` JSON cell, pull the leg's first/last stop times and
+    locations. The pipeline writes `Stops` as a JSON array of stop dicts; the
+    manual workbook stores a plain count (e.g. '1 / 2') which yields None here."""
+    if not isinstance(cell, str):
+        return None
+    s = cell.strip()
+    if not s.startswith("["):
+        return None
+    try:
+        stops = json.loads(s)
+    except Exception:
+        try:
+            stops = ast.literal_eval(s)
+        except Exception:
+            return None
+    if not isinstance(stops, list) or not stops:
+        return None
+    first, last = stops[0], stops[-1]
+    def addr(stop):
+        a = _ci_get(stop, "Address") or {}
+        return _city(_ci_get(a, "City"), _ci_get(a, "State"))
+    return {
+        "pick_dt": _ci_get(first, "DepartedAt") or _ci_get(first, "ArrivedAt"),
+        "drop_dt": _ci_get(last, "ArrivedAt") or _ci_get(last, "DepartedAt"),
+        "pick_loc": addr(first),
+        "drop_loc": addr(last),
+    }
+
+
+def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Timestamp | None = None) -> dict:
+    """Per-driver miles by settlement week, at Trips (per-leg) grain.
+
+    Reads the Alvys *pipeline* Trips sheet (API-sourced), where each leg carries
+    its own `Stops` JSON. Each leg is credited to its Driver 1 / Truck / Total
+    Miles and bucketed by its own actual delivery time (last stop's ArrivedAt,
+    falling back to DepartedAt). Start/End uses the leg's first-stop departure and
+    last-stop arrival. Cancelled and not-yet-delivered legs are excluded. Asset
+    fleet only (X-Trux / XFreight) — brokerage (X-Linx) is carrier-paid.
+    """
+    if not sheets:
+        return {}
+    trips = sheets.get("Trips")
+    if trips is None or trips.empty or "Stops" not in trips.columns:
+        return {}
+
+    now = now or pd.Timestamp.now(tz=CHI_TZ)
+    if now.tzinfo is None:
+        now = now.tz_localize(CHI_TZ)
+    starts = _settlement_starts(now)
+    end = starts[-1] + pd.Timedelta(weeks=1)
+
+    parsed = trips["Stops"].map(_parse_stops)
+    if not parsed.notna().any():
+        return {}  # no JSON stops (e.g. handed the manual workbook by mistake)
+    t = trips.copy()
+    t["deliv"] = _parse_alvys_dt(parsed.map(lambda p: (p and p.get("drop_dt")) or ""))
+    t["pick"] = _parse_alvys_dt(parsed.map(lambda p: (p and p.get("pick_dt")) or ""))
+    t["pick_loc"] = parsed.map(lambda p: (p and p.get("pick_loc")) or "")
+    t["drop_loc"] = parsed.map(lambda p: (p and p.get("drop_loc")) or "")
+
+    drv = t.get("Driver 1", pd.Series("", index=t.index)).astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+    status = t.get("Trip Status", pd.Series("", index=t.index)).astype(str).str.lower()
+    office = t.get("Office", pd.Series("", index=t.index)).astype(str).str.upper()
+    is_asset = office.str.contains("TRUX") | office.str.contains("FREIGHT")
+    valid = (
+        (status != "cancelled") & t["deliv"].notna()
+        & (t["deliv"] >= starts[0]) & (t["deliv"] < end)
+        & (drv != "") & (drv.str.lower() != "nan") & is_asset
+    )
+    t = t[valid].copy()
+    t["drv"] = drv[valid]
+    t["miles"] = pd.to_numeric(t.get("Total Miles"), errors="coerce").fillna(0.0)
+    t["wk"] = ((t["deliv"] - starts[0]) // pd.Timedelta(weeks=1)).astype(int)
+
+    rows = []
+    for name, g in t.groupby("drv"):
+        week_miles = [float(g.loc[g["wk"] == k, "miles"].sum()) for k in range(SETTLEMENT_WEEKS)]
+        trucks = sorted({str(x).strip() for x in g.get("Truck", pd.Series(dtype=object)).dropna().tolist()
+                         if str(x).strip() and str(x).strip().lower() != "nan"})
+        cur = g[g["wk"] == SETTLEMENT_WEEKS - 1]
+        start_end = ""
+        if len(cur):
+            s_leg = cur.loc[cur["pick"].idxmin()] if cur["pick"].notna().any() else None
+            e_leg = cur.loc[cur["deliv"].idxmax()]
+            start_txt = (f"{s_leg['pick_loc']} {s_leg['pick']:%-m/%-d %H:%M}".strip()
+                         if s_leg is not None and pd.notna(s_leg["pick"]) else "")
+            end_txt = f"{e_leg['drop_loc']} {e_leg['deliv']:%-m/%-d %H:%M}".strip()
+            start_end = f"{start_txt} &rarr; {end_txt}" if start_txt else end_txt
+        rows.append({
+            "driver": name, "trucks": ", ".join(trucks),
+            "weeks": week_miles, "total": sum(week_miles), "start_end": start_end,
+        })
+    rows.sort(key=lambda r: r["total"], reverse=True)
+
+    week_totals = [sum(r["weeks"][k] for r in rows) for k in range(SETTLEMENT_WEEKS)]
+    cur_idx = SETTLEMENT_WEEKS - 1
+    drivers_cur = sum(1 for r in rows if r["weeks"][cur_idx] > 0)
+    return {
+        "labels": [_wk_label(s) for s in starts],
+        "rows": rows,
+        "week_totals": week_totals,
+        "grand_total": sum(week_totals),
+        "drivers_this_week": drivers_cur,
+        "miles_this_week": week_totals[cur_idx],
+        "miles_last_week": week_totals[cur_idx - 1] if SETTLEMENT_WEEKS >= 2 else None,
+        "avg_per_driver": (week_totals[cur_idx] / drivers_cur) if drivers_cur else None,
+    }
+
+
+def _wk_label(start: pd.Timestamp) -> str:
+    end = start + pd.Timedelta(weeks=1) - pd.Timedelta(days=1)  # Wed -> Tue span
+    if start.month == end.month:
+        return f"{start:%b} {start.day}&ndash;{end.day}"
+    return f"{start:%b} {start.day}&ndash;{end:%b} {end.day}"
+
+
+# ----------------------------------------------------------------------
 # HTML design system
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
+PAGE_COUNT = 4
+ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
 
@@ -698,7 +872,7 @@ def _header(sub, pg, date_str):
             f"<td style='padding:18px 24px;'><div style='color:#fff;font-size:20px;font-weight:800;letter-spacing:1px;'>XFREIGHT</div>"
             f"<div style='color:#9fb3c8;font-size:13px;margin-top:2px;'>{sub}</div></td>"
             f"<td align='right' style='padding:18px 24px;color:#9fb3c8;font-size:13px;'>{date_str}<br>"
-            f"<span style='color:#637b94;font-size:11px;'>Page {pg} of 3</span></td></tr></table>")
+            f"<span style='color:#637b94;font-size:11px;'>Page {pg} of {PAGE_COUNT}</span></td></tr></table>")
 
 
 def _th(cells, al):
@@ -1003,8 +1177,76 @@ def build_page3(qb_ar, date_str) -> str:
             f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
 
 
+def build_page4(mileage, date_str) -> str:
+    m = mileage or {}
+    labels = (m.get("labels") or ["", "", "", ""])
+    rows = m.get("rows") or []
+    week_totals = m.get("week_totals") or [0] * SETTLEMENT_WEEKS
+    cur = SETTLEMENT_WEEKS - 1
+
+    tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")), _pill("settled legs", "mute"))
+             + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
+             + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
+             + _tile("Avg miles / driver", num(m.get("avg_per_driver")), _pill("this week", "mute")))
+
+    def mcell(text, al="right", cur=False, bold=False, small=False):
+        bg = f"background:{ACCENTBG};" if cur else ""
+        fs = "11px" if small else "12.5px"
+        return (f"<td align='{al}' style='padding:8px 8px;font-size:{fs};color:{INK};"
+                f"font-weight:{'700' if bold else '400'};border-bottom:1px solid {LINE};{bg}'>{text}</td>")
+
+    def hcell(text, al="right", cur=False):
+        bg = ACCENTBG if cur else TILEBG
+        fg = ACCENT if cur else MUTE
+        return (f"<td align='{al}' style='padding:8px 8px;font-size:10px;text-transform:uppercase;"
+                f"letter-spacing:.4px;color:{fg};font-weight:700;background:{bg};border-bottom:1px solid {LINE};'>{text}</td>")
+
+    head = ("<tr>" + hcell("Driver", "left") + hcell("Trucks", "left")
+            + "".join(hcell(labels[k], "right", cur=(k == cur)) for k in range(SETTLEMENT_WEEKS))
+            + hcell("Total", "right") + hcell("Start &rarr; End &middot; this week", "left") + "</tr>")
+
+    body = ""
+    for r in rows:
+        wk_cells = "".join(
+            mcell(num(r["weeks"][k]) if r["weeks"][k] else "&ndash;", "right", cur=(k == cur))
+            for k in range(SETTLEMENT_WEEKS))
+        body += ("<tr>"
+                 + mcell(r["driver"], "left")
+                 + mcell(r["trucks"] or "&ndash;", "left")
+                 + wk_cells
+                 + mcell(num(r["total"]), "right", bold=True)
+                 + mcell(r["start_end"] or "&ndash;", "left", small=True)
+                 + "</tr>")
+    if rows:
+        def tcell(text, al="right", cur=False):
+            bg = f"background:{ACCENTBG};" if cur else ""
+            return (f"<td align='{al}' style='padding:9px 8px;font-size:12.5px;font-weight:800;color:{INK};"
+                    f"border-top:2px solid {LINE};{bg}'>{text}</td>")
+        body += ("<tr>" + tcell("Total", "left") + tcell("", "left")
+                 + "".join(tcell(num(week_totals[k]), "right", cur=(k == cur)) for k in range(SETTLEMENT_WEEKS))
+                 + tcell(num(m.get("grand_total")), "right") + tcell("", "left") + "</tr>")
+    else:
+        body = (f"<tr><td colspan='8' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>"
+                f"No delivered legs in the last {SETTLEMENT_WEEKS} settlement weeks.</td></tr>")
+
+    table = (f"<tr><td colspan='4' style='padding:0 6px;'><table width='100%' cellpadding='0' cellspacing='0' "
+             f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
+             f"{head}{body}</table></td></tr>")
+
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 4, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
+            f"{table}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Settlement weeks run Wed 3:00 PM &rarr; the following Wed 2:59 PM (America/Chicago); the current "
+            f"week is tinted. Each trip leg is credited to its Driver 1 / Truck / miles and bucketed by its own "
+            f"actual delivery (last stop arrival). Cancelled and not-yet-delivered legs are excluded; asset fleet "
+            f"only. Source: Alvys API (Trips, via the pipeline file).</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-               alvys_ar=None, warnings=None, data_asof=None) -> str:
+               alvys_ar=None, warnings=None, data_asof=None, mileage=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -1017,7 +1259,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
-            f"{wrap(build_page3(qb_ar, date_str))}"
+            f"{wrap(build_page3(qb_ar, date_str))}{pb}"
+            f"{wrap(build_page4(mileage, date_str))}"
             f"</body></html>")
 
 
@@ -1034,11 +1277,12 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof)
+                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage)
 
 
 # ----------------------------------------------------------------------

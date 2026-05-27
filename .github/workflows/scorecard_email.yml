@@ -12,6 +12,9 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+  # TEMPORARY: one-shot trigger to send a fresh email on merge (removed right after).
+  push:
+    branches: [main]
   schedule:
     # 6:30am CST (= 12:30 UTC). GitHub cron is fixed UTC and ignores DST, so
     # this lands at 7:30am during Central Daylight Time. Runs after the 5:00/5:30am
