@@ -13,8 +13,10 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   schedule:
-    # ~7am CST / 8am CDT — ~1 hour after the morning Alvys/Samsara/QB refresh
-    - cron: '0 13 * * *'
+    # 7:45am CST (= 13:45 UTC). GitHub cron is fixed UTC and ignores DST, so
+    # this lands at 8:45am during Central Daylight Time. Runs after the morning
+    # Alvys/Samsara/QB refresh.
+    - cron: '45 13 * * *'
 
 jobs:
   scorecard:
