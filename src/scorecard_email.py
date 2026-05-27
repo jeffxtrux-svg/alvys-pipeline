@@ -41,7 +41,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-from src.onedrive_upload import download_file, get_token
+from src.onedrive_upload import download_file, get_file_modified, get_token
 
 log = logging.getLogger("scorecard_email")
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -253,8 +253,14 @@ def _entity_group(office) -> str | None:
     return None
 
 
-def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: str = "mtd") -> dict:
-    """Revenue / cost / margin by entity (X-Trux incl. XFreight, X-Linx)."""
+def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: str = "mtd",
+                           start=None, end=None) -> dict:
+    """Revenue / cost / margin by entity (X-Trux incl. XFreight, X-Linx).
+
+    Defaults to the open-ended window starting at `window_key`. Pass explicit
+    `start`/`end` (Timestamps) to bound a closed period — used by the parity
+    check and tests to compare a single finished month against Power BI.
+    """
     if not sheets:
         return {}
     loads = sheets.get("Loads")
@@ -263,11 +269,15 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if not office_col:
         return {}
+    if start is None:
+        start = _windows()[window_key]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     mask = pd.Series(True, index=loads.index)
     if "Load Status" in loads.columns:
         mask &= loads["Load Status"].astype(str).str.lower() != "cancelled"
-    mask &= dates >= _windows()[window_key]
+    mask &= dates >= start
+    if end is not None:
+        mask &= dates < end
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
@@ -294,6 +304,33 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "loads": n_loads,
         }
     return out
+
+
+def _alvys_health(sheets: dict[str, pd.DataFrame] | None) -> list[str]:
+    """Structural sanity checks on the Alvys Loads tab.
+
+    The KPI code fails soft — a missing/renamed column makes `_col` return 0,
+    which would ship a wrong-but-plausible number (e.g. $0 driver cost → 100%
+    margin) with no error. These checks turn that silent failure into a loud
+    warning (logged and shown on the email). They are column-presence/emptiness
+    checks only, so they don't false-alarm on normal month-to-date partials.
+    """
+    warns: list[str] = []
+    loads = (sheets or {}).get("Loads")
+    if loads is None or getattr(loads, "empty", True):
+        return warns  # absence is already reported via the `missing` list
+    cols = set(loads.columns)
+    if not ({"Customer Revenue", "Revenue"} & cols):
+        warns.append("Loads tab has no Customer Revenue column — revenue and margin will be blank.")
+    if "Driver Rate" not in cols:
+        warns.append("Loads tab has no 'Driver Rate' column — driver cost reads $0 and margin is overstated.")
+    elif float(_col(loads, "Driver Rate").fillna(0).abs().sum()) == 0:
+        warns.append("Loads 'Driver Rate' column is entirely empty — driver cost reads $0 and margin is overstated.")
+    if not _find_col(loads, OFFICE_COL_NEEDLES):
+        warns.append("Loads tab has no Office / Invoice As column — the X-Trux vs X-Linx split is unavailable.")
+    if not (set(ALVYS_DATE_CANDIDATES) & cols):
+        warns.append("Loads tab has no Scheduled Pickup date column — MTD windows may be wrong.")
+    return warns
 
 
 # ----------------------------------------------------------------------
@@ -705,7 +742,8 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # ----------------------------------------------------------------------
 # Page builders
 # ----------------------------------------------------------------------
-def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=None) -> str:
+def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
+                alvys_ar=None, warnings=None, data_asof=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -836,15 +874,31 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
 
+    # Data-check banner: surface any structural problems with the source workbook.
+    warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
+    # MTD figures are month-to-date and partial: late-month loads have booked
+    # revenue but unsettled driver pay, so MTD margin reads high until they settle.
+    mtd_note = _brief("MTD is month-to-date and partial &mdash; late-month loads carry booked revenue "
+                      "before driver pay settles, so month-to-date margin runs high until loads close.", "mute")
+    asof = ""
+    if data_asof is not None:
+        try:
+            t = pd.Timestamp(data_asof).tz_convert("America/Chicago")
+        except Exception:
+            t = pd.Timestamp(data_asof)
+        asof = f"Alvys data as of {t:%b %d, %Y %I:%M %p %Z}. "
+
     return (f"{_header('Morning Executive Brief', 1, date_str)}"
             f"<div style='padding:18px 24px 4px;'><div style='background:#0f2742;border-radius:10px;padding:14px 18px;"
             f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"{warn_row}"
             f"{_section('XFreight Overview')}"
             f"<tr>{t1}</tr><tr>{t1b}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
+            f"{mtd_note}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr>"
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
@@ -854,7 +908,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-            + f"Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
+            + f"{asof}Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
 
 
 def build_page2(samsara, date_str) -> str:
@@ -944,7 +998,8 @@ def build_page3(qb_ar, date_str) -> str:
             f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
 
 
-def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing, alvys_ar=None) -> str:
+def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
+               alvys_ar=None, warnings=None, data_asof=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -955,7 +1010,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}"
             f"</body></html>")
@@ -965,7 +1020,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # Orchestration (testable without network)
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                 alvys_pipeline_sheets=None) -> str:
+                 alvys_pipeline_sheets=None, data_asof=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
@@ -974,7 +1029,11 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
-    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing, alvys_ar=alvys_ar)
+    warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
+    for w in warnings:
+        log.warning("Alvys data check: %s", w)
+    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
+                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof)
 
 
 # ----------------------------------------------------------------------
@@ -1009,6 +1068,42 @@ def _safe_read(token: str, upn: str, path: str, missing: list[str], label: str):
         return None
 
 
+def run_check(path: str) -> int:
+    """Offline parity check: print closed-month Alvys KPIs from a local workbook so
+    they can be eyeballed against the Power BI XFreight Report. No network or
+    credentials needed: `python -m src.scorecard_email --check "Alvys Master 2026.xlsx"`.
+    """
+    try:
+        sheets = pd.read_excel(path, sheet_name=None)
+    except Exception as exc:
+        print(f"Could not open {path}: {exc}")
+        return 1
+    print(f"Alvys KPI parity check — {path}")
+    print("Compare each closed month against the report's XFreight+X-Trux and X-Linx rows.\n")
+    hdr = f"  {'entity':20s}{'revenue':>13}{'driver rate':>14}{'margin':>13}{'margin %':>10}{'loads':>7}"
+    this_month = pd.Timestamp.now().normalize().replace(day=1)
+    for i in range(1, 5):  # last 4 closed months
+        start = this_month - pd.offsets.MonthBegin(i)
+        end = start + pd.offsets.MonthBegin(1)
+        ent = compute_alvys_entities(sheets, start=start, end=end)
+        print(f"{start:%Y-%m} (closed)")
+        print(hdr)
+        for e in ENTITY_ORDER:
+            d = ent.get(e, {})
+            r, c, m, mp, l = (d.get("revenue"), d.get("cost"), d.get("margin"),
+                              d.get("margin_pct"), d.get("loads"))
+            print(f"  {e:20s}{money(r):>13}{money(c):>14}{money(m):>13}{pct(mp):>10}{num(l):>7}")
+        print()
+    warns = _alvys_health(sheets)
+    if warns:
+        print("Data checks:")
+        for w in warns:
+            print("  WARNING:", w)
+    else:
+        print("Data checks: all required Loads columns present.")
+    return 0
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -1016,6 +1111,12 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
     load_dotenv()
+
+    if "--check" in sys.argv:
+        i = sys.argv.index("--check")
+        path = sys.argv[i + 1] if i + 1 < len(sys.argv) else os.environ.get(
+            "SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
+        return run_check(path)
 
     tenant = os.environ.get("AZURE_TENANT_ID")
     client = os.environ.get("AZURE_CLIENT_ID")
@@ -1036,6 +1137,7 @@ def main() -> int:
     missing: list[str] = []
 
     alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
+    data_asof = get_file_modified(token, upn, alvys_path)
     alvys_pipeline_sheets = _safe_read(token, upn, alvys_pipeline_path, missing, "Alvys Pipeline")
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
@@ -1044,7 +1146,7 @@ def main() -> int:
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
 
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                        alvys_pipeline_sheets=alvys_pipeline_sheets)
+                        alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
     return 0

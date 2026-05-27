@@ -171,6 +171,23 @@ def download_file(token: str, user_upn: str, path: str) -> bytes:
     return resp.content
 
 
+def get_file_modified(token: str, user_upn: str, path: str):
+    """Return a file's lastModifiedDateTime (tz-aware datetime) from OneDrive, or
+    None if it can't be determined. Fail-soft: used only for a display timestamp."""
+    from datetime import datetime
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        user_enc = quote(user_upn, safe="@.")
+        url = f"{GRAPH}/users/{user_enc}/drive/root:/{_enc_path(path.strip('/'))}"
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            return None
+        ts = resp.json().get("lastModifiedDateTime")
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
+    except Exception:
+        return None
+
+
 def get_required(key: str) -> str:
     val = os.environ.get(key)
     if not val:
