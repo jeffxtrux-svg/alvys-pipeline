@@ -446,6 +446,17 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         })
     rows61.sort(key=lambda r: r["amount"], reverse=True)
 
+    # 90+ days rolled up by customer (the worst aged receivables) for the customer page.
+    mask91 = age >= 91
+    cust91: dict[str, dict] = {}
+    for idx in sub.index[mask91]:
+        name = (_cell(sub.at[idx, cust_col]) if cust_col else "") or "(no customer name)"
+        d = cust91.setdefault(name, {"customer": name, "loads": 0, "amount": 0.0, "oldest_days": 0})
+        d["loads"] += 1
+        d["amount"] += float(balance.at[idx])
+        d["oldest_days"] = max(d["oldest_days"], int(age.at[idx]))
+    rows91c = sorted(cust91.values(), key=lambda r: r["amount"], reverse=True)
+
     return {
         "total":   total,
         "current": current,
@@ -457,6 +468,7 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         "d61plus_rows":  rows61[:12],
         "d61plus_n":     len(rows61),
         "d61plus_total": d61_90 + d91plus,
+        "d91plus_customers": rows91c,
     }
 
 
@@ -961,7 +973,7 @@ def _wk_label(start: pd.Timestamp) -> str:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 5
+PAGE_COUNT = 6
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -1494,6 +1506,30 @@ def build_page5(uninv, date_str) -> str:
             f"Source: Alvys API (Loads, via the pipeline file).</div>")
 
 
+def build_page6(alvys_ar, date_str) -> str:
+    a = alvys_ar or {}
+    custs = a.get("d91plus_customers") or []
+    n_loads = sum(c["loads"] for c in custs)
+    tiles = (_tile("90+ days AR", money(a.get("d91plus")), _pill("X-Trux + X-Linx", "bad"))
+             + _tile("Customers 90+", num(len(custs)), _pill("over 90 days", "bad"))
+             + _tile("Loads 90+", num(n_loads), _pill("open invoices", "mute"))
+             + "<td width='25%' style='padding:6px;'></td>")
+    body = ""
+    for c in custs:
+        body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
+                     str(c["oldest_days"]), money(c["amount"])],
+                    ["left", "right", "right", "right"], [None, None, "bad", "bad"])
+    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 6, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
+            f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], body)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Open invoiced balances aged &gt;90 days past the Customer Due Date (Invoiced Date + 30d if none). "
+            f"X-Trux Inc + X-Linx Inc, JW Logistics excluded. Many may already be paid in QuickBooks &mdash; "
+            f"see the page-1 AR reconciliation note. Source: Alvys API (Loads, via the pipeline file).</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
@@ -1510,7 +1546,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
-            f"{wrap(build_page5(uninvoiced, date_str))}"
+            f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
+            f"{wrap(build_page6(alvys_ar, date_str))}"
             f"</body></html>")
 
 
