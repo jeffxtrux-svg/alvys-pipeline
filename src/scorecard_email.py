@@ -436,6 +436,72 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     }
 
 
+def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int = 30) -> dict:
+    """Delivered Alvys loads (X-Trux + X-Linx) with no issued customer invoice yet.
+
+    The complement of compute_alvys_ar: earned revenue QuickBooks can't see because
+    no invoice exists. These are the loads behind most of the QB-vs-Alvys AR gap —
+    the billing backlog to chase. Sorted oldest-delivered first.
+    """
+    if not sheets:
+        return {}
+    loads = sheets.get("Loads")
+    if loads is None or loads.empty:
+        return {}
+
+    status_col = "Load Status" if "Load Status" in loads.columns else _find_col(loads, ["load status", "status"])
+    inv_col = _find_col(loads, ["invoiced date", "invoice date"])
+    if not status_col or not inv_col:
+        return {}
+    rev_col = _find_col(loads, ["customer revenue", "revenue"])
+
+    sub = loads.copy()
+    sub = sub[sub[status_col].astype(str).str.strip().str.lower() == "delivered"]
+    sub = sub[pd.to_datetime(sub[inv_col], errors="coerce").isna()]   # not yet invoiced
+
+    office_col = _find_col(sub, OFFICE_COL_NEEDLES)
+    if office_col:
+        sub = sub[sub[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+
+    cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
+    if cust_col and _AR_DETAIL_EXCLUDE:
+        excl = sub[cust_col].astype(str).str.strip().str.lower().apply(
+            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE))
+        sub = sub[~excl]
+
+    if sub.empty:
+        return {"count": 0, "total_revenue": 0.0, "oldest_days": None, "rows": [], "shown": 0}
+
+    rev = pd.to_numeric(sub[rev_col], errors="coerce").fillna(0) if rev_col else pd.Series(0.0, index=sub.index)
+    today = pd.Timestamp.now().normalize()
+    del_col = _find_col(sub, ["scheduled delivery", "delivery date", "delivered"])
+    delivered = pd.to_datetime(sub[del_col], errors="coerce") if del_col else pd.Series(pd.NaT, index=sub.index)
+    days = (today - delivered).dt.days
+    loadno_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number", "load id"])
+
+    rows: list[dict] = []
+    for idx in sub.index:
+        d = days.get(idx)
+        dv = delivered.get(idx)
+        rows.append({
+            "load": str(sub.at[idx, loadno_col]) if loadno_col else "",
+            "customer": str(sub.at[idx, cust_col]) if cust_col else "",
+            "entity": (_entity_group(sub.at[idx, office_col]) or "") if office_col else "",
+            "delivered": dv.strftime("%m/%d/%Y") if pd.notna(dv) else "",
+            "days": int(d) if pd.notna(d) else None,
+            "revenue": float(rev.get(idx, 0)),
+        })
+    rows.sort(key=lambda r: ((r["days"] if r["days"] is not None else -1), r["revenue"]), reverse=True)
+    valid_days = [r["days"] for r in rows if r["days"] is not None]
+    return {
+        "count": len(rows),
+        "total_revenue": float(rev.sum()),
+        "oldest_days": max(valid_days) if valid_days else None,
+        "rows": rows[:limit],
+        "shown": min(len(rows), limit),
+    }
+
+
 def compute_qb_pnl(df: pd.DataFrame) -> dict:
     label = "Account" if "Account" in df.columns else df.columns[-2]
     amount = "Total" if "Total" in df.columns else df.columns[-1]
@@ -855,7 +921,7 @@ def _wk_label(start: pd.Timestamp) -> str:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 4
+PAGE_COUNT = 5
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -1333,8 +1399,38 @@ def build_page4(mileage, date_str) -> str:
             f"only. Source: Alvys API (Trips, via the pipeline file).</div>")
 
 
+def build_page5(uninv, date_str) -> str:
+    u = uninv or {}
+    rows_data = u.get("rows", [])
+    od = u.get("oldest_days")
+    tiles = (_tile("Loads delivered, not invoiced", num(u.get("count")), _pill("X-Trux + X-Linx", "mute"))
+             + _tile("Un-invoiced revenue", money(u.get("total_revenue")), _pill("to bill", "warn"))
+             + _tile("Oldest delivered", (num(od) + " days" if _isnum(od) else "n/a"), _pill("since delivery", "bad"))
+             + "<td width='25%' style='padding:6px;'></td>")
+    body = ""
+    for r in rows_data:
+        dd = r["days"] or 0
+        k = "bad" if dd >= 14 else ("warn" if dd >= 7 else None)
+        days_txt = str(r["days"]) if r["days"] is not None else "&ndash;"
+        body += _tr([r["load"], r["customer"], r["entity"], r["delivered"], days_txt, money(r["revenue"])],
+                    ["left", "left", "left", "left", "right", "right"],
+                    [None, None, None, None, k, None])
+    shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
+    more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
+            f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
+    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 5, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
+            f"{_table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'], ['left', 'left', 'left', 'left', 'right', 'right'], body + more)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
+            f"QuickBooks-vs-Alvys AR gap. X-Trux Inc + X-Linx Inc (JW Logistics excluded); "
+            f"&lsquo;Delivered&rsquo; uses Scheduled Delivery. Source: Alvys API (Loads, via the pipeline file).</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-               alvys_ar=None, warnings=None, data_asof=None, mileage=None) -> str:
+               alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -1348,7 +1444,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(build_page4(mileage, date_str))}"
+            f"{wrap(build_page4(mileage, date_str))}{pb}"
+            f"{wrap(build_page5(uninvoiced, date_str))}"
             f"</body></html>")
 
 
@@ -1366,11 +1463,13 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage)
+                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
+                      uninvoiced=uninvoiced)
 
 
 # ----------------------------------------------------------------------
