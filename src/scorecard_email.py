@@ -36,6 +36,7 @@ import json
 import logging
 import numbers
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -382,9 +383,7 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     # (CustomerName) column, not a substring match — many columns contain "customer".
     cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
     if cust_col and _AR_DETAIL_EXCLUDE:
-        excl = sub[cust_col].astype(str).str.strip().str.lower().apply(
-            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE))
-        sub = sub[~excl]
+        sub = sub[~sub[cust_col].apply(_is_ar_excluded)]
 
     # Match QuickBooks' AR basis: count only loads with an issued customer invoice
     # (Invoiced Date present). Un-invoiced loads aren't a receivable in the books
@@ -425,6 +424,20 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     d91plus = float(balance[age >= 91].sum())
     total   = float(balance.sum())
 
+    # 61+ balance detail (customer + amount + days) so the oldest open balances —
+    # the ones most likely already paid in QB — can be spot-checked by name.
+    loadno_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number"])
+    mask61 = age >= 61
+    rows61: list[dict] = []
+    for idx in sub.index[mask61]:
+        rows61.append({
+            "customer": str(sub.at[idx, cust_col]) if cust_col else "",
+            "load": str(sub.at[idx, loadno_col]) if loadno_col else "",
+            "days": int(age.at[idx]),
+            "amount": float(balance.at[idx]),
+        })
+    rows61.sort(key=lambda r: r["amount"], reverse=True)
+
     return {
         "total":   total,
         "current": current,
@@ -433,6 +446,9 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         "d61_90":  d61_90,
         "d91plus": d91plus,
         "overdue": d1_30 + d31_60 + d61_90 + d91plus,
+        "d61plus_rows":  rows61[:12],
+        "d61plus_n":     len(rows61),
+        "d61plus_total": d61_90 + d91plus,
     }
 
 
@@ -465,9 +481,7 @@ def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int 
 
     cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
     if cust_col and _AR_DETAIL_EXCLUDE:
-        excl = sub[cust_col].astype(str).str.strip().str.lower().apply(
-            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE))
-        sub = sub[~excl]
+        sub = sub[~sub[cust_col].apply(_is_ar_excluded)]
 
     if sub.empty:
         return {"count": 0, "total_revenue": 0.0, "oldest_days": None, "rows": [], "shown": 0}
@@ -555,6 +569,22 @@ _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 _AR_COMPANIES: frozenset[str] = frozenset({"x-trux inc", "x-linx inc"})
 
 
+def _norm_name(s) -> str:
+    """Normalize a customer name for matching: drop periods (so 'J.W.' -> 'jw'),
+    turn other punctuation/separators (hyphens, commas, slashes) into spaces, and
+    collapse whitespace. 'J.W. Logistics', 'JW-Logistics', 'JW Logistics, LLC'
+    all normalize to a string starting 'jw logistics'."""
+    s = str(s).lower().replace(".", "")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", s)).strip()
+
+
+def _is_ar_excluded(name) -> bool:
+    """True if a customer name matches any _AR_DETAIL_EXCLUDE prefix once normalized.
+    Shared by the QB and Alvys AR so both systems drop the same customers."""
+    n = _norm_name(name)
+    return any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE)
+
+
 def _ar_bucket(section: str) -> str | None:
     s = str(section).lower()
     if "31" in s and "60" in s:
@@ -581,10 +611,7 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
 
     # Build a boolean mask excluding customers in _AR_DETAIL_EXCLUDE.
     if cust_col and cust_col in data.columns and _AR_DETAIL_EXCLUDE:
-        excl_mask = data[cust_col].astype(str).str.strip().str.lower().apply(
-            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE)
-        )
-        data = data[~excl_mask]
+        data = data[~data[cust_col].apply(_is_ar_excluded)]
 
     rows: list[dict] = []
     totals = {"31&ndash;60": 0.0, "61&ndash;90": 0.0, "91+": 0.0}
@@ -1208,6 +1235,22 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                           "QuickBooks that Alvys hasn&rsquo;t billed or recorded yet. "
                           "Reconcile X-Trux + X-Linx to clear it.")
 
+    # Alvys 61+ balance detail — the oldest open balances to spot-check against QB.
+    rows61 = (alvys_ar or {}).get("d61plus_rows") or []
+    recon_detail = ""
+    if rows61:
+        body61 = ""
+        for r in rows61:
+            body61 += _tr([r["customer"], r["load"], str(r["days"]), money(r["amount"])],
+                          ["left", "left", "right", "right"], [None, None, "bad", None])
+        n61 = (alvys_ar or {}).get("d61plus_n", len(rows61))
+        if n61 > len(rows61):
+            body61 += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                       f"Showing the {len(rows61)} largest of {n61} balances "
+                       f"({money((alvys_ar or {}).get('d61plus_total'))} total).</td></tr>")
+        recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
+                        f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
+
     bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
@@ -1247,6 +1290,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
                f"{_brief(recon_note, recon['kind'])}"
                if recon_row else "")
+            + recon_detail
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
