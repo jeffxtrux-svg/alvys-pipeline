@@ -756,6 +756,9 @@ LOADS_COLUMNS = [
     # Actual delivery = last stop's arrival time (vs Scheduled Delivery above).
     # Used by the scorecard's "delivered, not yet invoiced" page.
     ("Actual Delivery",                     "Stops.last.ArrivedAt"),
+    # Customer invoice number — lets the scorecard match Alvys open invoices to
+    # the QuickBooks A/R Aging Detail bill-by-bill.
+    ("Customer Invoice Number",             _customer_invoice_field(["InvoiceNumber", "CustomerInvoiceNumber", "Number"])),
 ]
 
 

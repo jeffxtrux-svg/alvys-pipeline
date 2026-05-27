@@ -465,6 +465,20 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
             d = by_customer.setdefault(_norm_name(nm), {"name": nm, "amount": 0.0})
             d["amount"] += float(balance.at[idx])
 
+    # Per-invoice open balances (invoice #, customer, amount, days) for bill-by-bill
+    # matching against QB. The Customer Invoice Number column appears once the Alvys
+    # pull runs with that mapping; until then this list has blank invoice numbers.
+    invno_col = _find_col(sub, ["customer invoice number", "invoice number"])
+    open_invoices: list[dict] = []
+    for idx in sub.index:
+        open_invoices.append({
+            "invoice": _cell(sub.at[idx, invno_col]) if invno_col else "",
+            "customer": _cell(sub.at[idx, cust_col]) if cust_col else "",
+            "load": _cell(sub.at[idx, loadno_col]) if loadno_col else "",
+            "amount": float(balance.at[idx]),
+            "days": int(age.at[idx]),
+        })
+
     return {
         "total":   total,
         "current": current,
@@ -478,6 +492,7 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         "d61plus_total": d61_90 + d91plus,
         "d91plus_customers": rows91c,
         "by_customer":   by_customer,
+        "open_invoices": open_invoices,
     }
 
 
@@ -665,16 +680,22 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
 
     # Open AR rolled up by customer across ALL buckets (for the QB-vs-Alvys reconciliation).
     by_customer: dict[str, dict] = {}
+    open_invoices: list[dict] = []
     if cust_col and cust_col in data.columns:
         amts = pd.to_numeric(data[amt_col], errors="coerce").fillna(0)
-        for name, amt in zip(data[cust_col].astype(str), amts):
-            key = _norm_name(name)
-            d = by_customer.setdefault(key, {"name": name.strip(), "amount": 0.0})
-            d["amount"] += float(amt)
+        for _, r in data.iterrows():
+            name = str(r.get(cust_col, "")).strip()
+            amt = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
+            if not _isnum(amt):
+                continue
+            by_customer.setdefault(_norm_name(name), {"name": name, "amount": 0.0})["amount"] += float(amt)
+            if abs(float(amt)) >= 0.01:
+                open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
+                                      "customer": name, "amount": float(amt)})
 
     return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
             "total_ar": float(total_ar) if _isnum(total_ar) else None,
-            "by_customer": by_customer}
+            "by_customer": by_customer, "open_invoices": open_invoices}
 
 
 def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
@@ -718,6 +739,65 @@ def compute_ar_customer_reconciliation(qb_ar: dict | None, alvys_ar: dict | None
             "qb_total": sum(r["qb"] for r in rows),
             "alvys_total": sum(r["alvys"] for r in rows),
             "delta_total": sum(r["delta"] for r in rows)}
+
+
+def _norm_inv(s) -> str:
+    """Normalize an invoice number for matching: uppercase, alphanumeric only."""
+    return re.sub(r"[^a-z0-9]", "", str(s).lower()) if s is not None else ""
+
+
+def compute_bill_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
+    """Bill-by-bill QB-vs-Alvys match on invoice number. Returns invoices open in
+    Alvys but not QB (the gap: likely paid in QB, unsynced to Alvys), invoices open
+    in QB but not Alvys, and same-invoice amount mismatches.
+
+    Returns {"available": False} when the Alvys feed carries no invoice numbers yet
+    (i.e. the pull hasn't run with the Customer Invoice Number mapping)."""
+    al_inv = (alvys_ar or {}).get("open_invoices") or []
+    qb_inv = (qb_ar or {}).get("open_invoices") or []
+    al_has_nums = any(_norm_inv(r.get("invoice")) for r in al_inv)
+    if not al_inv or not al_has_nums:
+        return {"available": False}
+
+    qb_by: dict[str, dict] = {}
+    for r in qb_inv:
+        k = _norm_inv(r.get("invoice"))
+        if not k:
+            continue
+        d = qb_by.setdefault(k, {"invoice": r.get("invoice", ""), "customer": r.get("customer", ""), "amount": 0.0})
+        d["amount"] += float(r.get("amount") or 0)
+    al_by: dict[str, dict] = {}
+    for r in al_inv:
+        k = _norm_inv(r.get("invoice"))
+        if not k:
+            continue
+        d = al_by.setdefault(k, {"invoice": r.get("invoice", ""), "customer": r.get("customer", ""),
+                                 "load": r.get("load", ""), "amount": 0.0, "days": 0})
+        d["amount"] += float(r.get("amount") or 0)
+        d["days"] = max(d["days"], int(r.get("days") or 0))
+
+    alvys_only, qb_only, mismatch = [], [], []
+    for k, a in al_by.items():
+        q = qb_by.get(k)
+        if q is None:
+            alvys_only.append(a)
+        elif abs(a["amount"] - q["amount"]) > 1.0:
+            mismatch.append({**a, "qb_amount": q["amount"], "diff": a["amount"] - q["amount"]})
+    for k, q in qb_by.items():
+        if k not in al_by:
+            qb_only.append(q)
+    alvys_only.sort(key=lambda r: r["amount"], reverse=True)
+    qb_only.sort(key=lambda r: r["amount"], reverse=True)
+    mismatch.sort(key=lambda r: abs(r["diff"]), reverse=True)
+    matched = sum(1 for k in al_by if k in qb_by)
+    return {
+        "available": True,
+        "alvys_only": alvys_only, "qb_only": qb_only, "mismatch": mismatch,
+        "alvys_only_total": sum(r["amount"] for r in alvys_only),
+        "qb_only_total": sum(r["amount"] for r in qb_only),
+        "mismatch_total": sum(r["diff"] for r in mismatch),
+        "matched": matched, "alvys_n": len(al_by), "qb_n": len(qb_by),
+    }
 
 
 def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR",
@@ -1018,7 +1098,7 @@ def _wk_label(start: pd.Timestamp) -> str:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 7
+PAGE_COUNT = 8
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -1620,6 +1700,56 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
             f"number (not in the Alvys feed today). Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
+def build_page8(qb_ar, alvys_ar, date_str) -> str:
+    b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 8, date_str)
+    if not b.get("available"):
+        msg = ("Bill-by-bill matching needs the Alvys Customer Invoice Number, which appears once the "
+               "Alvys pull (&ldquo;Refresh Alvys data&rdquo;) runs with the new mapping. Until then, see "
+               "page 7 for the customer-level reconciliation.")
+        return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_brief(msg, 'warn')}"
+                f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+    ao, qo, mm = b["alvys_only"], b["qb_only"], b["mismatch"]
+    LIM = 20
+    match_pct = (b["matched"] / b["alvys_n"]) if b["alvys_n"] else None
+    tiles = (_tile("Open in Alvys, not QB", money(b["alvys_only_total"]), _pill(f"{len(ao)} bills", "bad"))
+             + _tile("Open in QB, not Alvys", money(b["qb_only_total"]), _pill(f"{len(qo)} bills", "warn"))
+             + _tile("Invoice match rate", pct(match_pct), _pill(f"{b['matched']}/{b['alvys_n']} matched", "mute"))
+             + "<td width='25%' style='padding:6px;'></td>")
+
+    def _tbl(title, rows, cols, mk):
+        if not rows:
+            return ""
+        body = "".join(mk(r) for r in rows[:LIM])
+        if len(rows) > LIM:
+            body += (f"<tr><td colspan='{len(cols)}' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                     f"Showing the {LIM} largest of {len(rows)}.</td></tr>")
+        return f"{_section(title)}{_table(cols, ['left', 'left', 'right', 'right'], body)}"
+
+    ao_tbl = _tbl("Open in Alvys, not in QuickBooks &middot; the gap to chase", ao,
+                  ["Invoice", "Customer", "Days", "Amount"],
+                  lambda r: _tr([r["invoice"] or r["load"], r["customer"] or "&mdash;", str(r["days"]), money(r["amount"])],
+                                ["left", "left", "right", "right"], [None, None, "bad", None]))
+    mm_tbl = _tbl("Same invoice, different open balance", mm,
+                  ["Invoice", "Customer", "Alvys / QB", "Diff"],
+                  lambda r: _tr([r["invoice"], r["customer"] or "&mdash;", f"{money(r['amount'])} / {money(r['qb_amount'])}", money(r["diff"])],
+                                ["left", "left", "right", "right"], [None, None, None, "warn"]))
+    qo_tbl = _tbl("Open in QuickBooks, not in Alvys", qo,
+                  ["Invoice", "Customer", "", "Amount"],
+                  lambda r: _tr([r["invoice"], r["customer"] or "&mdash;", "", money(r["amount"])],
+                                ["left", "left", "right", "right"], [None, None, None, "warn"]))
+
+    return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>{ao_tbl}{mm_tbl}{qo_tbl}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Matched on invoice number (X-Trux + X-Linx, JW excluded). &lsquo;Open in Alvys, not in QuickBooks&rsquo; "
+            f"are the bills driving the gap &mdash; most are likely paid in QB but not synced back to Alvys. "
+            f"If the match rate is low, the two systems use different invoice numbers and this view is unreliable &mdash; "
+            f"use page 7 instead. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
@@ -1638,7 +1768,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(build_page4(mileage, date_str))}{pb}"
             f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
             f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
-            f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
