@@ -41,7 +41,9 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-from src.onedrive_upload import download_file, get_file_modified, get_token
+from src.onedrive_upload import (
+    download_file, download_shared_file, get_file_modified, get_shared_modified, get_token,
+)
 
 log = logging.getLogger("scorecard_email")
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -1129,6 +1131,9 @@ def main() -> int:
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
     alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
+    # If set, read the Alvys workbook from this exact OneDrive sharing URL instead of
+    # by name — avoids reading the wrong file when a duplicate of the same name exists.
+    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", "").strip()
     alvys_pipeline_path = os.environ.get("SCORECARD_ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")
@@ -1136,8 +1141,17 @@ def main() -> int:
     token = get_token(tenant, client, secret)
     missing: list[str] = []
 
-    alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
-    data_asof = get_file_modified(token, upn, alvys_path)
+    alvys_sheets = data_asof = None
+    if alvys_share:
+        try:
+            alvys_sheets = pd.read_excel(io.BytesIO(download_shared_file(token, alvys_share)), sheet_name=None)
+            data_asof = get_shared_modified(token, alvys_share)
+            log.info("Read Alvys workbook via share URL")
+        except Exception as exc:
+            log.warning("Could not read Alvys via share URL (%s); falling back to path", exc)
+    if alvys_sheets is None:
+        alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
+        data_asof = get_file_modified(token, upn, alvys_path)
     alvys_pipeline_sheets = _safe_read(token, upn, alvys_pipeline_path, missing, "Alvys Pipeline")
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")

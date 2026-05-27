@@ -171,6 +171,44 @@ def download_file(token: str, user_upn: str, path: str) -> bytes:
     return resp.content
 
 
+def _share_id(share_url: str) -> str:
+    """Encode a sharing URL into a Graph share id (u!<base64url>, no padding)."""
+    import base64
+    url = share_url.split("?", 1)[0]  # drop volatile ?e=... access token
+    b64 = base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8").rstrip("=")
+    return "u!" + b64
+
+
+def download_shared_file(token: str, share_url: str) -> bytes:
+    """Download raw bytes of the driveItem behind a OneDrive/SharePoint sharing URL.
+
+    Resolves the exact shared item, so it's immune to duplicate filenames at the
+    same path. Used by the scorecard to read the specific workbook the report uses.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{GRAPH}/shares/{_share_id(share_url)}/driveItem/content"
+    resp = requests.get(url, headers=headers, timeout=180)
+    if resp.status_code != 200:
+        log.error("Download shared file failed [%s]: %s", resp.status_code, resp.text[:300])
+        resp.raise_for_status()
+    return resp.content
+
+
+def get_shared_modified(token: str, share_url: str):
+    """lastModifiedDateTime (tz-aware) of the shared driveItem, or None. Fail-soft."""
+    from datetime import datetime
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"{GRAPH}/shares/{_share_id(share_url)}/driveItem"
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            return None
+        ts = resp.json().get("lastModifiedDateTime")
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
+    except Exception:
+        return None
+
+
 def get_file_modified(token: str, user_upn: str, path: str):
     """Return a file's lastModifiedDateTime (tz-aware datetime) from OneDrive, or
     None if it can't be determined. Fail-soft: used only for a display timestamp."""
