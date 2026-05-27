@@ -372,6 +372,16 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     office_col = _find_col(sub, OFFICE_COL_NEEDLES)
     if office_col:
         sub = sub[sub[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+
+    # Exclude the same customers dropped from the QB AR (e.g. JW Logistics) so the
+    # two receivables figures reconcile like-for-like. Uses the exact "Customer"
+    # (CustomerName) column, not a substring match — many columns contain "customer".
+    cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
+    if cust_col and _AR_DETAIL_EXCLUDE:
+        excl = sub[cust_col].astype(str).str.strip().str.lower().apply(
+            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE))
+        sub = sub[~excl]
+
     if sub.empty:
         return {}
 
