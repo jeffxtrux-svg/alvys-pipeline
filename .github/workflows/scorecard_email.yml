@@ -12,9 +12,6 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
-  # TEMPORARY: one-shot trigger to force a fresh run on merge (removed right after).
-  push:
-    branches: [main]
   schedule:
     # ~7am CST / 8am CDT — ~1 hour after the morning Alvys/Samsara/QB refresh
     - cron: '0 13 * * *'
