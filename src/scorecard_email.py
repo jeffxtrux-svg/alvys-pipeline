@@ -742,8 +742,11 @@ def compute_ar_customer_reconciliation(qb_ar: dict | None, alvys_ar: dict | None
 
 
 def _norm_inv(s) -> str:
-    """Normalize an invoice number for matching: uppercase, alphanumeric only."""
-    return re.sub(r"[^a-z0-9]", "", str(s).lower()) if s is not None else ""
+    """Normalize an invoice number for matching: alphanumeric only, then drop a
+    leading alpha prefix so QuickBooks' 'T1006199' matches the Alvys load '1006199'
+    (and 'INV1001' matches '1001')."""
+    s = re.sub(r"[^a-z0-9]", "", str(s).lower()) if s is not None else ""
+    return re.sub(r"^[a-z]+", "", s)
 
 
 def compute_bill_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
