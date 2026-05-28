@@ -21,9 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.scorecard_email import (  # noqa: E402
     _norm_name, _is_ar_excluded, _norm_inv, _to_naive_dt, _cell,
+    _is_direct_customer, compute_rpm_trend, build_page1,
     compute_alvys_ar, compute_alvys_uninvoiced, compute_qb_ar_detail,
     compute_ar_reconciliation, compute_ar_customer_reconciliation,
-    compute_bill_reconciliation, compute_samsara,
+    compute_bill_reconciliation, compute_samsara, compute_alvys_entities,
 )
 from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
@@ -297,6 +298,62 @@ def test_customer_name_falls_back_to_lookup():
 def test_cell_collapses_null_to_empty_string():
     assert _cell(float("nan")) == "" and _cell(None) == "" and _cell("nan") == ""
     assert _cell("BERRY PLASTICS") == "BERRY PLASTICS"
+
+
+# ---------------------------------------------------------------------------
+# Direct vs broker customer classification + RPM trend tiles
+# ---------------------------------------------------------------------------
+def test_direct_customer_matcher_handles_prefixes_and_slashes():
+    # Direct shippers — case-insensitive prefix match on the user-provided list.
+    for nm in ["BERRY PLASTICS", "Berry Plastics, Inc.", "amcor packaging",
+               "BILLION Automotive", "Kozy Heat Fireplaces", "Innovative Office Products",
+               "  KRAFT TOOL  ", "Dakota Pottery LLC"]:
+        assert _is_direct_customer(nm), f"should be direct: {nm!r}"
+    # Broker pass-through (slash) and non-matches.
+    for nm in ["BERRY PLASTICS / CH ROBINSON", "CH Robinson", "ECHO GLOBAL LOGISTICS",
+               "Some Random Co", "", "nan", float("nan")]:
+        assert not _is_direct_customer(nm), f"should NOT be direct: {nm!r}"
+
+
+def test_compute_rpm_trend_separates_direct_and_broker_by_month():
+    today = pd.Timestamp.now().normalize()
+    # Two May loads: a direct one and a broker one — RPMs should split.
+    loads = pd.DataFrame([
+        {"Customer": "BERRY PLASTICS", "Customer Revenue": 2400,
+         "Total Dispatch Mileage": 1000, "Scheduled Pickup": today,
+         "Load Status": "Delivered"},
+        {"Customer": "BERRY PLASTICS / CH ROBINSON", "Customer Revenue": 1800,
+         "Total Dispatch Mileage": 1000, "Scheduled Pickup": today,
+         "Load Status": "Delivered"},
+        # Cancelled load must be excluded.
+        {"Customer": "AMCOR PACKAGING", "Customer Revenue": 9999,
+         "Total Dispatch Mileage": 100, "Scheduled Pickup": today,
+         "Load Status": "Cancelled"},
+    ])
+    out = compute_rpm_trend({"Loads": loads})
+    d_labels, d_values = out["direct"]
+    b_labels, b_values = out["broker"]
+    assert len(d_labels) == 6 and len(b_labels) == 6   # last 6 months
+    assert d_labels[-1].endswith("*") and b_labels[-1].endswith("*")
+    assert round(d_values[-1], 2) == 2.40   # direct: $2.40 / mi
+    assert round(b_values[-1], 2) == 1.80   # broker: $1.80 / mi
+    # No mileage in prior months -> 0 RPM, not a crash.
+    assert d_values[0] == 0.0 and b_values[0] == 0.0
+
+
+def test_build_page1_renders_the_two_new_rpm_charts():
+    # Smoke-render of build_page1 to confirm the new charts land in the HTML.
+    alvys_entities = compute_alvys_entities({"Loads": pd.DataFrame([
+        {"Office": "X-Trux, Inc", "Customer Revenue": 1000, "Driver Rate": 500,
+         "Carrier Rate": 0, "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 10,
+         "Scheduled Pickup": pd.Timestamp.now().normalize(), "Load Status": "Delivered"}])})
+    rpm_trend = {"direct": (["Dec","Jan","Feb","Mar","Apr","May*"], [2.5,2.6,2.4,2.7,2.8,2.9]),
+                 "broker":  (["Dec","Jan","Feb","Mar","Apr","May*"], [1.9,1.8,1.7,1.6,1.85,1.95])}
+    html = build_page1(None, alvys_entities, {}, {}, ([],[]), ([],[]), None,
+                       "Thursday, May 28, 2026", rpm_trend=rpm_trend)
+    assert "Direct customers" in html and "Broker freight" in html
+    # Final-month value should appear (bar label) for both charts.
+    assert "$2.90" in html and "$1.95" in html
 
 
 # ---------------------------------------------------------------------------
