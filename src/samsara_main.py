@@ -92,14 +92,17 @@ def build_dvir_defects(raw_dvirs: list[dict]) -> pd.DataFrame:
         driver = dvir.get("driver") or {}
         unit = vehicle.get("name") or vehicle.get("id")
         driver_name = driver.get("name") or driver.get("id")
-        reported = _ts_to_str(dvir.get("createdAtTime") or dvir.get("createdAtMs") or dvir.get("createdAt"))
-        dvir_type = dvir.get("inspectionType") or dvir.get("dvirType")
+        # DVIR records from /fleet/dvirs/history use startTime (no createdAt*); defects
+        # carry their own createdAtTime. Prefer the defect's, fall back to the DVIR's.
+        dvir_time = (dvir.get("startTime") or dvir.get("createdAtTime")
+                     or dvir.get("createdAtMs") or dvir.get("createdAt"))
+        dvir_type = dvir.get("inspectionType") or dvir.get("dvirType") or dvir.get("type")
         for d in defects:
             if not isinstance(d, dict):
                 continue
             resolved = d.get("isResolved", d.get("resolved", False))
             rows.append({
-                "Reported": reported,
+                "Reported": _ts_to_str(d.get("createdAtTime") or d.get("createdAtMs") or dvir_time),
                 "Unit": unit,
                 "Driver": driver_name,
                 "Defect": d.get("comment") or d.get("defectType") or "unspecified defect",
