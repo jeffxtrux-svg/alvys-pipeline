@@ -128,16 +128,28 @@ def _find_col(df: pd.DataFrame, needles: list[str]) -> str | None:
     return None
 
 
+def _to_naive_dt(series: pd.Series) -> pd.Series:
+    """Parse to datetime and drop any timezone (Samsara stamps are tz-aware 'Z',
+    but the window boundaries from _windows() are tz-naive — comparing the two
+    raises 'Cannot compare tz-naive and tz-aware'). utc=True normalizes mixed
+    offsets to UTC; tz_localize(None) then makes it naive UTC."""
+    d = pd.to_datetime(series, errors="coerce", utc=True)
+    try:
+        return d.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        return pd.to_datetime(series, errors="coerce")
+
+
 def _dates(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
     for c in candidates:
         if c in df.columns:
-            d = pd.to_datetime(df[c], errors="coerce")
+            d = _to_naive_dt(df[c])
             if d.notna().sum() > 0:
                 return d
     # fuzzy fallback: any column that looks like a date/time
     fuzzy = _find_col(df, ["date", "time", "reported"])
     if fuzzy:
-        return pd.to_datetime(df[fuzzy], errors="coerce")
+        return _to_naive_dt(df[fuzzy])
     return pd.Series([pd.NaT] * len(df), index=df.index)
 
 
