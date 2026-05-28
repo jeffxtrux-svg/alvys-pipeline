@@ -9,10 +9,6 @@ name: Compute goals (one-off)
 on:
   workflow_dispatch:
 
-  # TEMPORARY: one-shot trigger on push (removed right after).
-  push:
-    branches: [claude/claude-md-docs-Es64x]
-
 jobs:
   goals:
     runs-on: ubuntu-latest
