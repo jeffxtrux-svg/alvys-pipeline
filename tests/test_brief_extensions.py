@@ -21,9 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.scorecard_email import (  # noqa: E402
     _norm_name, _is_ar_excluded, _norm_inv, _to_naive_dt, _cell,
+    _is_direct_customer, compute_rpm_trend, build_page1,
     compute_alvys_ar, compute_alvys_uninvoiced, compute_qb_ar_detail,
     compute_ar_reconciliation, compute_ar_customer_reconciliation,
-    compute_bill_reconciliation, compute_samsara,
+    compute_bill_reconciliation, compute_samsara, compute_alvys_entities,
 )
 from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
@@ -297,6 +298,85 @@ def test_customer_name_falls_back_to_lookup():
 def test_cell_collapses_null_to_empty_string():
     assert _cell(float("nan")) == "" and _cell(None) == "" and _cell("nan") == ""
     assert _cell("BERRY PLASTICS") == "BERRY PLASTICS"
+
+
+# ---------------------------------------------------------------------------
+# Direct vs broker customer classification + RPM trend tiles
+# ---------------------------------------------------------------------------
+def test_direct_customer_matcher_handles_prefixes_and_slashes():
+    # Direct shippers — case-insensitive prefix match on the user-provided list.
+    # Broker pass-throughs ("SHIPPER / BROKER") still count as direct freight when
+    # the shipper segment is in the allow-list — the underlying shipper wins.
+    for nm in ["BERRY PLASTICS", "Berry Plastics, Inc.", "amcor packaging",
+               "BILLION Automotive", "Kozy Heat Fireplaces", "Innovative Office Products",
+               "  KRAFT TOOL  ", "Dakota Pottery LLC",
+               "BERRY PLASTICS / CH ROBINSON",        # brokered Berry -> direct
+               "CH ROBINSON / BERRY PLASTICS"]:       # reverse order also caught
+        assert _is_direct_customer(nm), f"should be direct: {nm!r}"
+    # Broker-only or unknown names — no direct shipper anywhere in the string.
+    for nm in ["CH Robinson", "ECHO GLOBAL LOGISTICS", "ECHO / NOLAN TRANSPORT",
+               "Some Random Co", "", "nan", float("nan")]:
+        assert not _is_direct_customer(nm), f"should NOT be direct: {nm!r}"
+
+
+def test_compute_rpm_trend_splits_and_scopes_to_xtrux():
+    today = pd.Timestamp.now().normalize()
+    loads = pd.DataFrame([
+        # Direct shipper, X-Trux office.
+        {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS",
+         "Customer Revenue": 2400, "Total Dispatch Mileage": 1000,
+         "Scheduled Pickup": today, "Load Status": "Delivered"},
+        # Brokered (slash) under X-Trux — still direct because the shipper segment
+        # ("BERRY PLASTICS") is in the allow-list.
+        {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS / CH ROBINSON",
+         "Customer Revenue": 1800, "Total Dispatch Mileage": 1000,
+         "Scheduled Pickup": today, "Load Status": "Delivered"},
+        # Broker-only (no direct shipper anywhere in the name).
+        {"Office": "X-Trux, Inc", "Customer": "CH ROBINSON",
+         "Customer Revenue": 1500, "Total Dispatch Mileage": 1000,
+         "Scheduled Pickup": today, "Load Status": "Delivered"},
+        # Cancelled — excluded.
+        {"Office": "X-Trux, Inc", "Customer": "AMCOR PACKAGING",
+         "Customer Revenue": 9999, "Total Dispatch Mileage": 100,
+         "Scheduled Pickup": today, "Load Status": "Cancelled"},
+        # X-Linx brokerage — must be excluded by the office filter.
+        {"Office": "X-Linx, Inc.", "Customer": "ECHO GLOBAL LOGISTICS",
+         "Customer Revenue": 5000, "Total Dispatch Mileage": 100,
+         "Scheduled Pickup": today, "Load Status": "Delivered"},
+    ])
+    out = compute_rpm_trend({"Loads": loads})
+    d_labels, d_values = out["direct"]
+    b_labels, b_values = out["broker"]
+    c_labels, c_values = out["combined"]
+    # 6-month window with current-month asterisk on all three series.
+    for labels in (d_labels, b_labels, c_labels):
+        assert len(labels) == 6 and labels[-1].endswith("*")
+    # Direct = both Berry loads: (2400 + 1800) / (1000 + 1000) = $2.10
+    assert round(d_values[-1], 2) == 2.10
+    # Broker = plain CH ROBINSON: 1500 / 1000 = $1.50
+    assert round(b_values[-1], 2) == 1.50
+    # Combined = (2400 + 1800 + 1500) / 3000 = $1.90
+    assert round(c_values[-1], 2) == 1.90
+    # Prior months have no in-scope mileage -> 0, not NaN.
+    assert d_values[0] == 0.0 and b_values[0] == 0.0 and c_values[0] == 0.0
+
+
+def test_build_page1_renders_three_rpm_charts_in_xtrux_overview():
+    # Smoke-render of build_page1 to confirm all three charts land in the HTML.
+    alvys_entities = compute_alvys_entities({"Loads": pd.DataFrame([
+        {"Office": "X-Trux, Inc", "Customer Revenue": 1000, "Driver Rate": 500,
+         "Carrier Rate": 0, "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 10,
+         "Scheduled Pickup": pd.Timestamp.now().normalize(), "Load Status": "Delivered"}])})
+    months = ["Dec", "Jan", "Feb", "Mar", "Apr", "May*"]
+    rpm_trend = {"direct":   (months, [2.5, 2.6, 2.4, 2.7, 2.8, 2.9]),
+                 "broker":   (months, [1.9, 1.8, 1.7, 1.6, 1.85, 1.95]),
+                 "combined": (months, [2.2, 2.2, 2.05, 2.15, 2.32, 2.42])}
+    html = build_page1(None, alvys_entities, {}, {}, ([], []), ([], []), None,
+                       "Thursday, May 28, 2026", rpm_trend=rpm_trend)
+    assert "Overall &middot; rev / mile" in html
+    assert "Direct customers" in html and "Broker freight" in html
+    # Final-month value of each chart appears as the bar label.
+    assert "$2.90" in html and "$1.95" in html and "$2.42" in html
 
 
 # ---------------------------------------------------------------------------

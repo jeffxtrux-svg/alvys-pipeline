@@ -640,6 +640,97 @@ _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 # "Company" column. The Alvys side folds the XFreight office into X-Trux.
 _AR_COMPANIES: frozenset[str] = frozenset({"x-trux inc", "x-linx inc"})
 
+# XFreight's direct-shipper customers (case-insensitive prefix match on the
+# Alvys "Customer" column). When a load is recorded as "SHIPPER / BROKER" the
+# underlying shipper wins — "BERRY PLASTICS / CH ROBINSON" still rolls up under
+# direct (Berry is in the list); a plain "CH ROBINSON" with no direct shipper
+# in the name stays broker.
+DIRECT_CUSTOMERS: frozenset[str] = frozenset({
+    "abbiamo pasta", "billion", "amcor", "berry", "viaflex", "kozy heat",
+    "enertec", "rainbow", "kraft tool", "dakota pottery", "lewis drug",
+    "traco", "bandag", "design tanks", "top lot processors",
+    "johnson brothers", "innovative",
+})
+
+
+def _is_direct_customer(name) -> bool:
+    """True if any "/"-segment of the customer name starts with a DIRECT_CUSTOMERS
+    keyword. Handles broker pass-throughs ("SHIPPER / BROKER") by counting the
+    load as direct freight whenever the shipper is in the allow-list; broker-only
+    names like "CH ROBINSON" with no direct shipper are rejected."""
+    n = str(name).strip().lower()
+    if not n or n == "nan":
+        return False
+    segments = [s.strip() for s in n.split("/")]
+    return any(seg.startswith(kw) for seg in segments for kw in DIRECT_CUSTOMERS)
+
+
+def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
+    """Monthly average Revenue / Mile by direct vs broker freight, last 6 months.
+
+    Each month's average RPM = SUM(Customer Revenue) / SUM(Total Dispatch Mileage)
+    over loads in that month (Scheduled Pickup), split into direct customers (per
+    DIRECT_CUSTOMERS) and broker freight (everything else). Returns
+    ``{"direct": (labels, values), "broker": (labels, values)}`` ready for
+    ``_bar_chart``; the current month's label gets a trailing ``*`` to mark MTD.
+    Returns empty tuples when the required Loads columns aren't present.
+    """
+    empty = {"direct": ([], []), "broker": ([], []), "combined": ([], [])}
+    if not sheets:
+        return empty
+    loads = sheets.get("Loads")
+    if loads is None or loads.empty:
+        return empty
+    cust_col = "Customer" if "Customer" in loads.columns else _find_col(loads, ["customer name", "customer"])
+    rev_col = _find_col(loads, ["customer revenue", "revenue"])
+    miles_col = _find_col(loads, ["total dispatch mileage", "dispatch mileage", "loaded dispatch mileage", "mileage"])
+    date_col = _find_col(loads, ["scheduled pickup", "pickup date"])
+    if not all([cust_col, rev_col, miles_col, date_col]):
+        return empty
+
+    sub = loads.copy()
+    if "Load Status" in sub.columns:
+        sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+    # Scope to the X-Trux + XFreight asset fleet (matches the X-Trux Overview
+    # section where these charts now live; X-Linx brokerage is excluded).
+    office_col = _find_col(sub, OFFICE_COL_NEEDLES)
+    if office_col:
+        sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    dates = _to_naive_dt(sub[date_col])
+    keep = dates.notna()
+    sub = sub.loc[keep]
+    dates = dates.loc[keep]
+    if sub.empty:
+        return empty
+
+    is_direct = sub[cust_col].apply(_is_direct_customer)
+    rev = pd.to_numeric(sub[rev_col], errors="coerce").fillna(0)
+    miles = pd.to_numeric(sub[miles_col], errors="coerce").fillna(0)
+
+    months = _last_6_months()
+    d_labels, d_values = [], []
+    b_labels, b_values = [], []
+    c_labels, c_values = [], []
+    for i, (yy, mm) in enumerate(months):
+        in_month = (dates.dt.year == yy) & (dates.dt.month == mm)
+        d_mask = in_month & is_direct
+        b_mask = in_month & ~is_direct
+        d_miles = float(miles[d_mask].sum())
+        b_miles = float(miles[b_mask].sum())
+        c_miles = float(miles[in_month].sum())
+        d_rpm = float(rev[d_mask].sum()) / d_miles if d_miles else 0.0
+        b_rpm = float(rev[b_mask].sum()) / b_miles if b_miles else 0.0
+        c_rpm = float(rev[in_month].sum()) / c_miles if c_miles else 0.0
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        if i == len(months) - 1:
+            lab += "*"
+        d_labels.append(lab); d_values.append(d_rpm)
+        b_labels.append(lab); b_values.append(b_rpm)
+        c_labels.append(lab); c_values.append(c_rpm)
+
+    return {"direct": (d_labels, d_values), "broker": (b_labels, b_values),
+            "combined": (c_labels, c_values)}
+
 
 def _norm_name(s) -> str:
     """Normalize a customer name for matching: drop periods (so 'J.W.' -> 'jw'),
@@ -1273,7 +1364,7 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
-                alvys_ar=None, warnings=None, data_asof=None) -> str:
+                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -1328,6 +1419,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + margin_tile
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     t1b = loads_tile + empty_td + empty_td + empty_td
+    # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
+    # XFreight asset fleet) plus a direct-customers vs broker-freight split.
+    _rpm_d_labels, _rpm_d_values = ((rpm_trend or {}).get("direct") or ([], []))
+    _rpm_b_labels, _rpm_b_values = ((rpm_trend or {}).get("broker") or ([], []))
+    _rpm_c_labels, _rpm_c_values = ((rpm_trend or {}).get("combined") or ([], []))
+    _rpm_sub = "monthly avg &middot; X-Trux + XFreight &middot; *MTD"
+    xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm)
+                + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm)
+                + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm)
+                + empty_td)
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -1480,7 +1581,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{mtd_note}"
-            f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr>"
+            f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
@@ -1822,7 +1923,8 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-               alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None) -> str:
+               alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
+               rpm_trend=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -1833,7 +1935,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -1859,12 +1961,13 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend)
 
 
 # ----------------------------------------------------------------------
