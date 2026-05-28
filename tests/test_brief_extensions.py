@@ -305,12 +305,16 @@ def test_cell_collapses_null_to_empty_string():
 # ---------------------------------------------------------------------------
 def test_direct_customer_matcher_handles_prefixes_and_slashes():
     # Direct shippers — case-insensitive prefix match on the user-provided list.
+    # Broker pass-throughs ("SHIPPER / BROKER") still count as direct freight when
+    # the shipper segment is in the allow-list — the underlying shipper wins.
     for nm in ["BERRY PLASTICS", "Berry Plastics, Inc.", "amcor packaging",
                "BILLION Automotive", "Kozy Heat Fireplaces", "Innovative Office Products",
-               "  KRAFT TOOL  ", "Dakota Pottery LLC"]:
+               "  KRAFT TOOL  ", "Dakota Pottery LLC",
+               "BERRY PLASTICS / CH ROBINSON",        # brokered Berry -> direct
+               "CH ROBINSON / BERRY PLASTICS"]:       # reverse order also caught
         assert _is_direct_customer(nm), f"should be direct: {nm!r}"
-    # Broker pass-through (slash) and non-matches.
-    for nm in ["BERRY PLASTICS / CH ROBINSON", "CH Robinson", "ECHO GLOBAL LOGISTICS",
+    # Broker-only or unknown names — no direct shipper anywhere in the string.
+    for nm in ["CH Robinson", "ECHO GLOBAL LOGISTICS", "ECHO / NOLAN TRANSPORT",
                "Some Random Co", "", "nan", float("nan")]:
         assert not _is_direct_customer(nm), f"should NOT be direct: {nm!r}"
 
@@ -322,9 +326,14 @@ def test_compute_rpm_trend_splits_and_scopes_to_xtrux():
         {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS",
          "Customer Revenue": 2400, "Total Dispatch Mileage": 1000,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
-        # Brokered (slash) under X-Trux.
+        # Brokered (slash) under X-Trux — still direct because the shipper segment
+        # ("BERRY PLASTICS") is in the allow-list.
         {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS / CH ROBINSON",
          "Customer Revenue": 1800, "Total Dispatch Mileage": 1000,
+         "Scheduled Pickup": today, "Load Status": "Delivered"},
+        # Broker-only (no direct shipper anywhere in the name).
+        {"Office": "X-Trux, Inc", "Customer": "CH ROBINSON",
+         "Customer Revenue": 1500, "Total Dispatch Mileage": 1000,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Cancelled — excluded.
         {"Office": "X-Trux, Inc", "Customer": "AMCOR PACKAGING",
@@ -342,11 +351,12 @@ def test_compute_rpm_trend_splits_and_scopes_to_xtrux():
     # 6-month window with current-month asterisk on all three series.
     for labels in (d_labels, b_labels, c_labels):
         assert len(labels) == 6 and labels[-1].endswith("*")
-    # Direct: 2400 / 1000 = $2.40; broker: 1800 / 1000 = $1.80.
-    assert round(d_values[-1], 2) == 2.40
-    assert round(b_values[-1], 2) == 1.80
-    # Combined = (2400 + 1800) / (1000 + 1000) = $2.10 (weighted, not the mean of the two).
-    assert round(c_values[-1], 2) == 2.10
+    # Direct = both Berry loads: (2400 + 1800) / (1000 + 1000) = $2.10
+    assert round(d_values[-1], 2) == 2.10
+    # Broker = plain CH ROBINSON: 1500 / 1000 = $1.50
+    assert round(b_values[-1], 2) == 1.50
+    # Combined = (2400 + 1800 + 1500) / 3000 = $1.90
+    assert round(c_values[-1], 2) == 1.90
     # Prior months have no in-scope mileage -> 0, not NaN.
     assert d_values[0] == 0.0 and b_values[0] == 0.0 and c_values[0] == 0.0
 

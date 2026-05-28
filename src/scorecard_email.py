@@ -640,11 +640,11 @@ _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 # "Company" column. The Alvys side folds the XFreight office into X-Trux.
 _AR_COMPANIES: frozenset[str] = frozenset({"x-trux inc", "x-linx inc"})
 
-# XFreight's direct-shipper customers (everything else with a customer record is
-# treated as broker freight). Match is case-insensitive prefix on the Alvys
-# "Customer" column, with the safeguard that any name containing a slash is
-# considered a broker pass-through (e.g. "BERRY PLASTICS / CH ROBINSON" is
-# brokered through CH Robinson and shouldn't roll up under direct Berry).
+# XFreight's direct-shipper customers (case-insensitive prefix match on the
+# Alvys "Customer" column). When a load is recorded as "SHIPPER / BROKER" the
+# underlying shipper wins — "BERRY PLASTICS / CH ROBINSON" still rolls up under
+# direct (Berry is in the list); a plain "CH ROBINSON" with no direct shipper
+# in the name stays broker.
 DIRECT_CUSTOMERS: frozenset[str] = frozenset({
     "abbiamo pasta", "billion", "amcor", "berry", "viaflex", "kozy heat",
     "enertec", "rainbow", "kraft tool", "dakota pottery", "lewis drug",
@@ -654,14 +654,15 @@ DIRECT_CUSTOMERS: frozenset[str] = frozenset({
 
 
 def _is_direct_customer(name) -> bool:
-    """True if the customer is one of XFreight's direct shippers.
-
-    Prefix match on a normalized name; reject when the name carries a slash
-    (broker pass-through, e.g. "BERRY PLASTICS / CH ROBINSON")."""
+    """True if any "/"-segment of the customer name starts with a DIRECT_CUSTOMERS
+    keyword. Handles broker pass-throughs ("SHIPPER / BROKER") by counting the
+    load as direct freight whenever the shipper is in the allow-list; broker-only
+    names like "CH ROBINSON" with no direct shipper are rejected."""
     n = str(name).strip().lower()
-    if not n or n == "nan" or "/" in n:
+    if not n or n == "nan":
         return False
-    return any(n.startswith(kw) for kw in DIRECT_CUSTOMERS)
+    segments = [s.strip() for s in n.split("/")]
+    return any(seg.startswith(kw) for seg in segments for kw in DIRECT_CUSTOMERS)
 
 
 def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
