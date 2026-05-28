@@ -186,14 +186,11 @@ class SamsaraClient:
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""
         log.info("Fetching safety events %s → %s…", start.date(), end.date())
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
-        for path in ["/fleet/safety-events", "/fleet/safety/events", "/safety/events"]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("Total safety events: %d (from %s)", len(items), path)
-                return items
-        log.info("Total safety events: 0")
-        return []
+        # /fleet/safety-events caps page size at 200 (PAGE_LIMIT of 512 -> HTTP 400).
+        params = {"startTime": _iso(start), "endTime": _iso(end), "limit": 200}
+        items = self._safe_get("/fleet/safety-events", params)
+        log.info("Total safety events: %d", len(items))
+        return items
 
     def fetch_hos_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """ELD / Hours of Service log entries."""
@@ -236,14 +233,19 @@ class SamsaraClient:
         is the *create* endpoint and returns 401 'requires DVIRs write permissions'.
         """
         log.info("Fetching DVIRs %s → %s…", start.date(), end.date())
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
-        for path in ["/fleet/dvirs/history", "/fleet/dvirs"]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("Total DVIRs: %d (from %s)", len(items), path)
-                return items
-        log.info("Total DVIRs: 0")
-        return []
+        # /fleet/dvirs/history rejects windows longer than 30 days, so page the
+        # range in <=30-day chunks. (POST /fleet/dvirs is create-only -> 405 on GET.)
+        all_items: list[dict] = []
+        chunk = datetime.timedelta(days=29)
+        win_start = start
+        while win_start < end:
+            win_end = min(win_start + chunk, end)
+            all_items.extend(self._safe_get("/fleet/dvirs/history", {
+                "startTime": _iso(win_start), "endTime": _iso(win_end), "limit": 200,
+            }))
+            win_start = win_end
+        log.info("Total DVIRs: %d (from /fleet/dvirs/history)", len(all_items))
+        return all_items
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
         """IFTA fuel & mileage report for a given month. Tries multiple known paths."""
