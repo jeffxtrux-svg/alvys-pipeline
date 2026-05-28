@@ -63,28 +63,47 @@ def build_dvir_defects(raw_dvirs: list[dict]) -> pd.DataFrame:
     cell, so we explode it here — same field shape that samsara_alerts.py reads.
     Keeps both resolved and unresolved so the scorecard can filter on ``Resolved``.
     """
+    # Debug: dump the first DVIR so the real field shape is visible in the artifact.
+    if raw_dvirs:
+        try:
+            import json as _json
+            debug_dir = os.environ.get("DEBUG_DIR", "output/samsara/_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            with open(os.path.join(debug_dir, "sample_dvir.json"), "w") as f:
+                _json.dump(raw_dvirs[0], f, indent=2, default=str)
+            log.info("  DVIR keys in first record: %s", list(raw_dvirs[0].keys()))
+        except Exception as e:
+            log.warning("  could not dump sample DVIR: %s", e)
+
     rows: list[dict] = []
     for dvir in raw_dvirs or []:
-        defects = dvir.get("defects")
-        if not isinstance(defects, list) or not defects:
+        # /fleet/dvirs/history nests defects under vehicleDefects / trailerDefects;
+        # older shapes used a flat "defects" list.
+        defects: list = []
+        for key in ("vehicleDefects", "trailerDefects", "defects"):
+            v = dvir.get(key)
+            if isinstance(v, list):
+                defects.extend(v)
+        if not defects:
             continue
         vehicle = dvir.get("vehicle") or {}
         driver = dvir.get("driver") or {}
         unit = vehicle.get("name") or vehicle.get("id")
         driver_name = driver.get("name") or driver.get("id")
-        reported = _ts_to_str(dvir.get("createdAtMs") or dvir.get("createdAt"))
+        reported = _ts_to_str(dvir.get("createdAtTime") or dvir.get("createdAtMs") or dvir.get("createdAt"))
         dvir_type = dvir.get("inspectionType") or dvir.get("dvirType")
         for d in defects:
             if not isinstance(d, dict):
                 continue
+            resolved = d.get("isResolved", d.get("resolved", False))
             rows.append({
                 "Reported": reported,
                 "Unit": unit,
                 "Driver": driver_name,
                 "Defect": d.get("comment") or d.get("defectType") or "unspecified defect",
                 "Defect Type": d.get("defectType"),
-                "Resolved": bool(d.get("resolved", False)),
-                "Mechanic Notes": d.get("mechanicNotes") or d.get("resolvedComment"),
+                "Resolved": bool(resolved),
+                "Mechanic Notes": d.get("mechanicNotes") or d.get("resolvedComment") or ((d.get("resolvedBy") or {}).get("name")),
                 "DVIR Type": dvir_type,
             })
     return pd.DataFrame(rows)
