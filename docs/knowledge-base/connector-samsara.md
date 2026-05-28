@@ -43,12 +43,12 @@ the whole run.
 | 2 | `fetch_drivers` | `/fleet/drivers` | roster |
 | 3 | `fetch_vehicle_stats` | `/fleet/vehicles/stats` | **2 calls merged** (see below) |
 | 4 | `fetch_locations` | `/fleet/vehicles/locations` | current GPS |
-| 5 | `fetch_trips` | `/fleet/trips` (legacy v1, `vehicleIds` CSV) | single call; tries ms params then ISO |
+| 5 | `fetch_trips` | `/v1/fleet/trips` (legacy v1) | **per-vehicle** loop; singular `vehicleId` + ms timestamps; response not in `data` envelope (read from `trips`/`vehicleTrips`/`vehicles[].trips`) |
 | 6 | `fetch_safety_events` | `/fleet/safety-events` | hyphen, not slash; `limit` capped at 200 |
 | 7 | `fetch_hos_logs` | `/fleet/hos/logs` → `/fleet/drivers/hos-logs` | duty-status **logs** (30-day window) |
 | 8 | `fetch_hos_violations` | `/fleet/hos/violations` (+ 2 fallbacks) | actual **violations** (not logs); ~190-day window |
 | 9 | `fetch_dvirs` | **GET** `/fleet/dvirs/history` | inspections; paged in **≤30-day chunks** |
-| 10 | `fetch_ifta` | `/fleet/reports/ifta/vehicle` (singular) | per-vehicle IFTA; one month per call |
+| 10 | `fetch_ifta` | `/fleet/reports/ifta/vehicle` (singular) | `year` (int) + `month` as full name; current month 400s with "data may still be processing" (~72-hour lag) |
 
 Three **time windows** are used: a long window (default 90 days, via
 `SAMSARA_DAYS_BACK`) for trips; a separate ~190-day window
@@ -79,10 +79,12 @@ HOS logs.
   `fetch_vehicle_stats` makes two calls (`obdOdometerMeters, fuelPercents,
   engineStates, gpsOdometerMeters` then `syntheticEngineSeconds`) and merges
   them by vehicle `id`.
-- **Trips: legacy v1, single call.** Uses `/fleet/trips` (no `/v1/` prefix on
-  Samsara's base) with a comma-joined `vehicleIds`. The old per-vehicle path
-  `/fleet/vehicles/{id}/trips` now returns 404. ms params (`startMs`/`endMs`)
-  are tried first, then ISO (`startTime`/`endTime`) as a fallback.
+- **Trips: legacy v1, per-vehicle.** Lives at `/v1/fleet/trips` (the `/v1/` prefix
+  is required — `/fleet/trips` returns 404). Each call takes a **singular**
+  `vehicleId` query param (CSV `vehicleIds` returns 400 "Missing parameter:
+  vehicleId"), plus `startMs`/`endMs`. The response **doesn't use the standard
+  `{"data": [...]}` envelope**, so `fetch_trips` does a direct GET and pulls
+  trips from `trips` / `vehicleTrips` / `vehicles[].trips`.
 - **DVIRs are GET, paged in ≤30-day chunks.** `POST /fleet/dvirs` is the
   *create* endpoint and returns `401 "requires DVIRs write permissions"`. The
   read endpoint is `GET /fleet/dvirs/history`, which rejects windows longer
