@@ -172,19 +172,20 @@ class SamsaraClient:
         if not vehicle_ids:
             log.warning("No vehicle IDs provided — skipping trips")
             return []
-        # v1 trips uses millisecond timestamps + a vehicleIds CSV; modern startTime/
-        # endTime is the fallback if/when Samsara migrates this endpoint.
-        params_ms = {"startMs": _ms(start), "endMs": _ms(end),
-                     "vehicleIds": ",".join(str(v) for v in vehicle_ids)}
-        items = self._safe_get("/fleet/trips", params_ms)
-        if items:
-            log.info("Total trips: %d (from /fleet/trips, ms params)", len(items))
-            return items
-        params_iso = {"startTime": _iso(start), "endTime": _iso(end),
-                      "vehicleIds": ",".join(str(v) for v in vehicle_ids)}
-        items = self._safe_get("/fleet/trips", params_iso)
-        log.info("Total trips: %d (from /fleet/trips, ISO params)", len(items))
-        return items
+        # v1 legacy endpoint — lives under /v1/, with millisecond timestamps and a
+        # vehicleIds CSV. /fleet/trips (no /v1) returns 404 on the current base.
+        vids = ",".join(str(v) for v in vehicle_ids)
+        for path, params in (
+            ("/v1/fleet/trips", {"startMs": _ms(start), "endMs": _ms(end), "vehicleIds": vids}),
+            ("/v1/fleet/trips", {"startTime": _iso(start), "endTime": _iso(end), "vehicleIds": vids}),
+            ("/fleet/trips",    {"startMs": _ms(start), "endMs": _ms(end), "vehicleIds": vids}),
+        ):
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Total trips: %d (from %s)", len(items), path)
+                return items
+        log.info("Total trips: 0 (no path returned data)")
+        return []
 
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""
@@ -251,14 +252,12 @@ class SamsaraClient:
         return all_items
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
-        """IFTA per-vehicle fuel & mileage report for a given month via
-        `GET /fleet/reports/ifta/vehicle` (singular). The old plural path 404s.
-        Takes a startTime/endTime window (not year/month)."""
+        """IFTA per-vehicle fuel & mileage report via `GET /fleet/reports/ifta/vehicle`
+        (singular — the plural path 404s). The endpoint takes integer ``year`` and
+        ``month`` query params; passing startTime/endTime returns 400
+        "year is missing from query string"."""
         log.info("Fetching IFTA %d-%02d…", year, month)
-        start = datetime.datetime(year, month, 1)
-        end = datetime.datetime(year + 1, 1, 1) if month == 12 else datetime.datetime(year, month + 1, 1)
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
-        items = self._safe_get("/fleet/reports/ifta/vehicle", params)
+        items = self._safe_get("/fleet/reports/ifta/vehicle", {"year": year, "month": month})
         if items:
             log.info("  IFTA: got %d records from /fleet/reports/ifta/vehicle", len(items))
             return items
