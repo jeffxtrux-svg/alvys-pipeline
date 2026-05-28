@@ -172,20 +172,20 @@ class SamsaraClient:
         if not vehicle_ids:
             log.warning("No vehicle IDs provided — skipping trips")
             return []
-        # v1 legacy endpoint — lives under /v1/, with millisecond timestamps and a
-        # vehicleIds CSV. /fleet/trips (no /v1) returns 404 on the current base.
-        vids = ",".join(str(v) for v in vehicle_ids)
-        for path, params in (
-            ("/v1/fleet/trips", {"startMs": _ms(start), "endMs": _ms(end), "vehicleIds": vids}),
-            ("/v1/fleet/trips", {"startTime": _iso(start), "endTime": _iso(end), "vehicleIds": vids}),
-            ("/fleet/trips",    {"startMs": _ms(start), "endMs": _ms(end), "vehicleIds": vids}),
-        ):
-            items = self._safe_get(path, params)
-            if items:
-                log.info("Total trips: %d (from %s)", len(items), path)
-                return items
-        log.info("Total trips: 0 (no path returned data)")
-        return []
+        # v1 legacy /v1/fleet/trips is **per-vehicle** and takes a singular
+        # ``vehicleId`` query param + ms timestamps. (CSV vehicleIds returns
+        # 400 "Missing parameter: vehicleId"; the old /fleet/vehicles/{id}/trips
+        # path 404s.)
+        all_trips: list[dict] = []
+        for vid in vehicle_ids:
+            params = {"vehicleId": vid, "startMs": _ms(start), "endMs": _ms(end)}
+            trips = self._safe_get("/v1/fleet/trips", params)
+            for t in trips:
+                t.setdefault("vehicleId", vid)
+            all_trips.extend(trips)
+            time.sleep(0.05)
+        log.info("Total trips: %d (from /v1/fleet/trips, per-vehicle)", len(all_trips))
+        return all_trips
 
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""
