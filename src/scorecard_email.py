@@ -674,7 +674,7 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
     ``_bar_chart``; the current month's label gets a trailing ``*`` to mark MTD.
     Returns empty tuples when the required Loads columns aren't present.
     """
-    empty = {"direct": ([], []), "broker": ([], [])}
+    empty = {"direct": ([], []), "broker": ([], []), "combined": ([], [])}
     if not sheets:
         return empty
     loads = sheets.get("Loads")
@@ -690,6 +690,11 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
     sub = loads.copy()
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+    # Scope to the X-Trux + XFreight asset fleet (matches the X-Trux Overview
+    # section where these charts now live; X-Linx brokerage is excluded).
+    office_col = _find_col(sub, OFFICE_COL_NEEDLES)
+    if office_col:
+        sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
     dates = _to_naive_dt(sub[date_col])
     keep = dates.notna()
     sub = sub.loc[keep]
@@ -702,22 +707,28 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
     miles = pd.to_numeric(sub[miles_col], errors="coerce").fillna(0)
 
     months = _last_6_months()
-    d_labels, d_values, b_labels, b_values = [], [], [], []
+    d_labels, d_values = [], []
+    b_labels, b_values = [], []
+    c_labels, c_values = [], []
     for i, (yy, mm) in enumerate(months):
         in_month = (dates.dt.year == yy) & (dates.dt.month == mm)
         d_mask = in_month & is_direct
         b_mask = in_month & ~is_direct
         d_miles = float(miles[d_mask].sum())
         b_miles = float(miles[b_mask].sum())
+        c_miles = float(miles[in_month].sum())
         d_rpm = float(rev[d_mask].sum()) / d_miles if d_miles else 0.0
         b_rpm = float(rev[b_mask].sum()) / b_miles if b_miles else 0.0
+        c_rpm = float(rev[in_month].sum()) / c_miles if c_miles else 0.0
         lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
         if i == len(months) - 1:
             lab += "*"
         d_labels.append(lab); d_values.append(d_rpm)
         b_labels.append(lab); b_values.append(b_rpm)
+        c_labels.append(lab); c_values.append(c_rpm)
 
-    return {"direct": (d_labels, d_values), "broker": (b_labels, b_values)}
+    return {"direct": (d_labels, d_values), "broker": (b_labels, b_values),
+            "combined": (c_labels, c_values)}
 
 
 def _norm_name(s) -> str:
@@ -1406,17 +1417,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + pay_tile
           + margin_tile
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
-    # Two trend charts beside the Loads tile: average rev / mile by month for
-    # direct customers (XFreight's contracted shippers) vs broker freight.
+    t1b = loads_tile + empty_td + empty_td + empty_td
+    # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
+    # XFreight asset fleet) plus a direct-customers vs broker-freight split.
     _rpm_d_labels, _rpm_d_values = ((rpm_trend or {}).get("direct") or ([], []))
     _rpm_b_labels, _rpm_b_values = ((rpm_trend or {}).get("broker") or ([], []))
-    direct_rpm_chart = _bar_chart("Direct customers &middot; rev / mile",
-                                  _rpm_d_labels, _rpm_d_values,
-                                  "monthly avg &middot; *MTD", fmt=rpm)
-    broker_rpm_chart = _bar_chart("Broker freight &middot; rev / mile",
-                                  _rpm_b_labels, _rpm_b_values,
-                                  "monthly avg &middot; *MTD", fmt=rpm)
-    t1b = loads_tile + direct_rpm_chart + broker_rpm_chart + empty_td
+    _rpm_c_labels, _rpm_c_values = ((rpm_trend or {}).get("combined") or ([], []))
+    _rpm_sub = "monthly avg &middot; X-Trux + XFreight &middot; *MTD"
+    xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm)
+                + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm)
+                + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm)
+                + empty_td)
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -1569,7 +1580,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{mtd_note}"
-            f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr>"
+            f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
