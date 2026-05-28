@@ -172,16 +172,37 @@ class SamsaraClient:
         if not vehicle_ids:
             log.warning("No vehicle IDs provided — skipping trips")
             return []
-        # v1 legacy /v1/fleet/trips is **per-vehicle** and takes a singular
-        # ``vehicleId`` query param + ms timestamps. (CSV vehicleIds returns
-        # 400 "Missing parameter: vehicleId"; the old /fleet/vehicles/{id}/trips
-        # path 404s.)
+        # v1 legacy /v1/fleet/trips is **per-vehicle** (singular ``vehicleId`` +
+        # ms timestamps). The response doesn't use the standard {"data": [...]}
+        # envelope, so we can't share _get_pages — try common v1 shapes.
         all_trips: list[dict] = []
+        url = f"{BASE_URL}/v1/fleet/trips"
         for vid in vehicle_ids:
-            params = {"vehicleId": vid, "startMs": _ms(start), "endMs": _ms(end)}
-            trips = self._safe_get("/v1/fleet/trips", params)
+            try:
+                resp = self._session.get(
+                    url, headers=self._headers(),
+                    params={"vehicleId": vid, "startMs": _ms(start), "endMs": _ms(end)},
+                    timeout=60,
+                )
+                if resp.status_code != 200:
+                    log.warning("GET /v1/fleet/trips vehicleId=%s → HTTP %d", vid, resp.status_code)
+                    continue
+                payload = resp.json()
+            except Exception as e:
+                log.warning("GET /v1/fleet/trips vehicleId=%s → %s", vid, e)
+                continue
+            # Pull trips from any of the common v1 wrappers; flatten a vehicles[].trips
+            # nesting if present.
+            trips = payload.get("trips") or payload.get("vehicleTrips") or payload.get("data") or []
+            if not trips:
+                vehicles = payload.get("vehicles") or []
+                if isinstance(vehicles, list):
+                    for v in vehicles:
+                        if isinstance(v, dict):
+                            trips.extend(v.get("trips") or [])
             for t in trips:
-                t.setdefault("vehicleId", vid)
+                if isinstance(t, dict):
+                    t.setdefault("vehicleId", vid)
             all_trips.extend(trips)
             time.sleep(0.05)
         log.info("Total trips: %d (from /v1/fleet/trips, per-vehicle)", len(all_trips))
