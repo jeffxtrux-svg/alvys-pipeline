@@ -747,17 +747,16 @@ def _norm_inv(s) -> str:
 
 
 def compute_bill_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
-    """Bill-by-bill QB-vs-Alvys match on invoice number. Returns invoices open in
-    Alvys but not QB (the gap: likely paid in QB, unsynced to Alvys), invoices open
-    in QB but not Alvys, and same-invoice amount mismatches.
+    """Bill-by-bill QB-vs-Alvys match. Tries the Alvys invoice number first, then the
+    Alvys Load #, and uses whichever actually overlaps QuickBooks' invoice "Num" — so
+    it still works if Alvys carries no customer invoice number (Load # is always
+    present). Returns invoices open in Alvys but not QB (the gap), open in QB but not
+    Alvys, and same-bill amount mismatches.
 
-    Returns {"available": False} when the Alvys feed carries no invoice numbers yet
-    (i.e. the pull hasn't run with the Customer Invoice Number mapping)."""
+    available=False only when there's nothing to compare; no_match=True (with sample
+    IDs from each side) when neither key overlaps QB, so the formats can be eyeballed."""
     al_inv = (alvys_ar or {}).get("open_invoices") or []
     qb_inv = (qb_ar or {}).get("open_invoices") or []
-    al_has_nums = any(_norm_inv(r.get("invoice")) for r in al_inv)
-    if not al_inv or not al_has_nums:
-        return {"available": False}
 
     qb_by: dict[str, dict] = {}
     for r in qb_inv:
@@ -766,12 +765,30 @@ def compute_bill_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> di
             continue
         d = qb_by.setdefault(k, {"invoice": r.get("invoice", ""), "customer": r.get("customer", ""), "amount": 0.0})
         d["amount"] += float(r.get("amount") or 0)
+    if not al_inv or not qb_by:
+        return {"available": False}
+
+    # Pick the Alvys identifier (invoice # or Load #) that best overlaps QB's Num.
+    def _overlap(field):
+        return sum(1 for r in al_inv if _norm_inv(r.get(field)) in qb_by)
+    inv_ov, load_ov = _overlap("invoice"), _overlap("load")
+    key_field = "invoice" if inv_ov >= load_ov else "load"
+    best_ov = max(inv_ov, load_ov)
+
+    if best_ov == 0:
+        # Couldn't match on either key — surface sample IDs so the formats are visible.
+        return {"available": True, "no_match": True, "matched": 0,
+                "alvys_sample": [(_cell(r.get("invoice")) or _cell(r.get("load")) or "?") for r in al_inv[:8]],
+                "qb_sample": [str(r.get("invoice", "")) for r in qb_inv[:8]],
+                "alvys_n": len(al_inv), "qb_n": len(qb_by)}
+
     al_by: dict[str, dict] = {}
     for r in al_inv:
-        k = _norm_inv(r.get("invoice"))
+        k = _norm_inv(r.get(key_field))
         if not k:
             continue
-        d = al_by.setdefault(k, {"invoice": r.get("invoice", ""), "customer": r.get("customer", ""),
+        label = _cell(r.get("invoice")) or _cell(r.get("load"))
+        d = al_by.setdefault(k, {"invoice": label, "customer": r.get("customer", ""),
                                  "load": r.get("load", ""), "amount": 0.0, "days": 0})
         d["amount"] += float(r.get("amount") or 0)
         d["days"] = max(d["days"], int(r.get("days") or 0))
@@ -791,7 +808,7 @@ def compute_bill_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> di
     mismatch.sort(key=lambda r: abs(r["diff"]), reverse=True)
     matched = sum(1 for k in al_by if k in qb_by)
     return {
-        "available": True,
+        "available": True, "no_match": False, "key_used": key_field,
         "alvys_only": alvys_only, "qb_only": qb_only, "mismatch": mismatch,
         "alvys_only_total": sum(r["amount"] for r in alvys_only),
         "qb_only_total": sum(r["amount"] for r in qb_only),
@@ -1704,19 +1721,37 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
     head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 8, date_str)
     if not b.get("available"):
-        msg = ("Bill-by-bill matching needs the Alvys Customer Invoice Number, which appears once the "
-               "Alvys pull (&ldquo;Refresh Alvys data&rdquo;) runs with the new mapping. Until then, see "
-               "page 7 for the customer-level reconciliation.")
+        msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
+               "numbers, or there is no open AR. See page 7 for the customer-level reconciliation.")
+        return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_brief(msg, 'warn')}</table>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+    if b.get("no_match"):
+        # Neither invoice # nor Load # overlapped QB's Num — show samples to compare formats.
+        msg = ("Couldn&rsquo;t match bills: neither the Alvys invoice number nor the Alvys Load # overlaps the "
+               "QuickBooks invoice &lsquo;Num&rsquo;. Sample identifiers below &mdash; the two systems appear to "
+               "number invoices differently. Use page 7 (by customer) meanwhile.")
+        srows = ""
+        al_s, qb_s = b.get("alvys_sample", []), b.get("qb_sample", [])
+        for i in range(max(len(al_s), len(qb_s))):
+            srows += _tr([al_s[i] if i < len(al_s) else "", qb_s[i] if i < len(qb_s) else ""],
+                         ["left", "left"], [None, None])
         return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_brief(msg, 'warn')}"
-                f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"{_section('Sample identifiers &middot; Alvys vs QuickBooks')}"
+                f"{_table(['Alvys invoice # / Load #', 'QuickBooks Num'], ['left', 'left'], srows)}</table>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
                 f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
     ao, qo, mm = b["alvys_only"], b["qb_only"], b["mismatch"]
     LIM = 20
     match_pct = (b["matched"] / b["alvys_n"]) if b["alvys_n"] else None
+    key_label = "Load #" if b.get("key_used") == "load" else "invoice #"
     tiles = (_tile("Open in Alvys, not QB", money(b["alvys_only_total"]), _pill(f"{len(ao)} bills", "bad"))
              + _tile("Open in QB, not Alvys", money(b["qb_only_total"]), _pill(f"{len(qo)} bills", "warn"))
-             + _tile("Invoice match rate", pct(match_pct), _pill(f"{b['matched']}/{b['alvys_n']} matched", "mute"))
+             + _tile("Match rate", pct(match_pct), _pill(f"on {key_label} &middot; {b['matched']}/{b['alvys_n']}", "mute"))
              + "<td width='25%' style='padding:6px;'></td>")
 
     def _tbl(title, rows, cols, mk):
@@ -1729,11 +1764,11 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
         return f"{_section(title)}{_table(cols, ['left', 'left', 'right', 'right'], body)}"
 
     ao_tbl = _tbl("Open in Alvys, not in QuickBooks &middot; the gap to chase", ao,
-                  ["Invoice", "Customer", "Days", "Amount"],
+                  ["Invoice / Load", "Customer", "Days", "Amount"],
                   lambda r: _tr([r["invoice"] or r["load"], r["customer"] or "&mdash;", str(r["days"]), money(r["amount"])],
                                 ["left", "left", "right", "right"], [None, None, "bad", None]))
-    mm_tbl = _tbl("Same invoice, different open balance", mm,
-                  ["Invoice", "Customer", "Alvys / QB", "Diff"],
+    mm_tbl = _tbl("Same bill, different open balance", mm,
+                  ["Invoice / Load", "Customer", "Alvys / QB", "Diff"],
                   lambda r: _tr([r["invoice"], r["customer"] or "&mdash;", f"{money(r['amount'])} / {money(r['qb_amount'])}", money(r["diff"])],
                                 ["left", "left", "right", "right"], [None, None, None, "warn"]))
     qo_tbl = _tbl("Open in QuickBooks, not in Alvys", qo,
@@ -1744,10 +1779,10 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
     return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>{ao_tbl}{mm_tbl}{qo_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Matched on invoice number (X-Trux + X-Linx, JW excluded). &lsquo;Open in Alvys, not in QuickBooks&rsquo; "
-            f"are the bills driving the gap &mdash; most are likely paid in QB but not synced back to Alvys. "
-            f"If the match rate is low, the two systems use different invoice numbers and this view is unreliable &mdash; "
-            f"use page 7 instead. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+            f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
+            f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
+            f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
+            f"differently and this view is partial &mdash; use page 7. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
