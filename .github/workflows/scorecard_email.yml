@@ -13,12 +13,12 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   schedule:
-    # 5:30am Central, locked to **CDT** (= 10:30 UTC). Runs 30 min after the
-    # 5am Alvys / Samsara / QB pulls so all three feeds are fresh in OneDrive
-    # by the time the brief reads them. In Central Standard Time (winter) this
-    # lands at 4:30am Central. The off-the-hour minute (`:30`) lowers the chance
-    # of a GitHub Actions schedule drop compared to top-of-hour high-load.
-    - cron: '30 10 * * *'
+    # 5:30am CST (= 11:30 UTC). GitHub cron is fixed UTC and ignores DST, so
+    # this lands at 6:30am during Central Daylight Time. Runs 30 min after the
+    # 5:00am Alvys/Samsara/QB refresh so all three feeds are fresh in OneDrive.
+    # The off-the-hour minute (`:30`) lowers the chance of a GitHub Actions
+    # schedule drop compared to the top-of-hour high-load window.
+    - cron: '30 11 * * *'
 
 jobs:
   scorecard:
