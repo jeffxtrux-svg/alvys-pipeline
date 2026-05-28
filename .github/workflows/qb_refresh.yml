@@ -17,11 +17,13 @@ name: Refresh QuickBooks data
 on:
   workflow_dispatch:
   schedule:
-    # Offset 30 min from Alvys runs to avoid overlap
-    # 5:30am, 12:30pm, 6:30pm Central (UTC-5 DST / UTC-6 standard)
-    - cron: '30 11 * * *'   # 5:30am CT (standard) / 6:30am CT (DST)
-    - cron: '30 18 * * *'   # 12:30pm CT (DST) / 1:30pm CT (standard)
-    - cron: '30 0 * * *'    # 6:30pm CT (DST) / 7:30pm CT (standard)
+    # Run concurrently with Alvys + Samsara at 5:00am CST so the scorecard
+    # (5:30am CST) has all three feeds fresh in OneDrive. Each connector
+    # uploads to a different folder and uses its own credentials, so there's
+    # no contention.
+    - cron: '0 11 * * *'   # 5:00am CT (standard) / 6:00am CT (DST)
+    - cron: '0 18 * * *'   # 12:00pm CT (DST) / 1:00pm CT (standard)
+    - cron: '0 0 * * *'    # 6:00pm CT (DST) / 7:00pm CT (standard)
 
 jobs:
   refresh:
