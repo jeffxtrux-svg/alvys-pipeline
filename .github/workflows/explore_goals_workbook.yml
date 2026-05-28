@@ -1,0 +1,38 @@
+# One-off: dump the structure of the Goals & Trends workbook to email so the
+# cost-per-mile algorithm can be designed against the real columns.
+
+name: Explore Goals & Trends workbook (one-off)
+
+on:
+  workflow_dispatch:
+
+  # TEMPORARY: one-shot trigger on push (removed right after).
+  push:
+    branches: [claude/claude-md-docs-Es64x]
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dump workbook structure and email
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          GOALS_TRENDS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQD0lr0zVSBRSK3IO-sKzNjYAbZ2OE-Djsu_t1EiIOcCgL8?e=H7u1v7"
+        run: python -m src.explore_goals_workbook
