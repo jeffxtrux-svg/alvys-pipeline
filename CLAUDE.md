@@ -114,11 +114,11 @@ upload `output/` as a 7-day artifact (`if: always()`):
 
 | Workflow | Does | Cron (UTC) |
 |----------|------|------------|
-| `refresh.yml` | Alvys pull → OneDrive → artifact | `0 11,18,0 * * *` |
-| `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 11,18,0 * * *` |
-| `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `0 11,18,0 * * *` |
+| `refresh.yml` | Alvys pull → OneDrive → artifact | `0 10,17,23 * * *` |
+| `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 10,17,23 * * *` |
+| `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `0 10,17,23 * * *` |
 | `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 13 * * *` |
-| `scorecard_email.yml` | read OneDrive → email daily brief (8 pages) | `30 11 * * *` |
+| `scorecard_email.yml` | read OneDrive → email daily brief (8 pages) | `30 10 * * *` |
 
 The daily brief (`src/scorecard_email.py`) is 8 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`):
 
@@ -131,7 +131,7 @@ The daily brief (`src/scorecard_email.py`) is 8 pages scoped to **X-Trux + X-Lin
 7. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance).
 8. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention).
 
-Crons are fixed UTC: the three pulls (Alvys / Samsara / QB) fire concurrently at **5:00am CST** (6:00am CDT) / 12pm / 6pm Central; the scorecard email follows **30 min later at 5:30am CST** (6:30am CDT). The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
+Crons are fixed UTC and locked to **CDT** (the dominant season): the three pulls (Alvys / Samsara / QB) fire concurrently at **5:00am Central** / 12pm / 6pm during DST (4am / 11am / 5pm Central during standard time); the scorecard email follows **30 min later at 5:30am Central** (4:30am during standard time). The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
 the new refresh token; without it the run still works but warns and the old
 token lasts ~100 days.

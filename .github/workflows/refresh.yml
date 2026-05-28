@@ -6,12 +6,14 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
-  # Cron times are in UTC. Adjust for Central time as needed.
-  # Below = 5am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
+  # Cron times are in UTC. Locked to **CDT** (Central Daylight Time, the current
+  # season) so the morning pull lands at 5am Central year-round during DST and
+  # 4am Central during standard time (the alternative — locking to CST — runs
+  # at 6am during DST, which is the wrong "morning" for the daily brief).
   schedule:
-    - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
-    - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
-    - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
+    - cron: '0 10 * * *'   # 5am CT (DST) / 4am CT (standard)
+    - cron: '0 17 * * *'   # 12pm CT (DST) / 11am CT (standard)
+    - cron: '0 23 * * *'   # 6pm CT (DST) / 5pm CT (standard)
 
 jobs:
   refresh:

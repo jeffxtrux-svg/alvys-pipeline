@@ -17,13 +17,13 @@ name: Refresh QuickBooks data
 on:
   workflow_dispatch:
   schedule:
-    # Run concurrently with Alvys + Samsara at 5:00am CST so the scorecard
-    # (5:30am CST) has all three feeds fresh in OneDrive. Each connector
-    # uploads to a different folder and uses its own credentials, so there's
-    # no contention.
-    - cron: '0 11 * * *'   # 5:00am CT (standard) / 6:00am CT (DST)
-    - cron: '0 18 * * *'   # 12:00pm CT (DST) / 1:00pm CT (standard)
-    - cron: '0 0 * * *'    # 6:00pm CT (DST) / 7:00pm CT (standard)
+    # Same UTC schedule as Alvys + Samsara — all three run concurrently at 5am
+    # Central (locked to CDT — see refresh.yml) so the 5:30am scorecard has all
+    # three feeds fresh in OneDrive. Each connector uploads to a different folder
+    # with its own credentials, so there's no contention.
+    - cron: '0 10 * * *'   # 5am CT (DST) / 4am CT (standard)
+    - cron: '0 17 * * *'   # 12pm CT (DST) / 11am CT (standard)
+    - cron: '0 23 * * *'   # 6pm CT (DST) / 5pm CT (standard)
 
 jobs:
   refresh:
