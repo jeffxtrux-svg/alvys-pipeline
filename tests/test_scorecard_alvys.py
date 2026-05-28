@@ -36,9 +36,11 @@ def _loads():
              "Driver Rate": 400, "Carrier Rate": 999, "Total Dispatch Mileage": 80,
              "Empty Dispatch Mileage": 0, "Scheduled Pickup": pd.Timestamp(2026, 4, 12),
              "Load Status": "Delivered"}),
-        # zero-revenue asset load: must still be counted in "Loads"
+        # zero-revenue but settled (driver paid) — e.g. a positioning / deadhead
+        # move with no customer fare. Must still be counted in "Loads" and its cost
+        # must roll into the entity's cost/margin.
         dict(Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"}, **{"Customer Revenue": 0,
-             "Driver Rate": 0, "Carrier Rate": 0, "Total Dispatch Mileage": 50,
+             "Driver Rate": 200, "Carrier Rate": 0, "Total Dispatch Mileage": 50,
              "Empty Dispatch Mileage": 5, "Scheduled Pickup": pd.Timestamp(2026, 4, 15),
              "Load Status": "Delivered"}),
     ]
@@ -48,9 +50,9 @@ def _loads():
 def test_margin_is_revenue_minus_driver_rate():
     e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
     xt = e["X-Trux"]
-    assert round(xt["cost"]) == 300                  # SUM(Loads[Driver Rate]) for L1+L3
-    assert round(xt["margin"]) == 700                # 1000 - 300
-    assert abs(xt["margin_pct"] - 0.70) < 1e-9
+    assert round(xt["cost"]) == 500                  # SUM(Loads[Driver Rate]) for L1 (300) + L3 (200)
+    assert round(xt["margin"]) == 500                # 1000 - 500
+    assert abs(xt["margin_pct"] - 0.50) < 1e-9
 
 
 def test_grouping_by_office_not_invoice_as():
@@ -71,6 +73,25 @@ def test_counts_all_loads_including_zero_revenue():
     e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
     assert e["X-Trux"]["loads"] == 2                 # L1 + zero-revenue L3
     assert e["X-Linx"]["loads"] == 1
+
+
+def test_unsettled_loads_excluded_from_pnl():
+    """Booked-but-not-yet-dispatched loads (revenue > 0, Driver Rate = 0) must NOT
+    contribute to revenue/cost/margin (which would inflate margin % mid-month
+    relative to the Power BI report). They surface separately via `unsettled`."""
+    sheets = _loads()
+    booked_unsettled = pd.DataFrame([dict(
+        Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
+        **{"Customer Revenue": 2665, "Driver Rate": 0, "Carrier Rate": 0,
+           "Total Dispatch Mileage": 0, "Empty Dispatch Mileage": 0,
+           "Scheduled Pickup": pd.Timestamp(2026, 4, 28), "Load Status": "Delivered"})])
+    sheets["Loads"] = pd.concat([sheets["Loads"], booked_unsettled], ignore_index=True)
+    e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
+    xt = e["X-Trux"]
+    # Same totals as without the unsettled load — it's excluded.
+    assert round(xt["revenue"]) == 1000 and round(xt["cost"]) == 500
+    assert round(xt["margin"]) == 500
+    assert xt["loads"] == 2 and xt["unsettled"] == 1
 
 
 def test_health_flags_missing_driver_rate():
