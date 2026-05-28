@@ -12,6 +12,9 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+  # TEMPORARY: one-shot trigger to send today's brief (removed right after).
+  push:
+    branches: [claude/claude-md-docs-Es64x]
   schedule:
     # 5:30am CST (= 11:30 UTC). GitHub cron is fixed UTC and ignores DST, so
     # this lands at 6:30am during Central Daylight Time. Runs 30 min after the
