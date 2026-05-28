@@ -233,9 +233,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         log.warning("Alvys Loads sheet missing/empty")
         return None
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
-    if "Load Status" in loads.columns:
-        loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
-        dates = dates.loc[loads.index]
+    # Power BI's XFreight Report table sums all loads (including cancelled) for
+    # the asset-carrier mileage / deadhead / RPM measures. Excluding cancelled
+    # here previously made the scorecard's Dead head %, Empty miles, and X-Trux
+    # Mileage tiles read lower than the Power BI table by 0.3-0.5 pts (cancelled
+    # loads still carry the empty miles where a truck repositioned before the
+    # load was killed). Match Power BI by keeping cancelled in the asset slice.
     w = _windows()
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
     out = {key: _alvys_metrics(loads[dates >= start]) for key, start in win_specs}
