@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 
 from src.samsara_client import SamsaraClient
 
+log = logging.getLogger("samsara_main")
+
 # openpyxl rejects ASCII control chars (except tab/LF/CR) embedded in strings
 _ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 

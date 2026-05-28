@@ -110,13 +110,24 @@ def _extract_dvir_defects(dvirs: list[dict]) -> list[dict]:
     """Find DVIRs with unresolved defects."""
     defects = []
     for dvir in dvirs:
-        dvir_defects = dvir.get("defects", [])
-        unresolved = [d for d in dvir_defects if not d.get("resolved", True)]
+        # /fleet/dvirs/history nests defects under vehicleDefects/trailerDefects
+        # with an isResolved flag (older shape used a flat "defects" list + resolved).
+        dvir_defects = []
+        for key in ("vehicleDefects", "trailerDefects", "defects"):
+            v = dvir.get(key)
+            if isinstance(v, list):
+                dvir_defects.extend(v)
+        unresolved = [
+            d for d in dvir_defects
+            if isinstance(d, dict) and not d.get("isResolved", d.get("resolved", True))
+        ]
         if not unresolved:
             continue
 
         created_ms = dvir.get("createdAtMs", 0)
-        if created_ms:
+        if dvir.get("createdAtTime"):
+            created_str = str(dvir["createdAtTime"])
+        elif created_ms:
             created_str = datetime.datetime.utcfromtimestamp(
                 created_ms / 1000
             ).strftime("%Y-%m-%d %H:%M UTC")
