@@ -1419,6 +1419,24 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + margin_tile
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     t1b = loads_tile + empty_td + empty_td + empty_td
+    # Estimated full-month margin: project MTD settled margin linearly to month-end.
+    # MTD margin is settled-only (Driver Rate > 0) so the run rate already excludes
+    # unsettled noise; scaling by days_in_month / day_of_month assumes the remaining
+    # days settle at the same per-day pace.
+    _now_ts = pd.Timestamp.now()
+    _dim, _de = _now_ts.days_in_month, _now_ts.day
+    _proj_factor = (_dim / _de) if _de else None
+    def _proj(v):
+        return (v * _proj_factor) if (_isnum(v) and _proj_factor) else None
+    _month_lbl = _now_ts.strftime("%B")
+    _proj_pill_sub = f"&middot; {_de}/{_dim}d"
+    t1c = (_tile(f"Est. {_month_lbl} margin", money(_proj(_xt.get("margin"))),
+                 _pill("X-Trux", "mute") + " " + _proj_pill_sub)
+           + _tile(f"Est. {_month_lbl} margin", money(_proj(_xl.get("margin"))),
+                   _pill("X-Linx", "mute") + " " + _proj_pill_sub)
+           + _tile(f"Est. {_month_lbl} margin", money(_proj(_co_margin or None)),
+                   _pill("X-Trux + X-Linx", "mute") + " " + _proj_pill_sub)
+           + empty_td)
     # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
     # XFreight asset fleet) plus a direct-customers vs broker-freight split.
     _rpm_d_labels, _rpm_d_values = ((rpm_trend or {}).get("direct") or ([], []))
@@ -1577,7 +1595,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{warn_row}"
             f"{_section('XFreight Overview')}"
-            f"<tr>{t1}</tr><tr>{t1b}</tr>"
+            f"<tr>{t1}</tr><tr>{t1b}</tr><tr>{t1c}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{mtd_note}"
