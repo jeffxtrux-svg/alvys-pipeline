@@ -52,8 +52,8 @@ log = logging.getLogger("scorecard_email")
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 # Targets pulled from your Goals workbooks
-TARGET_RPM = 2.33
-TARGET_DEADHEAD = 0.075
+TARGET_RPM = 2.92
+TARGET_DEADHEAD = 0.06
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
 
@@ -735,6 +735,79 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
             "combined": (c_labels, c_values)}
 
 
+def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 90) -> dict:
+    """Estimate full-month settled margin per entity.
+
+    Formula per entity:
+        projected_revenue = (booked MTD revenue) * (days_in_month / day_of_month)
+        projected_margin  = projected_revenue * trailing_{days}_margin_pct
+
+    Booked MTD revenue = all non-cancelled loads with Scheduled Pickup in the
+    current month — includes loads that haven't yet had driver pay entered, so
+    the forward estimate captures activity the settled-only MTD tile excludes.
+
+    Trailing margin % = settled loads only (Driver Rate > 0), non-cancelled,
+    Scheduled Pickup within the last ``days`` days. Combined = X-Trux + X-Linx,
+    using the combined trailing revenue/cost (revenue-weighted blend), not a
+    simple average of the per-entity rates.
+    """
+    if not sheets:
+        return {}
+    loads = sheets.get("Loads")
+    if loads is None or loads.empty:
+        return {}
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return {}
+
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    groups_all = loads[office_col].map(_entity_group)
+    not_cancelled = (loads["Load Status"].astype(str).str.lower() != "cancelled"
+                     if "Load Status" in loads.columns else pd.Series(True, index=loads.index))
+
+    now = pd.Timestamp.now()
+    dim, dom = now.days_in_month, now.day
+    factor = (dim / dom) if dom else None
+
+    mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
+    trail_start = now - pd.Timedelta(days=days)
+    trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
+    if "Driver Rate" in loads.columns:
+        trail_mask = trail_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
+
+    out: dict = {"days_in_month": dim, "day_of_month": dom, "trailing_days": days}
+    combined_booked = combined_t_rev = combined_t_cost = 0.0
+
+    for ent in ENTITY_ORDER:
+        ent_mask = groups_all == ent
+        booked = float(_col_any(loads[mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
+        t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
+        t_cost = float(_col(loads[trail_mask & ent_mask], "Driver Rate").fillna(0).sum())
+        m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
+        proj_rev = (booked * factor) if (booked and factor) else None
+        proj_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
+        out[ent] = {
+            "booked_mtd": booked or None,
+            "trailing_margin_pct": m_pct,
+            "projected_revenue": proj_rev,
+            "projected_margin": proj_margin,
+        }
+        combined_booked += booked
+        combined_t_rev += t_rev
+        combined_t_cost += t_cost
+
+    c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
+    c_proj_rev = (combined_booked * factor) if (combined_booked and factor) else None
+    c_proj_margin = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
+    out["combined"] = {
+        "booked_mtd": combined_booked or None,
+        "trailing_margin_pct": c_pct,
+        "projected_revenue": c_proj_rev,
+        "projected_margin": c_proj_margin,
+    }
+    return out
+
+
 def _norm_name(s) -> str:
     """Normalize a customer name for matching: drop periods (so 'J.W.' -> 'jw'),
     turn other punctuation/separators (hyphens, commas, slashes) into spaces, and
@@ -1367,7 +1440,8 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
-                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None) -> str:
+                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None,
+                margin_projection=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -1412,7 +1486,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
     _xt_asset = ((alvys or {}).get("asset") or {}).get("mtd", {})
     xtrux_r2 = (_tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
-                      "goal &le;7.5% " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+                      "goal &le;6% " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
                 + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
@@ -1422,23 +1496,24 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + margin_tile
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     t1b = loads_tile + empty_td + empty_td + empty_td
-    # Estimated full-month margin: project MTD settled margin linearly to month-end.
-    # MTD margin is settled-only (Driver Rate > 0) so the run rate already excludes
-    # unsettled noise; scaling by days_in_month / day_of_month assumes the remaining
-    # days settle at the same per-day pace.
-    _now_ts = pd.Timestamp.now()
-    _dim, _de = _now_ts.days_in_month, _now_ts.day
-    _proj_factor = (_dim / _de) if _de else None
-    def _proj(v):
-        return (v * _proj_factor) if (_isnum(v) and _proj_factor) else None
-    _month_lbl = _now_ts.strftime("%B")
-    _proj_pill_sub = f"&middot; {_de}/{_dim}d"
-    t1c = (_tile(f"Est. {_month_lbl} margin", money(_proj(_xt.get("margin"))),
-                 _pill("X-Trux", "mute") + " " + _proj_pill_sub)
-           + _tile(f"Est. {_month_lbl} margin", money(_proj(_xl.get("margin"))),
-                   _pill("X-Linx", "mute") + " " + _proj_pill_sub)
-           + _tile(f"Est. {_month_lbl} margin", money(_proj(_co_margin or None)),
-                   _pill("X-Trux + X-Linx", "mute") + " " + _proj_pill_sub)
+    # Estimated full-month margin per entity:
+    #   projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
+    #   projected_margin  = projected_revenue * trailing-90 settled margin %
+    # See compute_margin_projection() for the rationale. Pill shows the day ratio
+    # and trailing margin % so the basis is visible.
+    _mp = margin_projection or {}
+    _dim = _mp.get("days_in_month", 0)
+    _de = _mp.get("day_of_month", 0)
+    _td = _mp.get("trailing_days", 90)
+    _month_lbl = pd.Timestamp.now().strftime("%B")
+    def _proj_tile(label_ent, ent_key, pill_text):
+        ent = _mp.get(ent_key) or {}
+        sub = (_pill(pill_text, "mute")
+               + f" &middot; {_de}/{_dim}d &middot; t{_td} {pct(ent.get('trailing_margin_pct'))}")
+        return _tile(f"Est. {_month_lbl} margin", money(ent.get("projected_margin")), sub)
+    t1c = (_proj_tile("X-Trux", "X-Trux", "X-Trux")
+           + _proj_tile("X-Linx", "X-Linx", "X-Linx")
+           + _proj_tile("Combined", "combined", "X-Trux + X-Linx")
            + empty_td)
     # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
     # XFreight asset fleet) plus a direct-customers vs broker-freight split.
@@ -1567,8 +1642,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
                         f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
 
-    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
-              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
+    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.92), "
+              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;6%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
 
@@ -1945,7 +2020,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None) -> str:
+               rpm_trend=None, margin_projection=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -1956,7 +2031,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, margin_projection=margin_projection))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -1983,12 +2058,13 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
+    margin_projection = compute_margin_projection(alvys_sheets) if alvys_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced, rpm_trend=rpm_trend)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, margin_projection=margin_projection)
 
 
 # ----------------------------------------------------------------------
