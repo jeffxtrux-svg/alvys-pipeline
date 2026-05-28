@@ -520,6 +520,28 @@ def _customer_field_via_load(field_names: list[str]):
     return fn
 
 
+def _customer_name(load: dict):
+    """Customer display name: prefer the load's own CustomerName, else resolve via
+    CustomerId through the customers lookup (some loads carry the id but a blank
+    name, which otherwise renders as an empty / 'nan' customer downstream)."""
+    name = load.get("CustomerName")
+    if name:
+        return name
+    cust = customer_for_load(load)
+    if cust:
+        for f in ("Name", "CompanyName", "LegalName", "DisplayName"):
+            v = _get_nested(cust, f)
+            if v:
+                return v
+    return name
+
+
+def _customer_name_via_load(trip: dict):
+    """Trip-record version: hop to the joined load, then resolve its customer name."""
+    load = load_for_trip(trip)
+    return _customer_name(load) if load else None
+
+
 def _user_via_customer(field_names: list[str]):
     """For a Load record: customer record → user ID field → users lookup name."""
     def fn(load: dict):
@@ -657,7 +679,7 @@ LOADS_COLUMNS = [
     ("Load Status",                         "Status"),
     ("First Pick Status",                   "Stops.first.Status"),
     ("Last Drop Status",                    "Stops.last.Status"),
-    ("Customer",                            "CustomerName"),
+    ("Customer",                            _customer_name),
     ("Invoice As",                          "InvoiceAs"),
     ("First Stop",                          _first_stop_name),
     ("Pick City",                           "Stops.first.Address.City"),
@@ -731,6 +753,12 @@ LOADS_COLUMNS = [
     ("Created",                             "CreatedAt"),
     ("Invoicing Method",                    _customer_field(["InvoicingMethod", "InvoiceMethod", "PreferredInvoicingMethod"])),
     ("Contract Lane Type",                  "ContractLaneType"),
+    # Actual delivery = last stop's arrival time (vs Scheduled Delivery above).
+    # Used by the scorecard's "delivered, not yet invoiced" page.
+    ("Actual Delivery",                     "Stops.last.ArrivedAt"),
+    # Customer invoice number — lets the scorecard match Alvys open invoices to
+    # the QuickBooks A/R Aging Detail bill-by-bill.
+    ("Customer Invoice Number",             _customer_invoice_field(["InvoiceNumber", "CustomerInvoiceNumber", "Number", "InvoiceNum", "DocumentNumber", "ReferenceNumber"])),
 ]
 
 
@@ -760,7 +788,7 @@ TRIPS_COLUMNS = [
     ("Load Status",                         _from_load("Status")),
     ("First Pick Status",                   "Stops.first.Status"),
     ("Last Drop Status",                    "Stops.last.Status"),
-    ("Customer",                            _from_load("CustomerName")),
+    ("Customer",                            _customer_name_via_load),
     ("Customer Freight Charge",             _from_load("CustomerRate.Amount")),
     ("Contract Name",                       _from_load("ContractName")),
     ("Posted Carrier Rate",                 _zero_default_via_load("PostedCarrierRate")),

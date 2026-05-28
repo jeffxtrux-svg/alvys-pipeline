@@ -186,14 +186,11 @@ class SamsaraClient:
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""
         log.info("Fetching safety events %s → %s…", start.date(), end.date())
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
-        for path in ["/fleet/safety/events", "/safety/events"]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("Total safety events: %d (from %s)", len(items), path)
-                return items
-        log.info("Total safety events: 0")
-        return []
+        # /fleet/safety-events caps page size at 200 (PAGE_LIMIT of 512 -> HTTP 400).
+        params = {"startTime": _iso(start), "endTime": _iso(end), "limit": 200}
+        items = self._safe_get("/fleet/safety-events", params)
+        log.info("Total safety events: %d", len(items))
+        return items
 
     def fetch_hos_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """ELD / Hours of Service log entries."""
@@ -230,53 +227,24 @@ class SamsaraClient:
         return []
 
     def fetch_dvirs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
-        """Driver Vehicle Inspection Reports — uses POST (GET not allowed per API v2025.10)."""
+        """Driver Vehicle Inspection Reports (read).
+
+        Uses GET /fleet/dvirs/history (Read DVIRs scope). The old POST /fleet/dvirs
+        is the *create* endpoint and returns 401 'requires DVIRs write permissions'.
+        """
         log.info("Fetching DVIRs %s → %s…", start.date(), end.date())
-        url = f"{BASE_URL}/fleet/dvirs"
+        # /fleet/dvirs/history rejects windows longer than 30 days, so page the
+        # range in <=30-day chunks. (POST /fleet/dvirs is create-only -> 405 on GET.)
         all_items: list[dict] = []
-        req_body: dict = {
-            "startTime": _iso(start),
-            "endTime": _iso(end),
-            "limit": PAGE_LIMIT,
-        }
-        page_num = 0
-        while True:
-            try:
-                resp = self._session.post(
-                    url, headers=self._headers(), json=req_body, timeout=120
-                )
-                if resp.status_code != 200:
-                    log.error("POST /fleet/dvirs failed [%d]: %s", resp.status_code, resp.text[:500])
-                resp.raise_for_status()
-            except requests.HTTPError as e:
-                code = e.response.status_code if e.response is not None else "?"
-                log.warning("POST /fleet/dvirs → HTTP %s — skipping", code)
-                break
-            except Exception as e:
-                log.warning("POST /fleet/dvirs → %s — skipping", e)
-                break
-
-            payload = resp.json()
-            data = payload.get("data", [])
-            if isinstance(data, list):
-                all_items.extend(data)
-                page_num += 1
-                log.info("  page %d: %d records (running: %d)", page_num, len(data), len(all_items))
-                if not data:
-                    break
-            else:
-                break
-
-            pagination = payload.get("pagination", {})
-            if not pagination.get("hasNextPage", False):
-                break
-            cursor = pagination.get("endCursor")
-            if not cursor:
-                break
-            req_body["after"] = cursor
-            time.sleep(0.1)
-
-        log.info("Total DVIRs: %d", len(all_items))
+        chunk = datetime.timedelta(days=29)
+        win_start = start
+        while win_start < end:
+            win_end = min(win_start + chunk, end)
+            all_items.extend(self._safe_get("/fleet/dvirs/history", {
+                "startTime": _iso(win_start), "endTime": _iso(win_end), "limit": 200,
+            }))
+            win_start = win_end
+        log.info("Total DVIRs: %d (from /fleet/dvirs/history)", len(all_items))
         return all_items
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:

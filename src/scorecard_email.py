@@ -36,6 +36,7 @@ import json
 import logging
 import numbers
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -97,6 +98,14 @@ def num(x) -> str:
     return f"{x:,.0f}" if _isnum(x) else "n/a"
 
 
+def _cell(v) -> str:
+    """Stringify a cell, mapping pandas nulls (which str() turns into 'nan') to ''."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
+
+
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce")
@@ -119,16 +128,28 @@ def _find_col(df: pd.DataFrame, needles: list[str]) -> str | None:
     return None
 
 
+def _to_naive_dt(series: pd.Series) -> pd.Series:
+    """Parse to datetime and drop any timezone (Samsara stamps are tz-aware 'Z',
+    but the window boundaries from _windows() are tz-naive — comparing the two
+    raises 'Cannot compare tz-naive and tz-aware'). utc=True normalizes mixed
+    offsets to UTC; tz_localize(None) then makes it naive UTC."""
+    d = pd.to_datetime(series, errors="coerce", utc=True)
+    try:
+        return d.dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        return pd.to_datetime(series, errors="coerce")
+
+
 def _dates(df: pd.DataFrame, candidates: list[str]) -> pd.Series:
     for c in candidates:
         if c in df.columns:
-            d = pd.to_datetime(df[c], errors="coerce")
+            d = _to_naive_dt(df[c])
             if d.notna().sum() > 0:
                 return d
     # fuzzy fallback: any column that looks like a date/time
     fuzzy = _find_col(df, ["date", "time", "reported"])
     if fuzzy:
-        return pd.to_datetime(df[fuzzy], errors="coerce")
+        return _to_naive_dt(df[fuzzy])
     return pd.Series([pd.NaT] * len(df), index=df.index)
 
 
@@ -347,7 +368,11 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     it carries the Customer Payments (TotalPaid.Amount) column.  Returns {} if
     required columns are absent or no outstanding balance exists.
 
-    Age buckets are days past the Customer Due Date (negative/zero = still current).
+    Mirrors QuickBooks' AR basis: only loads that carry an issued customer invoice
+    (Invoiced Date present) are counted — un-invoiced loads are revenue, not yet a
+    receivable in the books. Age buckets are days past the Customer Due Date
+    (negative/zero = still current), falling back to Invoiced Date + 30d (net-30)
+    for an invoiced load with no explicit due date.
     """
     if not sheets:
         return {}
@@ -367,6 +392,29 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
 
+    # Scope to X-Trux (incl. XFreight) + X-Linx so it reconciles with the QB AR,
+    # which is limited to the X-Trux Inc / X-Linx Inc company files.
+    office_col = _find_col(sub, OFFICE_COL_NEEDLES)
+    if office_col:
+        sub = sub[sub[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+
+    # Exclude the same customers dropped from the QB AR (e.g. JW Logistics) so the
+    # two receivables figures reconcile like-for-like. Uses the exact "Customer"
+    # (CustomerName) column, not a substring match — many columns contain "customer".
+    cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
+    if cust_col and _AR_DETAIL_EXCLUDE:
+        sub = sub[~sub[cust_col].apply(_is_ar_excluded)]
+
+    # Match QuickBooks' AR basis: count only loads with an issued customer invoice
+    # (Invoiced Date present). Un-invoiced loads aren't a receivable in the books
+    # yet, so QB never ages them — including them previously dumped large balances
+    # into "Current" and overstated the Alvys figure vs QB.
+    if inv_col and inv_col in sub.columns:
+        sub = sub[pd.to_datetime(sub[inv_col], errors="coerce").notna()]
+
+    if sub.empty:
+        return {}
+
     rev     = pd.to_numeric(sub[rev_col],  errors="coerce").fillna(0)
     paid    = pd.to_numeric(sub[paid_col], errors="coerce").fillna(0)
     balance = (rev - paid).clip(lower=0)
@@ -379,12 +427,13 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     balance = balance[has_bal]
 
     today = pd.Timestamp.now().normalize()
-    if due_col and due_col in sub.columns:
-        due = pd.to_datetime(sub[due_col], errors="coerce")
-    elif inv_col and inv_col in sub.columns:
-        due = pd.to_datetime(sub[inv_col], errors="coerce") + pd.Timedelta(days=30)
-    else:
-        return {"total": float(balance.sum())}
+    due = (pd.to_datetime(sub[due_col], errors="coerce")
+           if due_col and due_col in sub.columns
+           else pd.Series(pd.NaT, index=sub.index))
+    # QB ages by due date; for an invoiced load missing an explicit due date, fall
+    # back to Invoiced Date + 30d (net-30) so it still ages instead of reading current.
+    if inv_col and inv_col in sub.columns:
+        due = due.fillna(pd.to_datetime(sub[inv_col], errors="coerce") + pd.Timedelta(days=30))
 
     age = (today - due).dt.days.fillna(0).clip(lower=0).astype(int)
 
@@ -395,6 +444,53 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
     d91plus = float(balance[age >= 91].sum())
     total   = float(balance.sum())
 
+    # 61+ balance detail (customer + amount + days) so the oldest open balances —
+    # the ones most likely already paid in QB — can be spot-checked by name.
+    loadno_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number"])
+    mask61 = age >= 61
+    rows61: list[dict] = []
+    for idx in sub.index[mask61]:
+        rows61.append({
+            "customer": _cell(sub.at[idx, cust_col]) if cust_col else "",
+            "load": _cell(sub.at[idx, loadno_col]) if loadno_col else "",
+            "days": int(age.at[idx]),
+            "amount": float(balance.at[idx]),
+        })
+    rows61.sort(key=lambda r: r["amount"], reverse=True)
+
+    # 90+ days rolled up by customer (the worst aged receivables) for the customer page.
+    mask91 = age >= 91
+    cust91: dict[str, dict] = {}
+    for idx in sub.index[mask91]:
+        name = (_cell(sub.at[idx, cust_col]) if cust_col else "") or "(no customer name)"
+        d = cust91.setdefault(name, {"customer": name, "loads": 0, "amount": 0.0, "oldest_days": 0})
+        d["loads"] += 1
+        d["amount"] += float(balance.at[idx])
+        d["oldest_days"] = max(d["oldest_days"], int(age.at[idx]))
+    rows91c = sorted(cust91.values(), key=lambda r: r["amount"], reverse=True)
+
+    # Open AR rolled up by customer (for the QB-vs-Alvys reconciliation by customer).
+    by_customer: dict[str, dict] = {}
+    if cust_col:
+        for idx in sub.index:
+            nm = _cell(sub.at[idx, cust_col])
+            d = by_customer.setdefault(_norm_name(nm), {"name": nm, "amount": 0.0})
+            d["amount"] += float(balance.at[idx])
+
+    # Per-invoice open balances (invoice #, customer, amount, days) for bill-by-bill
+    # matching against QB. The Customer Invoice Number column appears once the Alvys
+    # pull runs with that mapping; until then this list has blank invoice numbers.
+    invno_col = _find_col(sub, ["customer invoice number", "invoice number"])
+    open_invoices: list[dict] = []
+    for idx in sub.index:
+        open_invoices.append({
+            "invoice": _cell(sub.at[idx, invno_col]) if invno_col else "",
+            "customer": _cell(sub.at[idx, cust_col]) if cust_col else "",
+            "load": _cell(sub.at[idx, loadno_col]) if loadno_col else "",
+            "amount": float(balance.at[idx]),
+            "days": int(age.at[idx]),
+        })
+
     return {
         "total":   total,
         "current": current,
@@ -403,6 +499,81 @@ def compute_alvys_ar(sheets: dict[str, pd.DataFrame] | None) -> dict:
         "d61_90":  d61_90,
         "d91plus": d91plus,
         "overdue": d1_30 + d31_60 + d61_90 + d91plus,
+        "d61plus_rows":  rows61[:12],
+        "d61plus_n":     len(rows61),
+        "d61plus_total": d61_90 + d91plus,
+        "d91plus_customers": rows91c,
+        "by_customer":   by_customer,
+        "open_invoices": open_invoices,
+    }
+
+
+def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int = 30) -> dict:
+    """Delivered Alvys loads (X-Trux + X-Linx) with no issued customer invoice yet.
+
+    The complement of compute_alvys_ar: earned revenue QuickBooks can't see because
+    no invoice exists. These are the loads behind most of the QB-vs-Alvys AR gap —
+    the billing backlog to chase. Sorted oldest-delivered first.
+    """
+    if not sheets:
+        return {}
+    loads = sheets.get("Loads")
+    if loads is None or loads.empty:
+        return {}
+
+    status_col = "Load Status" if "Load Status" in loads.columns else _find_col(loads, ["load status", "status"])
+    inv_col = _find_col(loads, ["invoiced date", "invoice date"])
+    if not status_col or not inv_col:
+        return {}
+    rev_col = _find_col(loads, ["customer revenue", "revenue"])
+
+    sub = loads.copy()
+    sub = sub[sub[status_col].astype(str).str.strip().str.lower() == "delivered"]
+    sub = sub[pd.to_datetime(sub[inv_col], errors="coerce").isna()]   # not yet invoiced
+
+    office_col = _find_col(sub, OFFICE_COL_NEEDLES)
+    if office_col:
+        sub = sub[sub[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+
+    cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
+    if cust_col and _AR_DETAIL_EXCLUDE:
+        sub = sub[~sub[cust_col].apply(_is_ar_excluded)]
+
+    if sub.empty:
+        return {"count": 0, "total_revenue": 0.0, "oldest_days": None, "rows": [], "shown": 0}
+
+    rev = pd.to_numeric(sub[rev_col], errors="coerce").fillna(0) if rev_col else pd.Series(0.0, index=sub.index)
+    today = pd.Timestamp.now().normalize()
+    # Prefer actual last-stop arrival; fall back per-row to Scheduled Delivery when
+    # an arrival timestamp is missing (or the column isn't in the file yet).
+    act_col = _find_col(sub, ["actual delivery", "arrived"])
+    sched_col = _find_col(sub, ["scheduled delivery", "delivery date"])
+    delivered = pd.to_datetime(sub[act_col], errors="coerce") if act_col else pd.Series(pd.NaT, index=sub.index)
+    if sched_col:
+        delivered = delivered.fillna(pd.to_datetime(sub[sched_col], errors="coerce"))
+    days = (today - delivered).dt.days
+    loadno_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number", "load id"])
+
+    rows: list[dict] = []
+    for idx in sub.index:
+        d = days.get(idx)
+        dv = delivered.get(idx)
+        rows.append({
+            "load": _cell(sub.at[idx, loadno_col]) if loadno_col else "",
+            "customer": _cell(sub.at[idx, cust_col]) if cust_col else "",
+            "entity": (_entity_group(sub.at[idx, office_col]) or "") if office_col else "",
+            "delivered": dv.strftime("%m/%d/%Y") if pd.notna(dv) else "",
+            "days": int(d) if pd.notna(d) else None,
+            "revenue": float(rev.get(idx, 0)),
+        })
+    rows.sort(key=lambda r: ((r["days"] if r["days"] is not None else -1), r["revenue"]), reverse=True)
+    valid_days = [r["days"] for r in rows if r["days"] is not None]
+    return {
+        "count": len(rows),
+        "total_revenue": float(rev.sum()),
+        "oldest_days": max(valid_days) if valid_days else None,
+        "rows": rows[:limit],
+        "shown": min(len(rows), limit),
     }
 
 
@@ -446,6 +617,29 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 # Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
 _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 
+# QuickBooks company files that have an Alvys (TMS) counterpart. All AR reporting
+# and the QB-vs-Alvys reconciliation are scoped to these two so the two systems
+# compare like-for-like; the other QB companies (Truk-Way Leasing, N&J Trailers,
+# N&J Properties) have no Alvys equivalent. Matched case-insensitively on the
+# "Company" column. The Alvys side folds the XFreight office into X-Trux.
+_AR_COMPANIES: frozenset[str] = frozenset({"x-trux inc", "x-linx inc"})
+
+
+def _norm_name(s) -> str:
+    """Normalize a customer name for matching: drop periods (so 'J.W.' -> 'jw'),
+    turn other punctuation/separators (hyphens, commas, slashes) into spaces, and
+    collapse whitespace. 'J.W. Logistics', 'JW-Logistics', 'JW Logistics, LLC'
+    all normalize to a string starting 'jw logistics'."""
+    s = str(s).lower().replace(".", "")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", s)).strip()
+
+
+def _is_ar_excluded(name) -> bool:
+    """True if a customer name matches any _AR_DETAIL_EXCLUDE prefix once normalized.
+    Shared by the QB and Alvys AR so both systems drop the same customers."""
+    n = _norm_name(name)
+    return any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE)
+
 
 def _ar_bucket(section: str) -> str | None:
     s = str(section).lower()
@@ -465,13 +659,15 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
     date_col = _find_col(df, ["date"])
     due_col = _find_col(df, ["due"])
     num_col = _find_col(df, ["num", "invoice", "transaction #"])
+    company_col = _find_col(df, ["company"])
+
+    # Scope to the X-Trux Inc / X-Linx Inc company files (drop Truk-Way, N&J).
+    if company_col and company_col in data.columns:
+        data = data[data[company_col].astype(str).str.strip().str.lower().isin(_AR_COMPANIES)]
 
     # Build a boolean mask excluding customers in _AR_DETAIL_EXCLUDE.
     if cust_col and cust_col in data.columns and _AR_DETAIL_EXCLUDE:
-        excl_mask = data[cust_col].astype(str).str.strip().str.lower().apply(
-            lambda n: any(n.startswith(e) for e in _AR_DETAIL_EXCLUDE)
-        )
-        data = data[~excl_mask]
+        data = data[~data[cust_col].apply(_is_ar_excluded)]
 
     rows: list[dict] = []
     totals = {"31&ndash;60": 0.0, "61&ndash;90": 0.0, "91+": 0.0}
@@ -493,13 +689,155 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
         })
     rows.sort(key=lambda x: ({"31&ndash;60": 0, "61&ndash;90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
     total_ar = pd.to_numeric(data[amt_col], errors="coerce").dropna().sum() if amt_col in data.columns else None
+
+    # Open AR rolled up by customer across ALL buckets (for the QB-vs-Alvys reconciliation).
+    by_customer: dict[str, dict] = {}
+    open_invoices: list[dict] = []
+    if cust_col and cust_col in data.columns:
+        amts = pd.to_numeric(data[amt_col], errors="coerce").fillna(0)
+        for _, r in data.iterrows():
+            name = str(r.get(cust_col, "")).strip()
+            amt = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
+            if not _isnum(amt):
+                continue
+            by_customer.setdefault(_norm_name(name), {"name": name, "amount": 0.0})["amount"] += float(amt)
+            if abs(float(amt)) >= 0.01:
+                open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
+                                      "customer": name, "amount": float(amt)})
+
     return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
-            "total_ar": float(total_ar) if _isnum(total_ar) else None}
+            "total_ar": float(total_ar) if _isnum(total_ar) else None,
+            "by_customer": by_customer, "open_invoices": open_invoices}
 
 
-def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR") -> tuple[list[str], list[float]]:
+def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
+    """Compare total open AR for X-Trux + X-Linx between QuickBooks (system of
+    record) and Alvys (operational TMS). A persistent gap flags a fixable sync
+    issue — invoices/payments booked in one system but not yet the other.
+
+    Returns {} unless both totals are available.
+    """
+    qb = qb_ar.get("total_ar") if qb_ar else None
+    alvys = alvys_ar.get("total") if alvys_ar else None
+    if not _isnum(qb) or not _isnum(alvys):
+        return {}
+    delta = qb - alvys
+    base = max(abs(qb), abs(alvys), 1.0)
+    pct_var = abs(delta) / base
+    kind = "good" if pct_var <= 0.01 else "warn" if pct_var <= 0.05 else "bad"
+    return {"qb": qb, "alvys": alvys, "delta": delta, "pct": pct_var, "kind": kind}
+
+
+def compute_ar_customer_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
+    """Per-customer QB-vs-Alvys open-AR reconciliation. Joins the two by normalized
+    customer name and returns one row per customer with QB AR, Alvys AR, and the
+    delta (QB − Alvys). Rows sum exactly to the headline variance; a one-sided row
+    (only QB or only Alvys) usually means the customer is spelled differently in the
+    two systems. Sorted by largest absolute delta first."""
+    qb_by = (qb_ar or {}).get("by_customer") or {}
+    al_by = (alvys_ar or {}).get("by_customer") or {}
+    if not qb_by and not al_by:
+        return {}
+    rows: list[dict] = []
+    for key in set(qb_by) | set(al_by):
+        qb_amt = float(qb_by.get(key, {}).get("amount", 0.0))
+        al_amt = float(al_by.get(key, {}).get("amount", 0.0))
+        if abs(qb_amt) < 0.01 and abs(al_amt) < 0.01:
+            continue
+        name = (al_by.get(key) or qb_by.get(key) or {}).get("name") or "(no customer name)"
+        rows.append({"customer": name, "qb": qb_amt, "alvys": al_amt, "delta": qb_amt - al_amt})
+    rows.sort(key=lambda r: abs(r["delta"]), reverse=True)
+    return {"rows": rows,
+            "qb_total": sum(r["qb"] for r in rows),
+            "alvys_total": sum(r["alvys"] for r in rows),
+            "delta_total": sum(r["delta"] for r in rows)}
+
+
+def _norm_inv(s) -> str:
+    """Normalize an invoice number for matching: alphanumeric only, then drop a
+    leading alpha prefix so QuickBooks' 'T1006199' matches the Alvys load '1006199'
+    (and 'INV1001' matches '1001')."""
+    s = re.sub(r"[^a-z0-9]", "", str(s).lower()) if s is not None else ""
+    return re.sub(r"^[a-z]+", "", s)
+
+
+def compute_bill_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
+    """Bill-by-bill QB-vs-Alvys match. Tries the Alvys invoice number first, then the
+    Alvys Load #, and uses whichever actually overlaps QuickBooks' invoice "Num" — so
+    it still works if Alvys carries no customer invoice number (Load # is always
+    present). Returns invoices open in Alvys but not QB (the gap), open in QB but not
+    Alvys, and same-bill amount mismatches.
+
+    available=False only when there's nothing to compare; no_match=True (with sample
+    IDs from each side) when neither key overlaps QB, so the formats can be eyeballed."""
+    al_inv = (alvys_ar or {}).get("open_invoices") or []
+    qb_inv = (qb_ar or {}).get("open_invoices") or []
+
+    qb_by: dict[str, dict] = {}
+    for r in qb_inv:
+        k = _norm_inv(r.get("invoice"))
+        if not k:
+            continue
+        d = qb_by.setdefault(k, {"invoice": r.get("invoice", ""), "customer": r.get("customer", ""), "amount": 0.0})
+        d["amount"] += float(r.get("amount") or 0)
+    if not al_inv or not qb_by:
+        return {"available": False}
+
+    # Pick the Alvys identifier (invoice # or Load #) that best overlaps QB's Num.
+    def _overlap(field):
+        return sum(1 for r in al_inv if _norm_inv(r.get(field)) in qb_by)
+    inv_ov, load_ov = _overlap("invoice"), _overlap("load")
+    key_field = "invoice" if inv_ov >= load_ov else "load"
+    best_ov = max(inv_ov, load_ov)
+
+    if best_ov == 0:
+        # Couldn't match on either key — surface sample IDs so the formats are visible.
+        return {"available": True, "no_match": True, "matched": 0,
+                "alvys_sample": [(_cell(r.get("invoice")) or _cell(r.get("load")) or "?") for r in al_inv[:8]],
+                "qb_sample": [str(r.get("invoice", "")) for r in qb_inv[:8]],
+                "alvys_n": len(al_inv), "qb_n": len(qb_by)}
+
+    al_by: dict[str, dict] = {}
+    for r in al_inv:
+        k = _norm_inv(r.get(key_field))
+        if not k:
+            continue
+        label = _cell(r.get("invoice")) or _cell(r.get("load"))
+        d = al_by.setdefault(k, {"invoice": label, "customer": r.get("customer", ""),
+                                 "load": r.get("load", ""), "amount": 0.0, "days": 0})
+        d["amount"] += float(r.get("amount") or 0)
+        d["days"] = max(d["days"], int(r.get("days") or 0))
+
+    alvys_only, qb_only, mismatch = [], [], []
+    for k, a in al_by.items():
+        q = qb_by.get(k)
+        if q is None:
+            alvys_only.append(a)
+        elif abs(a["amount"] - q["amount"]) > 1.0:
+            mismatch.append({**a, "qb_amount": q["amount"], "diff": a["amount"] - q["amount"]})
+    for k, q in qb_by.items():
+        if k not in al_by:
+            qb_only.append(q)
+    alvys_only.sort(key=lambda r: r["amount"], reverse=True)
+    qb_only.sort(key=lambda r: r["amount"], reverse=True)
+    mismatch.sort(key=lambda r: abs(r["diff"]), reverse=True)
+    matched = sum(1 for k in al_by if k in qb_by)
+    return {
+        "available": True, "no_match": False, "key_used": key_field,
+        "alvys_only": alvys_only, "qb_only": qb_only, "mismatch": mismatch,
+        "alvys_only_total": sum(r["amount"] for r in alvys_only),
+        "qb_only_total": sum(r["amount"] for r in qb_only),
+        "mismatch_total": sum(r["diff"] for r in mismatch),
+        "matched": matched, "alvys_n": len(al_by), "qb_n": len(qb_by),
+    }
+
+
+def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR",
+                            companies: frozenset[str] | None = None) -> tuple[list[str], list[float]]:
     if df is None or df.empty or "AsOf" not in df.columns or value_col not in df.columns:
         return [], []
+    if companies is not None and "Company" in df.columns:
+        df = df[df["Company"].astype(str).str.strip().str.lower().isin(companies)]
     g = df.groupby("AsOf")[value_col].apply(
         lambda s: pd.to_numeric(s, errors="coerce").sum()
     )
@@ -792,7 +1130,7 @@ def _wk_label(start: pd.Timestamp) -> str:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 4
+PAGE_COUNT = 8
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -928,7 +1266,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
     recv_left = ("<td width='25%' valign='top' style='padding:6px;'>"
-                 + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("all open AR", "mute"))
+                 + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("X-Trux + X-Linx", "mute"))
                  + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
@@ -979,7 +1317,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
     ap_labels, ap_vals = ap_hist if ap_hist else ([], [])
     ar_chart = _bar_chart("AR &mdash; receivable balance", ar_labels, ar_vals,
-                          "total open AR by month-end &middot; *as-of", fmt=money_m)
+                          "open AR by month-end &middot; X-Trux + X-Linx &middot; *as-of", fmt=money_m)
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
@@ -1048,6 +1386,49 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         + _tile("Alvys AR &middot; 61+ days", money(_aar_61plus or None), _pill("collections", "bad"))
     ) if aar.get("total") else ""
 
+    # AR reconciliation — QuickBooks (system of record) vs Alvys (TMS), X-Trux + X-Linx.
+    recon = compute_ar_reconciliation(qb_ar, alvys_ar)
+    recon_row = recon_note = ""
+    if recon:
+        _d = recon["delta"]
+        recon_row = (
+            _tile("QuickBooks AR", money(recon["qb"]), _pill("system of record", "mute"))
+            + _tile("Alvys AR", money(recon["alvys"]), _pill("operational / TMS", "mute"))
+            + _tile("Variance &middot; QB &minus; Alvys", money(abs(_d)),
+                    _pill(pct(recon["pct"]) + " of AR", recon["kind"]))
+            + empty_td)
+        if recon["kind"] == "good":
+            recon_note = ("QuickBooks and Alvys agree on open AR within 1% "
+                          f"({money(abs(_d))} apart) &mdash; receivables are in sync.")
+        elif _d < 0:
+            recon_note = (f"QuickBooks shows {money(abs(_d))} less open AR than Alvys "
+                          f"({pct(recon['pct'])} of the balance). The likely cause is customer "
+                          "payments applied in QuickBooks that haven&rsquo;t synced back to Alvys &mdash; "
+                          "paid invoices drop out of QB&rsquo;s AR but still read open in the TMS, "
+                          "piling into the older buckets. Spot-check the oldest Alvys balances against QB.")
+        else:
+            recon_note = (f"QuickBooks shows {money(abs(_d))} more open AR than Alvys "
+                          f"({pct(recon['pct'])} of the balance) &mdash; likely invoices posted to "
+                          "QuickBooks that Alvys hasn&rsquo;t billed or recorded yet. "
+                          "Reconcile X-Trux + X-Linx to clear it.")
+
+    # Alvys 61+ balance detail — the oldest open balances to spot-check against QB.
+    rows61 = (alvys_ar or {}).get("d61plus_rows") or []
+    recon_detail = ""
+    if rows61:
+        body61 = ""
+        for r in rows61:
+            cust = r["customer"] or "&mdash; (no customer name)"
+            body61 += _tr([cust, r["load"], str(r["days"]), money(r["amount"])],
+                          ["left", "left", "right", "right"], [None, None, "bad", None])
+        n61 = (alvys_ar or {}).get("d61plus_n", len(rows61))
+        if n61 > len(rows61):
+            body61 += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                       f"Showing the {len(rows61)} largest of {n61} balances "
+                       f"({money((alvys_ar or {}).get('d61plus_total'))} total).</td></tr>")
+        recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
+                        f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
+
     bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
@@ -1082,8 +1463,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            + (f"{_section('Alvys AR &mdash; aging by due date &middot; all open invoices')}<tr>{alvys_ar_row}</tr>"
+            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
                if alvys_ar_row else "")
+            + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
+               f"{_brief(recon_note, recon['kind'])}"
+               if recon_row else "")
+            + recon_detail
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
@@ -1171,10 +1556,11 @@ def build_page3(qb_ar, date_str) -> str:
             f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
             f"{_tile('91+ days', money(totals.get('91+')), _pill('collections', 'bad'))}"
             f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>"
-            f"{_section('Overdue invoices (31+ days) by customer &middot; as of ' + date_str)}"
+            f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], rows + total_row)}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Current and 1&ndash;30 day balances omitted by request. Source: QuickBooks A/R Aging Detail.</div>")
+            f"Current and 1&ndash;30 day balances omitted by request. X-Trux Inc + X-Linx Inc only. "
+            f"Source: QuickBooks A/R Aging Detail.</div>")
 
 
 def build_page4(mileage, date_str) -> str:
@@ -1245,8 +1631,177 @@ def build_page4(mileage, date_str) -> str:
             f"only. Source: Alvys API (Trips, via the pipeline file).</div>")
 
 
+def build_page5(uninv, date_str) -> str:
+    u = uninv or {}
+    rows_data = u.get("rows", [])
+    od = u.get("oldest_days")
+    tiles = (_tile("Loads delivered, not invoiced", num(u.get("count")), _pill("X-Trux + X-Linx", "mute"))
+             + _tile("Un-invoiced revenue", money(u.get("total_revenue")), _pill("to bill", "warn"))
+             + _tile("Oldest delivered", (num(od) + " days" if _isnum(od) else "n/a"), _pill("since delivery", "bad"))
+             + "<td width='25%' style='padding:6px;'></td>")
+    body = ""
+    for r in rows_data:
+        dd = r["days"] or 0
+        k = "bad" if dd >= 14 else ("warn" if dd >= 7 else None)
+        days_txt = str(r["days"]) if r["days"] is not None else "&ndash;"
+        cust = r["customer"] or "&mdash; (no customer name)"
+        body += _tr([r["load"], cust, r["entity"], r["delivered"], days_txt, money(r["revenue"])],
+                    ["left", "left", "left", "left", "right", "right"],
+                    [None, None, None, None, k, None])
+    shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
+    more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
+            f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
+    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 5, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
+            f"{_table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'], ['left', 'left', 'left', 'left', 'right', 'right'], body + more)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
+            f"QuickBooks-vs-Alvys AR gap. X-Trux Inc + X-Linx Inc (JW Logistics excluded); &lsquo;Delivered&rsquo; "
+            f"is the actual last-stop arrival (Scheduled Delivery if arrival is missing). "
+            f"Source: Alvys API (Loads, via the pipeline file).</div>")
+
+
+def build_page6(alvys_ar, date_str) -> str:
+    a = alvys_ar or {}
+    custs = a.get("d91plus_customers") or []
+    n_loads = sum(c["loads"] for c in custs)
+    tiles = (_tile("90+ days AR", money(a.get("d91plus")), _pill("X-Trux + X-Linx", "bad"))
+             + _tile("Customers 90+", num(len(custs)), _pill("over 90 days", "bad"))
+             + _tile("Loads 90+", num(n_loads), _pill("open invoices", "mute"))
+             + "<td width='25%' style='padding:6px;'></td>")
+    body = ""
+    for c in custs:
+        body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
+                     str(c["oldest_days"]), money(c["amount"])],
+                    ["left", "right", "right", "right"], [None, None, "bad", "bad"])
+    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 6, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
+            f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], body)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Open invoiced balances aged &gt;90 days past the Customer Due Date (Invoiced Date + 30d if none). "
+            f"X-Trux Inc + X-Linx Inc, JW Logistics excluded. Many may already be paid in QuickBooks &mdash; "
+            f"see the page-1 AR reconciliation note. Source: Alvys API (Loads, via the pipeline file).</div>")
+
+
+def build_page7(qb_ar, alvys_ar, date_str) -> str:
+    rec = compute_ar_customer_reconciliation(qb_ar, alvys_ar) or {}
+    rows = rec.get("rows", [])
+    LIMIT = 30
+    shown = rows[:LIMIT]
+    n_gap = sum(1 for r in rows if abs(r["delta"]) >= 1.0)
+
+    def _signed(d):
+        return ("&minus;" + money(abs(d))) if d < 0 else money(d)
+
+    tiles = (_tile("Net variance &middot; QB &minus; Alvys", _signed(rec.get("delta_total") or 0), _pill("all customers", "bad"))
+             + _tile("Customers with a gap", num(n_gap), _pill("QB &ne; Alvys", "warn"))
+             + _tile("Largest gap", _signed(shown[0]["delta"]) if shown else "n/a",
+                     _pill((shown[0]["customer"][:20] if shown else ""), "mute"))
+             + "<td width='25%' style='padding:6px;'></td>")
+
+    body = ""
+    for r in shown:
+        d = r["delta"]
+        qb_txt = money(r["qb"]) if abs(r["qb"]) >= 0.01 else "&mdash;"
+        al_txt = money(r["alvys"]) if abs(r["alvys"]) >= 0.01 else "&mdash;"
+        k = "bad" if d < 0 else "warn"
+        body += _tr([r["customer"] or "&mdash; (no customer name)", qb_txt, al_txt, _signed(d)],
+                    ["left", "right", "right", "right"], [None, None, None, k])
+    body += (f"<tr><td style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>Total</td>"
+             f"<td align='right' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(rec.get('qb_total'))}</td>"
+             f"<td align='right' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(rec.get('alvys_total'))}</td>"
+             f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};border-top:2px solid {LINE};'>{_signed(rec.get('delta_total') or 0)}</td></tr>")
+    if len(rows) > LIMIT:
+        body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                 f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
+
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 7, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
+            f"{_table(['Customer', 'QuickBooks', 'Alvys', 'Variance'], ['left', 'right', 'right', 'right'], body)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Open AR per customer, QuickBooks vs Alvys (X-Trux + X-Linx, JW excluded). Variance = QB &minus; Alvys; "
+            f"a negative (red) value means Alvys shows more open AR &mdash; most often invoices already paid in QB but "
+            f"not synced back. Rows sum to the page-1 variance. Customers joined by name; a one-sided row can be the "
+            f"same customer spelled differently in the two systems. True bill-by-bill matching needs a shared invoice "
+            f"number (not in the Alvys feed today). Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+
+def build_page8(qb_ar, alvys_ar, date_str) -> str:
+    b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 8, date_str)
+    if not b.get("available"):
+        msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
+               "numbers, or there is no open AR. See page 7 for the customer-level reconciliation.")
+        return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_brief(msg, 'warn')}</table>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+    if b.get("no_match"):
+        # Neither invoice # nor Load # overlapped QB's Num — show samples to compare formats.
+        msg = ("Couldn&rsquo;t match bills: neither the Alvys invoice number nor the Alvys Load # overlaps the "
+               "QuickBooks invoice &lsquo;Num&rsquo;. Sample identifiers below &mdash; the two systems appear to "
+               "number invoices differently. Use page 7 (by customer) meanwhile.")
+        srows = ""
+        al_s, qb_s = b.get("alvys_sample", []), b.get("qb_sample", [])
+        for i in range(max(len(al_s), len(qb_s))):
+            srows += _tr([al_s[i] if i < len(al_s) else "", qb_s[i] if i < len(qb_s) else ""],
+                         ["left", "left"], [None, None])
+        return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_brief(msg, 'warn')}"
+                f"{_section('Sample identifiers &middot; Alvys vs QuickBooks')}"
+                f"{_table(['Alvys invoice # / Load #', 'QuickBooks Num'], ['left', 'left'], srows)}</table>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+    ao, qo, mm = b["alvys_only"], b["qb_only"], b["mismatch"]
+    LIM = 20
+    match_pct = (b["matched"] / b["alvys_n"]) if b["alvys_n"] else None
+    key_label = "Load #" if b.get("key_used") == "load" else "invoice #"
+    tiles = (_tile("Open in Alvys, not QB", money(b["alvys_only_total"]), _pill(f"{len(ao)} bills", "bad"))
+             + _tile("Open in QB, not Alvys", money(b["qb_only_total"]), _pill(f"{len(qo)} bills", "warn"))
+             + _tile("Match rate", pct(match_pct), _pill(f"on {key_label} &middot; {b['matched']}/{b['alvys_n']}", "mute"))
+             + "<td width='25%' style='padding:6px;'></td>")
+
+    def _tbl(title, rows, cols, mk):
+        if not rows:
+            return ""
+        body = "".join(mk(r) for r in rows[:LIM])
+        if len(rows) > LIM:
+            body += (f"<tr><td colspan='{len(cols)}' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                     f"Showing the {LIM} largest of {len(rows)}.</td></tr>")
+        return f"{_section(title)}{_table(cols, ['left', 'left', 'right', 'right'], body)}"
+
+    ao_tbl = _tbl("Open in Alvys, not in QuickBooks &middot; the gap to chase", ao,
+                  ["Invoice / Load", "Customer", "Days", "Amount"],
+                  lambda r: _tr([r["invoice"] or r["load"], r["customer"] or "&mdash;", str(r["days"]), money(r["amount"])],
+                                ["left", "left", "right", "right"], [None, None, "bad", None]))
+    mm_tbl = _tbl("Same bill, different open balance", mm,
+                  ["Invoice / Load", "Customer", "Alvys / QB", "Diff"],
+                  lambda r: _tr([r["invoice"], r["customer"] or "&mdash;", f"{money(r['amount'])} / {money(r['qb_amount'])}", money(r["diff"])],
+                                ["left", "left", "right", "right"], [None, None, None, "warn"]))
+    qo_tbl = _tbl("Open in QuickBooks, not in Alvys", qo,
+                  ["Invoice", "Customer", "", "Amount"],
+                  lambda r: _tr([r["invoice"], r["customer"] or "&mdash;", "", money(r["amount"])],
+                                ["left", "left", "right", "right"], [None, None, None, "warn"]))
+
+    return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>{ao_tbl}{mm_tbl}{qo_tbl}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
+            f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
+            f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
+            f"differently and this view is partial &mdash; use page 7. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-               alvys_ar=None, warnings=None, data_asof=None, mileage=None) -> str:
+               alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -1260,7 +1815,11 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(build_page4(mileage, date_str))}"
+            f"{wrap(build_page4(mileage, date_str))}{pb}"
+            f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
+            f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
@@ -1273,16 +1832,18 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
     qb_ar = compute_qb_ar_detail(next(iter(ar_sheets.values()))) if ar_sheets else {}
-    ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR") if ar_hist_sheets else ([], [])
+    ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR", _AR_COMPANIES) if ar_hist_sheets else ([], [])
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
-                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage)
+                      alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
+                      uninvoiced=uninvoiced)
 
 
 # ----------------------------------------------------------------------
