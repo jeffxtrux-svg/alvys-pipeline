@@ -165,23 +165,26 @@ class SamsaraClient:
         end: datetime.datetime,
         vehicle_ids: list[str] | None = None,
     ) -> list[dict]:
-        """Trip records fetched per vehicle (Samsara requires a vehicle ID in path)."""
+        """Trip records via the legacy v1 endpoint `GET /fleet/trips`. The old
+        per-vehicle path `/fleet/vehicles/{id}/trips` returns 404.
+        """
         log.info("Fetching trips %s → %s…", start.date(), end.date())
         if not vehicle_ids:
             log.warning("No vehicle IDs provided — skipping trips")
             return []
-
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
-        all_trips: list[dict] = []
-        for vid in vehicle_ids:
-            trips = self._safe_get(f"/fleet/vehicles/{vid}/trips", params)
-            for t in trips:
-                t.setdefault("vehicleId", vid)
-            all_trips.extend(trips)
-            time.sleep(0.05)
-
-        log.info("Total trips: %d", len(all_trips))
-        return all_trips
+        # v1 trips uses millisecond timestamps + a vehicleIds CSV; modern startTime/
+        # endTime is the fallback if/when Samsara migrates this endpoint.
+        params_ms = {"startMs": _ms(start), "endMs": _ms(end),
+                     "vehicleIds": ",".join(str(v) for v in vehicle_ids)}
+        items = self._safe_get("/fleet/trips", params_ms)
+        if items:
+            log.info("Total trips: %d (from /fleet/trips, ms params)", len(items))
+            return items
+        params_iso = {"startTime": _iso(start), "endTime": _iso(end),
+                      "vehicleIds": ",".join(str(v) for v in vehicle_ids)}
+        items = self._safe_get("/fleet/trips", params_iso)
+        log.info("Total trips: %d (from /fleet/trips, ISO params)", len(items))
+        return items
 
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events."""
@@ -248,17 +251,16 @@ class SamsaraClient:
         return all_items
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
-        """IFTA fuel & mileage report for a given month. Tries multiple known paths."""
+        """IFTA per-vehicle fuel & mileage report for a given month via
+        `GET /fleet/reports/ifta/vehicle` (singular). The old plural path 404s.
+        Takes a startTime/endTime window (not year/month)."""
         log.info("Fetching IFTA %d-%02d…", year, month)
-        params = {"year": year, "month": month}
-        for path in [
-            "/fleet/reports/ifta/vehicles",
-            "/fleet/ifta/vehicle-reports",
-            "/fleet/ifta/summaries",
-        ]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("  IFTA: got %d records from %s", len(items), path)
-                return items
-        log.warning("IFTA: no data from any known endpoint for %d-%02d", year, month)
+        start = datetime.datetime(year, month, 1)
+        end = datetime.datetime(year + 1, 1, 1) if month == 12 else datetime.datetime(year, month + 1, 1)
+        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        items = self._safe_get("/fleet/reports/ifta/vehicle", params)
+        if items:
+            log.info("  IFTA: got %d records from /fleet/reports/ifta/vehicle", len(items))
+            return items
+        log.warning("IFTA: no data for %d-%02d", year, month)
         return []
