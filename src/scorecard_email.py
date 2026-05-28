@@ -1445,7 +1445,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
-    w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight only
+    w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight 7d
+    wmtda = ((alvys or {}).get("asset") or {}).get("mtd", wmtd)  # X-Trux/XFreight MTD
 
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
@@ -1491,30 +1492,31 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
     margin_tile = _tile("XFreight Margin &middot; MTD", money(_co_margin or None), _pill("revenue &minus; cost", "mute"))
+    # XFreight Overview is laid out as two balanced rows of 4 tiles:
+    #   Row 1: Revenue / Cost / Margin / Gross margin %  (current MTD totals)
+    #   Row 2: Loads / Est. X-Trux margin / Est. X-Linx margin / Est. Combined margin
+    # The estimate per entity comes from compute_margin_projection():
+    #   projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
+    #   projected_margin  = projected_revenue * trailing-90 settled margin %
+    # Pill shows the day ratio and trailing margin % so the basis is visible.
     t1 = (_tile("XFreight Revenue &middot; MTD", money(_co_rev or None), _pill("X-Trux + X-Linx", "mute"))
           + pay_tile
           + margin_tile
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
-    t1b = loads_tile + empty_td + empty_td + empty_td
-    # Estimated full-month margin per entity:
-    #   projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
-    #   projected_margin  = projected_revenue * trailing-90 settled margin %
-    # See compute_margin_projection() for the rationale. Pill shows the day ratio
-    # and trailing margin % so the basis is visible.
     _mp = margin_projection or {}
     _dim = _mp.get("days_in_month", 0)
     _de = _mp.get("day_of_month", 0)
     _td = _mp.get("trailing_days", 90)
     _month_lbl = pd.Timestamp.now().strftime("%B")
-    def _proj_tile(label_ent, ent_key, pill_text):
+    def _proj_tile(ent_key, pill_text):
         ent = _mp.get(ent_key) or {}
         sub = (_pill(pill_text, "mute")
                + f" &middot; {_de}/{_dim}d &middot; t{_td} {pct(ent.get('trailing_margin_pct'))}")
         return _tile(f"Est. {_month_lbl} margin", money(ent.get("projected_margin")), sub)
-    t1c = (_proj_tile("X-Trux", "X-Trux", "X-Trux")
-           + _proj_tile("X-Linx", "X-Linx", "X-Linx")
-           + _proj_tile("Combined", "combined", "X-Trux + X-Linx")
-           + empty_td)
+    t1b = (loads_tile
+           + _proj_tile("X-Trux", "X-Trux")
+           + _proj_tile("X-Linx", "X-Linx")
+           + _proj_tile("combined", "X-Trux + X-Linx"))
     # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
     # XFreight asset fleet) plus a direct-customers vs broker-freight split.
     _rpm_d_labels, _rpm_d_values = ((rpm_trend or {}).get("direct") or ([], []))
@@ -1642,8 +1644,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
                         f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
 
-    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.92), "
-              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;6%, X-Trux/XFreight). "
+    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(wmtda.get('rpm'))} (goal $2.92), "
+              f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;6%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
 
@@ -1673,7 +1675,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{warn_row}"
             f"{_section('XFreight Overview')}"
-            f"<tr>{t1}</tr><tr>{t1b}</tr><tr>{t1c}</tr>"
+            f"<tr>{t1}</tr><tr>{t1b}</tr>"
             f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{mtd_note}"
