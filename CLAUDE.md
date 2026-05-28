@@ -92,8 +92,13 @@ Every connector is the same skeleton; learn it once and the rest follow.
 
 - **An Alvys column comes back blank:** the value's field path in
   `src/column_mappings.py` is wrong. Open `output/_debug/sample_loads.json` (or
-  `_trips`/`_fuel`), find the real path, fix that one tuple, re-run. No other
-  code changes needed. The log's `report_blank_columns` lists what's still empty.
+  `_trips`/`_fuel`/`_invoice`), find the real path, fix that one tuple, re-run.
+  No other code changes needed. The log's `report_blank_columns` lists what's
+  still empty. Helpers like `_customer_invoice_field([...])` and `_customer_name`
+  fall back through several candidate field names — add to the candidate list if
+  the real field has a different name. For load↔QB joins the matching key is
+  the **Alvys Load #** vs QuickBooks' **"T" + load #** invoice `Num` (handled by
+  `_norm_inv` stripping a leading alpha prefix).
 - **Adding a QuickBooks company:** the three live companies' realm IDs are
   hardcoded in `src/qb_main.py` `_companies()`; the N&J pair read realm IDs from
   env and are skipped until their refresh tokens exist.
@@ -113,7 +118,18 @@ upload `output/` as a 7-day artifact (`if: always()`):
 | `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 12,18,0 * * *` |
 | `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `30 12,18,0 * * *` |
 | `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 13 * * *` |
-| `scorecard_email.yml` | read OneDrive → email daily brief | `0 13 * * *` |
+| `scorecard_email.yml` | read OneDrive → email daily brief (8 pages) | `0 13 * * *` |
+
+The daily brief (`src/scorecard_email.py`) is 8 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`):
+
+1. Bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend.
+2. Safety detail (last 24h events / HOS violations / DVIR defects / coaching).
+3. AR overdue (31+ days) from QuickBooks.
+4. Driver mileage by settlement week.
+5. Delivered Alvys loads not yet invoiced (the un-billed gap behind most of the QB-vs-Alvys variance).
+6. Customers with Alvys AR aging 90+ days.
+7. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance).
+8. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention).
 
 Crons are fixed UTC (~6am/12pm/6pm Central; QB offset +30 min to avoid overlap).
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
