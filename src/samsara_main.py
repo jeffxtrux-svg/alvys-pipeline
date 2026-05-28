@@ -322,6 +322,10 @@ def main() -> int:
     if not df_hosv.empty and len(df_hosv) == len(raw_hos_viol):
         df_hosv["Driver Name"] = [(r.get("driver") or {}).get("name") for r in raw_hos_viol]
         df_hosv["Violation Type"] = [_hos_violation_type(r) for r in raw_hos_viol]
+        # The /fleet/hos/violations record carries the violation timestamp under
+        # ``violationStartTime`` — json_normalize doesn't always surface nested
+        # fields as columns, so set it explicitly for the scorecard's date logic.
+        df_hosv["violationStartTime"] = [r.get("violationStartTime") for r in raw_hos_viol]
 
     df_dvir_defects = build_dvir_defects(raw_dvirs)
     log.info("  DVIR_Defects: %d rows (exploded from %d DVIRs)",

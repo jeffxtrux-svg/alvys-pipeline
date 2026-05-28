@@ -165,22 +165,47 @@ class SamsaraClient:
         end: datetime.datetime,
         vehicle_ids: list[str] | None = None,
     ) -> list[dict]:
-        """Trip records fetched per vehicle (Samsara requires a vehicle ID in path)."""
+        """Trip records via the legacy v1 endpoint `GET /fleet/trips`. The old
+        per-vehicle path `/fleet/vehicles/{id}/trips` returns 404.
+        """
         log.info("Fetching trips %s → %s…", start.date(), end.date())
         if not vehicle_ids:
             log.warning("No vehicle IDs provided — skipping trips")
             return []
-
-        params = {"startTime": _iso(start), "endTime": _iso(end)}
+        # v1 legacy /v1/fleet/trips is **per-vehicle** (singular ``vehicleId`` +
+        # ms timestamps). The response doesn't use the standard {"data": [...]}
+        # envelope, so we can't share _get_pages — try common v1 shapes.
         all_trips: list[dict] = []
+        url = f"{BASE_URL}/v1/fleet/trips"
         for vid in vehicle_ids:
-            trips = self._safe_get(f"/fleet/vehicles/{vid}/trips", params)
+            try:
+                resp = self._session.get(
+                    url, headers=self._headers(),
+                    params={"vehicleId": vid, "startMs": _ms(start), "endMs": _ms(end)},
+                    timeout=60,
+                )
+                if resp.status_code != 200:
+                    log.warning("GET /v1/fleet/trips vehicleId=%s → HTTP %d", vid, resp.status_code)
+                    continue
+                payload = resp.json()
+            except Exception as e:
+                log.warning("GET /v1/fleet/trips vehicleId=%s → %s", vid, e)
+                continue
+            # Pull trips from any of the common v1 wrappers; flatten a vehicles[].trips
+            # nesting if present.
+            trips = payload.get("trips") or payload.get("vehicleTrips") or payload.get("data") or []
+            if not trips:
+                vehicles = payload.get("vehicles") or []
+                if isinstance(vehicles, list):
+                    for v in vehicles:
+                        if isinstance(v, dict):
+                            trips.extend(v.get("trips") or [])
             for t in trips:
-                t.setdefault("vehicleId", vid)
+                if isinstance(t, dict):
+                    t.setdefault("vehicleId", vid)
             all_trips.extend(trips)
             time.sleep(0.05)
-
-        log.info("Total trips: %d", len(all_trips))
+        log.info("Total trips: %d (from /v1/fleet/trips, per-vehicle)", len(all_trips))
         return all_trips
 
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
@@ -248,17 +273,15 @@ class SamsaraClient:
         return all_items
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
-        """IFTA fuel & mileage report for a given month. Tries multiple known paths."""
-        log.info("Fetching IFTA %d-%02d…", year, month)
-        params = {"year": year, "month": month}
-        for path in [
-            "/fleet/reports/ifta/vehicles",
-            "/fleet/ifta/vehicle-reports",
-            "/fleet/ifta/summaries",
-        ]:
-            items = self._safe_get(path, params)
-            if items:
-                log.info("  IFTA: got %d records from %s", len(items), path)
-                return items
-        log.warning("IFTA: no data from any known endpoint for %d-%02d", year, month)
+        """IFTA per-vehicle fuel & mileage report via `GET /fleet/reports/ifta/vehicle`
+        (singular). The endpoint takes ``year`` (int) and ``month`` as the **full
+        month name** ("January".."December") — passing an integer returns 400
+        "value of month must be one of \"January\", ..."."""
+        month_name = datetime.date(year, month, 1).strftime("%B")
+        log.info("Fetching IFTA %d-%s…", year, month_name)
+        items = self._safe_get("/fleet/reports/ifta/vehicle", {"year": year, "month": month_name})
+        if items:
+            log.info("  IFTA: got %d records from /fleet/reports/ifta/vehicle", len(items))
+            return items
+        log.warning("IFTA: no data for %d-%s", year, month_name)
         return []

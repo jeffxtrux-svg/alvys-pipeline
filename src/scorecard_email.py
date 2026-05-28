@@ -310,23 +310,39 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
         if rows.empty:
-            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None}
+            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                        "loads": 0, "unsettled": 0}
             continue
-        revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
-        # Match Power BI's "Loads" count: every (non-cancelled) load in the window,
-        # not just those that booked revenue. PBI's Margin-per-Bill divides by this.
-        n_loads = len(rows)
+        # Match Power BI: P&L tiles are computed on **settled** loads only (those
+        # with Driver Rate > 0). Booked-but-not-yet-dispatched loads carry full
+        # customer revenue and $0 driver pay, which inflates margin % during MTD
+        # until driver pay lands; excluding them keeps the brief in sync with the
+        # Power BI XFreight Report instead of running high mid-month.
+        if "Driver Rate" in rows.columns:
+            settled_mask = _col(rows, "Driver Rate").fillna(0) > 0
+            settled = rows[settled_mask]
+        else:
+            settled = rows
+        n_unsettled = len(rows) - len(settled)
+        if settled.empty:
+            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                        "loads": 0, "unsettled": n_unsettled}
+            continue
+        revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
         # Cost = SUM(Loads[Driver Rate]); margin = Customer Revenue - Driver Rate,
         # matching Power BI. The Loads "Driver Rate" column already holds each load's
         # full settled payout, so Carrier Rate is not added separately.
-        cost = float(_col(rows, "Driver Rate").fillna(0).sum())
+        cost = float(_col(settled, "Driver Rate").fillna(0).sum())
         margin = revenue - cost
+        # n_loads matches Power BI's Load Count (non-cancelled, settled).
+        n_loads = len(settled)
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
             "margin": margin if revenue else None,
             "margin_pct": (margin / revenue) if revenue else None,
             "loads": n_loads,
+            "unsettled": n_unsettled,
         }
     return out
 
@@ -1436,10 +1452,15 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
-    # MTD figures are month-to-date and partial: late-month loads have booked
-    # revenue but unsettled driver pay, so MTD margin reads high until they settle.
-    mtd_note = _brief("MTD is month-to-date and partial &mdash; late-month loads carry booked revenue "
-                      "before driver pay settles, so month-to-date margin runs high until loads close.", "mute")
+    # MTD P&L tiles include only settled loads (Driver Rate > 0) to match the
+    # Power BI XFreight Report. Surface the count of booked-but-not-yet-settled
+    # loads so the deferred work isn't invisible.
+    _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
+    _mtd_msg = ("MTD revenue / cost / margin tiles include only settled loads "
+                "(driver pay entered), matching the Power BI report.")
+    if _unsettled:
+        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver pay and will appear once settled."
+    mtd_note = _brief(_mtd_msg, "mute")
     asof = ""
     if data_asof is not None:
         try:

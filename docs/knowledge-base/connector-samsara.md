@@ -43,12 +43,12 @@ the whole run.
 | 2 | `fetch_drivers` | `/fleet/drivers` | roster |
 | 3 | `fetch_vehicle_stats` | `/fleet/vehicles/stats` | **2 calls merged** (see below) |
 | 4 | `fetch_locations` | `/fleet/vehicles/locations` | current GPS |
-| 5 | `fetch_trips` | `/fleet/vehicles/{id}/trips` | **per-vehicle** loop |
-| 6 | `fetch_safety_events` | `/fleet/safety/events` → `/safety/events` | first path that returns data |
+| 5 | `fetch_trips` | `/v1/fleet/trips` (legacy v1) | **per-vehicle** loop; singular `vehicleId` + ms timestamps; response not in `data` envelope (read from `trips`/`vehicleTrips`/`vehicles[].trips`) |
+| 6 | `fetch_safety_events` | `/fleet/safety-events` | hyphen, not slash; `limit` capped at 200 |
 | 7 | `fetch_hos_logs` | `/fleet/hos/logs` → `/fleet/drivers/hos-logs` | duty-status **logs** (30-day window) |
 | 8 | `fetch_hos_violations` | `/fleet/hos/violations` (+ 2 fallbacks) | actual **violations** (not logs); ~190-day window |
-| 9 | `fetch_dvirs` | `POST /fleet/dvirs` | inspections; **POST, not GET** |
-| 10 | `fetch_ifta` | tries 3 IFTA paths | last 3 months, one sheet each |
+| 9 | `fetch_dvirs` | **GET** `/fleet/dvirs/history` | inspections; paged in **≤30-day chunks** |
+| 10 | `fetch_ifta` | `/fleet/reports/ifta/vehicle` (singular) | `year` (int) + `month` as full name; current month 400s with "data may still be processing" (~72-hour lag) |
 
 Three **time windows** are used: a long window (default 90 days, via
 `SAMSARA_DAYS_BACK`) for trips; a separate ~190-day window
@@ -61,12 +61,17 @@ HOS logs.
 `json_normalize` can't flatten nested arrays, so two data types get post-processed:
 
 - **`DVIR_Defects`** — one row per defect (`Unit, Driver, Defect, Resolved,
-  Reported, …`), exploded from the `defects[]` array (same field shape
-  `samsara_alerts.py` reads). The raw `DVIRs` sheet is still written too.
+  Reported, …`), exploded from each DVIR's `vehicleDefects[]` / `trailerDefects[]`
+  arrays (the current `/fleet/dvirs/history` shape; the older `defects[]`
+  fallback is still tried). `Resolved` reads `isResolved` (falling back to
+  `resolved`). `Reported` prefers the defect's own `createdAtTime` and falls
+  back to the DVIR's `startTime` — the DVIR record itself doesn't carry
+  `createdAt*`, so without this fallback every defect's date came out null.
 - **`SafetyEvents`** gains clean `Event Type` / `Severity` / `Driver Name` /
   `Unit` columns decoded from the `behaviorLabels[]` array; `HOS_Violations`
-  gains `Driver Name` / `Violation Type`. Timestamps are normalized from
-  epoch-ms or ISO via `_ts_to_str`.
+  gains `Driver Name`, `Violation Type`, **and an explicit `violationStartTime`
+  column** (json_normalize doesn't always surface that nested field). Timestamps
+  are normalized from epoch-ms or ISO via `_ts_to_str`.
 
 ### Gotchas worth knowing
 
@@ -74,14 +79,20 @@ HOS logs.
   `fetch_vehicle_stats` makes two calls (`obdOdometerMeters, fuelPercents,
   engineStates, gpsOdometerMeters` then `syntheticEngineSeconds`) and merges
   them by vehicle `id`.
-- **Trips are per-vehicle.** The trips endpoint requires a vehicle ID in the
-  path, so the client loops every vehicle ID and stamps each trip with its
-  `vehicleId`.
-- **DVIRs use POST.** Per Samsara API v2025.10, `GET /fleet/dvirs` is not
-  allowed; `fetch_dvirs` posts the time range and cursors via a `after` field in
-  the request body.
-- **Endpoint fallback.** Safety, HOS, and IFTA each try a list of candidate
-  paths and keep the first that returns rows — Samsara has moved these around.
+- **Trips: legacy v1, per-vehicle.** Lives at `/v1/fleet/trips` (the `/v1/` prefix
+  is required — `/fleet/trips` returns 404). Each call takes a **singular**
+  `vehicleId` query param (CSV `vehicleIds` returns 400 "Missing parameter:
+  vehicleId"), plus `startMs`/`endMs`. The response **doesn't use the standard
+  `{"data": [...]}` envelope**, so `fetch_trips` does a direct GET and pulls
+  trips from `trips` / `vehicleTrips` / `vehicles[].trips`.
+- **DVIRs are GET, paged in ≤30-day chunks.** `POST /fleet/dvirs` is the
+  *create* endpoint and returns `401 "requires DVIRs write permissions"`. The
+  read endpoint is `GET /fleet/dvirs/history`, which rejects windows longer
+  than 30 days, so `fetch_dvirs` walks the requested range in 29-day slices.
+- **Safety events page size cap.** `/fleet/safety-events` rejects `limit > 200`
+  (`400: "Limit must be <= 200"`), so the call passes `limit=200`.
+- **Endpoint fallback.** HOS still tries a list of candidate paths and keeps
+  the first that returns rows — Samsara has moved these around.
 
 ## Transform & write — `samsara_main.py`
 
