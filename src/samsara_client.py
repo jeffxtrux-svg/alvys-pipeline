@@ -253,13 +253,14 @@ class SamsaraClient:
 
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
         """IFTA per-vehicle fuel & mileage report via `GET /fleet/reports/ifta/vehicle`
-        (singular — the plural path 404s). The endpoint takes integer ``year`` and
-        ``month`` query params; passing startTime/endTime returns 400
-        "year is missing from query string"."""
-        log.info("Fetching IFTA %d-%02d…", year, month)
-        items = self._safe_get("/fleet/reports/ifta/vehicle", {"year": year, "month": month})
+        (singular). The endpoint takes ``year`` (int) and ``month`` as the **full
+        month name** ("January".."December") — passing an integer returns 400
+        "value of month must be one of \"January\", ..."."""
+        month_name = datetime.date(year, month, 1).strftime("%B")
+        log.info("Fetching IFTA %d-%s…", year, month_name)
+        items = self._safe_get("/fleet/reports/ifta/vehicle", {"year": year, "month": month_name})
         if items:
             log.info("  IFTA: got %d records from /fleet/reports/ifta/vehicle", len(items))
             return items
-        log.warning("IFTA: no data for %d-%02d", year, month)
+        log.warning("IFTA: no data for %d-%s", year, month_name)
         return []
