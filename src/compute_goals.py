@@ -299,6 +299,13 @@ def main() -> int:
     ) + "</pre>"
     subject = f"Goal calculator - X-Trux/XFreight - {pd.Timestamp.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html_body)
+    try:
+        from src.karpathy_writer import frontmatter, save
+        body = frontmatter("Goal calculator report", "goals") + \
+               "# Goal calculator — X-Trux/XFreight\n\n```text\n" + report_text + "\n```\n"
+        save("goals", "goal-calculator", body)
+    except Exception as exc:
+        log.warning("Karpathy-Wiki archive skipped: %s", exc)
     return 0
 
 

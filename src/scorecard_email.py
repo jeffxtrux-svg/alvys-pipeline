@@ -2202,6 +2202,14 @@ def main() -> int:
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
+    # Archive the brief for the Karpathy-Wiki librarian to compile.
+    try:
+        from src.karpathy_writer import frontmatter, save
+        body = frontmatter("Executive Brief", "scorecard",
+                           subject=subject.replace(":", "—")) + html
+        save("scorecard", "executive-brief", body)
+    except Exception as exc:
+        log.warning("Karpathy-Wiki archive skipped: %s", exc)
     return 0
 
 

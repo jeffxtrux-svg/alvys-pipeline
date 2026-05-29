@@ -9,6 +9,9 @@ on:
   schedule:
     - cron: '0 13 * * *'   # 7am CT (DST) / 8am CT (standard) — morning refresh
 
+permissions:
+  contents: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -49,3 +52,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHEETS_START_DATE: '2024-01-01'
         run: python -m src.sheets_main
+
+      - name: Write run summary for Karpathy-Wiki
+        if: success()
+        run: python -m src.write_run_summary sheets
+
+      - name: Commit Karpathy-Wiki archive
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! git status --porcelain Karpathy-Wiki/raw 2>/dev/null | grep -q .; then
+            echo "No Karpathy-Wiki updates from this run."
+            exit 0
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add Karpathy-Wiki/raw
+          git commit -m "data: ${{ github.workflow }} $(date -u +%Y-%m-%dT%H:%M)"
+          for delay in 1 2 4 8 16; do
+            git fetch origin "$BRANCH" 2>/dev/null || true
+            git rebase "origin/$BRANCH" 2>/dev/null || { git rebase --abort 2>/dev/null || true; }
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push conflicted, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "Failed to push after retries"; exit 1

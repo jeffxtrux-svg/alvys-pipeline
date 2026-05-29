@@ -219,6 +219,15 @@ def main() -> int:
 
     if not dtc_issues and not dvir_defects:
         log.info("No active faults or unresolved defects — no alert needed.")
+        try:
+            from src.karpathy_writer import frontmatter, save
+            save("samsara-alerts", "all-clear",
+                 frontmatter("Samsara fleet — all clear", "samsara-alerts",
+                             dtc_issues="0", dvir_defects="0")
+                 + "# Samsara fleet alert — all clear\n\nNo active faults or "
+                   "unresolved DVIR defects in the last 7 days.\n")
+        except Exception as exc:
+            log.warning("Karpathy-Wiki archive skipped: %s", exc)
         return 0
 
     log.info(
@@ -241,6 +250,14 @@ def main() -> int:
     body = _build_email_body(dtc_issues, dvir_defects)
 
     send_alert_email(access_token, from_upn, to_emails, subject, body)
+    try:
+        from src.karpathy_writer import frontmatter, save
+        archive = frontmatter("Samsara fleet alert", "samsara-alerts",
+                              dtc_issues=str(len(dtc_issues)),
+                              dvir_defects=str(len(dvir_defects))) + body
+        save("samsara-alerts", "fleet-alert", archive)
+    except Exception as exc:
+        log.warning("Karpathy-Wiki archive skipped: %s", exc)
     return 0
 
 

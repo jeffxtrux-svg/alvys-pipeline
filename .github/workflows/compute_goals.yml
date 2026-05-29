@@ -9,6 +9,9 @@ name: Compute goals (one-off)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   goals:
     runs-on: ubuntu-latest
@@ -37,3 +40,27 @@ jobs:
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
           SCORECARD_QB_DIR: "QuickBooks"
         run: python -m src.compute_goals
+
+      - name: Commit Karpathy-Wiki archive
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! git status --porcelain Karpathy-Wiki/raw 2>/dev/null | grep -q .; then
+            echo "No Karpathy-Wiki updates from this run."
+            exit 0
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add Karpathy-Wiki/raw
+          git commit -m "data: ${{ github.workflow }} $(date -u +%Y-%m-%dT%H:%M)"
+          for delay in 1 2 4 8 16; do
+            git fetch origin "$BRANCH" 2>/dev/null || true
+            git rebase "origin/$BRANCH" 2>/dev/null || { git rebase --abort 2>/dev/null || true; }
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push conflicted, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "Failed to push after retries"; exit 1
