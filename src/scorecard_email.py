@@ -198,34 +198,36 @@ def _windows() -> dict[str, pd.Timestamp]:
 # Alvys operational KPIs (from the manual Alvys Master 2026 file)
 # ----------------------------------------------------------------------
 def _alvys_metrics(sub: pd.DataFrame) -> dict:
-    # Everything comes from the Loads tab. Power BI's report sums the Loads
-    # columns directly — Driver Rate = SUM(Loads[Driver Rate]) and the mileage
-    # measures = SUM(Loads[... Dispatch Mileage]) — and the Loads "Driver Rate"
-    # column already holds each load's full settled pay (all its trips
-    # aggregated), so no Trips summation is needed to match the report.
+    # Power BI's XFreight Report table:
+    #   "Dispatch Mileage" column  = Loaded Mileage (NOT Loaded + Empty)
+    #   "Empty Mileage" column     = Empty Mileage
+    #   "Dead Head %" measure      = Empty / Loaded   (empty-per-loaded ratio)
+    #   "Rev per Mile" measure     = Customer Revenue / Loaded Mileage
+    # Mirror that here so the scorecard tiles tie to the Power BI row-for-row.
+    # We previously divided by Loaded + Empty (the textbook deadhead formula)
+    # which read ~0.4 pts low vs the report; aligning the denominator to Loaded
+    # is the only change. If the workbook lacks a Loaded column, derive it from
+    # Total - Empty as a fallback.
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
     loaded = _col_any(sub, ["Loaded Mileage", "Loaded Dispatch Mileage", "Loaded Miles"]).sum()
-    # Power BI's XFreight Report table sums the workbook's "Empty Mileage" and
-    # "Dispatch Mileage" columns. The manual "Alvys Master 2026.xlsx" carries
-    # both the plain names ("Empty Mileage" / "Dispatch Mileage") and the longer
-    # variants ("Empty Dispatch Mileage" / "Total Dispatch Mileage") with
-    # different sums — preferring the plain names matches the Power BI table
-    # exactly. The long names remain as fallbacks for workbooks that only have
-    # those (e.g. the pipeline's own Alvys Pipeline.xlsx output).
     empty = _col_any(sub, ["Empty Mileage", "Empty Dispatch Mileage", "Empty Miles"]).sum()
-    total_col = _col_any(sub, ["Dispatch Mileage", "Total Dispatch Mileage", "Total Miles", "Total Mileage"])
-    total = total_col.sum() if total_col.notna().any() else (loaded + empty)
-    # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
-    # NOT added: the Driver Rate column is the full payout per load already.
+    if not loaded:
+        total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage",
+                                   "Total Miles", "Total Mileage"])
+        total_fallback = total_col.sum() if total_col.notna().any() else None
+        if total_fallback:
+            loaded = total_fallback - empty
+    # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate
+    # is NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
     margin = revenue - cost
     return {
         "loads": len(sub),
         "revenue": revenue if revenue else None,
-        "miles": total if total else None,
+        "miles": loaded if loaded else None,
         "empty": empty if empty else None,
-        "deadhead": (empty / total) if total else None,
-        "rpm": (revenue / total) if total else None,
+        "deadhead": (empty / loaded) if loaded else None,
+        "rpm": (revenue / loaded) if loaded else None,
         "margin": margin if margin else None,
         "margin_pct": (margin / revenue) if revenue else None,
     }
