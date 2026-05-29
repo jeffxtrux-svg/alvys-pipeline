@@ -74,19 +74,26 @@ def test_overhead_pools_configured_companies_only_and_abs():
     assert sorted(g["overhead_companies"]) == ["X-Linx Inc", "X-Trux, Inc."]
 
 
-def test_cost_per_mile_and_breakeven_default():
-    g = compute_rpm_goal(_sheets(), _qb_pnl())                 # default OR = 1.0
+def test_cost_per_mile_and_default_bakes_8pct_profit():
+    g = compute_rpm_goal(_sheets(), _qb_pnl())                 # default OR = 0.92 (8% net)
     assert abs(g["cost_per_mile"] - _COST_PM) < 1e-9
+    assert abs(g["goal_rpm"] - _COST_PM / 0.92) < 1e-9         # cost + 8% net margin
+    assert abs(g["profit_per_mile"] - (_COST_PM / 0.92 - _COST_PM)) < 1e-9
+    assert abs(g["target_margin"] - 0.08) < 1e-9
+
+
+def test_breakeven_when_or_is_one():
+    g = compute_rpm_goal(_sheets(), _qb_pnl(), target_or=1.0)
     assert abs(g["goal_rpm"] - _COST_PM) < 1e-9                 # break-even: goal == cost
     assert abs(g["profit_per_mile"]) < 1e-9
     assert g["target_margin"] == 0.0
 
 
 def test_profit_layered_via_operating_ratio():
-    g = compute_rpm_goal(_sheets(), _qb_pnl(), target_or=0.90)  # 10% net margin
-    assert abs(g["goal_rpm"] - _COST_PM / 0.90) < 1e-9
-    assert abs(g["profit_per_mile"] - (_COST_PM / 0.90 - _COST_PM)) < 1e-9
-    assert abs(g["target_margin"] - 0.10) < 1e-9
+    g = compute_rpm_goal(_sheets(), _qb_pnl(), target_or=0.85)  # 15% net margin
+    assert abs(g["goal_rpm"] - _COST_PM / 0.85) < 1e-9
+    assert abs(g["profit_per_mile"] - (_COST_PM / 0.85 - _COST_PM)) < 1e-9
+    assert abs(g["target_margin"] - 0.15) < 1e-9
 
 
 def test_no_quickbooks_yields_partial_cost_out():

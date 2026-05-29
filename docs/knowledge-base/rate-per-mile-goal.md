@@ -61,16 +61,17 @@ tracks rate changes within a few weeks instead of dragging a stale annual averag
 
 ### Profit — layered on top via the operating ratio
 
-`goal = cost ÷ RPM_GOAL_TARGET_OR`. The **default is `1.0` (break-even, no profit
-baked in)** — the cost number is the deliverable first; the profit target is set
-*after* the true cost is known. Set the OR below 1.0 to bake in net margin:
+`goal = cost ÷ RPM_GOAL_TARGET_OR`. The **default is `0.92` — an 8% net margin**
+on the fully-loaded cost (the target the business chose). Adjust the OR to change
+the baked-in profit:
 
-| `RPM_GOAL_TARGET_OR` | Net margin | Goal on a $2.92 cost |
-|----------------------|-----------|----------------------|
-| `1.00` | 0% (break-even) | $2.92 |
-| `0.95` | 5%  | $3.07 |
-| `0.90` | 10% | $3.24 |
-| `0.85` | 15% | $3.44 |
+| `RPM_GOAL_TARGET_OR` | Net margin | Goal on a ~$2.75 current cost |
+|----------------------|-----------|-------------------------------|
+| `1.00` | 0% (break-even) | $2.75 |
+| `0.95` | 5%  | $2.90 |
+| **`0.92`** | **8% (default)** | **$2.99** |
+| `0.90` | 10% | $3.06 |
+| `0.85` | 15% | $3.24 |
 
 > This margin is **net of total cost** (driver + overhead), which is *not* the
 > same as the 30–36% *gross* margins in the manual goals worksheet — those are
@@ -82,8 +83,8 @@ Four tiles plus a plain-language line that makes the number auditable from the
 email itself:
 
 - **Cost / mile · X-Trux** — the fully-loaded break-even (the headline).
-- **Goal rate / mile** — cost ÷ OR; the pill says "break-even · set profit %" until
-  a target margin is configured, otherwise "<x>% net · OR <r>".
+- **Goal rate / mile** — cost ÷ OR; the pill reads "<x>% net · OR <r>" (8% by
+  default), or "break-even · set profit %" if the OR is set back to 1.0.
 - **Actual / mile · recent** — revenue ÷ miles over the same trailing window.
 - **Gap to goal / mile** — green when actual ≥ goal, red when below.
 
@@ -108,7 +109,7 @@ All optional; defaults live in `src/scorecard_email.py` and are documented in
 
 | Variable | Default | What it controls |
 |----------|---------|------------------|
-| `RPM_GOAL_TARGET_OR` | `1.0` | Operating ratio the goal targets (1.0 = break-even). |
+| `RPM_GOAL_TARGET_OR` | `0.92` | Operating ratio the goal targets (0.92 = 8% net margin; 1.0 = break-even). |
 | `RPM_GOAL_OVERHEAD_COMPANIES` | `X-Trux Inc,X-Linx Inc` | QB companies whose Total Expenses form the overhead pool. |
 | `RPM_GOAL_PAY_WINDOW_DAYS` | `90` | Trailing window for the driver-pay-per-mile read. |
 | `RPM_GOAL_WORKSHEET_OVERHEAD` | `0.88` | Manual office-cost-per-mile shown as a sanity check. |
@@ -121,7 +122,7 @@ All optional; defaults live in `src/scorecard_email.py` and are documented in
   `n/a` offline; the live email fills it in.)
 - **Contract tests:** `python tests/test_rpm_goal.py` (or `pytest
   tests/test_rpm_goal.py`) lock the math — X-Linx/cancelled exclusion, the
-  combined-overhead pool, break-even default, and the profit-via-OR layering.
+  combined-overhead pool, the 10% default, break-even at OR 1.0, and OR layering.
 
 ## When you most commonly edit this
 
@@ -131,5 +132,5 @@ All optional; defaults live in `src/scorecard_email.py` and are documented in
 - **Overhead/mile looks wrong:** check the company names in
   `RPM_GOAL_OVERHEAD_COMPANIES` match the QB `Company` column, and that fiscal-YTD
   X-Trux miles are non-trivial (a near-empty Loads window inflates the per-mile cost).
-- **Ready to set a profit target:** set `RPM_GOAL_TARGET_OR` (e.g. `0.90`) and the
-  goal tile flips from "break-even · set profit %" to the margin-loaded rate.
+- **Changing the profit target:** set `RPM_GOAL_TARGET_OR` (default `0.92` = 8%
+  net; e.g. `0.90` for 10%, `1.0` for break-even) and the goal tile follows.
