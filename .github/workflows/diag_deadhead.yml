@@ -7,10 +7,6 @@ name: Deadhead diagnostic (one-off)
 on:
   workflow_dispatch:
 
-  # TEMPORARY: one-shot trigger on push (removed right after).
-  push:
-    branches: [claude/claude-md-docs-Es64x]
-
 jobs:
   diag:
     runs-on: ubuntu-latest
