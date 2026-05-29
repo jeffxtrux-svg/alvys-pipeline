@@ -19,7 +19,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.sheets_main import build_trukway_per_truck  # noqa: E402
+from src.sheets_main import build_trukway_per_truck, trukway_total_expenses  # noqa: E402
 
 
 def _loads() -> pd.DataFrame:
@@ -131,6 +131,47 @@ def test_handles_missing_fuel_frame():
     out = build_trukway_per_truck(_loads(), pd.DataFrame())
     assert not out.empty
     assert (out["Fuel Cost"] == 0).all()
+
+
+def test_net_profit_allocates_qb_expenses_by_miles():
+    # Fleet miles = 1400 (T101) + 300 (T102) = 1700. QB Total Expenses = 1700.
+    out = build_trukway_per_truck(_loads(), _fuel(), qb_total_expenses=1700.0)
+    assert "Net Profit" in out.columns and "Allocated QB Cost" in out.columns
+
+    t101 = _truck_row(out, "T101")
+    t102 = _truck_row(out, "T102")
+    # Allocation is by mile share: 1400/1700 and 300/1700 of $1700 → $1400 / $300.
+    assert abs(t101["Allocated QB Cost"] - 1400) < 1e-6
+    assert abs(t102["Allocated QB Cost"] - 300) < 1e-6
+    # Net Profit = Settlement Revenue − Allocated QB Cost (fuel NOT subtracted again).
+    assert abs(t101["Net Profit"] - (1700 - 1400)) < 1e-6
+    assert abs(t102["Net Profit"] - (500 - 300)) < 1e-6
+
+    total = _truck_row(out, "TOTAL")
+    # Allocated cost sums back to the QB total; net = total settlement − QB total.
+    assert abs(total["Allocated QB Cost"] - 1700) < 1e-6
+    assert abs(total["Net Profit"] - (2200 - 1700)) < 1e-6
+    assert abs(total["Net / Mile"] - round(500 / 1700, 3)) < 1e-6
+
+
+def test_net_columns_absent_without_qb_expenses():
+    out = build_trukway_per_truck(_loads(), _fuel())  # no qb_total_expenses
+    assert "Net Profit" not in out.columns
+    assert "Allocated QB Cost" not in out.columns
+
+
+def test_trukway_total_expenses_parsing():
+    qb = pd.DataFrame([
+        {"Company": "Truk-Way Leasing", "RowLabel": "Fuel", "RowType": "Data", "Col1": "500"},
+        {"Company": "Truk-Way Leasing", "RowLabel": "TOTAL Expenses", "RowType": "Summary", "Col1": "1700.00"},
+        {"Company": "X-Trux Inc", "RowLabel": "TOTAL Expenses", "RowType": "Summary", "Col1": "9999"},
+    ])
+    assert abs(trukway_total_expenses(qb) - 1700.0) < 1e-6
+    # Other-company total must not leak in.
+    assert trukway_total_expenses(qb) != 9999.0
+    # Fail-soft on empty / None.
+    assert trukway_total_expenses(None) is None
+    assert trukway_total_expenses(pd.DataFrame()) is None
 
 
 if __name__ == "__main__":
