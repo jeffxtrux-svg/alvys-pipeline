@@ -38,7 +38,6 @@ jobs:
           SCORECARD_TO_EMAILS: jeff@xfreight.net
           SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
-          SCORECARD_QB_DIR: "QuickBooks"
         run: python -m src.compute_goals
 
       - name: Commit Karpathy-Wiki archive
