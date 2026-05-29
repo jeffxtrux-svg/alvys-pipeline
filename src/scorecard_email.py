@@ -71,12 +71,15 @@ COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window n
 #                               pool that the X-Trux miles must absorb.
 #   RPM_GOAL_PAY_WINDOW_DAYS    trailing window for the driver-pay-per-mile read,
 #                               so the goal tracks the *current* weekly O/O rate.
+#                               Short (10d default) because the rate changes weekly;
+#                               the pay read is restricted to settled loads so the
+#                               recent not-yet-settled loads don't drag it down.
 #   RPM_GOAL_WORKSHEET_OVERHEAD the latest office-cost-per-mile from the manually
 #                               kept "Goals and Trends.xlsx" (Jeff's Number tab),
 #                               shown alongside the QB figure as a sanity check.
 RPM_GOAL_TARGET_OR = 0.92
 RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
-RPM_GOAL_PAY_WINDOW_DAYS = 90
+RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
@@ -774,10 +777,11 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
 
     Cost per mile is rebuilt from live data each run so the goal self-corrects:
       * driver/owner-op pay per mile = SUM(Driver Rate) / SUM(Total Dispatch Mileage)
-        for the X-Trux asset fleet over the trailing `pay_window_days`. Reading a
-        recent window (not fiscal-YTD) means the goal tracks the *current* weekly
-        O/O rate and blends in accessorials + deadhead automatically, instead of
-        hardcoding the $/mi contract number.
+        for the X-Trux asset fleet over the trailing `pay_window_days` (settled
+        loads only). A short recent window (not fiscal-YTD) means the goal tracks
+        the *current* weekly O/O rate and blends in accessorials + deadhead
+        automatically, instead of hardcoding the $/mi contract number; restricting
+        to settled loads keeps not-yet-settled recent loads from deflating it.
       * office/overhead per mile = combined Total Expenses of `overhead_companies`
         (X-Trux + X-Linx share one back office) from the QuickBooks P&L, divided by
         fiscal-YTD X-Trux miles. The QB P&L is a "This Fiscal Year" report, so YTD
@@ -822,7 +826,12 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
 
     now = pd.Timestamp.now()
-    recent = dates >= (now.normalize() - pd.Timedelta(days=pay_window_days))
+    # Recent, settled loads only. The owner-op rate changes weekly, so a short
+    # trailing window tracks the current rate — but the freshest loads carry miles
+    # whose driver pay hasn't settled yet ($0), and including them would drag the
+    # per-mile rate down. Restrict the pay/revenue reads to settled loads
+    # (Driver Rate > 0), matching the P&L convention used elsewhere.
+    recent = (dates >= (now.normalize() - pd.Timedelta(days=pay_window_days))) & (pay > 0)
     pay_miles = float(miles[recent].sum())
     pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
     actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None

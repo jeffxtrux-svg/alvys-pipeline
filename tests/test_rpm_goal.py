@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.scorecard_email import compute_rpm_goal  # noqa: E402
 
-# Recent date inside both the trailing-90d pay window and the fiscal-YTD miles window.
-_RECENT = (pd.Timestamp.now().normalize() - pd.Timedelta(days=15))
+# Recent date inside both the short trailing pay window and the fiscal-YTD window.
+_RECENT = (pd.Timestamp.now().normalize() - pd.Timedelta(days=3))
 
 
 def _sheets():
@@ -103,6 +103,26 @@ def test_no_quickbooks_yields_partial_cost_out():
     assert g["cost_per_mile"] is None and g["goal_rpm"] is None
     # worksheet sanity-check leg is still available offline
     assert abs(g["worksheet_cost_per_mile"] - (_PAY_PM + g["worksheet_overhead"])) < 1e-9
+
+
+def test_pay_leg_uses_settled_loads_only():
+    # A fresh X-Trux load whose driver pay hasn't settled yet (Driver Rate 0) has
+    # real miles but must NOT drag the pay-per-mile down — it's excluded from the
+    # pay read, yet its miles still count toward the YTD overhead denominator.
+    rows = [
+        dict(Office="X-Trux, Inc", **{"Customer Revenue": 2600, "Driver Rate": 2000,
+             "Total Dispatch Mileage": 1000, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
+        dict(Office="XFreight", **{"Customer Revenue": 2300, "Driver Rate": 1620,
+             "Total Dispatch Mileage": 900, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
+        # unsettled: just picked up, driver pay not entered yet
+        dict(Office="X-Trux, Inc", **{"Customer Revenue": 1500, "Driver Rate": 0,
+             "Total Dispatch Mileage": 700, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
+    ]
+    g = compute_rpm_goal({"Loads": pd.DataFrame(rows)}, _qb_pnl())
+    assert abs(g["pay_per_mile"] - _PAY_PM) < 1e-9             # 3620/1900, unsettled excluded
+    assert abs(g["pay_miles"] - _MILES) < 1e-9
+    assert abs(g["ytd_miles"] - (_MILES + 700)) < 1e-9        # unsettled miles still operated
+    assert abs(g["overhead_per_mile"] - (_OVERHEAD / (_MILES + 700))) < 1e-9
 
 
 def test_returns_none_without_xtrux_loads():

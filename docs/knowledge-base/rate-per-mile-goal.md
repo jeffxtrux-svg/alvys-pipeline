@@ -36,14 +36,18 @@ profit / mile =                goal / mile   −   cost / mile
 
 ### Leg 1 — driver/owner-op pay per mile  *(from Alvys, live)*
 
-`SUM(Loads[Driver Rate]) ÷ SUM(Loads[Total Dispatch Mileage])` for the **X-Trux
-asset fleet** (Office slicer → X-Trux/XFreight; X-Linx and cancelled loads
-dropped), over a **trailing window** (default 90 days, `RPM_GOAL_PAY_WINDOW_DAYS`).
+`SUM(Driver Rate) ÷ SUM(Total Dispatch Mileage)` for the **X-Trux asset fleet**
+(Office slicer → X-Trux/XFreight; X-Linx and cancelled loads dropped), over a
+short **trailing window** (default **10 days**, `RPM_GOAL_PAY_WINDOW_DAYS`),
+**settled loads only** (Driver Rate > 0).
 
-A recent window — not year-to-date — is deliberate: `Driver Rate` already holds
-each load's full settled pay (base + accessorials), so a trailing read blends the
-**current** weekly rate, accessorials, and deadhead into one honest $/mi and
-tracks rate changes within a few weeks instead of dragging a stale annual average.
+A short recent window — not year-to-date — is deliberate: the owner-op rate
+changes **weekly**, and `Driver Rate` holds each load's full settled pay (base +
+accessorials), so a tight trailing read blends the **current** rate, accessorials,
+and deadhead into one honest $/mi and tracks rate changes within days instead of
+dragging a stale average. The **settled-only** filter matters at this window
+length: the freshest loads have miles but $0 driver pay until they settle, and
+including them would deflate the rate — so they're excluded until pay lands.
 
 ### Leg 2 — office overhead per mile  *(from QuickBooks, monthly)*
 
@@ -111,7 +115,7 @@ All optional; defaults live in `src/scorecard_email.py` and are documented in
 |----------|---------|------------------|
 | `RPM_GOAL_TARGET_OR` | `0.92` | Operating ratio the goal targets (0.92 = 8% net margin; 1.0 = break-even). |
 | `RPM_GOAL_OVERHEAD_COMPANIES` | `X-Trux Inc,X-Linx Inc` | QB companies whose Total Expenses form the overhead pool. |
-| `RPM_GOAL_PAY_WINDOW_DAYS` | `90` | Trailing window for the driver-pay-per-mile read. |
+| `RPM_GOAL_PAY_WINDOW_DAYS` | `10` | Trailing window (days) for the driver-pay-per-mile read; settled loads only. |
 | `RPM_GOAL_WORKSHEET_OVERHEAD` | `0.88` | Manual office-cost-per-mile shown as a sanity check. |
 
 ## Verify / debug
