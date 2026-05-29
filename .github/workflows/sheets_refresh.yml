@@ -6,6 +6,10 @@ name: Refresh Google Sheets KPI Dashboard
 on:
   workflow_dispatch:
 
+  # TEMPORARY: one-shot trigger on push (removed right after).
+  push:
+    branches: [claude/pulls-oneshot]
+
   schedule:
     - cron: '0 13 * * *'   # 7am CT (DST) / 8am CT (standard) — morning refresh
 
