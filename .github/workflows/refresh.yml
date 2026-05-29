@@ -6,6 +6,10 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
+  # TEMPORARY: one-shot trigger on push (removed right after).
+  push:
+    branches: [claude/pulls-oneshot-2]
+
   # Cron times are in UTC. Adjust for Central time as needed.
   # Below = 5am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
   schedule:
