@@ -77,10 +77,20 @@ COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window n
 #   RPM_GOAL_WORKSHEET_OVERHEAD the latest office-cost-per-mile from the manually
 #                               kept "Goals and Trends.xlsx" (Jeff's Number tab),
 #                               shown alongside the QB figure as a sanity check.
+#   RPM_GOAL_OVERHEAD_ALLOC     fraction of the combined office-overhead pool that
+#                               the X-Trux miles absorb (1.0 = all of it, the
+#                               default; 0.85 would push 15% onto brokerage).
 RPM_GOAL_TARGET_OR = 0.95
 RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
+RPM_GOAL_OVERHEAD_ALLOC = 1.0
+# Fail-soft guards: if the short pay window is too thin to trust, widen it; if the
+# resulting cost lands outside a sane band, flag it on the email's data-check banner.
+RPM_GOAL_MIN_SETTLED_LOADS = 5      # need at least this many settled X-Trux loads…
+RPM_GOAL_MIN_WINDOW_MILES = 5000    # …and this many miles, else widen the window
+RPM_GOAL_FALLBACK_WINDOWS = (30, 60, 90)   # widen to these (days) in order
+RPM_GOAL_PLAUSIBLE_BAND = (1.50, 5.00)     # cost/mi outside this is flagged
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
@@ -831,7 +841,27 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     # whose driver pay hasn't settled yet ($0), and including them would drag the
     # per-mile rate down. Restrict the pay/revenue reads to settled loads
     # (Driver Rate > 0), matching the P&L convention used elsewhere.
-    recent = (dates >= (now.normalize() - pd.Timedelta(days=pay_window_days))) & (pay > 0)
+    #
+    # Fail-soft: a 10-day window can be too thin on a light/holiday week to trust.
+    # Try the configured window first, then widen through the fallback windows until
+    # there are enough settled loads + miles; if none qualify, use the widest as a
+    # best-effort read and flag it (pay_window_fallback) so the brief can warn.
+    def _window_mask(days):
+        return (dates >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+    candidate_windows = [pay_window_days] + [w for w in RPM_GOAL_FALLBACK_WINDOWS if w > pay_window_days]
+    pay_window_used, recent, pay_window_fallback = pay_window_days, _window_mask(pay_window_days), False
+    for w in candidate_windows:
+        m = _window_mask(w)
+        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
+            pay_window_used, recent = w, m
+            pay_window_fallback = (w != pay_window_days)
+            break
+    else:
+        # Nothing met the threshold — widen to the largest window we tried.
+        pay_window_used = candidate_windows[-1]
+        recent = _window_mask(pay_window_used)
+        pay_window_fallback = True
+    pay_loads = int(recent.sum())
     pay_miles = float(miles[recent].sum())
     pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
     actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
@@ -841,17 +871,26 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     ytd_miles = float(miles[ytd].sum())
 
     # Shared office overhead from QuickBooks (X-Trux + X-Linx Total Expenses).
-    overhead_total, overhead_used = None, []
+    # The allocation factor is the fraction of that combined pool the X-Trux miles
+    # absorb (default 1.0 = all of it). The X-Trux-only figure is kept too, so the
+    # brief can show "combined vs X-Trux-only" side by side.
+    alloc = _env_float("RPM_GOAL_OVERHEAD_ALLOC", RPM_GOAL_OVERHEAD_ALLOC)
+    overhead_combined, overhead_used, overhead_xtrux = None, [], None
     if qb_pnl:
         by_norm = {_norm_name(k): k for k in qb_pnl}
         total = 0.0
         for want in overhead_companies:
             key = by_norm.get(_norm_name(want))
             if key and _isnum(qb_pnl[key].get("opex")):
-                total += abs(float(qb_pnl[key]["opex"]))
+                val = abs(float(qb_pnl[key]["opex"]))
+                total += val
                 overhead_used.append(key)
-        overhead_total = total if overhead_used else None
+                if _norm_name(want).startswith("x trux"):
+                    overhead_xtrux = val
+        overhead_combined = total if overhead_used else None
+    overhead_total = (overhead_combined * alloc) if overhead_combined is not None else None
     overhead_per_mile = (overhead_total / ytd_miles) if (overhead_total and ytd_miles) else None
+    overhead_per_mile_xtrux = (overhead_xtrux / ytd_miles) if (overhead_xtrux and ytd_miles) else None
 
     cost_per_mile = ((pay_per_mile + overhead_per_mile)
                      if (pay_per_mile is not None and overhead_per_mile is not None) else None)
@@ -861,9 +900,15 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     ws_cost_per_mile = ((pay_per_mile + worksheet_overhead)
                         if (pay_per_mile is not None and worksheet_overhead) else None)
 
+    # Plausibility: a sane fully-loaded X-Trux mile sits in a known band. Outside it
+    # usually means a bad QB pull or a near-empty Loads window — flag, don't trust.
+    lo, hi = RPM_GOAL_PLAUSIBLE_BAND
+    cost_plausible = (lo <= cost_per_mile <= hi) if cost_per_mile is not None else None
+
     return {
         "pay_per_mile": pay_per_mile,
         "overhead_per_mile": overhead_per_mile,
+        "overhead_per_mile_xtrux_only": overhead_per_mile_xtrux,
         "cost_per_mile": cost_per_mile,
         "goal_rpm": goal_rpm,
         "profit_per_mile": profit_per_mile,
@@ -872,13 +917,37 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         "actual_rpm": actual_rpm,
         "gap": gap,
         "overhead_total": overhead_total,
+        "overhead_combined": overhead_combined,
+        "overhead_alloc": alloc,
         "overhead_companies": overhead_used,
         "ytd_miles": ytd_miles or None,
         "pay_window_days": pay_window_days,
+        "pay_window_used": pay_window_used,
+        "pay_window_fallback": pay_window_fallback,
+        "pay_loads": pay_loads,
         "pay_miles": pay_miles or None,
         "worksheet_overhead": worksheet_overhead,
         "worksheet_cost_per_mile": ws_cost_per_mile,
+        "cost_plausible": cost_plausible,
     }
+
+
+def _rpm_goal_health(goal: dict | None) -> list[str]:
+    """Warnings about the rate-per-mile goal for the email's data-check banner."""
+    if not goal:
+        return []
+    out: list[str] = []
+    if goal.get("pay_window_fallback"):
+        out.append(
+            f"Rate-per-mile: only {goal.get('pay_loads', 0)} settled X-Trux load(s) in the "
+            f"last {goal.get('pay_window_days')}d &mdash; widened the pay window to "
+            f"{goal.get('pay_window_used')}d for a stable read.")
+    if goal.get("cost_plausible") is False:
+        lo, hi = RPM_GOAL_PLAUSIBLE_BAND
+        out.append(
+            f"Rate-per-mile cost {rpm(goal.get('cost_per_mile'))}/mi is outside the expected "
+            f"{rpm(lo)}&ndash;{rpm(hi)} band &mdash; check the QuickBooks P&amp;L and Loads window.")
+    return out
 
 
 def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: dict | None) -> dict:
@@ -1666,16 +1735,25 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                   _pill("driver pay + overhead", "mute"))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
-                    _pill(f"last {g.get('pay_window_days')}d", "mute"))
+                    _pill(f"last {g.get('pay_window_used') or g.get('pay_window_days')}d", "mute"))
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
+        _win = g.get("pay_window_used") or g.get("pay_window_days")
         parts = []
         if _isnum(_pp):
-            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {g.get('pay_window_days')}d)")
+            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
         if _isnum(_oh):
             cos = g.get("overhead_companies") or []
-            parts.append(f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles)")
+            _alloc = g.get("overhead_alloc")
+            _xt_oh = g.get("overhead_per_mile_xtrux_only")
+            oh_txt = f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles"
+            if _isnum(_alloc) and abs(_alloc - 1.0) > 1e-9:
+                oh_txt += f" &times; {_alloc:.0%} allocation"
+            if _isnum(_xt_oh):
+                oh_txt += f"; X-Trux-only {rpm(_xt_oh)}/mi"
+            oh_txt += ")"
+            parts.append(oh_txt)
         breakdown = " + ".join(parts) if parts else "awaiting data"
         if _isnum(_cpm):
             msg = f"Fully-loaded cost to run an X-Trux mile is <b>{rpm(_cpm)}</b> = {breakdown}. "
@@ -2249,6 +2327,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
     rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
+    warnings += _rpm_goal_health(rpm_goal)
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
