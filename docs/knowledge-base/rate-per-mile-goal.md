@@ -96,6 +96,14 @@ The note also prints the **worksheet sanity check**: the office-cost-per-mile fr
 the manually kept `Goals and Trends.xlsx` (`RPM_GOAL_WORKSHEET_OVERHEAD`, default
 `$0.88`) sits beside the live QB figure so the two can be compared at a glance.
 
+Below the tiles, a **6-month trend** (`compute_rpm_goal_trend`) charts **cost /
+goal / actual revenue per mile** by month so the goal reads as a living line — you
+can see cost creep or a chronic actual-below-goal gap, not just today's snapshot.
+The driver-pay leg varies by month; office overhead is **held flat at the current
+YTD rate** (the QB P&L is a single fiscal-year report, so monthly overhead can't be
+reconstructed). The cost/goal bars render only when the QB overhead leg is present;
+the actual rev/mile bars always render.
+
 ## Reconciling the ~$2.92 estimate
 
 The owner's `Goals and Trends.xlsx` ("Jeff's Number" tab) already itemizes office
@@ -115,8 +123,21 @@ All optional; defaults live in `src/scorecard_email.py` and are documented in
 |----------|---------|------------------|
 | `RPM_GOAL_TARGET_OR` | `0.95` | Operating ratio the goal targets (0.95 = 5% net margin; 1.0 = break-even). |
 | `RPM_GOAL_OVERHEAD_COMPANIES` | `X-Trux Inc,X-Linx Inc` | QB companies whose Total Expenses form the overhead pool. |
+| `RPM_GOAL_OVERHEAD_ALLOC` | `1.0` | Fraction of the combined overhead the X-Trux miles absorb (1.0 = all; lower pushes some onto brokerage). |
 | `RPM_GOAL_PAY_WINDOW_DAYS` | `10` | Trailing window (days) for the driver-pay-per-mile read; settled loads only. |
 | `RPM_GOAL_WORKSHEET_OVERHEAD` | `0.88` | Manual office-cost-per-mile shown as a sanity check. |
+
+### Fail-soft guards
+
+The goal stays trustworthy on thin or bad data (constants in `src/scorecard_email.py`):
+
+- **Min-sample window widening** — if the `RPM_GOAL_PAY_WINDOW_DAYS` window holds fewer
+  than `RPM_GOAL_MIN_SETTLED_LOADS` (5) settled loads or `RPM_GOAL_MIN_WINDOW_MILES`
+  (5,000) miles, the pay read widens through `RPM_GOAL_FALLBACK_WINDOWS` (30/60/90d)
+  until it has a stable sample, and the brief's **Data check** banner notes the widening.
+- **Plausibility band** — a cost/mi outside `RPM_GOAL_PLAUSIBLE_BAND` ($1.50–$5.00)
+  flags the banner instead of reading as a trustworthy goal (usually a bad QB pull or
+  a near-empty Loads window). Both checks live in `_rpm_goal_health`.
 
 ## Verify / debug
 

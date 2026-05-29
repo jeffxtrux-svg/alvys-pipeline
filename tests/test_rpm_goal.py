@@ -17,7 +17,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_rpm_goal  # noqa: E402
+from src.scorecard_email import (  # noqa: E402
+    compute_rpm_goal, compute_rpm_goal_trend, _rpm_goal_health,
+)
 
 # Recent date inside both the short trailing pay window and the fiscal-YTD window.
 _RECENT = (pd.Timestamp.now().normalize() - pd.Timedelta(days=3))
@@ -130,6 +132,74 @@ def test_returns_none_without_xtrux_loads():
         dict(Office="X-Linx, Inc.", **{"Customer Revenue": 800, "Driver Rate": 500,
              "Total Dispatch Mileage": 300, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"})])}
     assert compute_rpm_goal(only_xlinx, _qb_pnl()) is None
+
+
+def test_goal_trend_this_month_matches_point_goal():
+    sheets, qb = _sheets(), _qb_pnl()
+    g = compute_rpm_goal(sheets, qb)
+    t = compute_rpm_goal_trend(sheets, g)
+    assert len(t["labels"]) == 6
+    assert t["labels"][-1].endswith("*")                       # current month flagged MTD
+    # All test loads sit in the current month, so this month's trend cost/goal/actual
+    # equal the point-in-time figures from compute_rpm_goal.
+    assert abs(t["cost"][-1] - g["cost_per_mile"]) < 1e-9
+    assert abs(t["goal"][-1] - g["goal_rpm"]) < 1e-9
+    assert abs(t["actual"][-1] - 4900 / _MILES) < 1e-9         # (2600+2300)/1900 revenue/mi
+
+
+def test_goal_trend_cost_empty_without_quickbooks():
+    sheets = _sheets()
+    g = compute_rpm_goal(sheets, qb_pnl=None)                   # no overhead leg
+    t = compute_rpm_goal_trend(sheets, g)
+    assert t["cost"] == [] and t["goal"] == []                 # cost/goal pending
+    assert len(t["actual"]) == 6                               # actual rev/mi still available
+
+
+def _rich_sheets(rate=1.80, n=6, mi_each=1000):
+    """Enough settled X-Trux loads to clear the min-sample threshold in a 10d window."""
+    rows = [dict(Office="X-Trux, Inc", **{"Customer Revenue": mi_each * 2.4,
+                 "Driver Rate": mi_each * rate, "Total Dispatch Mileage": mi_each,
+                 "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}) for _ in range(n)]
+    return {"Loads": pd.DataFrame(rows)}
+
+
+def test_pay_window_widens_when_sample_is_thin():
+    # _sheets() has only 2 settled loads / 1900 mi — below the 5-load / 5000-mi floor,
+    # so the window widens to the largest fallback and flags it.
+    g = compute_rpm_goal(_sheets(), _qb_pnl())
+    assert g["pay_window_fallback"] is True
+    assert g["pay_window_used"] == 90                          # widened past 10
+    assert abs(g["pay_per_mile"] - _PAY_PM) < 1e-9            # same settled loads, just a wider net
+    assert "widened the pay window" in " ".join(_rpm_goal_health(g))
+
+
+def test_no_fallback_with_a_rich_sample():
+    g = compute_rpm_goal(_rich_sheets(), _qb_pnl())
+    assert g["pay_window_fallback"] is False
+    assert g["pay_window_used"] == 10
+    assert g["pay_loads"] == 6
+    assert _rpm_goal_health(g) == []                           # clean: no banner warnings
+
+
+def test_overhead_allocation_and_xtrux_only():
+    g = compute_rpm_goal(_sheets(), _qb_pnl())                 # default alloc 1.0
+    assert abs(g["overhead_total"] - _OVERHEAD) < 1e-9
+    assert abs(g["overhead_per_mile_xtrux_only"] - (1000 / _MILES)) < 1e-9   # X-Trux opex only
+    # allocation factor scales the combined pool
+    os.environ["RPM_GOAL_OVERHEAD_ALLOC"] = "0.5"
+    try:
+        g2 = compute_rpm_goal(_sheets(), _qb_pnl())
+        assert abs(g2["overhead_total"] - _OVERHEAD * 0.5) < 1e-9
+        assert abs(g2["overhead_alloc"] - 0.5) < 1e-9
+    finally:
+        del os.environ["RPM_GOAL_OVERHEAD_ALLOC"]
+
+
+def test_implausible_cost_is_flagged():
+    huge = {"X-Trux Inc": {"opex": 30000.0}, "X-Linx Inc": {"opex": 30000.0}}  # ~$31/mi overhead
+    g = compute_rpm_goal(_sheets(), huge)
+    assert g["cost_plausible"] is False
+    assert any("outside the expected" in m for m in _rpm_goal_health(g))
 
 
 if __name__ == "__main__":

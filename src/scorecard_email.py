@@ -78,10 +78,20 @@ COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window n
 #   RPM_GOAL_WORKSHEET_OVERHEAD the latest office-cost-per-mile from the manually
 #                               kept "Goals and Trends.xlsx" (Jeff's Number tab),
 #                               shown alongside the QB figure as a sanity check.
+#   RPM_GOAL_OVERHEAD_ALLOC     fraction of the combined office-overhead pool that
+#                               the X-Trux miles absorb (1.0 = all of it, the
+#                               default; 0.85 would push 15% onto brokerage).
 RPM_GOAL_TARGET_OR = 0.95
 RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
+RPM_GOAL_OVERHEAD_ALLOC = 1.0
+# Fail-soft guards: if the short pay window is too thin to trust, widen it; if the
+# resulting cost lands outside a sane band, flag it on the email's data-check banner.
+RPM_GOAL_MIN_SETTLED_LOADS = 5      # need at least this many settled X-Trux loads…
+RPM_GOAL_MIN_WINDOW_MILES = 5000    # …and this many miles, else widen the window
+RPM_GOAL_FALLBACK_WINDOWS = (30, 60, 90)   # widen to these (days) in order
+RPM_GOAL_PLAUSIBLE_BAND = (1.50, 5.00)     # cost/mi outside this is flagged
 
 # SambaSafety driver-compliance thresholds (page 9).
 LICENSE_EXPIRY_WARN_DAYS = 30     # flag licenses expiring within this many days
@@ -837,7 +847,27 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     # whose driver pay hasn't settled yet ($0), and including them would drag the
     # per-mile rate down. Restrict the pay/revenue reads to settled loads
     # (Driver Rate > 0), matching the P&L convention used elsewhere.
-    recent = (dates >= (now.normalize() - pd.Timedelta(days=pay_window_days))) & (pay > 0)
+    #
+    # Fail-soft: a 10-day window can be too thin on a light/holiday week to trust.
+    # Try the configured window first, then widen through the fallback windows until
+    # there are enough settled loads + miles; if none qualify, use the widest as a
+    # best-effort read and flag it (pay_window_fallback) so the brief can warn.
+    def _window_mask(days):
+        return (dates >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+    candidate_windows = [pay_window_days] + [w for w in RPM_GOAL_FALLBACK_WINDOWS if w > pay_window_days]
+    pay_window_used, recent, pay_window_fallback = pay_window_days, _window_mask(pay_window_days), False
+    for w in candidate_windows:
+        m = _window_mask(w)
+        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
+            pay_window_used, recent = w, m
+            pay_window_fallback = (w != pay_window_days)
+            break
+    else:
+        # Nothing met the threshold — widen to the largest window we tried.
+        pay_window_used = candidate_windows[-1]
+        recent = _window_mask(pay_window_used)
+        pay_window_fallback = True
+    pay_loads = int(recent.sum())
     pay_miles = float(miles[recent].sum())
     pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
     actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
@@ -847,17 +877,26 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     ytd_miles = float(miles[ytd].sum())
 
     # Shared office overhead from QuickBooks (X-Trux + X-Linx Total Expenses).
-    overhead_total, overhead_used = None, []
+    # The allocation factor is the fraction of that combined pool the X-Trux miles
+    # absorb (default 1.0 = all of it). The X-Trux-only figure is kept too, so the
+    # brief can show "combined vs X-Trux-only" side by side.
+    alloc = _env_float("RPM_GOAL_OVERHEAD_ALLOC", RPM_GOAL_OVERHEAD_ALLOC)
+    overhead_combined, overhead_used, overhead_xtrux = None, [], None
     if qb_pnl:
         by_norm = {_norm_name(k): k for k in qb_pnl}
         total = 0.0
         for want in overhead_companies:
             key = by_norm.get(_norm_name(want))
             if key and _isnum(qb_pnl[key].get("opex")):
-                total += abs(float(qb_pnl[key]["opex"]))
+                val = abs(float(qb_pnl[key]["opex"]))
+                total += val
                 overhead_used.append(key)
-        overhead_total = total if overhead_used else None
+                if _norm_name(want).startswith("x trux"):
+                    overhead_xtrux = val
+        overhead_combined = total if overhead_used else None
+    overhead_total = (overhead_combined * alloc) if overhead_combined is not None else None
     overhead_per_mile = (overhead_total / ytd_miles) if (overhead_total and ytd_miles) else None
+    overhead_per_mile_xtrux = (overhead_xtrux / ytd_miles) if (overhead_xtrux and ytd_miles) else None
 
     cost_per_mile = ((pay_per_mile + overhead_per_mile)
                      if (pay_per_mile is not None and overhead_per_mile is not None) else None)
@@ -867,9 +906,15 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     ws_cost_per_mile = ((pay_per_mile + worksheet_overhead)
                         if (pay_per_mile is not None and worksheet_overhead) else None)
 
+    # Plausibility: a sane fully-loaded X-Trux mile sits in a known band. Outside it
+    # usually means a bad QB pull or a near-empty Loads window — flag, don't trust.
+    lo, hi = RPM_GOAL_PLAUSIBLE_BAND
+    cost_plausible = (lo <= cost_per_mile <= hi) if cost_per_mile is not None else None
+
     return {
         "pay_per_mile": pay_per_mile,
         "overhead_per_mile": overhead_per_mile,
+        "overhead_per_mile_xtrux_only": overhead_per_mile_xtrux,
         "cost_per_mile": cost_per_mile,
         "goal_rpm": goal_rpm,
         "profit_per_mile": profit_per_mile,
@@ -878,13 +923,98 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         "actual_rpm": actual_rpm,
         "gap": gap,
         "overhead_total": overhead_total,
+        "overhead_combined": overhead_combined,
+        "overhead_alloc": alloc,
         "overhead_companies": overhead_used,
         "ytd_miles": ytd_miles or None,
         "pay_window_days": pay_window_days,
+        "pay_window_used": pay_window_used,
+        "pay_window_fallback": pay_window_fallback,
+        "pay_loads": pay_loads,
         "pay_miles": pay_miles or None,
         "worksheet_overhead": worksheet_overhead,
         "worksheet_cost_per_mile": ws_cost_per_mile,
+        "cost_plausible": cost_plausible,
     }
+
+
+def _rpm_goal_health(goal: dict | None) -> list[str]:
+    """Warnings about the rate-per-mile goal for the email's data-check banner."""
+    if not goal:
+        return []
+    out: list[str] = []
+    if goal.get("pay_window_fallback"):
+        out.append(
+            f"Rate-per-mile: only {goal.get('pay_loads', 0)} settled X-Trux load(s) in the "
+            f"last {goal.get('pay_window_days')}d &mdash; widened the pay window to "
+            f"{goal.get('pay_window_used')}d for a stable read.")
+    if goal.get("cost_plausible") is False:
+        lo, hi = RPM_GOAL_PLAUSIBLE_BAND
+        out.append(
+            f"Rate-per-mile cost {rpm(goal.get('cost_per_mile'))}/mi is outside the expected "
+            f"{rpm(lo)}&ndash;{rpm(hi)} band &mdash; check the QuickBooks P&amp;L and Loads window.")
+    return out
+
+
+def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: dict | None) -> dict:
+    """Six-month trend of X-Trux cost / goal / actual revenue per mile.
+
+    Pairs with ``compute_rpm_goal``: the office overhead is YTD-only (the QB P&L is
+    a single fiscal-year report, so monthly overhead can't be reconstructed), so it
+    is **held flat at the current YTD rate** for every month while the volatile
+    driver-pay-per-mile leg varies by month — which is where the movement comes from
+    anyway (the O/O rate changes weekly). Each month, over settled X-Trux asset loads:
+        cost/mi   = SUM(Driver Rate)/SUM(miles) + overhead/mi (flat)
+        goal/mi   = cost/mi / target operating ratio
+        actual/mi = SUM(Customer Revenue)/SUM(miles)
+    Returns ``{"labels", "cost", "goal", "actual"}`` ready for ``_bar_chart`` (current
+    month's label gets a trailing ``*`` to mark MTD). ``cost``/``goal`` come back empty
+    when overhead is unavailable (no QB P&L); ``actual`` is always available.
+    """
+    empty = {"labels": [], "cost": [], "goal": [], "actual": []}
+    if not alvys_sheets or not goal:
+        return empty
+    loads = alvys_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return empty
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return empty
+    overhead = goal.get("overhead_per_mile")
+    target_or = goal.get("target_or") or 1.0
+
+    sub = loads.copy()
+    if "Load Status" in sub.columns:
+        sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+    sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    if sub.empty:
+        return empty
+    dates = _dates(sub, ALVYS_DATE_CANDIDATES)
+    pay = _col(sub, "Driver Rate").fillna(0)
+    miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
+    settled = pay > 0
+
+    labels, cost_s, goal_s, actual_s = [], [], [], []
+    months = _last_6_months()
+    for i, (yy, mm) in enumerate(months):
+        m = settled & (dates.dt.year == yy) & (dates.dt.month == mm)
+        mi = float(miles[m].sum())
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        if i == len(months) - 1:
+            lab += "*"
+        labels.append(lab)
+        actual_s.append((float(rev[m].sum()) / mi) if mi else 0.0)
+        if mi and overhead is not None:
+            cpm = float(pay[m].sum()) / mi + overhead
+            cost_s.append(cpm)
+            goal_s.append(cpm / target_or if target_or else cpm)
+        else:
+            cost_s.append(0.0)
+            goal_s.append(0.0)
+    if overhead is None:
+        cost_s, goal_s = [], []          # signal "pending" to the chart helper
+    return {"labels": labels, "cost": cost_s, "goal": goal_s, "actual": actual_s}
 
 
 def _norm_name(s) -> str:
@@ -1627,7 +1757,8 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
-                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None) -> str:
+                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
+                rpm_goal_trend=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -1718,16 +1849,25 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                   _pill("driver pay + overhead", "mute"))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
-                    _pill(f"last {g.get('pay_window_days')}d", "mute"))
+                    _pill(f"last {g.get('pay_window_used') or g.get('pay_window_days')}d", "mute"))
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
+        _win = g.get("pay_window_used") or g.get("pay_window_days")
         parts = []
         if _isnum(_pp):
-            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {g.get('pay_window_days')}d)")
+            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
         if _isnum(_oh):
             cos = g.get("overhead_companies") or []
-            parts.append(f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles)")
+            _alloc = g.get("overhead_alloc")
+            _xt_oh = g.get("overhead_per_mile_xtrux_only")
+            oh_txt = f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles"
+            if _isnum(_alloc) and abs(_alloc - 1.0) > 1e-9:
+                oh_txt += f" &times; {_alloc:.0%} allocation"
+            if _isnum(_xt_oh):
+                oh_txt += f"; X-Trux-only {rpm(_xt_oh)}/mi"
+            oh_txt += ")"
+            parts.append(oh_txt)
         breakdown = " + ".join(parts) if parts else "awaiting data"
         if _isnum(_cpm):
             msg = f"Fully-loaded cost to run an X-Trux mile is <b>{rpm(_cpm)}</b> = {breakdown}. "
@@ -1746,6 +1886,20 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         else:
             goal_note = _brief("Rate-per-mile cost is pending the QuickBooks P&amp;L this run "
                                "(office overhead comes from X-Trux + X-Linx Total Expenses).", "mute")
+
+    # X-Trux cost / goal / actual revenue per mile — 6-month trend. Cost and goal
+    # only render when the QB overhead leg is available (held flat at the YTD rate);
+    # actual rev/mile always renders. Lets the goal read as a living line.
+    gt = rpm_goal_trend or {}
+    goal_trend_row = ""
+    if gt.get("labels") and (gt.get("cost") or gt.get("actual")):
+        _gt_sub = "monthly &middot; X-Trux + XFreight &middot; *MTD"
+        goal_trend_row = (
+            _bar_chart("Cost / mile", gt["labels"], gt.get("cost") or [],
+                       "overhead held at YTD rate &middot; *MTD", fmt=rpm)
+            + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm)
+            + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm)
+            + empty_td)
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -1902,6 +2056,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{mtd_note}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
             + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
+               + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
                if goal_tiles else "")
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
@@ -2330,7 +2485,7 @@ def build_page9(samba, date_str) -> str:
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None, rpm_goal=None, samba=None) -> str:
+               rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -2341,7 +2496,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -2370,13 +2525,16 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
+    rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
+    warnings += _rpm_goal_health(rpm_goal)
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal, samba=samba)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
+                      rpm_goal_trend=rpm_goal_trend, samba=samba)
 
 
 # ----------------------------------------------------------------------

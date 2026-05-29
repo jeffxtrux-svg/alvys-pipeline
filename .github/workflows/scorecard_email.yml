@@ -50,3 +50,28 @@ jobs:
           SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
         run: python -m src.scorecard_email
+
+      # If the brief fails to build/send, the morning email would just silently
+      # not arrive. Send a short failure notice (reuses the same Graph Mail.Send
+      # path + secrets) so a broken run is noticed instead of going quiet.
+      - name: Notify on failure
+        if: failure()
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from src.onedrive_upload import get_token
+          from src.scorecard_email import send_email
+          tok = get_token(os.environ["AZURE_TENANT_ID"], os.environ["AZURE_CLIENT_ID"], os.environ["AZURE_CLIENT_SECRET"])
+          to = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+          run = os.environ.get("RUN_URL", "")
+          html = (f"<p>The daily KPI scorecard job <b>failed</b> &mdash; this morning's brief was not sent.</p>"
+                  f"<p>Check the run log: <a href='{run}'>{run}</a></p>")
+          send_email(tok, os.environ["ONEDRIVE_USER_UPN"], to, "⚠️ XFreight scorecard email FAILED", html)
+          PY
