@@ -53,8 +53,8 @@ log = logging.getLogger("scorecard_email")
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 # Targets pulled from your Goals workbooks
-TARGET_RPM = 2.33
-TARGET_DEADHEAD = 0.075
+TARGET_RPM = 2.92
+TARGET_DEADHEAD = 0.06
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
 
@@ -239,17 +239,26 @@ def _windows() -> dict[str, pd.Timestamp]:
 # Alvys operational KPIs (from the manual Alvys Master 2026 file)
 # ----------------------------------------------------------------------
 def _alvys_metrics(sub: pd.DataFrame) -> dict:
-    # Everything comes from the Loads tab. Power BI's report sums the Loads
-    # columns directly — Driver Rate = SUM(Loads[Driver Rate]) and the mileage
-    # measures = SUM(Loads[... Dispatch Mileage]) — and the Loads "Driver Rate"
-    # column already holds each load's full settled pay (all its trips
-    # aggregated), so no Trips summation is needed to match the report.
+    # Power BI's XFreight Report table:
+    #   "Dispatch Mileage" column  = Loaded Mileage (NOT Loaded + Empty)
+    #   "Empty Mileage" column     = Empty Mileage
+    #   "Dead Head %" measure      = Empty / Loaded   (empty-per-loaded ratio)
+    #   "Rev per Mile" measure     = Customer Revenue / Loaded Mileage
+    # Mirror that here so the scorecard tiles tie to the Power BI row-for-row.
+    # We previously divided by Loaded + Empty (the textbook deadhead formula)
+    # which read ~0.4 pts low vs the report; aligning the denominator to Loaded
+    # is the only change. Plain "Loaded Mileage" / "Empty Mileage" preferred over
+    # the long variants — those are what the manual workbook + Power BI use. The
+    # long names remain as fallbacks for the pipeline's own output workbook.
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    loaded = _col_any(sub, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
-    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
-    # Power BI's "Dispatch Mileage" basis = the Total Dispatch Mileage column (Rev/Mile & Dead Head %).
-    total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"])
-    total = total_col.sum() if total_col.notna().any() else (loaded + empty)
+    loaded = _col_any(sub, ["Loaded Mileage", "Loaded Dispatch Mileage", "Loaded Miles"]).sum()
+    empty = _col_any(sub, ["Empty Mileage", "Empty Dispatch Mileage", "Empty Miles"]).sum()
+    if not loaded:
+        total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage",
+                                   "Total Miles", "Total Mileage"])
+        total_fallback = total_col.sum() if total_col.notna().any() else None
+        if total_fallback:
+            loaded = total_fallback - empty
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
@@ -257,10 +266,10 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     return {
         "loads": len(sub),
         "revenue": revenue if revenue else None,
-        "miles": total if total else None,
+        "miles": loaded if loaded else None,
         "empty": empty if empty else None,
-        "deadhead": (empty / total) if total else None,
-        "rpm": (revenue / total) if total else None,
+        "deadhead": (empty / loaded) if loaded else None,
+        "rpm": (revenue / loaded) if loaded else None,
         "margin": margin if margin else None,
         "margin_pct": (margin / revenue) if revenue else None,
     }
@@ -2031,7 +2040,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
     _xt_asset = ((alvys or {}).get("asset") or {}).get("mtd", {})
     xtrux_r2 = (_tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
-                      "goal &le;7.5% " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+                      f"goal &le;{pct(TARGET_DEADHEAD)} " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
                 + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
@@ -2252,7 +2261,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     bottom = (f"{_lead_phrase(wmtd)} "
               f"For X-Trux/XFreight asset loads (7d rolling): "
               f"RPM {rpm(w7a.get('rpm'))} ({_goal_txt}), "
-              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%). "
+              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
               f"(X-Trux + X-Linx snapshot &mdash; see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
@@ -2942,6 +2951,14 @@ def main() -> int:
                         sambasafety_sheets=samba_sheets)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
+    # Archive the brief for the Karpathy-Wiki librarian to compile.
+    try:
+        from src.karpathy_writer import frontmatter, save
+        body = frontmatter("Executive Brief", "scorecard",
+                           subject=subject.replace(":", "—")) + html
+        save("scorecard", "executive-brief", body)
+    except Exception as exc:
+        log.warning("Karpathy-Wiki archive skipped: %s", exc)
     return 0
 
 

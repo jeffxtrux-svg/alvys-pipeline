@@ -13,12 +13,23 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   schedule:
-    # 5:30am CST (= 11:30 UTC). GitHub cron is fixed UTC and ignores DST, so
-    # this lands at 6:30am during Central Daylight Time. Runs 30 min after the
-    # 5:00am Alvys/Samsara/QB refresh so all three feeds are fresh in OneDrive.
-    # The off-the-hour minute (`:30`) lowers the chance of a GitHub Actions
-    # schedule drop compared to the top-of-hour high-load window.
-    - cron: '30 11 * * *'
+    # Two cron entries, 15 min apart, as redundancy against GitHub Actions
+    # schedule drops. GitHub's cron is documented as best-effort — runs at
+    # high-traffic minutes get silently dropped or delayed. If 5:30am CST
+    # (11:30 UTC) drops, the 5:45am CST (11:45 UTC) backup still produces
+    # the brief 15 minutes later. The script is idempotent (reads the
+    # latest OneDrive files each run) so on a normal day BOTH may fire and
+    # the team gets two identical briefs — a small annoyance well worth
+    # the silent-miss insurance.
+    #
+    # Both line up after the 5:00am Alvys/Samsara/QB refresh so all three
+    # feeds are fresh in OneDrive. GitHub cron is fixed UTC and ignores
+    # DST, so during Central Daylight Time these land at 6:30am / 6:45am.
+    - cron: '30 11 * * *'   # primary    5:30am CST / 6:30am CDT
+    - cron: '45 11 * * *'   # backup     5:45am CST / 6:45am CDT
+
+permissions:
+  contents: write
 
 jobs:
   scorecard:
@@ -50,6 +61,30 @@ jobs:
           SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
         run: python -m src.scorecard_email
+
+      - name: Commit Karpathy-Wiki archive
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! git status --porcelain Karpathy-Wiki/raw 2>/dev/null | grep -q .; then
+            echo "No Karpathy-Wiki updates from this run."
+            exit 0
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add Karpathy-Wiki/raw
+          git commit -m "data: ${{ github.workflow }} $(date -u +%Y-%m-%dT%H:%M)"
+          for delay in 1 2 4 8 16; do
+            git fetch origin "$BRANCH" 2>/dev/null || true
+            git rebase "origin/$BRANCH" 2>/dev/null || { git rebase --abort 2>/dev/null || true; }
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push conflicted, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "Failed to push after retries"; exit 1
 
       # If the brief fails to build/send, the morning email would just silently
       # not arrive. Send a short failure notice (reuses the same Graph Mail.Send
