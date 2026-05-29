@@ -17,7 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_rpm_goal  # noqa: E402
+from src.scorecard_email import compute_rpm_goal, compute_rpm_goal_trend  # noqa: E402
 
 # Recent date inside both the short trailing pay window and the fiscal-YTD window.
 _RECENT = (pd.Timestamp.now().normalize() - pd.Timedelta(days=3))
@@ -130,6 +130,27 @@ def test_returns_none_without_xtrux_loads():
         dict(Office="X-Linx, Inc.", **{"Customer Revenue": 800, "Driver Rate": 500,
              "Total Dispatch Mileage": 300, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"})])}
     assert compute_rpm_goal(only_xlinx, _qb_pnl()) is None
+
+
+def test_goal_trend_this_month_matches_point_goal():
+    sheets, qb = _sheets(), _qb_pnl()
+    g = compute_rpm_goal(sheets, qb)
+    t = compute_rpm_goal_trend(sheets, g)
+    assert len(t["labels"]) == 6
+    assert t["labels"][-1].endswith("*")                       # current month flagged MTD
+    # All test loads sit in the current month, so this month's trend cost/goal/actual
+    # equal the point-in-time figures from compute_rpm_goal.
+    assert abs(t["cost"][-1] - g["cost_per_mile"]) < 1e-9
+    assert abs(t["goal"][-1] - g["goal_rpm"]) < 1e-9
+    assert abs(t["actual"][-1] - 4900 / _MILES) < 1e-9         # (2600+2300)/1900 revenue/mi
+
+
+def test_goal_trend_cost_empty_without_quickbooks():
+    sheets = _sheets()
+    g = compute_rpm_goal(sheets, qb_pnl=None)                   # no overhead leg
+    t = compute_rpm_goal_trend(sheets, g)
+    assert t["cost"] == [] and t["goal"] == []                 # cost/goal pending
+    assert len(t["actual"]) == 6                               # actual rev/mi still available
 
 
 if __name__ == "__main__":
