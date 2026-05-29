@@ -79,6 +79,225 @@ def flatten(records: list[dict], label: str = "") -> pd.DataFrame:
         return pd.DataFrame(records)
 
 
+# ── Truk-Way per-truck P&L ─────────────────────────────────────────────────────
+# Truk-Way is an Alvys *Fleet* ("Truk-Way Leasing LLC", invoice prefix "T") — an
+# owner-operator that runs ~10 trucks under X-Trux. This tab is Truk-Way's own
+# per-truck economics, per the chosen definition:
+#   Revenue = the settlement X-Trux pays the truck  (Driver Rate + accessorials)
+#   Cost    = Truk-Way's all-in QB Total Expenses, allocated to the truck by miles
+#   Profit  = Settlement Revenue − Allocated QB Cost
+# The QB cost is all-in (includes fuel), so the per-truck Alvys Fuel Cost is shown
+# as a reference column only and is NOT subtracted again. Without QB expenses the
+# tab degrades to contribution (Rev − Fuel). See docs/knowledge-base/trukway-per-truck.md.
+TRUKWAY_FLEET_MATCH = "truk-way"  # case-insensitive substring of the load's Fleet.Name
+
+
+def _num(series: pd.Series) -> pd.Series:
+    """Coerce a column to float, treating blanks/non-numeric as 0."""
+    return pd.to_numeric(series, errors="coerce").fillna(0.0)
+
+
+def trukway_total_expenses(qb_pnl: pd.DataFrame | None) -> float | None:
+    """Truk-Way Leasing's all-in Total Expenses from the flattened QB
+    ProfitAndLoss frame (Company / RowLabel / Col1… as produced by
+    ``_flatten_qb_report``). Returns None when it can't be found.
+
+    The amount is taken from the right-most numeric ``Col*`` column on the
+    'Total Expenses' row (P&L date-range reports have a single total column).
+    """
+    if qb_pnl is None or qb_pnl.empty:
+        return None
+    cols = {c.lower(): c for c in qb_pnl.columns}
+    company_col = cols.get("company")
+    label_col = cols.get("rowlabel") or cols.get("row_label")
+    if not label_col:
+        return None
+
+    df = qb_pnl
+    if company_col:
+        norm = df[company_col].astype(str).map(lambda s: re.sub(r"[^a-z0-9]+", "", s.lower()))
+        df = df[norm.str.contains("trukway", na=False)]
+    if df.empty:
+        return None
+
+    label = df[label_col].astype(str).str.strip().str.lower()
+    # Match the operating 'Total Expenses' line; avoid 'Total Other Expenses' / COGS.
+    is_total_exp = label.str.replace(r"\s+", " ", regex=True).isin(
+        ["total expenses", "total expense"]
+    )
+    rows = df[is_total_exp]
+    if rows.empty:
+        return None
+
+    amount_cols = [c for c in df.columns if str(c).lower().startswith("col")]
+    for _, r in rows.iterrows():
+        for c in reversed(amount_cols):
+            val = pd.to_numeric(pd.Series([r.get(c)]), errors="coerce").iloc[0]
+            if pd.notna(val) and val != 0:
+                return abs(float(val))
+    return None
+
+
+def build_trukway_per_truck(
+    df_loads: pd.DataFrame,
+    df_fuel: pd.DataFrame,
+    qb_total_expenses: float | None = None,
+) -> pd.DataFrame:
+    """Revenue / fuel / contribution — and, when QB expenses are supplied, true
+    net profit — by truck for the Truk-Way fleet.
+
+    When `qb_total_expenses` (Truk-Way Leasing's QuickBooks Total Expenses, an
+    all-in figure that already includes fuel) is given, it is allocated across the
+    trucks by each truck's share of total miles, and Net Profit = Settlement
+    Revenue − Allocated QB Cost. The Alvys per-truck Fuel Cost stays as a
+    reference column only (it is *not* subtracted again — the allocated QB cost
+    already covers fuel). Without it, the tab stops at contribution (Rev − Fuel).
+
+    Fail-soft: returns an empty frame (skipping the tab) when the loads frame is
+    missing, lacks a 'Load Fleet' column, or has no Truk-Way rows.
+    """
+    log = logging.getLogger("sheets_main.trukway")
+    if df_loads is None or df_loads.empty or "Load Fleet" not in df_loads.columns:
+        log.info("  Truk-Way: no loads / no 'Load Fleet' column — skipping per-truck tab")
+        return pd.DataFrame()
+
+    fleet = df_loads["Load Fleet"].astype(str).str.strip().str.lower()
+    tw = df_loads[fleet.str.contains(TRUKWAY_FLEET_MATCH, na=False)].copy()
+    if tw.empty:
+        log.info("  Truk-Way: no loads matched fleet ~ %r — skipping", TRUKWAY_FLEET_MATCH)
+        return pd.DataFrame()
+
+    # Cancelled loads carry no settlement — drop them so they don't dilute $/mi.
+    if "Load Status" in tw.columns:
+        tw = tw[~tw["Load Status"].astype(str).str.contains("cancel", case=False, na=False)]
+
+    tw["Truck"] = tw.get("Truck", "").astype(str).str.strip()
+    tw = tw[(tw["Truck"] != "") & (tw["Truck"].str.lower() != "none")]
+    if tw.empty:
+        log.info("  Truk-Way: matched loads but none carry a Truck — skipping")
+        return pd.DataFrame()
+
+    work = pd.DataFrame({
+        "Truck":            tw["Truck"].values,
+        "Driver":           tw.get("Driver 1", "").astype(str).values,
+        "Linehaul Pay":     _num(tw.get("Driver Rate", 0)).values,
+        "Accessorials":     (
+            _num(tw.get("Carrier Detention", 0))
+            + _num(tw.get("Carrier Lumper", 0))
+            + _num(tw.get("Carrier Other Accessorials", 0))
+        ).values,
+        "Advances":         _num(tw.get("Carrier Advances", 0)).values,
+        "Loaded Miles":     _num(tw.get("Loaded Miles", 0)).values,
+        "Empty Miles":      _num(tw.get("Empty Miles", 0)).values,
+        "Customer Revenue": _num(tw.get("Customer Revenue", 0)).values,
+    })
+    work["Settlement Revenue"] = work["Linehaul Pay"] + work["Accessorials"]
+    work["Total Miles"] = work["Loaded Miles"] + work["Empty Miles"]
+
+    sums = work.groupby("Truck", as_index=False)[[
+        "Linehaul Pay", "Accessorials", "Settlement Revenue", "Advances",
+        "Loaded Miles", "Empty Miles", "Total Miles", "Customer Revenue",
+    ]].sum()
+    sums = sums.merge(
+        work.groupby("Truck").size().rename("Loads").reset_index(),
+        on="Truck", how="left",
+    )
+    # Most-frequent non-blank driver per truck (helps identify the unit).
+    named = work[work["Driver"].str.strip().str.lower().isin(["", "none"]) == False]
+    if not named.empty:
+        drivers = (
+            named.groupby("Truck")["Driver"]
+            .agg(lambda s: s.value_counts().idxmax())
+            .reset_index()
+        )
+        sums = sums.merge(drivers, on="Truck", how="left")
+    else:
+        sums["Driver"] = ""
+    sums["Driver"] = sums["Driver"].fillna("")
+
+    # Fuel cost per truck, matched on truck number (Alvys fuel card "Truck").
+    fuel_by_truck: dict[str, float] = {}
+    if df_fuel is not None and not df_fuel.empty and "Truck" in df_fuel.columns:
+        cost_col = next((c for c in ("Total Due", "Net Total") if c in df_fuel.columns), None)
+        if cost_col:
+            f = df_fuel.copy()
+            f["_tk"] = f["Truck"].astype(str).str.strip().str.upper()
+            fuel_by_truck = _num(f[cost_col]).groupby(f["_tk"]).sum().to_dict()
+    if not fuel_by_truck:
+        log.info("  Truk-Way: no fuel matched by truck — Fuel Cost left at 0 (owner-op may self-fuel)")
+    sums["Fuel Cost"] = (
+        sums["Truck"].astype(str).str.strip().str.upper().map(fuel_by_truck).fillna(0.0)
+    )
+
+    sums["Rev - Fuel"] = sums["Settlement Revenue"] - sums["Fuel Cost"]
+    miles = sums["Total Miles"]
+    sums["Rev / Mile"] = (sums["Settlement Revenue"] / miles).where(miles > 0, 0.0)
+    sums["Fuel / Mile"] = (sums["Fuel Cost"] / miles).where(miles > 0, 0.0)
+
+    # True net profit: allocate Truk-Way's all-in QB Total Expenses by mile share.
+    fleet_miles = float(sums["Total Miles"].sum())
+    allocate = (
+        qb_total_expenses is not None
+        and float(qb_total_expenses) > 0
+        and fleet_miles > 0
+    )
+    if allocate:
+        share = sums["Total Miles"] / fleet_miles
+        sums["Allocated QB Cost"] = share * float(qb_total_expenses)
+        sums["Net Profit"] = sums["Settlement Revenue"] - sums["Allocated QB Cost"]
+        sums["Net / Mile"] = (sums["Net Profit"] / miles).where(miles > 0, 0.0)
+    elif qb_total_expenses is not None:
+        log.info("  Truk-Way: QB expenses present but not allocatable (no miles) — net profit skipped")
+
+    cols = [
+        "Truck", "Driver", "Loads", "Loaded Miles", "Empty Miles", "Total Miles",
+        "Linehaul Pay", "Accessorials", "Settlement Revenue", "Fuel Cost", "Rev - Fuel",
+    ]
+    if allocate:
+        cols += ["Allocated QB Cost", "Net Profit", "Net / Mile"]
+    cols += ["Rev / Mile", "Fuel / Mile", "Advances", "Customer Revenue"]
+    out = sums[cols].sort_values("Settlement Revenue", ascending=False).reset_index(drop=True)
+
+    # TOTAL row (rates recomputed from the totals, not averaged).
+    tot_miles = float(out["Total Miles"].sum())
+    additive = ["Loads", "Loaded Miles", "Empty Miles", "Total Miles", "Linehaul Pay",
+                "Accessorials", "Settlement Revenue", "Fuel Cost", "Rev - Fuel",
+                "Advances", "Customer Revenue"]
+    if allocate:
+        additive += ["Allocated QB Cost", "Net Profit"]
+    total = {c: "" for c in cols}
+    total["Truck"] = "TOTAL"
+    for c in additive:
+        total[c] = out[c].sum()
+    total["Rev / Mile"] = (total["Settlement Revenue"] / tot_miles) if tot_miles else 0.0
+    total["Fuel / Mile"] = (total["Fuel Cost"] / tot_miles) if tot_miles else 0.0
+    if allocate:
+        total["Net / Mile"] = (total["Net Profit"] / tot_miles) if tot_miles else 0.0
+    out = pd.concat([out, pd.DataFrame([total])], ignore_index=True)
+
+    money = ["Linehaul Pay", "Accessorials", "Settlement Revenue", "Fuel Cost",
+             "Rev - Fuel", "Advances", "Customer Revenue"]
+    rates = ["Rev / Mile", "Fuel / Mile"]
+    if allocate:
+        money += ["Allocated QB Cost", "Net Profit"]
+        rates += ["Net / Mile"]
+    for c in money:
+        out[c] = _num(out[c]).round(2)
+    for c in rates:
+        out[c] = _num(out[c]).round(3)
+    for c in ("Loads", "Loaded Miles", "Empty Miles", "Total Miles"):
+        out[c] = _num(out[c]).round(0).astype("int64")
+
+    if allocate:
+        log.info("  Truk-Way: %d trucks, %d loads, $%.0f settlement, $%.0f allocated QB cost, $%.0f net",
+                 len(out) - 1, int(total["Loads"]), total["Settlement Revenue"],
+                 total["Allocated QB Cost"], total["Net Profit"])
+    else:
+        log.info("  Truk-Way: %d trucks, %d loads, $%.0f settlement, $%.0f fuel (contribution only)",
+                 len(out) - 1, int(total["Loads"]), total["Settlement Revenue"], total["Fuel Cost"])
+    return out
+
+
 # ── Alvys pull ────────────────────────────────────────────────────────────────
 
 def pull_alvys(start_date: str) -> dict[str, pd.DataFrame]:
@@ -337,6 +556,9 @@ def main() -> int:
     from src.sheets_writer import SheetsWriter
     writer = SheetsWriter(sheet_id=sheet_id, creds_path=creds_path)
 
+    alvys_sheets: dict[str, pd.DataFrame] = {}
+    qb_sheets: dict[str, pd.DataFrame] = {}
+
     # ── Alvys ──────────────────────────────────────────────────────────────
     log.info("PHASE 1/3: Alvys")
     try:
@@ -354,6 +576,19 @@ def main() -> int:
             writer.write_tab(tab, df)
     except Exception as e:
         log.error("QuickBooks pull failed: %s", e)
+
+    # ── Truk-Way per-truck P&L (needs Alvys loads/fuel + Truk-Way QB expenses) ──
+    try:
+        qb_expenses = trukway_total_expenses(qb_sheets.get("QB_ProfitAndLoss"))
+        trukway = build_trukway_per_truck(
+            alvys_sheets.get("Alvys_Loads"), alvys_sheets.get("Alvys_Fuel"), qb_expenses,
+        )
+        if not trukway.empty:
+            writer.write_tab("Truk-Way Trucks", sanitize(trukway))
+        else:
+            log.info("Truk-Way per-truck tab skipped (no Truk-Way loads).")
+    except Exception as e:
+        log.error("Truk-Way per-truck tab failed: %s", e)
 
     # ── Samsara ────────────────────────────────────────────────────────────
     log.info("PHASE 3/3: Samsara")
