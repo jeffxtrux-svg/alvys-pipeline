@@ -1,0 +1,65 @@
+# One-off goal calculator — emails a cost-floor + percentile hybrid analysis
+# of RPM and Deadhead goals for the X-Trux/XFreight asset fleet.
+#
+# Manual / one-shot only: no cron. Triggered from the Actions tab, or via the
+# temporary push trigger when investigating goal-setting.
+
+name: Compute goals (one-off)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  goals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute and email goals
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+          SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+        run: python -m src.compute_goals
+
+      - name: Commit Karpathy-Wiki archive
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! git status --porcelain Karpathy-Wiki/raw 2>/dev/null | grep -q .; then
+            echo "No Karpathy-Wiki updates from this run."
+            exit 0
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add Karpathy-Wiki/raw
+          git commit -m "data: ${{ github.workflow }} $(date -u +%Y-%m-%dT%H:%M)"
+          for delay in 1 2 4 8 16; do
+            git fetch origin "$BRANCH" 2>/dev/null || true
+            git rebase "origin/$BRANCH" 2>/dev/null || { git rebase --abort 2>/dev/null || true; }
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push conflicted, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "Failed to push after retries"; exit 1

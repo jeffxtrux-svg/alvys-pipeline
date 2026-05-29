@@ -479,7 +479,7 @@ def test_drag_picks_deadhead_when_empty_miles_dominate():
     )
     assert d["metric"] == "deadhead"
     assert "203" in d["text"]
-    assert "goal &le;7.5%" in d["text"]
+    assert "goal &le;6.0%" in d["text"]
 
 
 def test_drag_picks_ar_when_overdue_dominates():
