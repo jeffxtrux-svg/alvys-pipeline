@@ -204,10 +204,16 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     # column already holds each load's full settled pay (all its trips
     # aggregated), so no Trips summation is needed to match the report.
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    loaded = _col_any(sub, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
-    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
-    # Power BI's "Dispatch Mileage" basis = the Total Dispatch Mileage column (Rev/Mile & Dead Head %).
-    total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"])
+    loaded = _col_any(sub, ["Loaded Mileage", "Loaded Dispatch Mileage", "Loaded Miles"]).sum()
+    # Power BI's XFreight Report table sums the workbook's "Empty Mileage" and
+    # "Dispatch Mileage" columns. The manual "Alvys Master 2026.xlsx" carries
+    # both the plain names ("Empty Mileage" / "Dispatch Mileage") and the longer
+    # variants ("Empty Dispatch Mileage" / "Total Dispatch Mileage") with
+    # different sums — preferring the plain names matches the Power BI table
+    # exactly. The long names remain as fallbacks for workbooks that only have
+    # those (e.g. the pipeline's own Alvys Pipeline.xlsx output).
+    empty = _col_any(sub, ["Empty Mileage", "Empty Dispatch Mileage", "Empty Miles"]).sum()
+    total_col = _col_any(sub, ["Dispatch Mileage", "Total Dispatch Mileage", "Total Miles", "Total Mileage"])
     total = total_col.sum() if total_col.notna().any() else (loaded + empty)
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
