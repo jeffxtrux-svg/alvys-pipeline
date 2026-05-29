@@ -57,6 +57,31 @@ TARGET_DEADHEAD = 0.075
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
 
+# --- X-Trux rate-per-mile goal -----------------------------------------
+# The goal re-costs the operation every run instead of trusting a stale number.
+# It is scoped to X-Trux (the asset trucking company that runs the owner-ops);
+# X-Linx (brokerage) is priced per load, not per mile, so it is excluded from
+# the rate but its office overhead is still absorbed (see RPM_GOAL_OVERHEAD_COMPANIES).
+# All four inputs are overridable from the environment for CI / tuning:
+#   RPM_GOAL_TARGET_OR          operating ratio the goal targets. 0.92 = 8% net
+#                               margin (the chosen default — bakes profit on top
+#                               of the fully-loaded cost); 0.95 = 5%, 1.0 = break-even.
+#   RPM_GOAL_OVERHEAD_COMPANIES comma-separated QuickBooks company names whose
+#                               Total Expenses make up the shared office overhead
+#                               pool that the X-Trux miles must absorb.
+#   RPM_GOAL_PAY_WINDOW_DAYS    trailing window for the driver-pay-per-mile read,
+#                               so the goal tracks the *current* weekly O/O rate.
+#                               Short (10d default) because the rate changes weekly;
+#                               the pay read is restricted to settled loads so the
+#                               recent not-yet-settled loads don't drag it down.
+#   RPM_GOAL_WORKSHEET_OVERHEAD the latest office-cost-per-mile from the manually
+#                               kept "Goals and Trends.xlsx" (Jeff's Number tab),
+#                               shown alongside the QB figure as a sanity check.
+RPM_GOAL_TARGET_OR = 0.92
+RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
+RPM_GOAL_PAY_WINDOW_DAYS = 10
+RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
+
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
     "Scheduled Pickup", "Dispatched Date", "Invoiced Date", "Delivered",
@@ -732,6 +757,130 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
             "combined": (c_labels, c_values)}
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float from the environment, falling back to `default` when unset/blank/bad."""
+    v = os.environ.get(name)
+    if v in (None, ""):
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        log.warning("Ignoring non-numeric %s=%r; using %s", name, v, default)
+        return default
+
+
+def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict | None, *,
+                     target_or: float | None = None, overhead_companies: list[str] | None = None,
+                     pay_window_days: int | None = None,
+                     worksheet_overhead: float | None = None) -> dict | None:
+    """X-Trux rate-per-mile goal = fully-loaded cost per mile / target operating ratio.
+
+    Cost per mile is rebuilt from live data each run so the goal self-corrects:
+      * driver/owner-op pay per mile = SUM(Driver Rate) / SUM(Total Dispatch Mileage)
+        for the X-Trux asset fleet over the trailing `pay_window_days` (settled
+        loads only). A short recent window (not fiscal-YTD) means the goal tracks
+        the *current* weekly O/O rate and blends in accessorials + deadhead
+        automatically, instead of hardcoding the $/mi contract number; restricting
+        to settled loads keeps not-yet-settled recent loads from deflating it.
+      * office/overhead per mile = combined Total Expenses of `overhead_companies`
+        (X-Trux + X-Linx share one back office) from the QuickBooks P&L, divided by
+        fiscal-YTD X-Trux miles. The QB P&L is a "This Fiscal Year" report, so YTD
+        miles keep numerator and denominator on the same period. The trucking miles
+        absorb the whole office overhead — that is what makes the rate "fully loaded".
+
+    Profit is layered on top via the operating ratio: goal = cost / OR. The default
+    OR = 0.92 bakes in an 8% net margin on the fully-loaded cost; OR = 0.95 is 5%
+    and OR = 1.0 is break-even. Returns None only when the Alvys Loads tab is unusable;
+    otherwise it returns every component it can compute and leaves the rest None so
+    the brief can render partial results (fail-soft, like the other KPIs).
+    """
+    if not alvys_sheets:
+        return None
+    loads = alvys_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return None
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return None
+
+    target_or = target_or if target_or is not None else _env_float("RPM_GOAL_TARGET_OR", RPM_GOAL_TARGET_OR)
+    pay_window_days = int(pay_window_days if pay_window_days is not None
+                          else _env_float("RPM_GOAL_PAY_WINDOW_DAYS", RPM_GOAL_PAY_WINDOW_DAYS))
+    worksheet_overhead = (worksheet_overhead if worksheet_overhead is not None
+                          else _env_float("RPM_GOAL_WORKSHEET_OVERHEAD", RPM_GOAL_WORKSHEET_OVERHEAD))
+    if overhead_companies is None:
+        env_co = os.environ.get("RPM_GOAL_OVERHEAD_COMPANIES")
+        overhead_companies = ([c.strip() for c in env_co.split(",") if c.strip()]
+                              if env_co else list(RPM_GOAL_OVERHEAD_COMPANIES))
+
+    # X-Trux asset fleet only (fold XFreight in, drop X-Linx brokerage and cancellations).
+    sub = loads.copy()
+    if "Load Status" in sub.columns:
+        sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+    sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    if sub.empty:
+        return None
+    dates = _dates(sub, ALVYS_DATE_CANDIDATES)
+    pay = _col(sub, "Driver Rate").fillna(0)
+    miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
+
+    now = pd.Timestamp.now()
+    # Recent, settled loads only. The owner-op rate changes weekly, so a short
+    # trailing window tracks the current rate — but the freshest loads carry miles
+    # whose driver pay hasn't settled yet ($0), and including them would drag the
+    # per-mile rate down. Restrict the pay/revenue reads to settled loads
+    # (Driver Rate > 0), matching the P&L convention used elsewhere.
+    recent = (dates >= (now.normalize() - pd.Timedelta(days=pay_window_days))) & (pay > 0)
+    pay_miles = float(miles[recent].sum())
+    pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
+    actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
+
+    # Fiscal-YTD X-Trux miles, to match QuickBooks' "This Fiscal Year" P&L window.
+    ytd = dates >= now.normalize().replace(month=1, day=1)
+    ytd_miles = float(miles[ytd].sum())
+
+    # Shared office overhead from QuickBooks (X-Trux + X-Linx Total Expenses).
+    overhead_total, overhead_used = None, []
+    if qb_pnl:
+        by_norm = {_norm_name(k): k for k in qb_pnl}
+        total = 0.0
+        for want in overhead_companies:
+            key = by_norm.get(_norm_name(want))
+            if key and _isnum(qb_pnl[key].get("opex")):
+                total += abs(float(qb_pnl[key]["opex"]))
+                overhead_used.append(key)
+        overhead_total = total if overhead_used else None
+    overhead_per_mile = (overhead_total / ytd_miles) if (overhead_total and ytd_miles) else None
+
+    cost_per_mile = ((pay_per_mile + overhead_per_mile)
+                     if (pay_per_mile is not None and overhead_per_mile is not None) else None)
+    goal_rpm = (cost_per_mile / target_or) if (cost_per_mile is not None and target_or) else None
+    profit_per_mile = (goal_rpm - cost_per_mile) if (goal_rpm is not None and cost_per_mile is not None) else None
+    gap = (goal_rpm - actual_rpm) if (goal_rpm is not None and actual_rpm is not None) else None
+    ws_cost_per_mile = ((pay_per_mile + worksheet_overhead)
+                        if (pay_per_mile is not None and worksheet_overhead) else None)
+
+    return {
+        "pay_per_mile": pay_per_mile,
+        "overhead_per_mile": overhead_per_mile,
+        "cost_per_mile": cost_per_mile,
+        "goal_rpm": goal_rpm,
+        "profit_per_mile": profit_per_mile,
+        "target_or": target_or,
+        "target_margin": (1 - target_or) if target_or else None,
+        "actual_rpm": actual_rpm,
+        "gap": gap,
+        "overhead_total": overhead_total,
+        "overhead_companies": overhead_used,
+        "ytd_miles": ytd_miles or None,
+        "pay_window_days": pay_window_days,
+        "pay_miles": pay_miles or None,
+        "worksheet_overhead": worksheet_overhead,
+        "worksheet_cost_per_mile": ws_cost_per_mile,
+    }
+
+
 def _norm_name(s) -> str:
     """Normalize a customer name for matching: drop periods (so 'J.W.' -> 'jw'),
     turn other punctuation/separators (hyphens, commas, slashes) into spaces, and
@@ -1364,7 +1513,7 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
-                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None) -> str:
+                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -1429,6 +1578,60 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm)
                 + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm)
                 + empty_td)
+
+    # X-Trux rate-per-mile goal: fully-loaded cost per mile (driver pay + shared
+    # office overhead), then the profit-loaded goal rate, vs. what we actually run.
+    g = rpm_goal or {}
+    goal_tiles = goal_note = ""
+    if g:
+        _or = g.get("target_or")
+        _margin = g.get("target_margin")
+        _no_profit = (not _isnum(_margin)) or abs(_margin) < 1e-9
+        # Goal tile pill: flag whether profit is baked in yet, and how the actual rate stacks up.
+        if _no_profit:
+            goal_pill = _pill("break-even &middot; set profit %", "warn")
+        else:
+            goal_pill = _pill(f"{pct(_margin)} net &middot; OR {_or:.2f}", "good")
+        gap = g.get("gap")
+        if _isnum(gap):
+            gap_kind = "good" if gap <= 0 else "bad"  # actual >= goal is good
+            gap_sub = _pill(("at/above goal" if gap <= 0 else "below goal"), gap_kind)
+            gap_val = rpm(abs(gap))
+        else:
+            gap_kind, gap_sub, gap_val = "mute", _pill("need QB P&amp;L", "mute"), "n/a"
+        goal_tiles = (
+            _tile("Cost / mile &middot; X-Trux", rpm(g.get("cost_per_mile")),
+                  _pill("driver pay + overhead", "mute"))
+            + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
+            + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
+                    _pill(f"last {g.get('pay_window_days')}d", "mute"))
+            + _tile("Gap to goal / mile", gap_val, gap_sub))
+        # Plain-language breakdown so the number is auditable from the email itself.
+        _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
+        parts = []
+        if _isnum(_pp):
+            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {g.get('pay_window_days')}d)")
+        if _isnum(_oh):
+            cos = g.get("overhead_companies") or []
+            parts.append(f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles)")
+        breakdown = " + ".join(parts) if parts else "awaiting data"
+        if _isnum(_cpm):
+            msg = f"Fully-loaded cost to run an X-Trux mile is <b>{rpm(_cpm)}</b> = {breakdown}. "
+            if _no_profit:
+                msg += ("No profit is baked in yet, so the goal equals cost &mdash; tell me the target "
+                        "margin and I&rsquo;ll set <code>RPM_GOAL_TARGET_OR</code> to layer it on "
+                        f"(e.g. 10% net &rarr; goal {rpm((_cpm or 0)/0.90)}/mi).")
+            else:
+                msg += (f"Goal of <b>{rpm(g.get('goal_rpm'))}</b>/mi bakes in {pct(_margin)} net margin "
+                        f"({rpm(g.get('profit_per_mile'))}/mi profit) on top of cost.")
+            if _isnum(g.get("worksheet_cost_per_mile")):
+                msg += (f" Sanity check: the manual Goals &amp; Trends model puts overhead near "
+                        f"{rpm(g.get('worksheet_overhead'))}/mi (cost ~{rpm(g.get('worksheet_cost_per_mile'))}/mi).")
+            goal_kind = "good" if (_isnum(gap) and gap <= 0) else "warn"
+            goal_note = _brief(msg, goal_kind)
+        else:
+            goal_note = _brief("Rate-per-mile cost is pending the QuickBooks P&amp;L this run "
+                               "(office overhead comes from X-Trux + X-Linx Total Expenses).", "mute")
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -1546,7 +1749,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
                         f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
 
-    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} (goal $2.33), "
+    _goal_rpm = (rpm_goal or {}).get("goal_rpm")
+    _goal_txt = f"goal {rpm(_goal_rpm)}" if _isnum(_goal_rpm) else "goal pending QB cost-out"
+    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
@@ -1582,7 +1787,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{mtd_note}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
-            f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
+            + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
+               if goal_tiles else "")
+            + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
@@ -1924,7 +2131,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None) -> str:
+               rpm_trend=None, rpm_goal=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -1935,7 +2142,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -1962,12 +2169,13 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
+    rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced, rpm_trend=rpm_trend)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal)
 
 
 # ----------------------------------------------------------------------
@@ -2028,6 +2236,20 @@ def run_check(path: str) -> int:
                               d.get("margin_pct"), d.get("loads"))
             print(f"  {e:20s}{money(r):>13}{money(c):>14}{money(m):>13}{pct(mp):>10}{num(l):>7}")
         print()
+    # Rate-per-mile goal cost-out. No QuickBooks here (offline), so office overhead
+    # is unavailable; this prints the driver-pay-per-mile leg and the goal math so
+    # the per-mile inputs can be eyeballed. The live email adds the QB overhead leg.
+    goal = compute_rpm_goal(sheets, qb_pnl=None)
+    print("X-Trux rate-per-mile goal (driver-pay leg only; QuickBooks overhead added in the live run)")
+    if goal:
+        print(f"  driver/owner-op pay  {rpm(goal['pay_per_mile']):>8} / mile   (last {goal['pay_window_days']}d, {num(goal['pay_miles'])} mi)")
+        print(f"  actual revenue       {rpm(goal['actual_rpm']):>8} / mile")
+        print(f"  office overhead      {'n/a':>8} / mile   (needs QuickBooks P&L)")
+        print(f"  worksheet overhead   {rpm(goal['worksheet_overhead']):>8} / mile   (Goals and Trends.xlsx reference)")
+        print(f"  fiscal-YTD miles     {num(goal['ytd_miles']):>8}")
+        print(f"  target operating ratio {goal['target_or']:.2f}  ({pct(goal['target_margin'])} net margin)\n")
+    else:
+        print("  (no X-Trux asset loads found)\n")
     warns = _alvys_health(sheets)
     if warns:
         print("Data checks:")

@@ -122,7 +122,7 @@ upload `output/` as a 7-day artifact (`if: always()`):
 
 The daily brief (`src/scorecard_email.py`) is 8 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`):
 
-1. Bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend.
+1. Bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
 2. Safety detail (last 24h events / HOS violations / DVIR defects / coaching).
 3. AR overdue (31+ days) from QuickBooks.
 4. Driver mileage by settlement week.
