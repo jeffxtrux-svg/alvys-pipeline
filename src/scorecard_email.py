@@ -1754,6 +1754,23 @@ def _flag_kind(value, target, lower_is_better) -> str:
 
 
 # ----------------------------------------------------------------------
+# Bottom-line lead phrase for the page-1 summary blurb.
+# Honest about MTD profitability (matches the Power BI MTD views and the
+# MTD tiles elsewhere on page 1) instead of always claiming "Profitable
+# picture" regardless of the actual numbers.
+# ----------------------------------------------------------------------
+def _lead_phrase(wmtd: dict | None) -> str:
+    m = (wmtd or {}).get("margin")
+    if not _isnum(m):
+        return "Latest refresh:"
+    if m > 0:
+        return f"Profitable MTD &mdash; {money(m)} margin."
+    if m == 0:
+        return "Break-even MTD."
+    return f"Unprofitable MTD &mdash; {money(abs(m))} negative margin."
+
+
+# ----------------------------------------------------------------------
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
@@ -2019,10 +2036,15 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     _goal_rpm = (rpm_goal or {}).get("goal_rpm")
     _goal_txt = f"goal {rpm(_goal_rpm)}" if _isnum(_goal_rpm) else "goal pending QB cost-out"
-    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(w7a.get('rpm'))} ({_goal_txt}), "
-              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%, X-Trux/XFreight). "
-              f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
-              f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
+    # Every number gets an explicit scope/window so the blurb is comparable to
+    # other views in the email and to Power BI (which uses different windows).
+    bottom = (f"{_lead_phrase(wmtd)} "
+              f"For X-Trux/XFreight asset loads (7d rolling): "
+              f"RPM {rpm(w7a.get('rpm'))} ({_goal_txt}), "
+              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;7.5%). "
+              f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 3). "
+              f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
