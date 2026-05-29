@@ -25,7 +25,7 @@ from src.scorecard_email import (  # noqa: E402
     compute_alvys_ar, compute_alvys_uninvoiced, compute_qb_ar_detail,
     compute_ar_reconciliation, compute_ar_customer_reconciliation,
     compute_bill_reconciliation, compute_samsara, compute_alvys_entities,
-    _lead_phrase,
+    _lead_phrase, compute_drag_attribution,
 )
 from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
@@ -408,6 +408,123 @@ def test_lead_phrase_neutral_when_margin_missing():
     assert _lead_phrase({}) == "Latest refresh:"
     assert _lead_phrase(None) == "Latest refresh:"
     assert _lead_phrase({"margin": None}) == "Latest refresh:"
+
+
+# ---------------------------------------------------------------------------
+# Drag attribution: pick the worst operational metric and name the contributor
+# behind it (the "biggest drag" sentence on the BOTTOM LINE).
+# ---------------------------------------------------------------------------
+def _drag_loads(now=None):
+    """7-day asset loads where J.B. Hunt drags fleet RPM and truck 203 is empty."""
+    now = now or pd.Timestamp.now()
+    recent = now - pd.Timedelta(days=2)
+    return pd.DataFrame([
+        # Two strong Walmart loads on truck 101 (cheap deadhead, good RPM)
+        {"Office": "XFreight", "Customer": "Walmart", "Truck": "101",
+         "Customer Revenue": 3000, "Driver Rate": 800,
+         "Total Dispatch Mileage": 1000, "Empty Dispatch Mileage": 30,
+         "Scheduled Pickup": recent, "Load Status": "Delivered"},
+        {"Office": "XFreight", "Customer": "Walmart", "Truck": "101",
+         "Customer Revenue": 3000, "Driver Rate": 800,
+         "Total Dispatch Mileage": 1000, "Empty Dispatch Mileage": 30,
+         "Scheduled Pickup": recent, "Load Status": "Delivered"},
+        # Two J.B. Hunt loads on truck 203 (drag fleet RPM, run empty a lot)
+        {"Office": "X-Trux Inc.", "Customer": "J.B. Hunt", "Truck": "203",
+         "Customer Revenue": 1200, "Driver Rate": 600,
+         "Total Dispatch Mileage": 1000, "Empty Dispatch Mileage": 200,
+         "Scheduled Pickup": recent, "Load Status": "Delivered"},
+        {"Office": "X-Trux Inc.", "Customer": "J.B. Hunt", "Truck": "203",
+         "Customer Revenue": 1100, "Driver Rate": 600,
+         "Total Dispatch Mileage": 1000, "Empty Dispatch Mileage": 250,
+         "Scheduled Pickup": recent, "Load Status": "Delivered"},
+    ])
+
+
+def test_drag_safety_short_circuits_everything():
+    """Safety events in last 24h beat any AR / RPM / deadhead drag — life-
+    safety always wins."""
+    d = compute_drag_attribution(
+        alvys_sheets={"Loads": _drag_loads()},
+        qb_ar={"total31": 999_999, "rows": [{"customer": "X", "amount": 999_999, "bucket": "91+"}]},
+        w7a={"rpm": 1.0, "deadhead": 0.99, "miles": 4000.0},
+        rpm_goal={"goal_rpm": 5.0},
+        samsara={"windows": {"events": {"24h": 2}, "hosv": {"24h": 1}}},
+    )
+    assert d["metric"] == "safety"
+    assert "safety" in d["text"].lower()
+    assert "2 safety events" in d["text"]
+
+
+def test_drag_picks_rpm_when_rpm_short_dominates():
+    d = compute_drag_attribution(
+        alvys_sheets={"Loads": _drag_loads()},
+        qb_ar={"total31": 0, "rows": []},
+        w7a={"rpm": 2.075, "deadhead": 0.04, "miles": 4000.0},
+        rpm_goal={"goal_rpm": 3.00},
+        samsara=None,
+    )
+    assert d["metric"] == "rpm"
+    assert "J.B. Hunt" in d["text"]
+    assert "2 loads" in d["text"]
+
+
+def test_drag_picks_deadhead_when_empty_miles_dominate():
+    d = compute_drag_attribution(
+        alvys_sheets={"Loads": _drag_loads()},
+        qb_ar={"total31": 0, "rows": []},
+        # Tight RPM miss, but huge deadhead
+        w7a={"rpm": 2.10, "deadhead": 0.18, "miles": 4000.0},
+        rpm_goal={"goal_rpm": 2.15},
+        samsara=None,
+    )
+    assert d["metric"] == "deadhead"
+    assert "203" in d["text"]
+    assert "goal &le;7.5%" in d["text"]
+
+
+def test_drag_picks_ar_when_overdue_dominates():
+    d = compute_drag_attribution(
+        alvys_sheets={"Loads": _drag_loads()},
+        qb_ar={"total31": 75_000, "rows": [
+            {"customer": "Big Cust", "amount": 50_000, "bucket": "91+"},
+            {"customer": "Small Cust", "amount": 25_000, "bucket": "31&ndash;60"},
+        ]},
+        w7a={"rpm": 2.85, "deadhead": 0.06, "miles": 4000.0},
+        rpm_goal={"goal_rpm": 2.90},
+        samsara=None,
+    )
+    assert d["metric"] == "ar"
+    assert "Big Cust" in d["text"]
+    assert "$50,000" in d["text"]
+
+
+def test_drag_returns_clean_when_all_metrics_meet_goal():
+    """Above goal on RPM, under goal on deadhead, no AR overdue, no safety."""
+    d = compute_drag_attribution(
+        alvys_sheets={"Loads": _drag_loads()},
+        qb_ar={"total31": 0, "rows": []},
+        w7a={"rpm": 3.00, "deadhead": 0.04, "miles": 4000.0},
+        rpm_goal={"goal_rpm": 2.50},
+        samsara=None,
+    )
+    assert d["metric"] == "clean"
+    assert "no drag" in d["text"].lower()
+
+
+def test_drag_rpm_text_names_lift_to_clear_goal():
+    """When excluding the dragger would lift fleet RPM past goal, the text
+    should say so explicitly."""
+    d = compute_drag_attribution(
+        alvys_sheets={"Loads": _drag_loads()},
+        qb_ar={"total31": 0, "rows": []},
+        w7a={"rpm": 2.075, "deadhead": 0.04, "miles": 4000.0},
+        rpm_goal={"goal_rpm": 3.00},
+        samsara=None,
+    )
+    # Walmart fleet rpm = $3.00 -> exactly clears the $3.00 goal once
+    # J.B. Hunt is removed
+    assert "clears" in d["text"]
+    assert "$3.00 goal" in d["text"]
 
 
 # ---------------------------------------------------------------------------
