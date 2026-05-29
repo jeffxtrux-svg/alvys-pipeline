@@ -27,6 +27,7 @@ Optional:
     SCORECARD_ALVYS_PATH       default "Alvys Master 2026.xlsx"
     SCORECARD_QB_DIR           default "QuickBooks"
     SCORECARD_SAMSARA_PATH     default "Samsara/Samsara Master.xlsx"
+    SCORECARD_SAMBASAFETY_PATH default "SambaSafety/SambaSafety_Master.xlsx" (optional, page 9)
 """
 from __future__ import annotations
 
@@ -81,6 +82,11 @@ RPM_GOAL_TARGET_OR = 0.95
 RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
+
+# SambaSafety driver-compliance thresholds (page 9).
+LICENSE_EXPIRY_WARN_DAYS = 30     # flag licenses expiring within this many days
+SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk category column
+VIOLATION_WINDOW_DAYS = 30        # "recent" window for new violations / MVR alerts
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
@@ -1382,11 +1388,119 @@ def _wk_label(start: pd.Timestamp) -> str:
 
 
 # ----------------------------------------------------------------------
+# SambaSafety driver compliance (license status, MVR violations, risk score).
+# Tolerant reader: the real export column names aren't finalized, so columns
+# are matched fuzzily. Expects a "Drivers" sheet and a "Violations" sheet.
+# ----------------------------------------------------------------------
+_LICENSE_OK = {"valid", "active", "clear", "ok", "current", "good"}
+
+
+def _mask_license(lic: str) -> str:
+    s = "".join(ch for ch in str(lic) if ch.isalnum())
+    if len(s) >= 4:
+        return "&bull;&bull;&bull;" + s[-4:]
+    return s or "&mdash;"
+
+
+def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
+    if not sheets:
+        return None
+    now = now or pd.Timestamp.now()
+    drivers_df = viol_df = None
+    for name, df in sheets.items():
+        if df is None or df.empty:
+            continue
+        ln = str(name).lower()
+        if viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
+            viol_df = df
+        elif drivers_df is None and any(k in ln for k in ("driver", "license", "monitor", "roster", "risk")):
+            drivers_df = df
+    if drivers_df is None:
+        drivers_df = next((df for df in sheets.values() if df is not None and not df.empty), None)
+    if drivers_df is None or drivers_df.empty:
+        return None
+
+    name_c = _find_col(drivers_df, ["driver name", "driver", "employee", "name"])
+    status_c = _find_col(drivers_df, ["license status", "licensestatus", "cdl status", "status"])
+    exp_c = _find_col(drivers_df, ["license expiration", "expiration", "expire", "expiry", "valid through"])
+    state_c = _find_col(drivers_df, ["license state", "issuing state", "dl state", "state"])
+    lic_c = _find_col(drivers_df, ["license number", "license #", "license no", "dl number", "cdl number", "dl #"])
+    score_c = _find_col(drivers_df, ["risk score", "score"])
+    cat_c = _find_col(drivers_df, ["risk category", "risk level", "risk tier", "category"])
+
+    drivers, scores = [], []
+    for _, r in drivers_df.iterrows():
+        name = str(r[name_c]).strip() if name_c else ""
+        if not name or name.lower() == "nan":
+            continue
+        status = (str(r[status_c]).strip() if status_c and pd.notna(r[status_c]) else "")
+        exp = pd.to_datetime(r[exp_c], errors="coerce") if exp_c else pd.NaT
+        state = (str(r[state_c]).strip() if state_c and pd.notna(r[state_c]) else "")
+        lic = (str(r[lic_c]).strip() if lic_c and pd.notna(r[lic_c]) else "")
+        score = pd.to_numeric(r[score_c], errors="coerce") if score_c else float("nan")
+        cat = (str(r[cat_c]).strip() if cat_c and pd.notna(r[cat_c]) else "")
+        ok = status.lower() in _LICENSE_OK
+        days_to_exp = int((exp.normalize() - now.normalize()).days) if pd.notna(exp) else None
+        expiring = days_to_exp is not None and 0 <= days_to_exp <= LICENSE_EXPIRY_WARN_DAYS
+        expired_by_date = days_to_exp is not None and days_to_exp < 0
+        high = ("high" in cat.lower()) or (not cat and pd.notna(score) and score >= SAMBA_HIGH_RISK_SCORE)
+        if pd.notna(score):
+            scores.append(float(score))
+        drivers.append({
+            "name": name, "status": status or "Unknown", "state": state,
+            "license": lic, "exp": exp, "days_to_exp": days_to_exp,
+            "score": float(score) if pd.notna(score) else None, "category": cat,
+            "ok": ok, "expiring": expiring, "expired": (not ok) or expired_by_date, "high": high,
+        })
+
+    license_issues = [d for d in drivers if (not d["ok"]) or d["expiring"]]
+    license_issues.sort(key=lambda d: (d["ok"], d["days_to_exp"] if d["days_to_exp"] is not None else 9999))
+    high_risk = [d for d in drivers if d["high"]]
+    ranked = sorted([d for d in drivers if d["score"] is not None], key=lambda d: d["score"], reverse=True)
+
+    violations = []
+    if viol_df is not None and not viol_df.empty:
+        vname_c = _find_col(viol_df, ["driver name", "driver", "name"])
+        vdate_c = _find_col(viol_df, ["violation date", "conviction date", "offense date", "date", "reported"])
+        vtype_c = _find_col(viol_df, ["violation type", "violation", "description", "offense", "type"])
+        vpts_c = _find_col(viol_df, ["points", "point"])
+        vstate_c = _find_col(viol_df, ["state", "jurisdiction"])
+        vsev_c = _find_col(viol_df, ["severity", "seriousness", "level"])
+        window = now - pd.Timedelta(days=VIOLATION_WINDOW_DAYS)
+        for _, r in viol_df.iterrows():
+            d = pd.to_datetime(r[vdate_c], errors="coerce") if vdate_c else pd.NaT
+            if pd.isna(d) or d < window:
+                continue
+            violations.append({
+                "name": (str(r[vname_c]).strip() if vname_c and pd.notna(r[vname_c]) else "&mdash;"),
+                "date": d,
+                "type": (str(r[vtype_c]).strip() if vtype_c and pd.notna(r[vtype_c]) else "&mdash;"),
+                "points": (pd.to_numeric(r[vpts_c], errors="coerce") if vpts_c else float("nan")),
+                "state": (str(r[vstate_c]).strip() if vstate_c and pd.notna(r[vstate_c]) else ""),
+                "severity": (str(r[vsev_c]).strip() if vsev_c and pd.notna(r[vsev_c]) else ""),
+            })
+        violations.sort(key=lambda v: v["date"], reverse=True)
+
+    return {
+        "now": now,
+        "monitored": len(drivers),
+        "drivers": drivers,
+        "license_issues": license_issues,
+        "high_risk": high_risk,
+        "ranked": ranked,
+        "avg_score": (sum(scores) / len(scores)) if scores else None,
+        "has_scores": bool(scores),
+        "violations": violations,
+        "window_days": VIOLATION_WINDOW_DAYS,
+    }
+
+
+# ----------------------------------------------------------------------
 # HTML design system
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 8
+PAGE_COUNT = 9
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -2129,9 +2243,94 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
             f"differently and this view is partial &mdash; use page 7. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
+def build_page9(samba, date_str) -> str:
+    header = _header('Driver Compliance &mdash; SambaSafety', 9, date_str)
+    footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+              f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
+              f"Source: SambaSafety driver monitoring.</div>")
+    if not samba or not samba.get("monitored"):
+        return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_section('Driver compliance &middot; SambaSafety')}"
+                f"<tr><td colspan='4' style='padding:14px 6px;color:{MUTE};font-size:12.5px;'>"
+                f"SambaSafety data unavailable this run.</td></tr>{footer}")
+
+    def _md(ts):
+        return "&mdash;" if pd.isna(ts) else f"{ts.month}/{ts.day}/{ts.strftime('%y')}"
+
+    issues = samba["license_issues"]
+    viol = samba["violations"]
+    n_issue = len(issues)
+    n_viol = len(viol)
+    n_high = len(samba["high_risk"])
+    avg = samba["avg_score"]
+
+    tiles = (_tile("Monitored drivers", num(samba["monitored"]), _pill("enrolled", "mute"))
+             + _tile("License issues", num(n_issue),
+                     _pill("suspended / expired / &le;30d", "bad" if n_issue else "good"))
+             + _tile(f"New violations &middot; {samba['window_days']}d", num(n_viol),
+                     _pill("MVR alerts", "warn" if n_viol else "good"))
+             + _tile("High-risk drivers", num(n_high),
+                     (f"avg score {avg:.0f} " if avg is not None else "")
+                     + _pill("elevated", "bad" if n_high else "good")))
+
+    if issues:
+        lrows = ""
+        for d in issues:
+            exp_txt = _md(d["exp"])
+            if d["days_to_exp"] is not None and d["ok"] and d["expiring"]:
+                exp_txt += f" ({d['days_to_exp']}d)"
+            lrows += _tr(
+                [d["name"], d["state"] or "&mdash;", _mask_license(d["license"]), d["status"], exp_txt,
+                 (f"{d['score']:.0f}" if d["score"] is not None else "&mdash;")],
+                ["left", "left", "left", "left", "left", "right"],
+                [None, None, None, ("bad" if not d["ok"] else "warn"),
+                 ("bad" if not d["ok"] else "warn"), ("bad" if d["high"] else None)])
+        license_block = _table(["Driver", "State", "License #", "Status", "Expires", "Risk"],
+                               ["left", "left", "left", "left", "left", "right"], lrows)
+    else:
+        license_block = _brief("All monitored drivers have a valid, current license.", "good")
+
+    if viol:
+        vrows = ""
+        for v in viol:
+            sev = str(v["severity"]).lower()
+            kind = "bad" if any(s in sev for s in ("major", "serious", "high", "disq")) else "warn"
+            vrows += _tr(
+                [v["name"], _md(v["date"]), v["type"],
+                 (num(v["points"]) if _isnum(v["points"]) else "&mdash;"),
+                 v["state"] or "&mdash;", v["severity"] or "&mdash;"],
+                ["left", "left", "left", "right", "left", "left"],
+                [None, None, None, None, None, kind])
+        viol_block = _table(["Driver", "Date", "Violation", "Pts", "State", "Severity"],
+                            ["left", "left", "left", "right", "left", "left"], vrows)
+    else:
+        viol_block = _brief(f"No new violations or MVR alerts in the last {samba['window_days']} days.", "good")
+
+    if samba["has_scores"]:
+        rrows = ""
+        for d in samba["ranked"][:10]:
+            cat = d["category"] or ("High" if d["high"] else "")
+            rrows += _tr(
+                [d["name"], f"{d['score']:.0f}", cat or "&mdash;", d["status"]],
+                ["left", "right", "left", "left"],
+                [None, ("bad" if d["high"] else None), ("bad" if d["high"] else None),
+                 (None if d["ok"] else "bad")])
+        risk_block = _table(["Driver", "Risk score", "Category", "License"],
+                            ["left", "right", "left", "left"], rrows)
+    else:
+        risk_block = _brief("Risk scores not present in this export.", "mute")
+
+    return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('License status &middot; action needed')}{license_block}"
+            f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
+            f"{_section('Risk leaderboard &middot; highest-scoring drivers')}{risk_block}"
+            f"{footer}")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None, rpm_goal=None) -> str:
+               rpm_trend=None, rpm_goal=None, samba=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -2149,7 +2348,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
             f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
             f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page9(samba, date_str))}"
             f"</body></html>")
 
 
@@ -2157,7 +2357,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # Orchestration (testable without network)
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                 alvys_pipeline_sheets=None, data_asof=None) -> str:
+                 alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
@@ -2173,9 +2373,10 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
+    samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal, samba=samba)
 
 
 # ----------------------------------------------------------------------
@@ -2291,6 +2492,7 @@ def main() -> int:
     alvys_pipeline_path = os.environ.get("SCORECARD_ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")
+    samba_path = os.environ.get("SCORECARD_SAMBASAFETY_PATH", "SambaSafety/SambaSafety_Master.xlsx")
 
     token = get_token(tenant, client, secret)
     missing: list[str] = []
@@ -2312,6 +2514,8 @@ def main() -> int:
     ar_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AR_History.xlsx", missing, "QB AR history")
     ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
+    # SambaSafety is optional — don't flag it as "missing" if the export isn't set up yet.
+    samba_sheets = _safe_read(token, upn, samba_path, [], "SambaSafety Master")
 
     # Preflight summary — first thing readable in the Actions log. Tells you
     # immediately if a wrong path silently blanked a section.
@@ -2323,6 +2527,7 @@ def main() -> int:
         ("QB AR history", f"{qb_dir}/QB_AR_History.xlsx", ar_hist_sheets, True),
         ("QB AP history", f"{qb_dir}/QB_AP_History.xlsx", ap_hist_sheets, True),
         ("Samsara Master", samsara_path, samsara_sheets, True),
+        ("SambaSafety Master", samba_path, samba_sheets, False),
     ]
     n_found = sum(1 for _l, _p, s, _r in preflight if s is not None)
     log.info("OneDrive preflight: %d of %d expected files found", n_found, len(preflight))
@@ -2338,7 +2543,8 @@ def main() -> int:
         log.warning("Required files missing: %s — those sections will be blank.", ", ".join(missing))
 
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                        alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof)
+                        alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
+                        sambasafety_sheets=samba_sheets)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
     return 0
