@@ -13,12 +13,20 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   schedule:
-    # 5:30am CST (= 11:30 UTC). GitHub cron is fixed UTC and ignores DST, so
-    # this lands at 6:30am during Central Daylight Time. Runs 30 min after the
-    # 5:00am Alvys/Samsara/QB refresh so all three feeds are fresh in OneDrive.
-    # The off-the-hour minute (`:30`) lowers the chance of a GitHub Actions
-    # schedule drop compared to the top-of-hour high-load window.
-    - cron: '30 11 * * *'
+    # Two cron entries, 15 min apart, as redundancy against GitHub Actions
+    # schedule drops. GitHub's cron is documented as best-effort — runs at
+    # high-traffic minutes get silently dropped or delayed. If 5:30am CST
+    # (11:30 UTC) drops, the 5:45am CST (11:45 UTC) backup still produces
+    # the brief 15 minutes later. The script is idempotent (reads the
+    # latest OneDrive files each run) so on a normal day BOTH may fire and
+    # the team gets two identical briefs — a small annoyance well worth
+    # the silent-miss insurance.
+    #
+    # Both line up after the 5:00am Alvys/Samsara/QB refresh so all three
+    # feeds are fresh in OneDrive. GitHub cron is fixed UTC and ignores
+    # DST, so during Central Daylight Time these land at 6:30am / 6:45am.
+    - cron: '30 11 * * *'   # primary    5:30am CST / 6:30am CDT
+    - cron: '45 11 * * *'   # backup     5:45am CST / 6:45am CDT
 
 permissions:
   contents: write
