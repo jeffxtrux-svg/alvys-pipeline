@@ -25,6 +25,7 @@ from src.scorecard_email import (  # noqa: E402
     compute_alvys_ar, compute_alvys_uninvoiced, compute_qb_ar_detail,
     compute_ar_reconciliation, compute_ar_customer_reconciliation,
     compute_bill_reconciliation, compute_samsara, compute_alvys_entities,
+    _lead_phrase,
 )
 from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
@@ -377,6 +378,36 @@ def test_build_page1_renders_three_rpm_charts_in_xtrux_overview():
     assert "Direct customers" in html and "Broker freight" in html
     # Final-month value of each chart appears as the bar label.
     assert "$2.90" in html and "$1.95" in html and "$2.42" in html
+
+
+# ---------------------------------------------------------------------------
+# Bottom-line lead phrase: must be honest about MTD profitability, not
+# hardcoded to "Profitable picture" regardless of the actual margin.
+# ---------------------------------------------------------------------------
+def test_lead_phrase_profitable_when_margin_positive():
+    p = _lead_phrase({"margin": 12_345})
+    assert "Profitable MTD" in p
+    assert "$12,345" in p
+
+
+def test_lead_phrase_unprofitable_when_margin_negative():
+    p = _lead_phrase({"margin": -8_500})
+    assert "Unprofitable" in p
+    assert "$8,500" in p
+    # Must NOT claim "Profitable" anywhere when the margin is negative
+    assert "Profitable" not in p
+
+
+def test_lead_phrase_breakeven_when_margin_zero():
+    assert "Break-even" in _lead_phrase({"margin": 0})
+
+
+def test_lead_phrase_neutral_when_margin_missing():
+    """Early in the month or before MTD data is loaded, refuse to make a
+    profitability claim either way."""
+    assert _lead_phrase({}) == "Latest refresh:"
+    assert _lead_phrase(None) == "Latest refresh:"
+    assert _lead_phrase({"margin": None}) == "Latest refresh:"
 
 
 # ---------------------------------------------------------------------------
