@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from src.alvys_client import AlvysClient
 from src.column_mappings import LOADS_COLUMNS, TRIPS_COLUMNS, FUEL_COLUMNS
 from src.output_writer import write_master_xlsx
-from src.transformers import transform_records, report_blank_columns
+from src.transformers import transform_records, report_blank_columns, report_schema_drift
 
 def setup_logging() -> None:
     logging.basicConfig(
@@ -199,12 +199,15 @@ def main() -> int:
     log.info("Transforming records")
     log.info("=" * 60)
     log.info("Loads:")
+    report_schema_drift(raw_loads, LOADS_COLUMNS, "Loads")
     loads_df = transform_records(raw_loads, LOADS_COLUMNS)
     report_blank_columns(loads_df, "Loads")
     log.info("Trips:")
+    report_schema_drift(raw_trips, TRIPS_COLUMNS, "Trips")
     trips_df = transform_records(raw_trips, TRIPS_COLUMNS)
     report_blank_columns(trips_df, "Trips")
     log.info("Fuel:")
+    report_schema_drift(raw_fuel, FUEL_COLUMNS, "Fuel")
     fuel_df = transform_records(raw_fuel, FUEL_COLUMNS)
     report_blank_columns(fuel_df, "Fuel")
 

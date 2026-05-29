@@ -50,6 +50,21 @@ python -m src.samsara_alerts           # checks faults/DVIRs, emails if needed
 4. Re-run `python -m src.main`. The log's `report_blank_columns` warning lists
    what's still empty.
 
+### Alvys log shows `SCHEMA DRIFT — N column path(s)…`
+A field name in Alvys' JSON changed and `column_mappings.py` still references the
+old key, so the column would silently go blank. The warning names each broken
+path with **the sibling keys that *are* present** on the parent dict — the new
+field name is almost always in that list. Fix:
+1. Note the broken column and the `broken_at` path from the warning.
+2. Check `output/_debug/sample_<loads|trips|fuel>.json` to confirm the new key
+   name (cross-reference with the `Sibling keys present:` line).
+3. Update that one tuple's accessor in `src/column_mappings.py` and re-run.
+
+Drift is reported only when **zero records** resolve the path and at least one
+record's parent dict was reachable — empty stops or missing optional sub-objects
+are correctly ignored (won't false-positive). Callable accessors are skipped
+(can't be statically validated).
+
 ### A whole Alvys reference lookup failed
 The log prints `<name>: FAILED (…)` and those enriched columns stay blank. The
 fetch tried GET then several POST `/search` filter shapes; check the logged HTTP
