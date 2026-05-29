@@ -1764,19 +1764,40 @@ def _flag_kind(value, target, lower_is_better) -> str:
 
 # ----------------------------------------------------------------------
 # Bottom-line lead phrase for the page-1 summary blurb.
-# Honest about MTD profitability (matches the Power BI MTD views and the
-# MTD tiles elsewhere on page 1) instead of always claiming "Profitable
-# picture" regardless of the actual numbers.
+#
+# Honest net-P&L basis: revenue - fully-loaded cost (driver pay + office
+# overhead allocation), not the contribution-margin shortcut used by the
+# in-page MTD tiles. The fully-loaded cost comes from compute_rpm_goal's
+# cost_per_mile output, which combines:
+#   - driver/owner-op pay/mi from settled X-Trux/XFreight loads
+#   - X-Trux + X-Linx combined office overhead/mi from QB P&L (YTD)
+#
+# When the rpm_goal pieces aren't available (early run, missing QB data),
+# fall back to Revenue - Driver Rate (the prior contribution-margin
+# definition) and tag the lead with an asterisk so a reader can spot it.
 # ----------------------------------------------------------------------
-def _lead_phrase(wmtd: dict | None) -> str:
-    m = (wmtd or {}).get("margin")
-    if not _isnum(m):
+def _lead_phrase(wmtd: dict | None, rpm_goal: dict | None = None) -> str:
+    revenue = (wmtd or {}).get("revenue")
+    miles = (wmtd or {}).get("miles")
+    contribution = (wmtd or {}).get("margin")
+    cpm = (rpm_goal or {}).get("cost_per_mile") if rpm_goal else None
+    net = None
+    if _isnum(revenue) and _isnum(miles) and _isnum(cpm):
+        net = float(revenue) - (float(cpm) * float(miles))
+    if net is not None:
+        if net > 0:
+            return f"Net-profitable MTD &mdash; {money(net)} above fully-loaded cost."
+        if net == 0:
+            return "Break-even MTD on fully-loaded cost."
+        return f"Net-unprofitable MTD &mdash; {money(abs(net))} below fully-loaded cost."
+    # Fully-loaded basis unavailable — fall back to contribution margin.
+    if not _isnum(contribution):
         return "Latest refresh:"
-    if m > 0:
-        return f"Profitable MTD &mdash; {money(m)} margin."
-    if m == 0:
-        return "Break-even MTD."
-    return f"Unprofitable MTD &mdash; {money(abs(m))} negative margin."
+    if contribution > 0:
+        return f"Contribution-positive MTD &mdash; {money(contribution)} over driver pay.*"
+    if contribution == 0:
+        return "Break-even MTD on driver pay.*"
+    return f"Driver-pay-underwater MTD &mdash; {money(abs(contribution))} negative.*"
 
 
 # ----------------------------------------------------------------------
@@ -2258,7 +2279,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _goal_txt = f"goal {rpm(_goal_rpm)}" if _isnum(_goal_rpm) else "goal pending QB cost-out"
     # Every number gets an explicit scope/window so the blurb is comparable to
     # other views in the email and to Power BI (which uses different windows).
-    bottom = (f"{_lead_phrase(wmtd)} "
+    bottom = (f"{_lead_phrase(wmtd, rpm_goal)} "
               f"For X-Trux/XFreight asset loads (7d rolling): "
               f"RPM {rpm(w7a.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(w7a.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "

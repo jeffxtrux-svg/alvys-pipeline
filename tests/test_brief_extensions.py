@@ -384,25 +384,47 @@ def test_build_page1_renders_three_rpm_charts_in_xtrux_overview():
 # Bottom-line lead phrase: must be honest about MTD profitability, not
 # hardcoded to "Profitable picture" regardless of the actual margin.
 # ---------------------------------------------------------------------------
-def test_lead_phrase_profitable_when_margin_positive():
-    p = _lead_phrase({"margin": 12_345})
-    assert "Profitable MTD" in p
+# Fully-loaded basis = revenue - cost_per_mile * miles, sourced from
+# compute_rpm_goal. Asterisked fallback fires when rpm_goal is None / partial.
+def test_lead_phrase_net_profitable_when_revenue_exceeds_loaded_cost():
+    """Net-positive on fully-loaded cost: revenue $200K, 50K miles, cost $3/mi
+    => $150K loaded cost, $50K above fully-loaded cost."""
+    p = _lead_phrase({"revenue": 200_000, "miles": 50_000, "margin": 80_000},
+                     rpm_goal={"cost_per_mile": 3.00})
+    assert "Net-profitable" in p
+    assert "$50,000" in p
+
+
+def test_lead_phrase_net_unprofitable_when_loaded_cost_exceeds_revenue():
+    """Negative on fully-loaded cost even when contribution margin is positive:
+    revenue $100K, 50K miles, cost $2.50/mi => $125K loaded cost, $25K under."""
+    p = _lead_phrase({"revenue": 100_000, "miles": 50_000, "margin": 30_000},
+                     rpm_goal={"cost_per_mile": 2.50})
+    assert "Net-unprofitable" in p
+    assert "$25,000" in p
+    assert "Net-profitable" not in p
+
+
+def test_lead_phrase_falls_back_to_contribution_when_rpm_goal_missing():
+    """rpm_goal missing -> contribution-margin lead (with asterisk) so the
+    reader can spot that the net basis is not available."""
+    p = _lead_phrase({"revenue": 100_000, "miles": 50_000, "margin": 12_345},
+                     rpm_goal=None)
+    assert "Contribution-positive" in p
     assert "$12,345" in p
+    assert "*" in p
 
 
-def test_lead_phrase_unprofitable_when_margin_negative():
-    p = _lead_phrase({"margin": -8_500})
-    assert "Unprofitable" in p
+def test_lead_phrase_falls_back_when_cost_per_mile_missing():
+    """rpm_goal exists but cost_per_mile didn't compute (early run / no QB
+    overhead) — fall back rather than dropping the lead entirely."""
+    p = _lead_phrase({"revenue": 100_000, "miles": 50_000, "margin": -8_500},
+                     rpm_goal={"cost_per_mile": None})
+    assert "Driver-pay-underwater" in p
     assert "$8,500" in p
-    # Must NOT claim "Profitable" anywhere when the margin is negative
-    assert "Profitable" not in p
 
 
-def test_lead_phrase_breakeven_when_margin_zero():
-    assert "Break-even" in _lead_phrase({"margin": 0})
-
-
-def test_lead_phrase_neutral_when_margin_missing():
+def test_lead_phrase_neutral_when_everything_missing():
     """Early in the month or before MTD data is loaded, refuse to make a
     profitability claim either way."""
     assert _lead_phrase({}) == "Latest refresh:"
