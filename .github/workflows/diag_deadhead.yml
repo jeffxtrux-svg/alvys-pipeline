@@ -1,0 +1,40 @@
+# One-off: dump every mileage-related column from the Alvys Master 2026 workbook
+# with its May-2026 X-Trux+XFreight sum, so we can see exactly which columns
+# match Power BI's 10,253 / 165,717 = 6.187%.
+
+name: Deadhead diagnostic (one-off)
+
+on:
+  workflow_dispatch:
+
+  # TEMPORARY: one-shot trigger on push (removed right after).
+  push:
+    branches: [claude/claude-md-docs-Es64x]
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dump mileage columns and email
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+          SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+        run: python -m src.diag_deadhead
