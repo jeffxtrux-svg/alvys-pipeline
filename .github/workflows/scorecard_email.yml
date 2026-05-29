@@ -52,6 +52,10 @@ jobs:
           # the wrong (un-settled) one. The sharing URL resolves to the right item.
           SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+          # Goal targets (RPM, Margin, Truck Pay/mile) are read from the
+          # JB Formula tab of this workbook. If unreachable, the brief falls
+          # back to DEFAULT_GOALS in scorecard_email.py.
+          GOALS_TRENDS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQD0lr0zVSBRSK3IO-sKzNjYAbZ2OE-Djsu_t1EiIOcCgL8?e=H7u1v7"
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive

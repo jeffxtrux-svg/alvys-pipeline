@@ -51,9 +51,22 @@ from src.onedrive_upload import (
 log = logging.getLogger("scorecard_email")
 GRAPH = "https://graph.microsoft.com/v1.0"
 
-# Targets pulled from your Goals workbooks
-TARGET_RPM = 2.92
-TARGET_DEADHEAD = 0.06
+# Defaults for the brief's goal references. These are the fallbacks when the
+# Goals & Trends workbook can't be read (no share URL, network error, missing
+# labels). Each one is overridden per-run by read_workbook_goals() pulling the
+# value from the JB Formula sheet.
+DEFAULT_GOALS = {
+    "rpm": 2.92,
+    "deadhead": 0.06,
+    "margin": 0.18,
+    "truck_pay_per_mile": 1.49,
+}
+# Back-compat aliases — internal code that still references TARGET_* gets the
+# baseline value. The live brief should always read from the `goals` dict
+# passed into build_page1 / build_html / build_report, which is layered with
+# whatever the workbook returned this run.
+TARGET_RPM = DEFAULT_GOALS["rpm"]
+TARGET_DEADHEAD = DEFAULT_GOALS["deadhead"]
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
 
@@ -231,6 +244,74 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
         "margin": margin if margin else None,
         "margin_pct": (margin / revenue) if revenue else None,
     }
+
+
+# ----------------------------------------------------------------------
+# Goal-target sourcing — read RPM / deadhead / margin / truck-pay goals
+# from the Goals & Trends workbook ("JB Formula" sheet) so they live in
+# the spreadsheet you maintain, not in code.
+# ----------------------------------------------------------------------
+def _scan_label_value(df: pd.DataFrame, label: str) -> float | None:
+    """Find a cell matching `label` (case-insensitive, whitespace-trimmed) and
+    return the numeric value in the next column of the same row. Returns None
+    if not found or the next cell isn't numeric. The JB Formula sheet uses an
+    irregular label/value layout (multiple label-value pairs per row at varying
+    column positions), so scan every cell."""
+    target = str(label).strip().lower()
+    for _, row in df.iterrows():
+        cells = row.tolist()
+        for i in range(len(cells) - 1):
+            v = cells[i]
+            if isinstance(v, str) and v.strip().lower() == target:
+                nxt = cells[i + 1]
+                if nxt is None or (isinstance(nxt, float) and pd.isna(nxt)):
+                    continue
+                try:
+                    return float(nxt)
+                except (TypeError, ValueError):
+                    continue
+    return None
+
+
+def read_workbook_goals(token: str | None, share_url: str | None,
+                        defaults: dict | None = None) -> dict:
+    """Read the brief's goal targets from the Goals & Trends workbook.
+
+    The JB Formula sheet holds maintained-by-hand values:
+      - "Average RPM Goal"   -> rpm
+      - "Margin Goal"        -> margin
+      - "Current Truck Pay"  -> truck_pay_per_mile
+      - "Deadhead Goal" (optional, falls through to default if missing)
+
+    Returns DEFAULT_GOALS layered with whatever the sheet supplied. If the
+    workbook is unreachable or labels are missing, the defaults stand — the
+    brief renders with the previous hardcoded goals instead of breaking.
+    """
+    goals = dict(defaults or DEFAULT_GOALS)
+    if not (token and share_url):
+        return goals
+    try:
+        raw = download_shared_file(token, share_url)
+        sheets = pd.read_excel(io.BytesIO(raw), sheet_name=None)
+    except Exception as exc:
+        log.warning("Could not read Goals & Trends workbook (%s); using defaults", exc)
+        return goals
+    jb = sheets.get("JB Formula")
+    if jb is None or jb.empty:
+        log.warning("'JB Formula' sheet missing/empty; using defaults")
+        return goals
+    overrides = {
+        "rpm": _scan_label_value(jb, "Average RPM Goal"),
+        "margin": _scan_label_value(jb, "Margin Goal"),
+        "truck_pay_per_mile": _scan_label_value(jb, "Current Truck Pay"),
+        "deadhead": (_scan_label_value(jb, "Deadhead Goal")
+                     or _scan_label_value(jb, "Dead Head Goal")),
+    }
+    for k, v in overrides.items():
+        if v is not None:
+            goals[k] = v
+    log.info("Goals sourced from JB Formula sheet: %s", goals)
+    return goals
 
 
 def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
@@ -1449,7 +1530,8 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None,
-                margin_projection=None) -> str:
+                margin_projection=None, goals=None) -> str:
+    goals = goals or DEFAULT_GOALS
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -1495,7 +1577,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
     _xt_asset = ((alvys or {}).get("asset") or {}).get("mtd", {})
     xtrux_r2 = (_tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
-                      "goal &le;6% " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+                      f"goal &le;{pct(goals['deadhead'])} " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), goals['deadhead'], True)))
                 + _tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
@@ -1652,8 +1734,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
                         f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
 
-    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(wmtda.get('rpm'))} (goal $2.92), "
-              f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;6%, X-Trux/XFreight). "
+    bottom = (f"Profitable picture from the latest refresh. RPM {rpm(wmtda.get('rpm'))} (goal {rpm(goals['rpm'])}), "
+              f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(goals['deadhead'])}, X-Trux/XFreight). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue (see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations in last 24h.")
 
@@ -2030,7 +2112,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None, margin_projection=None) -> str:
+               rpm_trend=None, margin_projection=None, goals=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -2041,7 +2123,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, margin_projection=margin_projection))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, margin_projection=margin_projection, goals=goals))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -2056,7 +2138,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # Orchestration (testable without network)
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                 alvys_pipeline_sheets=None, data_asof=None) -> str:
+                 alvys_pipeline_sheets=None, data_asof=None, goals=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
@@ -2074,7 +2156,8 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, margin_projection=margin_projection)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, margin_projection=margin_projection,
+                      goals=goals)
 
 
 # ----------------------------------------------------------------------
@@ -2198,8 +2281,14 @@ def main() -> int:
     ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
 
+    # Goal targets come from the Goals & Trends workbook (JB Formula sheet) so
+    # they live in the spreadsheet, not in code. If the URL isn't set or the
+    # workbook can't be read, the DEFAULT_GOALS at the top of this module stand.
+    goals_share = os.environ.get("GOALS_TRENDS_SHARE_URL", "").strip()
+    goals = read_workbook_goals(token, goals_share)
+
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                        alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof)
+                        alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof, goals=goals)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, html)
     # Archive the brief for the Karpathy-Wiki librarian to compile.
