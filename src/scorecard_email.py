@@ -2313,6 +2313,30 @@ def main() -> int:
     ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
 
+    # Preflight summary — first thing readable in the Actions log. Tells you
+    # immediately if a wrong path silently blanked a section.
+    preflight = [
+        ("Alvys Master 2026", alvys_path, alvys_sheets, True),
+        ("Alvys Pipeline", alvys_pipeline_path, alvys_pipeline_sheets, True),
+        ("QB P&L", f"{qb_dir}/QB_ProfitAndLoss.xlsx", pnl_sheets, True),
+        ("QB AR aging", f"{qb_dir}/QB_AgedReceivableDetail.xlsx", ar_sheets, True),
+        ("QB AR history", f"{qb_dir}/QB_AR_History.xlsx", ar_hist_sheets, True),
+        ("QB AP history", f"{qb_dir}/QB_AP_History.xlsx", ap_hist_sheets, True),
+        ("Samsara Master", samsara_path, samsara_sheets, True),
+    ]
+    n_found = sum(1 for _l, _p, s, _r in preflight if s is not None)
+    log.info("OneDrive preflight: %d of %d expected files found", n_found, len(preflight))
+    for label, path, sheets, required in preflight:
+        if sheets is not None:
+            rows = sum(len(df) for df in sheets.values())
+            log.info("  FOUND    %-22s %s  (%d sheet(s), %d rows)", label, path, len(sheets), rows)
+        elif required:
+            log.warning("  MISSING  %-22s %s  (required)", label, path)
+        else:
+            log.info("  absent   %-22s %s  (optional)", label, path)
+    if missing:
+        log.warning("Required files missing: %s — those sections will be blank.", ", ".join(missing))
+
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof)
     subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
