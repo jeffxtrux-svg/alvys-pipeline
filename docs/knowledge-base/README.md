@@ -117,6 +117,7 @@ alvys-pipeline/
 | [automation-and-secrets.md](./automation-and-secrets.md) | Understand the GitHub Actions schedules and every secret/env var |
 | [powerbi.md](./powerbi.md) | Understand how Power BI consumes the data (both paths) |
 | [rate-per-mile-goal.md](./rate-per-mile-goal.md) | Understand or tune the X-Trux rate-per-mile cost-out goal on the daily brief |
+| [trukway-per-truck.md](./trukway-per-truck.md) | Understand the Truk-Way per-truck P&L tab (revenue − fuel by truck) on the Google Sheet |
 | [operations.md](./operations.md) | Run a job locally, debug a failure, or onboard a new company |
 
 ---
