@@ -1771,11 +1771,222 @@ def _lead_phrase(wmtd: dict | None) -> str:
 
 
 # ----------------------------------------------------------------------
+# Drag attribution: pick the worst-performing operational metric and name
+# the specific customer / truck driving the deviation, so the BOTTOM LINE
+# blurb says "who", not just "what".
+#
+# Ranks RPM / deadhead / AR 31+ by approximate dollar impact:
+#   RPM:      (goal - actual) * fleet_miles_7d        (revenue short of goal)
+#   Deadhead: (actual - goal) * fleet_miles_7d * RPM  (empty miles re-priced)
+#   AR 31+:   total31 ($)                              (already a dollar amount)
+# The winner gets attributed to its top contributor.
+# ----------------------------------------------------------------------
+def _seven_day_asset_loads(alvys_sheets: dict | None, now: pd.Timestamp | None = None):
+    """Return the 7-day, non-cancelled, X-Trux asset Loads slice — the same
+    slice that feeds w7a's RPM/deadhead. Returns None if unavailable."""
+    if not alvys_sheets:
+        return None
+    loads = alvys_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return None
+    now = now or pd.Timestamp.now()
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    if "Load Status" in loads.columns:
+        keep = loads["Load Status"].astype(str).str.lower() != "cancelled"
+    else:
+        keep = pd.Series(True, index=loads.index)
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return None
+    is_asset = loads[office_col].map(_entity_group) == "X-Trux"
+    cutoff = now - pd.Timedelta(days=7)
+    mask = keep & is_asset & (dates >= cutoff)
+    sub = loads[mask]
+    return sub if not sub.empty else None
+
+
+def _attribute_rpm_drag(sub, goal_rpm) -> str | None:
+    """Among the 7d asset loads, find the customer whose removal would lift
+    fleet RPM the most."""
+    cust_col = _find_col(sub, ["customer", "shipper", "billto"])
+    if not cust_col:
+        return None
+    rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0).astype(float)
+    miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Mileage"]).fillna(0).astype(float)
+    fleet_rev = float(rev.sum())
+    fleet_miles = float(miles.sum())
+    if fleet_miles <= 0:
+        return None
+    fleet_rpm = fleet_rev / fleet_miles
+
+    by_cust: dict[str, dict] = {}
+    for c, r, m in zip(sub[cust_col].fillna("").astype(str).str.strip(), rev, miles):
+        key = c if c and c.lower() != "nan" else "(unknown customer)"
+        d = by_cust.setdefault(key, {"n": 0, "rev": 0.0, "miles": 0.0})
+        d["n"] += 1
+        d["rev"] += float(r)
+        d["miles"] += float(m)
+
+    best = None
+    for c, d in by_cust.items():
+        miles_w = fleet_miles - d["miles"]
+        rev_w = fleet_rev - d["rev"]
+        if miles_w <= 0:
+            continue
+        rpm_w = rev_w / miles_w
+        lift = rpm_w - fleet_rpm
+        if lift <= 0:
+            continue
+        cust_rpm = (d["rev"] / d["miles"]) if d["miles"] > 0 else 0.0
+        if best is None or lift > best["lift"]:
+            best = {"customer": c, "n": d["n"], "rpm": cust_rpm,
+                    "rpm_without": rpm_w, "lift": lift}
+
+    if not best:
+        return None
+    plural = "" if best["n"] == 1 else "s"
+    text = (f"Biggest RPM drag: {best['n']} load{plural} from {best['customer']} "
+            f"averaging {rpm(best['rpm'])} (vs fleet {rpm(fleet_rpm)}). "
+            f"Excluding them lifts fleet RPM to {rpm(best['rpm_without'])}")
+    if _isnum(goal_rpm) and best["rpm_without"] >= goal_rpm:
+        text += f" &mdash; clears the {rpm(goal_rpm)} goal."
+    else:
+        text += "."
+    return text
+
+
+def _attribute_deadhead_drag(sub, min_truck_miles: float = 100.0) -> str | None:
+    """Among the 7d asset loads, list the top trucks running above the goal."""
+    truck_col = _find_col(sub, ["truck"])
+    if not truck_col:
+        return None
+    total = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Mileage"]).fillna(0).astype(float)
+    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage"]).fillna(0).astype(float)
+
+    by_truck: dict[str, dict] = {}
+    for t, tot, em in zip(sub[truck_col].fillna("").astype(str).str.strip(), total, empty):
+        key = t if t and t.lower() != "nan" else "(no truck)"
+        d = by_truck.setdefault(key, {"tot": 0.0, "em": 0.0})
+        d["tot"] += float(tot)
+        d["em"] += float(em)
+
+    ranked = []
+    for t, d in by_truck.items():
+        if d["tot"] < min_truck_miles:
+            continue
+        dh = d["em"] / d["tot"] if d["tot"] > 0 else 0.0
+        if dh > TARGET_DEADHEAD:
+            ranked.append({"truck": t, "dh": dh})
+    if not ranked:
+        return None
+    ranked.sort(key=lambda x: x["dh"], reverse=True)
+    top = ranked[:3]
+    parts = [f"{t['truck']} ({pct(t['dh'])})" for t in top]
+    label = "truck" if len(parts) == 1 else "trucks"
+    if len(parts) == 1:
+        joined = parts[0]
+    elif len(parts) == 2:
+        joined = f"{parts[0]} and {parts[1]}"
+    else:
+        joined = f"{parts[0]}, {parts[1]}, and {parts[2]}"
+    return (f"Biggest deadhead drag: {label} {joined} this week "
+            f"(goal &le;{pct(TARGET_DEADHEAD)}).")
+
+
+def _attribute_ar_drag(qb_ar: dict | None) -> str | None:
+    """Find the customer with the largest 31+ aged AR concentration."""
+    rows = (qb_ar or {}).get("rows") or []
+    total31 = (qb_ar or {}).get("total31") or 0
+    if not rows or total31 <= 0:
+        return None
+    by_cust: dict[str, float] = {}
+    for r in rows:
+        c = (r.get("customer") or "").strip() or "(unknown customer)"
+        by_cust[c] = by_cust.get(c, 0.0) + float(r.get("amount", 0) or 0)
+    if not by_cust:
+        return None
+    top_cust, top_amt = max(by_cust.items(), key=lambda x: x[1])
+    if top_amt <= 0:
+        return None
+    share = top_amt / total31 if total31 > 0 else 0
+    return (f"Biggest AR drag: {top_cust} owes {money(top_amt)} of the "
+            f"{money(total31)} 31+ balance ({pct(share)}).")
+
+
+def compute_drag_attribution(
+    alvys_sheets: dict | None,
+    qb_ar: dict | None,
+    w7a: dict | None,
+    rpm_goal: dict | None,
+    samsara: dict | None,
+    now: pd.Timestamp | None = None,
+) -> dict | None:
+    """One-sentence "biggest drag" attribution for the BOTTOM LINE blurb.
+
+    Priority: safety events in 24h short-circuit (life-safety first). Otherwise
+    score RPM / deadhead / AR 31+ by approximate dollar impact and attribute
+    the winner. If everything is at or better than goal, returns a "clean"
+    note instead.
+
+    Returns {"text": "...", "metric": "safety|rpm|deadhead|ar|clean",
+             "kind": "bad|warn|good"} or None when there isn't enough data.
+    """
+    sf = (samsara or {}).get("windows", {}) or {}
+    ev24 = int(((sf.get("events") or {}).get("24h") or 0))
+    hos24 = int(((sf.get("hosv") or {}).get("24h") or 0))
+    if ev24 + hos24 > 0:
+        bits = []
+        if ev24:
+            bits.append(f"{ev24} safety event{'s' if ev24 != 1 else ''}")
+        if hos24:
+            bits.append(f"{hos24} HOS violation{'s' if hos24 != 1 else ''}")
+        return {
+            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review page 2.",
+            "metric": "safety", "kind": "bad",
+        }
+
+    actual_rpm = (w7a or {}).get("rpm")
+    actual_dh = (w7a or {}).get("deadhead")
+    miles = (w7a or {}).get("miles")
+    goal_rpm = (rpm_goal or {}).get("goal_rpm")
+    total31 = (qb_ar or {}).get("total31") or 0
+
+    rpm_impact = 0.0
+    if _isnum(actual_rpm) and _isnum(goal_rpm) and _isnum(miles) and goal_rpm > 0:
+        rpm_impact = max(0.0, float(goal_rpm) - float(actual_rpm)) * float(miles)
+    dh_impact = 0.0
+    if _isnum(actual_dh) and _isnum(miles) and _isnum(actual_rpm):
+        excess = max(0.0, float(actual_dh) - TARGET_DEADHEAD)
+        dh_impact = excess * float(miles) * float(actual_rpm)
+    ar_impact = float(total31) if _isnum(total31) else 0.0
+
+    scored = [("rpm", rpm_impact), ("deadhead", dh_impact), ("ar", ar_impact)]
+    worst, score = max(scored, key=lambda x: x[1])
+    if score < 1.0:
+        return {
+            "text": "All operational metrics within goal this week &mdash; no drag detected.",
+            "metric": "clean", "kind": "good",
+        }
+
+    sub = _seven_day_asset_loads(alvys_sheets, now=now) if worst in ("rpm", "deadhead") else None
+    text = None
+    if worst == "rpm" and sub is not None:
+        text = _attribute_rpm_drag(sub, goal_rpm)
+    elif worst == "deadhead" and sub is not None:
+        text = _attribute_deadhead_drag(sub)
+    elif worst == "ar":
+        text = _attribute_ar_drag(qb_ar)
+    if not text:
+        return None
+    return {"text": text, "metric": worst, "kind": "bad"}
+
+
+# ----------------------------------------------------------------------
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
-                rpm_goal_trend=None) -> str:
+                rpm_goal_trend=None, drag=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -2045,6 +2256,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
               f"(X-Trux + X-Linx snapshot &mdash; see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
+    if drag and drag.get("text"):
+        bottom += f" {drag['text']}"
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
@@ -2507,7 +2720,7 @@ def build_page9(samba, date_str) -> str:
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None) -> str:
+               rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -2518,7 +2731,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -2553,10 +2766,12 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
+    w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
+    drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
-                      rpm_goal_trend=rpm_goal_trend, samba=samba)
+                      rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag)
 
 
 # ----------------------------------------------------------------------
