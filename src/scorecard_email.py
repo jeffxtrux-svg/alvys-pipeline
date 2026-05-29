@@ -63,9 +63,9 @@ COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window n
 # X-Linx (brokerage) is priced per load, not per mile, so it is excluded from
 # the rate but its office overhead is still absorbed (see RPM_GOAL_OVERHEAD_COMPANIES).
 # All four inputs are overridable from the environment for CI / tuning:
-#   RPM_GOAL_TARGET_OR          operating ratio the goal targets. 0.92 = 8% net
+#   RPM_GOAL_TARGET_OR          operating ratio the goal targets. 0.95 = 5% net
 #                               margin (the chosen default — bakes profit on top
-#                               of the fully-loaded cost); 0.95 = 5%, 1.0 = break-even.
+#                               of the fully-loaded cost); 0.92 = 8%, 1.0 = break-even.
 #   RPM_GOAL_OVERHEAD_COMPANIES comma-separated QuickBooks company names whose
 #                               Total Expenses make up the shared office overhead
 #                               pool that the X-Trux miles must absorb.
@@ -77,7 +77,7 @@ COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window n
 #   RPM_GOAL_WORKSHEET_OVERHEAD the latest office-cost-per-mile from the manually
 #                               kept "Goals and Trends.xlsx" (Jeff's Number tab),
 #                               shown alongside the QB figure as a sanity check.
-RPM_GOAL_TARGET_OR = 0.92
+RPM_GOAL_TARGET_OR = 0.95
 RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
@@ -789,7 +789,7 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         absorb the whole office overhead — that is what makes the rate "fully loaded".
 
     Profit is layered on top via the operating ratio: goal = cost / OR. The default
-    OR = 0.92 bakes in an 8% net margin on the fully-loaded cost; OR = 0.95 is 5%
+    OR = 0.95 bakes in a 5% net margin on the fully-loaded cost; OR = 0.92 is 8%
     and OR = 1.0 is break-even. Returns None only when the Alvys Loads tab is unusable;
     otherwise it returns every component it can compute and leaves the rest None so
     the brief can render partial results (fail-soft, like the other KPIs).

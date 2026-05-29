@@ -74,12 +74,12 @@ def test_overhead_pools_configured_companies_only_and_abs():
     assert sorted(g["overhead_companies"]) == ["X-Linx Inc", "X-Trux, Inc."]
 
 
-def test_cost_per_mile_and_default_bakes_8pct_profit():
-    g = compute_rpm_goal(_sheets(), _qb_pnl())                 # default OR = 0.92 (8% net)
+def test_cost_per_mile_and_default_bakes_5pct_profit():
+    g = compute_rpm_goal(_sheets(), _qb_pnl())                 # default OR = 0.95 (5% net)
     assert abs(g["cost_per_mile"] - _COST_PM) < 1e-9
-    assert abs(g["goal_rpm"] - _COST_PM / 0.92) < 1e-9         # cost + 8% net margin
-    assert abs(g["profit_per_mile"] - (_COST_PM / 0.92 - _COST_PM)) < 1e-9
-    assert abs(g["target_margin"] - 0.08) < 1e-9
+    assert abs(g["goal_rpm"] - _COST_PM / 0.95) < 1e-9         # cost + 5% net margin
+    assert abs(g["profit_per_mile"] - (_COST_PM / 0.95 - _COST_PM)) < 1e-9
+    assert abs(g["target_margin"] - 0.05) < 1e-9
 
 
 def test_breakeven_when_or_is_one():
