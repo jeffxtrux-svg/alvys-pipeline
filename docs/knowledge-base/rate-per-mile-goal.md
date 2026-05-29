@@ -96,6 +96,14 @@ The note also prints the **worksheet sanity check**: the office-cost-per-mile fr
 the manually kept `Goals and Trends.xlsx` (`RPM_GOAL_WORKSHEET_OVERHEAD`, default
 `$0.88`) sits beside the live QB figure so the two can be compared at a glance.
 
+Below the tiles, a **6-month trend** (`compute_rpm_goal_trend`) charts **cost /
+goal / actual revenue per mile** by month so the goal reads as a living line — you
+can see cost creep or a chronic actual-below-goal gap, not just today's snapshot.
+The driver-pay leg varies by month; office overhead is **held flat at the current
+YTD rate** (the QB P&L is a single fiscal-year report, so monthly overhead can't be
+reconstructed). The cost/goal bars render only when the QB overhead leg is present;
+the actual rev/mile bars always render.
+
 ## Reconciling the ~$2.92 estimate
 
 The owner's `Goals and Trends.xlsx` ("Jeff's Number" tab) already itemizes office

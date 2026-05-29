@@ -881,6 +881,67 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     }
 
 
+def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: dict | None) -> dict:
+    """Six-month trend of X-Trux cost / goal / actual revenue per mile.
+
+    Pairs with ``compute_rpm_goal``: the office overhead is YTD-only (the QB P&L is
+    a single fiscal-year report, so monthly overhead can't be reconstructed), so it
+    is **held flat at the current YTD rate** for every month while the volatile
+    driver-pay-per-mile leg varies by month — which is where the movement comes from
+    anyway (the O/O rate changes weekly). Each month, over settled X-Trux asset loads:
+        cost/mi   = SUM(Driver Rate)/SUM(miles) + overhead/mi (flat)
+        goal/mi   = cost/mi / target operating ratio
+        actual/mi = SUM(Customer Revenue)/SUM(miles)
+    Returns ``{"labels", "cost", "goal", "actual"}`` ready for ``_bar_chart`` (current
+    month's label gets a trailing ``*`` to mark MTD). ``cost``/``goal`` come back empty
+    when overhead is unavailable (no QB P&L); ``actual`` is always available.
+    """
+    empty = {"labels": [], "cost": [], "goal": [], "actual": []}
+    if not alvys_sheets or not goal:
+        return empty
+    loads = alvys_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return empty
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return empty
+    overhead = goal.get("overhead_per_mile")
+    target_or = goal.get("target_or") or 1.0
+
+    sub = loads.copy()
+    if "Load Status" in sub.columns:
+        sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+    sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    if sub.empty:
+        return empty
+    dates = _dates(sub, ALVYS_DATE_CANDIDATES)
+    pay = _col(sub, "Driver Rate").fillna(0)
+    miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
+    settled = pay > 0
+
+    labels, cost_s, goal_s, actual_s = [], [], [], []
+    months = _last_6_months()
+    for i, (yy, mm) in enumerate(months):
+        m = settled & (dates.dt.year == yy) & (dates.dt.month == mm)
+        mi = float(miles[m].sum())
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        if i == len(months) - 1:
+            lab += "*"
+        labels.append(lab)
+        actual_s.append((float(rev[m].sum()) / mi) if mi else 0.0)
+        if mi and overhead is not None:
+            cpm = float(pay[m].sum()) / mi + overhead
+            cost_s.append(cpm)
+            goal_s.append(cpm / target_or if target_or else cpm)
+        else:
+            cost_s.append(0.0)
+            goal_s.append(0.0)
+    if overhead is None:
+        cost_s, goal_s = [], []          # signal "pending" to the chart helper
+    return {"labels": labels, "cost": cost_s, "goal": goal_s, "actual": actual_s}
+
+
 def _norm_name(s) -> str:
     """Normalize a customer name for matching: drop periods (so 'J.W.' -> 'jw'),
     turn other punctuation/separators (hyphens, commas, slashes) into spaces, and
@@ -1513,7 +1574,8 @@ def _flag_kind(value, target, lower_is_better) -> str:
 # Page builders
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
-                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None) -> str:
+                alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
+                rpm_goal_trend=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -1632,6 +1694,20 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         else:
             goal_note = _brief("Rate-per-mile cost is pending the QuickBooks P&amp;L this run "
                                "(office overhead comes from X-Trux + X-Linx Total Expenses).", "mute")
+
+    # X-Trux cost / goal / actual revenue per mile — 6-month trend. Cost and goal
+    # only render when the QB overhead leg is available (held flat at the YTD rate);
+    # actual rev/mile always renders. Lets the goal read as a living line.
+    gt = rpm_goal_trend or {}
+    goal_trend_row = ""
+    if gt.get("labels") and (gt.get("cost") or gt.get("actual")):
+        _gt_sub = "monthly &middot; X-Trux + XFreight &middot; *MTD"
+        goal_trend_row = (
+            _bar_chart("Cost / mile", gt["labels"], gt.get("cost") or [],
+                       "overhead held at YTD rate &middot; *MTD", fmt=rpm)
+            + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm)
+            + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm)
+            + empty_td)
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -1788,6 +1864,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"{mtd_note}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
             + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
+               + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
                if goal_tiles else "")
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
@@ -2131,7 +2208,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
-               rpm_trend=None, rpm_goal=None) -> str:
+               rpm_trend=None, rpm_goal=None, rpm_goal_trend=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -2142,7 +2219,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page4(mileage, date_str))}{pb}"
@@ -2170,12 +2247,14 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
+    rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
-                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal)
+                      uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
+                      rpm_goal_trend=rpm_goal_trend)
 
 
 # ----------------------------------------------------------------------
