@@ -1577,6 +1577,10 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
     week_totals = [sum(r["weeks"][k] for r in rows) for k in range(SETTLEMENT_WEEKS)]
     cur_idx = SETTLEMENT_WEEKS - 1
     drivers_cur = sum(1 for r in rows if r["weeks"][cur_idx] > 0)
+    # Average distinct drivers running per week across the displayed window —
+    # for the "avg drivers/wk" reference next to the per-driver miles avg.
+    drivers_per_week = [sum(1 for r in rows if r["weeks"][k] > 0) for k in range(SETTLEMENT_WEEKS)]
+    avg_drivers_per_week = (sum(drivers_per_week) / SETTLEMENT_WEEKS) if SETTLEMENT_WEEKS else None
     return {
         "labels": [_wk_label(s) for s in starts],
         "rows": rows,
@@ -1586,6 +1590,7 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
         "miles_this_week": week_totals[cur_idx],
         "miles_last_week": week_totals[cur_idx - 1] if SETTLEMENT_WEEKS >= 2 else None,
         "avg_per_driver": (week_totals[cur_idx] / drivers_cur) if drivers_cur else None,
+        "avg_drivers_per_week": avg_drivers_per_week,
     }
 
 
@@ -2549,7 +2554,10 @@ def build_page4(mileage, date_str) -> str:
     tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")), _pill("settled legs", "mute"))
              + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
              + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
-             + _tile("Avg miles / driver", num(m.get("avg_per_driver")), _pill("this week", "mute")))
+             + _tile("Avg miles / driver", num(m.get("avg_per_driver")),
+                     _pill("this week", "mute")
+                     + " &middot; "
+                     + _pill(f"avg {num(m.get('avg_drivers_per_week'))} drivers/wk", "mute")))
 
     def mcell(text, al="right", cur=False, bold=False, small=False):
         bg = f"background:{ACCENTBG};" if cur else ""
@@ -2565,18 +2573,21 @@ def build_page4(mileage, date_str) -> str:
 
     head = ("<tr>" + hcell("Driver", "left") + hcell("Trucks", "left")
             + "".join(hcell(labels[k], "right", cur=(k == cur)) for k in range(SETTLEMENT_WEEKS))
-            + hcell("Total", "right") + hcell("Start &rarr; End &middot; this week", "left") + "</tr>")
+            + hcell("Total", "right") + hcell("Avg / wk", "right")
+            + hcell("Start &rarr; End &middot; this week", "left") + "</tr>")
 
     body = ""
     for r in rows:
         wk_cells = "".join(
             mcell(num(r["weeks"][k]) if r["weeks"][k] else "&ndash;", "right", cur=(k == cur))
             for k in range(SETTLEMENT_WEEKS))
+        avg_wk = (r["total"] / SETTLEMENT_WEEKS) if SETTLEMENT_WEEKS else 0
         body += ("<tr>"
                  + mcell(r["driver"], "left")
                  + mcell(r["trucks"] or "&ndash;", "left")
                  + wk_cells
                  + mcell(num(r["total"]), "right", bold=True)
+                 + mcell(num(avg_wk), "right")
                  + mcell(r["start_end"] or "&ndash;", "left", small=True)
                  + "</tr>")
     if rows:
@@ -2584,11 +2595,17 @@ def build_page4(mileage, date_str) -> str:
             bg = f"background:{ACCENTBG};" if cur else ""
             return (f"<td align='{al}' style='padding:9px 8px;font-size:12.5px;font-weight:800;color:{INK};"
                     f"border-top:2px solid {LINE};{bg}'>{text}</td>")
+        # Total row's "Avg / wk" cell averages the column totals — same as
+        # grand_total / SETTLEMENT_WEEKS, but spelled as the row average so
+        # column math is verifiable.
+        grand_avg = (m.get("grand_total") / SETTLEMENT_WEEKS) if SETTLEMENT_WEEKS else 0
         body += ("<tr>" + tcell("Total", "left") + tcell("", "left")
                  + "".join(tcell(num(week_totals[k]), "right", cur=(k == cur)) for k in range(SETTLEMENT_WEEKS))
-                 + tcell(num(m.get("grand_total")), "right") + tcell("", "left") + "</tr>")
+                 + tcell(num(m.get("grand_total")), "right")
+                 + tcell(num(grand_avg), "right")
+                 + tcell("", "left") + "</tr>")
     else:
-        body = (f"<tr><td colspan='8' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>"
+        body = (f"<tr><td colspan='9' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>"
                 f"No delivered legs in the last {SETTLEMENT_WEEKS} settlement weeks.</td></tr>")
 
     table = (f"<tr><td colspan='4' style='padding:0 6px;'><table width='100%' cellpadding='0' cellspacing='0' "
