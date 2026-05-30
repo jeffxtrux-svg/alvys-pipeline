@@ -11,6 +11,10 @@ name: Compile Karpathy-Wiki
 on:
   workflow_dispatch:
 
+  # TEMPORARY: one-shot trigger on push (removed right after).
+  push:
+    branches: [claude/karpathy-oneshot-2]
+
   schedule:
     # 12:15 UTC = 6:15am CST / 7:15am CDT, after the brief lands in /raw.
     - cron: '15 12 * * *'
