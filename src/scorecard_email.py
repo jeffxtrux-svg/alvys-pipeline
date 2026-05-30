@@ -2093,7 +2093,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
-    w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight only
+    w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight 7d
+    # X-Trux/XFreight MTD — same Power BI-aligned basis (revenue / Loaded
+    # miles) that feeds the Revenue/Mile and Dead head % tiles. The bottom-
+    # line blurb uses this so its RPM/DH numbers tie to the Power BI report
+    # row-for-row instead of drifting on a 7d-rolling window readers can't
+    # cross-check.
+    wmtda = ((alvys or {}).get("asset") or {}).get("mtd", wmtd)
 
     fleet = (alvys or {}).get("fleet", {})
     empty_td = "<td width='25%' style='padding:6px;'></td>"
@@ -2378,9 +2384,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     # Every number gets an explicit scope/window so the blurb is comparable to
     # other views in the email and to Power BI (which uses different windows).
     bottom = (f"{_lead_phrase(wmtd, rpm_goal)} "
-              f"For X-Trux/XFreight asset loads (7d rolling): "
-              f"RPM {rpm(w7a.get('rpm'))} ({_goal_txt}), "
-              f"deadhead {pct(w7a.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
+              f"For X-Trux/XFreight asset loads (MTD): "
+              f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
+              f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
               f"(X-Trux + X-Linx snapshot &mdash; see pg 3). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
