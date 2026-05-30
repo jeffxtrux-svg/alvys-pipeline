@@ -2124,9 +2124,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                    + _tile("Margin / load &middot; MTD", money(_xl_mpl), _pill("X-Linx", "mute"))
                    + _tile("Margin % &middot; MTD", pct(_xl_mpct), _pill("X-Linx", "mute")))
     # X-Trux (asset) overview: mileage, loads, revenue/mile, revenue/load.
+    # Revenue/mile MUST come from _alvys_metrics so numerator and denominator
+    # share the same load filter (all non-cancelled X-Trux/XFreight MTD) —
+    # matching Power BI's "Rev per Mile" measure. If we instead compute
+    # _xt_rev / _xt_miles, the numerator is compute_alvys_entities's
+    # settled-only revenue but the denominator is _alvys_metrics's
+    # all-non-cancelled Loaded mileage, which inflates the ratio while
+    # loads are still settling mid-month.
     _xt_rev = _xt.get("revenue")
     _xt_loads, _xt_miles = _xt.get("loads"), fleet.get("miles")
-    _xt_rpm = (_xt_rev / _xt_miles) if (_isnum(_xt_rev) and _isnum(_xt_miles) and _xt_miles) else None
+    _xt_rpm = ((alvys or {}).get("asset") or {}).get("mtd", {}).get("rpm")
     _xt_rpl = (_xt_rev / _xt_loads) if (_isnum(_xt_rev) and _isnum(_xt_loads) and _xt_loads) else None
     xtrux_r1 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _pill("X-Trux + XFreight", "mute"))
                 + _tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))

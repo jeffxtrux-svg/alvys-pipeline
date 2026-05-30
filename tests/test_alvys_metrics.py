@@ -138,6 +138,60 @@ def test_revenue_falls_back_from_customer_revenue_to_revenue():
     assert round(m["margin_pct"], 2) == 0.70
 
 
+# ---------------------------------------------------------------------------
+# Page 1 Revenue / Mile tile MUST source rpm from _alvys_metrics, not
+# recompute it from compute_alvys_entities revenue ÷ fleet miles. The two
+# values are computed on different load filters (settled-only vs all
+# non-cancelled), so dividing them creates an inflated mid-month rate that
+# doesn't match Power BI. Pinning this so a future "simplification" doesn't
+# revert it.
+# ---------------------------------------------------------------------------
+def test_revenue_per_mile_tile_matches_alvys_metrics_rpm():
+    from src.scorecard_email import build_page1, rpm as rpm_fmt
+
+    # Simulate the case that surfaced the bug: settled-only revenue is
+    # smaller than all-revenue, but they share the same loaded-mile pool.
+    # If the tile did _xt_rev / _xt_miles it would be inflated; if it
+    # reads _alvys_metrics's rpm directly it stays at the Power BI value.
+    target_rpm = 2.680
+    alvys = {
+        "7d": {},
+        "mtd": {},
+        "asset": {
+            "7d": {"rpm": 2.5, "deadhead": 0.05},
+            # _alvys_metrics-equivalent values: all-non-cancelled,
+            # Loaded denominator. This is the Power BI basis.
+            "mtd": {"rpm": target_rpm, "deadhead": 0.062, "miles": 165_717,
+                    "empty": 10_253, "revenue": 444_149},
+        },
+        "fleet": {"miles": 165_717, "active_trucks": 25, "miles_per_truck": 6628},
+    }
+    # Entities revenue is SETTLED-ONLY — lower than 444,149 because some
+    # MTD loads still haven't been settled. Dividing this by fleet.miles
+    # would inflate the ratio above target_rpm.
+    ent = {
+        "X-Trux": {"revenue": 400_000, "cost": 280_000, "margin": 120_000,
+                   "margin_pct": 0.30, "loads": 190, "unsettled": 8},
+        "X-Linx": {"revenue": 200_000, "cost": 160_000, "margin": 40_000,
+                   "margin_pct": 0.20, "loads": 80, "unsettled": 2},
+    }
+    html = build_page1(
+        alvys, ent, {}, {"total_ar": 1e6, "total31": 2e5},
+        ([], []), ([], []),
+        {"windows": {}, "coaching": {}, "trend": {}, "detail": {}},
+        "Today",
+    )
+
+    # The tile must render the target_rpm formatted via the brief's rpm()
+    # helper. If the tile reverted to _xt_rev / _xt_miles, it would
+    # produce 400_000 / 165_717 ≈ $2.413, NOT $2.680.
+    assert rpm_fmt(target_rpm) in html, \
+        f"Revenue / mile tile missing the Power BI-aligned value {rpm_fmt(target_rpm)}"
+    inflated_or_wrong = rpm_fmt(400_000 / 165_717)
+    assert inflated_or_wrong not in html, \
+        f"Tile is showing the recomputed _xt_rev / _xt_miles value {inflated_or_wrong} — must use _alvys_metrics rpm instead"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
