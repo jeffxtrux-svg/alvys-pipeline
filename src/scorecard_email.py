@@ -2214,7 +2214,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                   _pill("driver pay + overhead", "mute"))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
-                    _pill(f"last {g.get('pay_window_used') or g.get('pay_window_days')}d", "mute"))
+                    _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days", "mute"))
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
