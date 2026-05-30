@@ -34,6 +34,10 @@ jobs:
 
       - name: Run librarian (Claude Code)
         uses: anthropics/claude-code-action@v1
+        # Some action versions only read the OAuth token from the env, others
+        # only from the `with:` input. Pass it both ways so either works.
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
