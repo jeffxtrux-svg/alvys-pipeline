@@ -2341,14 +2341,22 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
     # Alvys AR aging tiles (from pipeline file — has Customer Payments column).
+    # Five buckets render across two rows so the 91+ split stays prominent
+    # rather than being hidden inside a combined 61+ tile.
     aar = alvys_ar or {}
-    _aar_61plus = (aar.get("d61_90") or 0) + (aar.get("d91plus") or 0)
-    alvys_ar_row = (
-        _tile("Alvys AR &middot; Current", money(aar.get("current")), _pill("not overdue", "mute"))
-        + _tile("Alvys AR &middot; 1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"))
-        + _tile("Alvys AR &middot; 31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"))
-        + _tile("Alvys AR &middot; 61+ days", money(_aar_61plus or None), _pill("collections", "bad"))
-    ) if aar.get("total") else ""
+    alvys_ar_row = ""
+    alvys_ar_row_b = ""
+    if aar.get("total"):
+        alvys_ar_row = (
+            _tile("Alvys AR &middot; Current", money(aar.get("current")), _pill("not overdue", "mute"))
+            + _tile("Alvys AR &middot; 1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"))
+            + _tile("Alvys AR &middot; 31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"))
+            + _tile("Alvys AR &middot; 61&ndash;90 days", money(aar.get("d61_90")), _pill("escalate", "bad"))
+        )
+        alvys_ar_row_b = (
+            _tile("Alvys AR &middot; 91+ days", money(aar.get("d91plus")), _pill("collections", "bad"))
+            + empty_td + empty_td + empty_td
+        )
 
     # AR reconciliation — QuickBooks (system of record) vs Alvys (TMS), X-Trux + X-Linx.
     recon = compute_ar_reconciliation(qb_ar, alvys_ar)
@@ -2444,7 +2452,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
+            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr><tr>{alvys_ar_row_b}</tr>"
                if alvys_ar_row else "")
             + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
                f"{_brief(recon_note, recon['kind'])}"
