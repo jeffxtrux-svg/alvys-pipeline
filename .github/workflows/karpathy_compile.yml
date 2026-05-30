@@ -40,6 +40,12 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The Action's default sandbox is read-mostly — it allows Read,
+          # Glob, Grep, Bash, but BLOCKS Write/Edit/MultiEdit unless we
+          # opt in. Without these the librarian runs successfully but can't
+          # actually save any /wiki pages (you'll see permission_denials_count
+          # > 0 and "No /wiki changes from this run" in the next step).
+          claude_args: '--allowed-tools "Read,Glob,Grep,Bash,Write,Edit,MultiEdit"'
           prompt: |
             You are the Karpathy-Wiki librarian. Your instructions live in
             `Karpathy-Wiki/CLAUDE.md` — read that file first, follow it
