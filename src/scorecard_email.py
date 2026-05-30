@@ -675,7 +675,7 @@ def qb_company_totals(qb_pnl: dict) -> dict:
     }
 
 
-# --- AR aging detail (page 3, 31+ only) --------------------------------
+# --- AR aging detail (page 4, 31+ only) --------------------------------
 # Customer/vendor names excluded from AR aging tables and totals.
 # Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
 _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
@@ -2046,7 +2046,7 @@ def compute_drag_attribution(
         if hos24:
             bits.append(f"{hos24} HOS violation{'s' if hos24 != 1 else ''}")
         return {
-            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review page 2.",
+            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review page 3.",
             "metric": "safety", "kind": "bad",
         }
 
@@ -2107,7 +2107,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     empty_td = "<td width='25%' style='padding:6px;'></td>"
     recv_left = ("<td width='25%' valign='top' style='padding:6px;'>"
                  + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("X-Trux + X-Linx", "mute"))
-                 + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 3", "bad"))
+                 + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 4", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
     # Top-line tiles = whole company (X-Trux + X-Linx), matching the entity table's Total row.
@@ -2402,7 +2402,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 3). "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 4). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         bottom += f" {drag['text']}"
@@ -2500,7 +2500,7 @@ def build_page2(samsara, date_str) -> str:
     coach_rows = rows_coach()
     coach_count = coach_rows.count("<tr>")
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 2, date_str)}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
@@ -2531,7 +2531,7 @@ def build_page3(qb_ar, date_str) -> str:
     total_row = (f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>"
                  f"Total 31+ days overdue</td><td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
                  f"border-top:2px solid {LINE};'>{money(total31)}</td><td style='border-top:2px solid {LINE};'></td></tr>")
-    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 3, date_str)}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 4, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
             f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
@@ -2612,7 +2612,7 @@ def build_page4(mileage, date_str) -> str:
              f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
              f"{head}{body}</table></td></tr>")
 
-    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 4, date_str)}"
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 2, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
@@ -2893,9 +2893,15 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection))}{pb}"
+            # Driver Mileage runs immediately after the Executive Brief (whose
+            # last section is X-Linx Overview) so the per-driver weekly view
+            # follows the entity-level summary. Safety and AR pages then come
+            # behind it. Function names build_page<N> are kept for stability,
+            # but the page-number arguments in _header reflect the actual
+            # render order.
+            f"{wrap(build_page4(mileage, date_str))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(build_page4(mileage, date_str))}{pb}"
             f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
             f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
             f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}{pb}"
