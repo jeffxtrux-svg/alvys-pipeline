@@ -2168,10 +2168,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         sub = (_pill(pill_text, "mute")
                + f" &middot; {_de}/{_dim}d &middot; t{_td} {pct(ent.get('trailing_margin_pct'))}")
         return _tile(f"Est. {_month_lbl} margin", money(ent.get("projected_margin")), sub)
-    t1b = (loads_tile
+    # Order: Combined projection in the leftmost slot (visually anchors the
+    # row's lead number), per-entity projections in the middle, and the plain
+    # Loads count on the right.
+    t1b = (_proj_tile("combined", "X-Trux + X-Linx")
            + _proj_tile("X-Trux", "X-Trux")
            + _proj_tile("X-Linx", "X-Linx")
-           + _proj_tile("combined", "X-Trux + X-Linx"))
+           + loads_tile)
     # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
     # XFreight asset fleet) plus a direct-customers vs broker-freight split.
     _rpm_d_labels, _rpm_d_values = ((rpm_trend or {}).get("direct") or ([], []))
