@@ -100,6 +100,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           BRANCH="${GITHUB_REF_NAME}"
+          # The Claude Code Action sets up its own git auth during the
+          # librarian step and removes it on exit, leaving the remote URL
+          # without credentials. Re-point origin at an authenticated URL
+          # built from the workflow's GITHUB_TOKEN so push (and fetch)
+          # work again. x-access-token is the documented username GitHub
+          # expects for Actions tokens.
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git add Karpathy-Wiki/wiki
           git commit -m "wiki: librarian compile $(date -u +%Y-%m-%dT%H:%M)"
           for delay in 1 2 4 8 16; do
