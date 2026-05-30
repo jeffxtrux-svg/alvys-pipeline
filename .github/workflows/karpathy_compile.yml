@@ -1,0 +1,63 @@
+# Karpathy-Wiki auto-compile — runs Claude against the librarian rules in
+# Karpathy-Wiki/CLAUDE.md, reading /raw and updating /wiki. Scheduled daily
+# at 6:15am CST, 45 min after the executive brief lands in /raw/scorecard/.
+
+name: Compile Karpathy-Wiki
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 12:15 UTC = 6:15am CST / 7:15am CDT, after the brief lands in /raw.
+    - cron: '15 12 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run librarian
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KARPATHY_RAW_DAYS: '30'
+          KARPATHY_MAX_FILES: '60'
+        run: python -m src.karpathy_compiler
+
+      - name: Commit /wiki updates
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! git status --porcelain Karpathy-Wiki/wiki 2>/dev/null | grep -q .; then
+            echo "No /wiki changes from this run."
+            exit 0
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          BRANCH="${GITHUB_REF_NAME}"
+          git add Karpathy-Wiki/wiki
+          git commit -m "wiki: librarian compile $(date -u +%Y-%m-%dT%H:%M)"
+          for delay in 1 2 4 8 16; do
+            git fetch origin "$BRANCH" 2>/dev/null || true
+            git rebase "origin/$BRANCH" 2>/dev/null || { git rebase --abort 2>/dev/null || true; }
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push conflicted, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "Failed to push after retries"; exit 1
