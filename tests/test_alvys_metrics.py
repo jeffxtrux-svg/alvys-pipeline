@@ -192,6 +192,57 @@ def test_revenue_per_mile_tile_matches_alvys_metrics_rpm():
         f"Tile is showing the recomputed _xt_rev / _xt_miles value {inflated_or_wrong} — must use _alvys_metrics rpm instead"
 
 
+# ---------------------------------------------------------------------------
+# Bottom-line blurb MUST source RPM and Dead head % from the X-Trux/XFreight
+# MTD asset slice — the same Power BI-aligned basis the tiles use. Older
+# code used a 7d-rolling window, which gave readers a number they couldn't
+# cross-check against the report. Pinning the MTD basis so it doesn't drift.
+# ---------------------------------------------------------------------------
+def test_bottom_line_uses_mtd_asset_rpm_and_deadhead():
+    from src.scorecard_email import build_page1, rpm as rpm_fmt, pct as pct_fmt
+
+    mtd_rpm, mtd_dh = 2.680, 0.062
+    d7_rpm, d7_dh = 2.500, 0.050    # deliberately different so we can tell
+
+    alvys = {
+        "7d": {},
+        "mtd": {},
+        "asset": {
+            "7d":  {"rpm": d7_rpm,  "deadhead": d7_dh},
+            "mtd": {"rpm": mtd_rpm, "deadhead": mtd_dh, "miles": 165_717,
+                    "empty": 10_253, "revenue": 444_149},
+        },
+        "fleet": {"miles": 165_717, "active_trucks": 25, "miles_per_truck": 6628},
+    }
+    ent = {
+        "X-Trux": {"revenue": 400_000, "cost": 280_000, "margin": 120_000,
+                   "margin_pct": 0.30, "loads": 190, "unsettled": 8},
+        "X-Linx": {"revenue": 200_000, "cost": 160_000, "margin": 40_000,
+                   "margin_pct": 0.20, "loads": 80, "unsettled": 2},
+    }
+    html = build_page1(
+        alvys, ent, {}, {"total_ar": 1e6, "total31": 2e5},
+        ([], []), ([], []),
+        {"windows": {}, "coaching": {}, "trend": {}, "detail": {}},
+        "Today",
+    )
+
+    # The MTD values must appear in the bottom-line blurb.
+    assert f"RPM {rpm_fmt(mtd_rpm)}" in html, \
+        f"Bottom-line RPM should be {rpm_fmt(mtd_rpm)} (MTD asset) not the 7d value"
+    assert f"deadhead {pct_fmt(mtd_dh)}" in html, \
+        f"Bottom-line deadhead should be {pct_fmt(mtd_dh)} (MTD asset) not the 7d value"
+
+    # And the 7d values must NOT appear in the bottom-line context — if they
+    # do, the bottom-line drifted back to the w7a source.
+    assert f"RPM {rpm_fmt(d7_rpm)}" not in html, \
+        "Bottom-line is showing the 7d RPM — must use MTD asset slice instead"
+
+    # The window label should match the data window.
+    assert "MTD" in html and "7d rolling" not in html, \
+        "Bottom-line label must say MTD now that the numbers are MTD-basis"
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
