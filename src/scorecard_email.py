@@ -1728,7 +1728,7 @@ def _pill(t, k):
 
 
 def _tile(label, value, sub):
-    return (f"<td width='25%' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
+    return (f"<td class='tile' width='25%' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
             f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;'>"
             f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
             f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
@@ -1752,7 +1752,7 @@ def _mwtile(label, v24, v7, vmtd, hk="mute"):
         return (f"<td align='center' style='padding:2px 2px;'><div style='font-size:9px;text-transform:uppercase;"
                 f"letter-spacing:.4px;color:{MUTE};'>{tag}</div><div style='font-size:18px;font-weight:800;"
                 f"color:{col};line-height:1.1;'>{val}</div></td>")
-    return (f"<td width='25%' style='padding:6px;' valign='top'><div style='background:#fff;border:1px solid {LINE};"
+    return (f"<td class='tile' width='25%' style='padding:6px;' valign='top'><div style='background:#fff;border:1px solid {LINE};"
             f"border-radius:10px;padding:12px 10px 10px;'><div style='font-size:11px;letter-spacing:.5px;"
             f"text-transform:uppercase;color:{hf};font-weight:700;background:{hb};display:inline-block;"
             f"padding:2px 8px;border-radius:8px;margin-bottom:8px;'>{label}</div>"
@@ -1761,7 +1761,7 @@ def _mwtile(label, v24, v7, vmtd, hk="mute"):
 
 def _bar_chart(title, months, values, sub="", fmt=str):
     if not months:
-        return (f"<td valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;"
+        return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;"
                 f"padding:14px;color:{MUTE};font-size:12px;'>{title}: data pending</div></td>")
     maxv = max(values) if max(values) else 1
     H = 84
@@ -1776,7 +1776,7 @@ def _bar_chart(title, months, values, sub="", fmt=str):
         lcol = INK if last else MUTE
         lbl += (f"<td align='center' style='font-size:10px;color:{lcol};font-weight:{'700' if last else '400'};"
                 f"padding-top:4px;'>{m}</td>")
-    return (f"<td valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;'>"
+    return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;'><tr>{bar}</tr></table>"
@@ -2104,8 +2104,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     wmtda = ((alvys or {}).get("asset") or {}).get("mtd", wmtd)
 
     fleet = (alvys or {}).get("fleet", {})
-    empty_td = "<td width='25%' style='padding:6px;'></td>"
-    recv_left = ("<td width='25%' valign='top' style='padding:6px;'>"
+    empty_td = "<td class='tile-empty' width='25%' style='padding:6px;'></td>"
+    recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("X-Trux + X-Linx", "mute"))
                  + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 4", "bad"))
                  + "</td>")
@@ -2639,7 +2639,7 @@ def build_page5(uninv, date_str) -> str:
     tiles = (_tile("Loads delivered, not invoiced", num(u.get("count")), _pill("X-Trux + X-Linx", "mute"))
              + _tile("Un-invoiced revenue", money(u.get("total_revenue")), _pill("to bill", "warn"))
              + _tile("Oldest delivered", (num(od) + " days" if _isnum(od) else "n/a"), _pill("since delivery", "bad"))
-             + "<td width='25%' style='padding:6px;'></td>")
+             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
     body = ""
     for r in rows_data:
         dd = r["days"] or 0
@@ -2671,7 +2671,7 @@ def build_page6(alvys_ar, date_str) -> str:
     tiles = (_tile("90+ days AR", money(a.get("d91plus")), _pill("X-Trux + X-Linx", "bad"))
              + _tile("Customers 90+", num(len(custs)), _pill("over 90 days", "bad"))
              + _tile("Loads 90+", num(n_loads), _pill("open invoices", "mute"))
-             + "<td width='25%' style='padding:6px;'></td>")
+             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
     body = ""
     for c in custs:
         body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
@@ -2702,7 +2702,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
              + _tile("Customers with a gap", num(n_gap), _pill("QB &ne; Alvys", "warn"))
              + _tile("Largest gap", _signed(shown[0]["delta"]) if shown else "n/a",
                      _pill((shown[0]["customer"][:20] if shown else ""), "mute"))
-             + "<td width='25%' style='padding:6px;'></td>")
+             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
 
     body = ""
     for r in shown:
@@ -2768,7 +2768,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
     tiles = (_tile("Open in Alvys, not QB", money(b["alvys_only_total"]), _pill(f"{len(ao)} bills", "bad"))
              + _tile("Open in QB, not Alvys", money(b["qb_only_total"]), _pill(f"{len(qo)} bills", "warn"))
              + _tile("Match rate", pct(match_pct), _pill(f"on {key_label} &middot; {b['matched']}/{b['alvys_n']}", "mute"))
-             + "<td width='25%' style='padding:6px;'></td>")
+             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
 
     def _tbl(title, rows, cols, mk):
         if not rows:
@@ -2897,8 +2897,30 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
     wrap = lambda inner: f"<div style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
+    # Mobile-responsive overrides. Email clients that support media queries
+    # (Apple Mail, iOS Mail, Gmail mobile app, modern webmail) will stack the
+    # 4-column tile rows into a single column at narrow widths. Clients that
+    # don't support media queries (Outlook desktop, older Gmail web) fall back
+    # to the desktop 4-column layout — they're on wide screens anyway.
+    mobile_css = (
+        "<style>"
+        # Tile rows: each tile gets its own line on phones, hidden when empty.
+        "@media only screen and (max-width:600px){"
+        "td.tile{display:block !important;width:100% !important;"
+        "padding:6px 12px !important;box-sizing:border-box;}"
+        "td.tile-empty{display:none !important;}"
+        # Wide tables (driver mileage, AR reconciliation, bill matching) get
+        # horizontal scroll instead of squishing.
+        ".scroll-wide{overflow-x:auto !important;-webkit-overflow-scrolling:touch;}"
+        # Trim the section header / page header padding so more vertical space
+        # is usable on small screens.
+        "td[style*='padding:18px 24px']{padding:14px 16px !important;}"
+        "}"
+        "</style>"
+    )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
-            f"<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
