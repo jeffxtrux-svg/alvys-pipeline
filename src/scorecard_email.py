@@ -2209,9 +2209,15 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             gap_val = rpm(abs(gap))
         else:
             gap_kind, gap_sub, gap_val = "mute", _pill("need QB P&amp;L", "mute"), "n/a"
+        # Cost-per-mile sub-pill spells out the time windows behind each
+        # component so readers can audit the basis at a glance:
+        #   driver pay = trailing N-day window (10d default, widens to
+        #               30/60/90 on light weeks via RPM_GOAL_FALLBACK_WINDOWS)
+        #   overhead   = fiscal-YTD (QB P&L is "This Fiscal Year")
+        _pay_win = g.get("pay_window_used") or g.get("pay_window_days") or "?"
         goal_tiles = (
             _tile("Cost / mile &middot; X-Trux", rpm(g.get("cost_per_mile")),
-                  _pill("driver pay + overhead", "mute"))
+                  _pill(f"{_pay_win}d pay + YTD overhead", "mute"))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
                     _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days", "mute"))
