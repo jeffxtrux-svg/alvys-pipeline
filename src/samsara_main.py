@@ -157,14 +157,20 @@ def _severity_for(event_type: str | None) -> str | None:
     return "Low"
 
 
-def build_engine_idle(raw_engine_history: list[dict]) -> pd.DataFrame:
+def build_engine_idle(raw_engine_history: list[dict],
+                      driver_by_vehicle_id: dict[str, str] | None = None) -> pd.DataFrame:
     """Aggregate engineStates transitions into idle / running / off hours per vehicle.
 
     Samsara emits a stream of `{time, value}` transitions per vehicle. Each
     state is in effect from its timestamp until the next transition. Sum
     durations by state and convert to hours.
+
+    Optional `driver_by_vehicle_id` map (built from /fleet/vehicles
+    staticAssignedDriver) is joined onto each row so the Top Idlers report
+    can call out who's been parked.
     """
     rows = []
+    dmap = driver_by_vehicle_id or {}
     for rec in raw_engine_history or []:
         states = rec.get("engineStates") or []
         if not isinstance(states, list) or len(states) < 2:
@@ -188,9 +194,11 @@ def build_engine_idle(raw_engine_history: list[dict]) -> pd.DataFrame:
             # accounts. Map anything else to On so total time accounts.
             key = val if val in totals else ("On" if val else "Off")
             totals[key] = totals.get(key, 0.0) + secs
+        vid = rec.get("id")
         rows.append({
-            "Vehicle ID": rec.get("id"),
+            "Vehicle ID": vid,
             "Vehicle Name": rec.get("name"),
+            "Driver Name": dmap.get(str(vid)) if vid is not None else None,
             "Idle Hours": round(totals.get("Idle", 0) / 3600, 2),
             "On Hours": round(totals.get("On", 0) / 3600, 2),
             "Running Hours": round(totals.get("Running", 0) / 3600, 2),
@@ -394,9 +402,20 @@ def main() -> int:
     log.info("  DVIR_Defects: %d rows (exploded from %d DVIRs)",
              len(df_dvir_defects), len(raw_dvirs))
 
-    df_idle = build_engine_idle(raw_engine_history)
-    log.info("  EngineIdle: %d rows (aggregated from %d vehicles' state history)",
-             len(df_idle), len(raw_engine_history))
+    # Build a vehicle_id -> assigned-driver-name map from /fleet/vehicles so
+    # the EngineIdle sheet can call out who's been parked. Samsara puts the
+    # current assignment under staticAssignedDriver{id,name}.
+    driver_by_vehicle: dict[str, str] = {}
+    for v in raw_vehicles or []:
+        vid = v.get("id")
+        d = v.get("staticAssignedDriver") or {}
+        nm = d.get("name") if isinstance(d, dict) else None
+        if vid is not None and nm:
+            driver_by_vehicle[str(vid)] = nm
+    df_idle = build_engine_idle(raw_engine_history, driver_by_vehicle)
+    log.info("  EngineIdle: %d rows (aggregated from %d vehicles' state history, "
+             "%d with assigned driver)",
+             len(df_idle), len(raw_engine_history), len(driver_by_vehicle))
 
     df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
     # Stamp the driver name onto each row by joining with the drivers sheet.

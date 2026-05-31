@@ -1479,6 +1479,9 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         top = idle.sort_values("Idle Hours", ascending=False).head(5)
         out["fleet"]["idle"] = [
             {"unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
+             "driver": (str(r.get("Driver Name")).strip()
+                        if r.get("Driver Name") and str(r.get("Driver Name")).lower() != "nan"
+                        else ""),
              "idle_hours": float(r.get("Idle Hours") or 0),
              "engine_hours": float(r.get("Engine Hours") or 0),
              "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
@@ -2673,10 +2676,12 @@ def build_page_fleet(samsara, date_str) -> str:
 
     # Top 5 idle hours.
     idle_tbl = _rank_table(
-        idle_rows, ["Truck", "Idle hrs", "Engine hrs", "Idle %"],
-        lambda r: _tr([r["unit"], f"{r['idle_hours']:.1f}", f"{r['engine_hours']:.1f}",
+        idle_rows, ["Truck", "Driver", "Idle hrs", "Engine hrs", "Idle %"],
+        lambda r: _tr([r["unit"], r.get("driver") or "&mdash;",
+                       f"{r['idle_hours']:.1f}", f"{r['engine_hours']:.1f}",
                        (f"{r['idle_pct']*100:.0f}%" if r.get("idle_pct") else "n/a")],
-                      ["left", "right", "right", "right"], [None, "bad", None, "warn"]))
+                      ["left", "left", "right", "right", "right"],
+                      [None, None, "bad", None, "warn"]))
 
     # Top 5 speeders.
     spd_tbl = _rank_table(

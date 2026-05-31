@@ -6,6 +6,13 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
+  # One-shot verification trigger — DELETE this push block after the run.
+  push:
+    branches:
+      - claude/claude-md-docs-Es64x
+    paths:
+      - .github/workflows/samsara_refresh.yml
+
   # Same UTC schedule as Alvys: 5am, 12pm, 6pm Central
   schedule:
     - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
