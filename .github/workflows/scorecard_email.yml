@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: fall back to most-recent Trips driver for unassigned trucks)
+  # (touch bump: re-fire after FuelEnergy MPG source added to Samsara)
   push:
     branches:
       - claude/claude-md-docs-Es64x
