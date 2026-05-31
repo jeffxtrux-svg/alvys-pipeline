@@ -1477,6 +1477,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     idle = sheets.get("EngineIdle")
     if idle is not None and not idle.empty and "Idle Hours" in idle.columns:
         top = idle.sort_values("Idle Hours", ascending=False).head(5)
+        wk_keys = ["W1", "W2", "W3", "W4", "Cur"]
         out["fleet"]["idle"] = [
             {"unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
              "driver": (str(r.get("Driver Name")).strip()
@@ -1485,10 +1486,19 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
              "idle_hours": float(r.get("Idle Hours") or 0),
              "engine_hours": float(r.get("Engine Hours") or 0),
              "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
-                          if r.get("Engine Hours") else 0)}
+                          if r.get("Engine Hours") else 0),
+             "weeks_idle": [float(r.get(f"Idle_{k}") or 0) for k in wk_keys],
+             "weeks_engine": [float(r.get(f"Engine_{k}") or 0) for k in wk_keys]}
             for _, r in top.iterrows()
         ]
         out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
+        # Settlement-week date-range labels (reuse the same helpers Driver
+        # Mileage uses so both pages match).
+        try:
+            starts = _settlement_starts(pd.Timestamp.now(tz=CHI_TZ), n=SETTLEMENT_WEEKS)
+            out["fleet"]["idle_labels"] = [_wk_label(s) for s in starts]
+        except Exception:
+            out["fleet"]["idle_labels"] = ["W1", "W2", "W3", "W4", "Current"]
 
     # Driver safety scores — top 5 and bottom 5 from DriverSafetyScores sheet.
     scores = sheets.get("DriverSafetyScores")

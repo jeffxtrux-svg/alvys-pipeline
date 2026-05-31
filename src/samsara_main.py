@@ -158,29 +158,43 @@ def _severity_for(event_type: str | None) -> str | None:
 
 
 def build_engine_idle(raw_engine_history: list[dict],
-                      driver_by_vehicle_id: dict[str, str] | None = None) -> pd.DataFrame:
-    """Aggregate engineStates transitions into idle / running / off hours per vehicle.
+                      driver_by_vehicle_id: dict[str, str] | None = None,
+                      now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Aggregate engineStates transitions into idle / running / off hours per vehicle,
+    bucketed by **settlement week** (Wed 3 PM Chicago → next Wed 2:59 PM).
 
-    Samsara emits a stream of `{time, value}` transitions per vehicle. Each
-    state is in effect from its timestamp until the next transition. Sum
-    durations by state and convert to hours.
+    Produces a per-vehicle row with:
+      - per-week idle + engine hours (5 weeks: W1..W4 complete + Cur partial)
+      - aggregate Idle / On / Off / Running / Engine totals across the window
+      - Driver Name (from /fleet/vehicles staticAssignedDriver, if provided)
 
-    Optional `driver_by_vehicle_id` map (built from /fleet/vehicles
-    staticAssignedDriver) is joined onto each row so the Top Idlers report
-    can call out who's been parked.
+    Each transition is credited to whichever settlement week its start time
+    falls in. Transitions older than the 5-week window are dropped.
     """
+    chi = "America/Chicago"
+    now = now or pd.Timestamp.now(tz=chi)
+    if now.tzinfo is None:
+        now = now.tz_localize(chi)
+    # Wed=2 (Mon=0). Anchor each week at Wed 15:00 Chicago.
+    days_since_wed = (now.weekday() - 2) % 7
+    cur_start = (now - pd.Timedelta(days=days_since_wed)).normalize() + pd.Timedelta(hours=15)
+    if cur_start > now:
+        cur_start -= pd.Timedelta(weeks=1)
+    starts = [cur_start - pd.Timedelta(weeks=k) for k in range(5)][::-1]  # oldest first
+    window_start = starts[0]
+    week_labels = ["W1", "W2", "W3", "W4", "Cur"]
+
     rows = []
     dmap = driver_by_vehicle_id or {}
     for rec in raw_engine_history or []:
         states = rec.get("engineStates") or []
         if not isinstance(states, list) or len(states) < 2:
             continue
-        # Sort by time (string ISO sorts lexicographically when same TZ)
         try:
             states = sorted(states, key=lambda s: s.get("time", ""))
         except Exception:
             pass
-        totals = {"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0}
+        per_week = [{"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0} for _ in range(5)]
         for i in range(len(states) - 1):
             t0 = pd.to_datetime(states[i].get("time"), errors="coerce", utc=True)
             t1 = pd.to_datetime(states[i + 1].get("time"), errors="coerce", utc=True)
@@ -189,24 +203,42 @@ def build_engine_idle(raw_engine_history: list[dict],
             secs = (t1 - t0).total_seconds()
             if secs <= 0:
                 continue
+            t0_chi = t0.tz_convert(chi)
+            if t0_chi < window_start:
+                continue
+            # Bucket: which of the 5 settlement weeks contains t0?
+            idx = None
+            for k in range(5):
+                end = starts[k + 1] if k < 4 else (starts[4] + pd.Timedelta(weeks=1))
+                if starts[k] <= t0_chi < end:
+                    idx = k
+                    break
+            if idx is None:
+                continue
             val = states[i].get("value") or ""
-            # Samsara uses "Idle" / "On" / "Off" — "Running" appears in some
-            # accounts. Map anything else to On so total time accounts.
-            key = val if val in totals else ("On" if val else "Off")
-            totals[key] = totals.get(key, 0.0) + secs
+            key = val if val in per_week[idx] else ("On" if val else "Off")
+            per_week[idx][key] += secs
+
         vid = rec.get("id")
-        rows.append({
+        row = {
             "Vehicle ID": vid,
             "Vehicle Name": rec.get("name"),
             "Driver Name": dmap.get(str(vid)) if vid is not None else None,
-            "Idle Hours": round(totals.get("Idle", 0) / 3600, 2),
-            "On Hours": round(totals.get("On", 0) / 3600, 2),
-            "Running Hours": round(totals.get("Running", 0) / 3600, 2),
-            "Off Hours": round(totals.get("Off", 0) / 3600, 2),
-            "Engine Hours": round(
-                (totals.get("Idle", 0) + totals.get("On", 0) + totals.get("Running", 0)) / 3600, 2
-            ),
-        })
+        }
+        for k, lab in enumerate(week_labels):
+            pw = per_week[k]
+            row[f"Idle_{lab}"] = round(pw["Idle"] / 3600, 2)
+            row[f"Engine_{lab}"] = round((pw["Idle"] + pw["On"] + pw["Running"]) / 3600, 2)
+        tot_idle = sum(per_week[k]["Idle"] for k in range(5))
+        tot_on = sum(per_week[k]["On"] for k in range(5))
+        tot_off = sum(per_week[k]["Off"] for k in range(5))
+        tot_run = sum(per_week[k]["Running"] for k in range(5))
+        row["Idle Hours"] = round(tot_idle / 3600, 2)
+        row["On Hours"] = round(tot_on / 3600, 2)
+        row["Off Hours"] = round(tot_off / 3600, 2)
+        row["Running Hours"] = round(tot_run / 3600, 2)
+        row["Engine Hours"] = round((tot_idle + tot_on + tot_run) / 3600, 2)
+        rows.append(row)
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values("Idle Hours", ascending=False).reset_index(drop=True)
@@ -347,10 +379,10 @@ def main() -> int:
     raw_dvirs = client.fetch_dvirs(start_safety, now)
 
     log.info("=" * 60)
-    log.info("Step 10/12: Engine state history (idle time, 30 days)")
+    log.info("Step 10/12: Engine state history (idle time, 36 days = 5 settlement weeks)")
     log.info("=" * 60)
     raw_engine_history = client.fetch_engine_state_history(
-        now - datetime.timedelta(days=30), now
+        now - datetime.timedelta(days=36), now
     )
 
     log.info("=" * 60)
