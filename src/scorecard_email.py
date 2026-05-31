@@ -2715,14 +2715,61 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["unit"], f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    # Top 5 idle hours.
-    idle_tbl = _rank_table(
-        idle_rows, ["Truck", "Driver", "Idle hrs", "Engine hrs", "Idle %"],
-        lambda r: _tr([r["unit"], r.get("driver") or "&mdash;",
-                       f"{r['idle_hours']:.1f}", f"{r['engine_hours']:.1f}",
-                       (f"{r['idle_pct']*100:.0f}%" if r.get("idle_pct") else "n/a")],
-                      ["left", "left", "right", "right", "right"],
-                      [None, None, "bad", None, "warn"]))
+    # Top 5 idle hours — laid out like the Driver Mileage page: 5 settlement
+    # weeks (Wed 3pm CT → Wed 2:59pm CT), current tinted, Avg / wk averaged
+    # over the 4 complete weeks (excludes the partial current week).
+    idle_labels = fleet.get("idle_labels") or ["W1", "W2", "W3", "W4", "Current"]
+    n_weeks = len(idle_labels)
+    cur_idx = n_weeks - 1
+    complete_weeks = n_weeks - 1
+
+    def _icell(text, al="right", cur=False, bold=False):
+        bg = f"background:{ACCENTBG};" if cur else ""
+        return (f"<td align='{al}' style='padding:8px 8px;font-size:12.5px;color:{INK};"
+                f"font-weight:{'700' if bold else '400'};border-bottom:1px solid {LINE};{bg}'>{text}</td>")
+
+    def _ihcell(text, al="right", cur=False):
+        bg = ACCENTBG if cur else TILEBG
+        fg = ACCENT if cur else MUTE
+        return (f"<td align='{al}' style='padding:8px 8px;font-size:10px;text-transform:uppercase;"
+                f"letter-spacing:.4px;color:{fg};font-weight:700;background:{bg};border-bottom:1px solid {LINE};'>{text}</td>")
+
+    if idle_rows:
+        idle_head = ("<tr>"
+                     + _ihcell("Truck", "left")
+                     + _ihcell("Driver", "left")
+                     + "".join(_ihcell(idle_labels[k], "right", cur=(k == cur_idx)) for k in range(n_weeks))
+                     + _ihcell("Total", "right")
+                     + _ihcell("Avg / wk", "right")
+                     + _ihcell("Idle %", "right")
+                     + "</tr>")
+        idle_body = ""
+        for r in idle_rows:
+            weeks = r.get("weeks_idle") or [0] * n_weeks
+            avg_wk = (sum(weeks[:complete_weeks]) / complete_weeks) if complete_weeks else 0
+            wk_cells = "".join(
+                _icell(f"{weeks[k]:.1f}" if weeks[k] else "&ndash;", "right", cur=(k == cur_idx))
+                for k in range(n_weeks))
+            pct_txt = f"{r['idle_pct']*100:.0f}%" if r.get("idle_pct") else "n/a"
+            pct_style = f"color:{WARN};font-weight:700;"
+            pct_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{pct_style}"
+                        f"border-bottom:1px solid {LINE};'>{pct_txt}</td>")
+            total_style = f"color:{BAD};font-weight:700;"
+            total_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{total_style}"
+                          f"border-bottom:1px solid {LINE};'>{r['idle_hours']:.1f}</td>")
+            idle_body += ("<tr>"
+                          + _icell(r["unit"], "left")
+                          + _icell(r.get("driver") or "&mdash;", "left")
+                          + wk_cells
+                          + total_cell
+                          + _icell(f"{avg_wk:.1f}", "right")
+                          + pct_cell
+                          + "</tr>")
+        idle_tbl = (f"<tr><td colspan='4' style='padding:0 6px;'><table width='100%' cellpadding='0' cellspacing='0' "
+                    f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
+                    f"{idle_head}{idle_body}</table></td></tr>")
+    else:
+        idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
 
     # Top 5 speeders.
     spd_tbl = _rank_table(
@@ -2747,7 +2794,7 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{mpg_top_tbl}"
             f"{_section('Worst MPG &middot; bottom 5 trucks (latest IFTA month)')}"
             f"{mpg_bot_tbl}"
-            f"{_section('Top idlers &middot; last 30 days')}"
+            f"{_section('Top idlers &middot; by settlement week &middot; current week tinted')}"
             f"{idle_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"

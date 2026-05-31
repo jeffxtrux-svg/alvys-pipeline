@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
-  # (touch bump #2: IFTA vehicleReports key + safety score direct parse)
+  # (touch bump #3: rebuild EngineIdle sheet w/ per-settlement-week columns)
   push:
     branches:
       - claude/claude-md-docs-Es64x
