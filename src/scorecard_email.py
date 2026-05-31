@@ -1770,6 +1770,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 "weeks_engine": weeks_engine,
                 "avg_wk": avg_wk,
                 "mpg": mpg_by_unit.get(unit),
+                "idle_gallons": float(r.get("Idle Gallons") or 0)
+                                if _isnum(r.get("Idle Gallons")) else None,
             })
         rows.sort(key=lambda x: x["avg_wk"], reverse=True)
         rows = [r for r in rows if not _is_excluded_truck(r["unit"])]
@@ -3053,6 +3055,7 @@ def build_page_fleet(samsara, date_str) -> str:
                      + _ihcell("Total", "right")
                      + _ihcell("Avg / wk", "right")
                      + _ihcell("Idle %", "right")
+                     + _ihcell("Idle Gal", "right")
                      + _ihcell("MPG", "right")
                      + "</tr>")
         idle_body = ""
@@ -3071,6 +3074,11 @@ def build_page_fleet(samsara, date_str) -> str:
                           f"border-bottom:1px solid {LINE};'>{r['idle_hours']:.1f}</td>")
             mpg_val = r.get("mpg")
             mpg_txt = f"{mpg_val:.2f}" if _isnum(mpg_val) else "&ndash;"
+            ig_val = r.get("idle_gallons")
+            ig_txt = f"{ig_val:.0f}" if _isnum(ig_val) and ig_val > 0 else "&ndash;"
+            ig_style = f"color:{BAD};font-weight:700;" if _isnum(ig_val) and ig_val > 0 else ""
+            ig_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{ig_style}"
+                       f"border-bottom:1px solid {LINE};'>{ig_txt}</td>")
             idle_body += ("<tr>"
                           + _icell(r["unit"], "left")
                           + _icell(r.get("driver") or "&mdash;", "left")
@@ -3078,6 +3086,7 @@ def build_page_fleet(samsara, date_str) -> str:
                           + total_cell
                           + _icell(f"{avg_wk:.1f}", "right")
                           + pct_cell
+                          + ig_cell
                           + _icell(mpg_txt, "right")
                           + "</tr>")
         idle_tbl = (f"<tr><td colspan='4' style='padding:0 6px;'><table width='100%' cellpadding='0' cellspacing='0' "

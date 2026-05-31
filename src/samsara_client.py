@@ -375,14 +375,18 @@ class SamsaraClient:
         Samsara caps the request window — page through in <=7-day chunks to stay
         well under the limit. The endpoint accepts ms-since-epoch timestamps.
         """
-        log.info("Fetching engine state history (%s -> %s)…", start.date(), end.date())
+        log.info("Fetching engine state history + fuel-consumed (%s -> %s)…",
+                 start.date(), end.date())
         all_items: dict[str, dict] = {}
         chunk = datetime.timedelta(days=7)
         cur = start
         while cur < end:
             chunk_end = min(cur + chunk, end)
+            # Pull engineStates AND the OBD cumulative-fuel counter together
+            # so we can compute per-state fuel consumption (idle gallons) in
+            # one round-trip per chunk.
             params = {
-                "types": "engineStates",
+                "types": "engineStates,obdFuelGallonsConsumedSinceVehicleStarted",
                 "startTime": cur.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "endTime": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
@@ -393,21 +397,28 @@ class SamsaraClient:
                             cur.date(), chunk_end.date(), exc)
                 cur = chunk_end
                 continue
-            # Merge transitions per vehicle id across chunks.
+            # Merge transitions + fuel samples per vehicle id across chunks.
             for rec in items or []:
                 vid = rec.get("id")
                 if not vid:
                     continue
                 slot = all_items.setdefault(vid, {"id": vid, "name": rec.get("name"),
-                                                  "engineStates": []})
+                                                  "engineStates": [],
+                                                  "obdFuelGallonsConsumedSinceVehicleStarted": []})
                 states = (rec.get("engineStates") or [])
                 if isinstance(states, list):
                     slot["engineStates"].extend(states)
+                fuel = (rec.get("obdFuelGallonsConsumedSinceVehicleStarted") or [])
+                if isinstance(fuel, list):
+                    slot["obdFuelGallonsConsumedSinceVehicleStarted"].extend(fuel)
                 # Preserve other top-level keys (vehicle name, etc.) if newer chunk has them
                 if not slot.get("name"):
                     slot["name"] = rec.get("name")
             cur = chunk_end
-        log.info("Total vehicles with engine state history: %d", len(all_items))
+        n_with_fuel = sum(1 for r in all_items.values()
+                          if r.get("obdFuelGallonsConsumedSinceVehicleStarted"))
+        log.info("Total vehicles with engine state history: %d (%d with OBD fuel samples)",
+                 len(all_items), n_with_fuel)
         return list(all_items.values())
 
     def fetch_driver_safety_scores(self, driver_ids: list[str],

@@ -194,7 +194,45 @@ def build_engine_idle(raw_engine_history: list[dict],
             states = sorted(states, key=lambda s: s.get("time", ""))
         except Exception:
             pass
-        per_week = [{"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0} for _ in range(5)]
+        # Parse the parallel fuel-consumed counter (cumulative gallons since
+        # current ignition cycle; resets each time vehicle starts). Build a
+        # sorted list of (timestamp_utc, gallons) for interpolation lookup.
+        fuel_raw = rec.get("obdFuelGallonsConsumedSinceVehicleStarted") or []
+        fuel_samples: list[tuple[pd.Timestamp, float]] = []
+        for fs in fuel_raw:
+            ft = pd.to_datetime(fs.get("time"), errors="coerce", utc=True)
+            fv = fs.get("value")
+            if pd.isna(ft) or fv is None:
+                continue
+            try:
+                fuel_samples.append((ft, float(fv)))
+            except (TypeError, ValueError):
+                continue
+        fuel_samples.sort(key=lambda x: x[0])
+
+        def fuel_at(t: pd.Timestamp) -> float | None:
+            """Linear-interpolate the cumulative-fuel reading at time t.
+            Returns None if t is outside the sample range."""
+            if not fuel_samples:
+                return None
+            if t <= fuel_samples[0][0]:
+                return fuel_samples[0][1]
+            if t >= fuel_samples[-1][0]:
+                return fuel_samples[-1][1]
+            # Binary search would be faster; linear is fine at this scale.
+            for i in range(len(fuel_samples) - 1):
+                t0, v0 = fuel_samples[i]
+                t1, v1 = fuel_samples[i + 1]
+                if t0 <= t <= t1:
+                    span = (t1 - t0).total_seconds()
+                    if span <= 0:
+                        return v1
+                    frac = (t - t0).total_seconds() / span
+                    return v0 + frac * (v1 - v0)
+            return None
+
+        per_week = [{"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0,
+                     "IdleGal": 0.0} for _ in range(5)]
         for i in range(len(states) - 1):
             t0 = pd.to_datetime(states[i].get("time"), errors="coerce", utc=True)
             t1 = pd.to_datetime(states[i + 1].get("time"), errors="coerce", utc=True)
@@ -218,6 +256,14 @@ def build_engine_idle(raw_engine_history: list[dict],
             val = states[i].get("value") or ""
             key = val if val in per_week[idx] else ("On" if val else "Off")
             per_week[idx][key] += secs
+            # Idle-only fuel: integrate the cumulative-gallons curve across
+            # the idle interval. Skip if a counter reset (ignition cycle)
+            # happened mid-interval — those become negative deltas.
+            if key == "Idle":
+                f0 = fuel_at(t0)
+                f1 = fuel_at(t1)
+                if f0 is not None and f1 is not None and f1 >= f0:
+                    per_week[idx]["IdleGal"] += (f1 - f0)
 
         vid = rec.get("id")
         row = {
@@ -229,15 +275,18 @@ def build_engine_idle(raw_engine_history: list[dict],
             pw = per_week[k]
             row[f"Idle_{lab}"] = round(pw["Idle"] / 3600, 2)
             row[f"Engine_{lab}"] = round((pw["Idle"] + pw["On"] + pw["Running"]) / 3600, 2)
+            row[f"IdleGal_{lab}"] = round(pw["IdleGal"], 1)
         tot_idle = sum(per_week[k]["Idle"] for k in range(5))
         tot_on = sum(per_week[k]["On"] for k in range(5))
         tot_off = sum(per_week[k]["Off"] for k in range(5))
         tot_run = sum(per_week[k]["Running"] for k in range(5))
+        tot_idle_gal = sum(per_week[k]["IdleGal"] for k in range(5))
         row["Idle Hours"] = round(tot_idle / 3600, 2)
         row["On Hours"] = round(tot_on / 3600, 2)
         row["Off Hours"] = round(tot_off / 3600, 2)
         row["Running Hours"] = round(tot_run / 3600, 2)
         row["Engine Hours"] = round((tot_idle + tot_on + tot_run) / 3600, 2)
+        row["Idle Gallons"] = round(tot_idle_gal, 1)
         rows.append(row)
     df = pd.DataFrame(rows)
     if not df.empty:

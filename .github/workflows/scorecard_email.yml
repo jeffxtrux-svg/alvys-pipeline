@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: normalize float-coerced vehicleIds/driverIds + ship lint)
+  # (touch bump: render Idle Gal column from OBD fuel-counter integration)
   push:
     branches:
       - claude/claude-md-docs-Es64x

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
-  # (touch bump #5: MPG now computed from Trips data in scorecard, no Samsara endpoint needed)
+  # (touch bump #6: pull OBD fuel counter alongside engine state for idle gallons)
   push:
     branches:
       - claude/claude-md-docs-Es64x
