@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
+  # (touch bump to re-fire with safety-score path fix + IFTA dict unwrap)
   push:
     branches:
       - claude/claude-md-docs-Es64x

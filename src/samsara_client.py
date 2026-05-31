@@ -279,7 +279,42 @@ class SamsaraClient:
         "value of month must be one of \"January\", ..."."""
         month_name = datetime.date(year, month, 1).strftime("%B")
         log.info("Fetching IFTA %d-%s…", year, month_name)
-        items = self._safe_get("/fleet/reports/ifta/vehicle", {"year": year, "month": month_name})
+        # Bypass _get_pages so we can inspect the raw response shape — IFTA
+        # responses don't follow the standard {"data": [...]} list pattern;
+        # some accounts return a wrapper dict around the per-vehicle list.
+        try:
+            resp = self._session.get(
+                f"{BASE_URL}/fleet/reports/ifta/vehicle",
+                headers=self._headers(),
+                params={"year": year, "month": month_name},
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                log.error("GET /fleet/reports/ifta/vehicle failed [%d]: %s",
+                          resp.status_code, resp.text[:500])
+                log.warning("IFTA: no data for %d-%s", year, month_name)
+                return []
+            payload = resp.json()
+        except Exception as e:
+            log.warning("IFTA fetch failed: %s", e)
+            return []
+        data = payload.get("data")
+        items: list[dict] = []
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            # Try common wrapper keys before giving up.
+            for k in ("vehicles", "records", "items", "ifta", "ifta_vehicles"):
+                v = data.get(k)
+                if isinstance(v, list):
+                    items = v
+                    log.info("  IFTA: unwrapped data['%s'] (%d records)", k, len(v))
+                    break
+            if not items:
+                # Log keys so we can see the actual shape and refine if needed.
+                log.warning("  IFTA: response data is a dict with keys=%s — "
+                            "no per-vehicle list extracted",
+                            list(data.keys())[:10])
         if items:
             log.info("  IFTA: got %d records from /fleet/reports/ifta/vehicle", len(items))
             return items
@@ -353,7 +388,9 @@ class SamsaraClient:
         for did in driver_ids:
             # _safe_get handles the {"data": {...}} envelope and returns a list
             # of records — a dict response gets wrapped into a single-element list.
-            recs = self._safe_get(f"/fleet/drivers/{did}/safety/score",
+            # Samsara's Driver Safety Score lives under the legacy `/v1/` path —
+            # the modern `/fleet/...` namespace 404s for this resource.
+            recs = self._safe_get(f"/v1/fleet/drivers/{did}/safety/score",
                                   {"startMs": start_ms, "endMs": end_ms})
             if not recs:
                 continue
