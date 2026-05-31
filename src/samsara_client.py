@@ -272,6 +272,49 @@ class SamsaraClient:
         log.info("Total DVIRs: %d (from /fleet/dvirs/history)", len(all_items))
         return all_items
 
+    def fetch_fuel_energy_usage(self, start: datetime.datetime,
+                                end: datetime.datetime) -> list[dict]:
+        """Per-vehicle miles + gallons + MPG, computed from Samsara's OBD/CAN
+        fuel-consumption signal — no IFTA dependency. Endpoint:
+
+            GET /fleet/reports/fuel-energy/usage?startTime=&endTime=
+
+        Response shape varies; like IFTA the payload can be either
+        `{"data": [...]}` or `{"data": {"vehicles": [...]}}`. Inspect both.
+        """
+        log.info("Fetching fuel/energy usage (%s -> %s)…", start.date(), end.date())
+        try:
+            resp = self._session.get(
+                f"{BASE_URL}/fleet/reports/fuel-energy/usage",
+                headers=self._headers(),
+                params={"startTime": _iso(start), "endTime": _iso(end)},
+                timeout=120,
+            )
+            if resp.status_code != 200:
+                log.error("GET /fleet/reports/fuel-energy/usage failed [%d]: %s",
+                          resp.status_code, resp.text[:500])
+                return []
+            payload = resp.json()
+        except Exception as e:
+            log.warning("Fuel/energy usage fetch failed: %s", e)
+            return []
+        data = payload.get("data")
+        items: list[dict] = []
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            for k in ("vehicles", "vehicleReports", "records", "items"):
+                v = data.get(k)
+                if isinstance(v, list):
+                    items = v
+                    log.info("  FuelEnergy: unwrapped data['%s'] (%d records)", k, len(v))
+                    break
+            if not items:
+                log.warning("  FuelEnergy: response data is a dict with keys=%s",
+                            list(data.keys())[:10])
+        log.info("  FuelEnergy: got %d records", len(items))
+        return items
+
     def fetch_ifta(self, year: int, month: int) -> list[dict]:
         """IFTA per-vehicle fuel & mileage report via `GET /fleet/reports/ifta/vehicle`
         (singular). The endpoint takes ``year`` (int) and ``month`` as the **full

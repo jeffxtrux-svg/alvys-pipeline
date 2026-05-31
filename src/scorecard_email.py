@@ -1505,42 +1505,68 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 if vid and vnm:
                     id_to_truck[vid] = _truck_label(vnm)
 
-    ifta_keys = sorted([k for k in sheets if k.startswith("IFTA_")], reverse=True)
-    if ifta_keys:
-        ifta = sheets[ifta_keys[0]]
-        if ifta is not None and not ifta.empty:
-            # Look for name FIRST (so "vehicleName" / "vehicle.name" beats the
-            # broader "vehicle" substring that would otherwise grab vehicleId).
-            v_col = (_find_col(ifta, ["vehiclename", "vehicle.name", "vehicle_name", "vehicle name", "unitname", "unit name"])
-                     or _find_col(ifta, ["vehicleid", "vehicle.id", "vehicle"])
-                     or _find_col(ifta, ["unit"]))
-            mi_col = _find_col(ifta, ["miles", "distance"])
-            ga_col = _find_col(ifta, ["gallons", "fuel"])
-            if v_col and mi_col and ga_col:
-                df = ifta.copy()
-                df["_miles"] = pd.to_numeric(df[mi_col], errors="coerce").fillna(0)
-                df["_gallons"] = pd.to_numeric(df[ga_col], errors="coerce").fillna(0)
-                df = df[(df["_miles"] > 0) & (df["_gallons"] > 0)]
-                if not df.empty:
-                    df["_mpg"] = df["_miles"] / df["_gallons"]
-                    fleet_mpg = (df["_miles"].sum() / df["_gallons"].sum()) if df["_gallons"].sum() else None
-                    out["fleet"]["fleet_mpg"] = float(fleet_mpg) if fleet_mpg else None
-                    out["fleet"]["fleet_miles"] = float(df["_miles"].sum())
-                    out["fleet"]["fleet_gallons"] = float(df["_gallons"].sum())
-                    df = df.sort_values("_mpg", ascending=False).reset_index(drop=True)
-                    # Resolve the value in v_col to a truck number — if the
-                    # column held vehicleId we go through id_to_truck; if it
-                    # already held the truck name we pass through.
-                    def _unit_label(raw):
-                        s = str(raw).strip()
-                        if s in id_to_truck:
-                            return id_to_truck[s]
-                        return _truck_label(s)
-                    out["fleet"]["mpg"] = [
-                        {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
-                         "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
-                        for _, r in df.iterrows()
-                    ]
+    # Source preference: FuelEnergy (OBD-direct, last 30d) wins when present,
+    # IFTA falls back. The FuelEnergy sheet doesn't depend on IFTA report
+    # generation in Samsara, so it works for fleets that don't use Samsara's
+    # IFTA workflow.
+    fuel_energy = sheets.get("FuelEnergy")
+    ifta = None
+    if fuel_energy is not None and not fuel_energy.empty:
+        ifta = fuel_energy
+        log.info("MPG source: FuelEnergy (%d rows)", len(fuel_energy))
+    else:
+        ifta_keys = sorted([k for k in sheets if k.startswith("IFTA_")], reverse=True)
+        if ifta_keys:
+            ifta = sheets[ifta_keys[0]]
+            log.info("MPG source: IFTA fallback (%s)", ifta_keys[0])
+    if ifta is not None and not ifta.empty:
+        # Look for name FIRST (so "vehicleName" / "vehicle.name" beats the
+        # broader "vehicle" substring that would otherwise grab vehicleId).
+        v_col = (_find_col(ifta, ["vehiclename", "vehicle.name", "vehicle_name", "vehicle name", "unitname", "unit name"])
+                 or _find_col(ifta, ["vehicleid", "vehicle.id", "vehicle"])
+                 or _find_col(ifta, ["unit"]))
+        # FuelEnergy uses meters; IFTA uses miles. Detect from column name.
+        mi_col = _find_col(ifta, ["distancemiles", "miles", "distance"])
+        ga_col = _find_col(ifta, ["gallons", "fuel"])
+        if v_col and mi_col and ga_col:
+            df = ifta.copy()
+            raw_miles = pd.to_numeric(df[mi_col], errors="coerce").fillna(0)
+            # Heuristic: if the column name signals meters, convert to miles
+            # (1 mile = 1609.344 m). FuelEnergy returns totalDistanceMeters.
+            if "meter" in str(mi_col).lower():
+                df["_miles"] = raw_miles / 1609.344
+            else:
+                df["_miles"] = raw_miles
+            raw_gallons = pd.to_numeric(df[ga_col], errors="coerce").fillna(0)
+            # Heuristic: if column name signals liters or milliliters, convert.
+            cn = str(ga_col).lower()
+            if "milliliter" in cn or "ml" == cn[-2:] or "mlused" in cn:
+                df["_gallons"] = raw_gallons / 3785.411784
+            elif "liter" in cn:
+                df["_gallons"] = raw_gallons / 3.785411784
+            else:
+                df["_gallons"] = raw_gallons
+            df = df[(df["_miles"] > 0) & (df["_gallons"] > 0)]
+            if not df.empty:
+                df["_mpg"] = df["_miles"] / df["_gallons"]
+                fleet_mpg = (df["_miles"].sum() / df["_gallons"].sum()) if df["_gallons"].sum() else None
+                out["fleet"]["fleet_mpg"] = float(fleet_mpg) if fleet_mpg else None
+                out["fleet"]["fleet_miles"] = float(df["_miles"].sum())
+                out["fleet"]["fleet_gallons"] = float(df["_gallons"].sum())
+                df = df.sort_values("_mpg", ascending=False).reset_index(drop=True)
+                # Resolve the value in v_col to a truck number — if the
+                # column held vehicleId we go through id_to_truck; if it
+                # already held the truck name we pass through.
+                def _unit_label(raw):
+                    s = str(raw).strip()
+                    if s in id_to_truck:
+                        return id_to_truck[s]
+                    return _truck_label(s)
+                out["fleet"]["mpg"] = [
+                    {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
+                     "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
+                    for _, r in df.iterrows()
+                ]
 
     # Idle hours per truck (top 5 idlers) from EngineIdle sheet.
     idle = sheets.get("EngineIdle")

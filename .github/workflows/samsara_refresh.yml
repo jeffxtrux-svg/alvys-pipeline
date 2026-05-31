@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
-  # (touch bump #3: rebuild EngineIdle sheet w/ per-settlement-week columns)
+  # (touch bump #4: add FuelEnergy sheet — OBD-based per-vehicle MPG, no IFTA)
   push:
     branches:
       - claude/claude-md-docs-Es64x

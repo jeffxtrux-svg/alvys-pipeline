@@ -394,7 +394,13 @@ def main() -> int:
     )
 
     log.info("=" * 60)
-    log.info("Step 12/12: IFTA (last 3 months)")
+    log.info("Step 12a/12: Fuel & Energy usage (last 30 days, OBD-based MPG)")
+    log.info("=" * 60)
+    raw_fuel_energy = client.fetch_fuel_energy_usage(
+        now - datetime.timedelta(days=30), now)
+
+    log.info("=" * 60)
+    log.info("Step 12b/12: IFTA (last 3 months, kept as fallback)")
     log.info("=" * 60)
     ifta_sheets: dict[str, pd.DataFrame] = {}
     for months_ago in range(3):
@@ -470,6 +476,7 @@ def main() -> int:
         "DVIR_Defects":   df_dvir_defects,
         "EngineIdle":     df_idle,
         "DriverSafetyScores": df_driver_scores,
+        "FuelEnergy":     flatten(raw_fuel_energy, "FuelEnergy"),
         **ifta_sheets,
     }
 
