@@ -147,6 +147,19 @@ def check_ar_past_due_both_sources(html: str, ctx: dict) -> list[Finding]:
     return out
 
 
+def check_idlers_section_not_empty(html: str, ctx: dict) -> list[Finding]:
+    """The Idlers section should not render '(no data)' — if it does the
+    EngineIdle sheet didn't make it into compute_samsara."""
+    out: list[Finding] = []
+    samsara = ctx.get("samsara") or {}
+    idle = ((samsara.get("fleet") or {}).get("idle") or [])
+    if not idle and "IDLERS" in (html or "").upper():
+        out.append(Finding("error", "idlers_empty",
+                           "Idlers table is empty — EngineIdle sheet missing or "
+                           "compute_samsara couldn't read it"))
+    return out
+
+
 def check_idle_gallons_present(html: str, ctx: dict) -> list[Finding]:
     """If every idle row has zero/missing idle gallons but the underlying
     EngineIdle sheet has idle hours, the OBD fuel-counter integration in
@@ -208,6 +221,7 @@ CHECKS: list[Callable[[str, dict], list[Finding]]] = [
     check_excluded_driver_absent,
     check_ar_past_due_both_sources,
     check_safety_scores_complete,
+    check_idlers_section_not_empty,
     check_idle_gallons_present,
     check_mpg_table_has_drivers,
 ]

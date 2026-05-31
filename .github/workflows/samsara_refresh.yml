@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
-  # (touch bump #7: re-run so EngineIdle gets IdleGal columns before scorecard)
+  # (touch bump #8: fetch engineStates and OBD fuel in separate calls)
   push:
     branches:
       - claude/claude-md-docs-Es64x

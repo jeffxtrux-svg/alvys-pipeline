@@ -375,50 +375,51 @@ class SamsaraClient:
         Samsara caps the request window — page through in <=7-day chunks to stay
         well under the limit. The endpoint accepts ms-since-epoch timestamps.
         """
-        log.info("Fetching engine state history + fuel-consumed (%s -> %s)…",
+        log.info("Fetching engine state history (%s -> %s)…",
                  start.date(), end.date())
         all_items: dict[str, dict] = {}
         chunk = datetime.timedelta(days=7)
-        cur = start
-        while cur < end:
-            chunk_end = min(cur + chunk, end)
-            # Pull engineStates AND the OBD cumulative-fuel counter together
-            # so we can compute per-state fuel consumption (idle gallons) in
-            # one round-trip per chunk.
-            params = {
-                "types": "engineStates,obdFuelGallonsConsumedSinceVehicleStarted",
-                "startTime": cur.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "endTime": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            try:
-                items = self._safe_get("/fleet/vehicles/stats/history", params)
-            except Exception as exc:
-                log.warning("Engine state history chunk %s -> %s failed: %s",
-                            cur.date(), chunk_end.date(), exc)
-                cur = chunk_end
-                continue
-            # Merge transitions + fuel samples per vehicle id across chunks.
-            for rec in items or []:
-                vid = rec.get("id")
-                if not vid:
+        # Two separate single-type pulls — combining engineStates with the
+        # fuel-counter type in one `types=` param caused engineStates to come
+        # back empty for every vehicle (Samsara returned only the first type).
+        for stat_type, slot_key in (
+            ("engineStates", "engineStates"),
+            ("obdFuelGallonsConsumedSinceVehicleStarted",
+             "obdFuelGallonsConsumedSinceVehicleStarted"),
+        ):
+            cur = start
+            while cur < end:
+                chunk_end = min(cur + chunk, end)
+                params = {
+                    "types": stat_type,
+                    "startTime": cur.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "endTime": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                try:
+                    items = self._safe_get("/fleet/vehicles/stats/history", params)
+                except Exception as exc:
+                    log.warning("%s chunk %s -> %s failed: %s",
+                                stat_type, cur.date(), chunk_end.date(), exc)
+                    cur = chunk_end
                     continue
-                slot = all_items.setdefault(vid, {"id": vid, "name": rec.get("name"),
-                                                  "engineStates": [],
-                                                  "obdFuelGallonsConsumedSinceVehicleStarted": []})
-                states = (rec.get("engineStates") or [])
-                if isinstance(states, list):
-                    slot["engineStates"].extend(states)
-                fuel = (rec.get("obdFuelGallonsConsumedSinceVehicleStarted") or [])
-                if isinstance(fuel, list):
-                    slot["obdFuelGallonsConsumedSinceVehicleStarted"].extend(fuel)
-                # Preserve other top-level keys (vehicle name, etc.) if newer chunk has them
-                if not slot.get("name"):
-                    slot["name"] = rec.get("name")
-            cur = chunk_end
+                for rec in items or []:
+                    vid = rec.get("id")
+                    if not vid:
+                        continue
+                    slot = all_items.setdefault(vid, {"id": vid, "name": rec.get("name"),
+                                                      "engineStates": [],
+                                                      "obdFuelGallonsConsumedSinceVehicleStarted": []})
+                    samples = rec.get(slot_key) or []
+                    if isinstance(samples, list):
+                        slot[slot_key].extend(samples)
+                    if not slot.get("name"):
+                        slot["name"] = rec.get("name")
+                cur = chunk_end
+        n_with_states = sum(1 for r in all_items.values() if r.get("engineStates"))
         n_with_fuel = sum(1 for r in all_items.values()
                           if r.get("obdFuelGallonsConsumedSinceVehicleStarted"))
-        log.info("Total vehicles with engine state history: %d (%d with OBD fuel samples)",
-                 len(all_items), n_with_fuel)
+        log.info("Vehicle stat history: %d total, %d w/ engineStates, %d w/ OBD fuel",
+                 len(all_items), n_with_states, n_with_fuel)
         return list(all_items.values())
 
     def fetch_driver_safety_scores(self, driver_ids: list[str],
