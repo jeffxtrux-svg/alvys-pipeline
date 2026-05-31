@@ -1367,7 +1367,9 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     hosv = sheets.get("HOS_Violations")
     defects = sheets.get("DVIR_Defects")
     w = _windows()
-    out: dict = {"windows": {}, "trend": {}, "detail": {}, "coaching": {"24h": 0, "7d": 0, "mtd": 0}}
+    out: dict = {"windows": {}, "trend": {}, "detail": {}, "coaching": {"24h": 0, "7d": 0, "mtd": 0},
+                 "fleet": {"mpg": [], "idle": [], "speeders": [], "scores_top": [],
+                            "scores_bottom": [], "fleet_mpg": None, "fleet_score": None}}
 
     # Safety events
     if events is not None and not events.empty:
@@ -1405,6 +1407,83 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             opd[opdd >= w["24h"]], opdd[opdd >= w["24h"]],
             [("unit",), ("driver",), ("defect",), ("defect type",), ("resolved",)],
         )
+
+    # --- Fleet Operations metrics (page 4) -----------------------------------
+    # Speeding-event leaderboard: filter the safety-events stream for Event
+    # Type containing "speeding" and group by driver over the last 7 days.
+    if events is not None and not events.empty:
+        ed = _dates(events, SAFETY_DATE)
+        et_col = _find_col(events, ["event type"])
+        dcol = _find_col(events, ["driver name", "driver"])
+        if et_col and dcol:
+            recent = events[ed >= w["7d"]]
+            spd_mask = recent[et_col].astype(str).str.lower().str.contains("speed", na=False)
+            spd = recent[spd_mask]
+            if not spd.empty:
+                top = (spd[dcol].astype(str).str.strip()
+                       .replace({"": "(unknown)", "nan": "(unknown)"})
+                       .value_counts().head(5))
+                out["fleet"]["speeders"] = [{"driver": k, "count": int(v)} for k, v in top.items()]
+
+    # MPG per truck: pull all IFTA_YYYY_MM sheets (most recent month wins per
+    # vehicle when duplicated). Compute MPG = miles / gallons.
+    ifta_keys = sorted([k for k in sheets if k.startswith("IFTA_")], reverse=True)
+    if ifta_keys:
+        ifta = sheets[ifta_keys[0]]
+        if ifta is not None and not ifta.empty:
+            v_col = _find_col(ifta, ["vehicle name", "vehicle", "unit name", "unit"])
+            mi_col = _find_col(ifta, ["miles", "distance"])
+            ga_col = _find_col(ifta, ["gallons", "fuel"])
+            if v_col and mi_col and ga_col:
+                df = ifta.copy()
+                df["_miles"] = pd.to_numeric(df[mi_col], errors="coerce").fillna(0)
+                df["_gallons"] = pd.to_numeric(df[ga_col], errors="coerce").fillna(0)
+                df = df[(df["_miles"] > 0) & (df["_gallons"] > 0)]
+                if not df.empty:
+                    df["_mpg"] = df["_miles"] / df["_gallons"]
+                    fleet_mpg = (df["_miles"].sum() / df["_gallons"].sum()) if df["_gallons"].sum() else None
+                    out["fleet"]["fleet_mpg"] = float(fleet_mpg) if fleet_mpg else None
+                    out["fleet"]["fleet_miles"] = float(df["_miles"].sum())
+                    out["fleet"]["fleet_gallons"] = float(df["_gallons"].sum())
+                    df = df.sort_values("_mpg", ascending=False).reset_index(drop=True)
+                    out["fleet"]["mpg"] = [
+                        {"unit": str(r[v_col]), "mpg": round(r["_mpg"], 2),
+                         "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
+                        for _, r in df.iterrows()
+                    ]
+
+    # Idle hours per truck (top 5 idlers) from EngineIdle sheet.
+    idle = sheets.get("EngineIdle")
+    if idle is not None and not idle.empty and "Idle Hours" in idle.columns:
+        top = idle.sort_values("Idle Hours", ascending=False).head(5)
+        out["fleet"]["idle"] = [
+            {"unit": str(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
+             "idle_hours": float(r.get("Idle Hours") or 0),
+             "engine_hours": float(r.get("Engine Hours") or 0),
+             "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
+                          if r.get("Engine Hours") else 0)}
+            for _, r in top.iterrows()
+        ]
+        out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
+
+    # Driver safety scores — top 5 and bottom 5 from DriverSafetyScores sheet.
+    scores = sheets.get("DriverSafetyScores")
+    if scores is not None and not scores.empty:
+        sc_col = _find_col(scores, ["safetyscore", "score"])
+        nm_col = _find_col(scores, ["driver name", "name"]) or "driverId"
+        if sc_col:
+            df = scores.copy()
+            df["_score"] = pd.to_numeric(df[sc_col], errors="coerce")
+            df = df.dropna(subset=["_score"])
+            if not df.empty:
+                out["fleet"]["fleet_score"] = float(df["_score"].mean())
+                top = df.sort_values("_score", ascending=False).head(5)
+                bot = df.sort_values("_score", ascending=True).head(5)
+                def _row(r):
+                    return {"driver": str(r.get(nm_col) or r.get("driverId") or ""),
+                            "score": int(round(r["_score"]))}
+                out["fleet"]["scores_top"] = [_row(r) for _, r in top.iterrows()]
+                out["fleet"]["scores_bottom"] = [_row(r) for _, r in bot.iterrows()]
 
     return out
 
@@ -1714,7 +1793,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 9
+PAGE_COUNT = 10
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -2107,7 +2186,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     empty_td = "<td class='tile-empty' width='25%' style='padding:6px;'></td>"
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("X-Trux + X-Linx", "mute"))
-                 + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 4", "bad"))
+                 + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 5", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
     # Top-line tiles = whole company (X-Trux + X-Linx), matching the entity table's Total row.
@@ -2410,7 +2489,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 4). "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 5). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         bottom += f" {drag['text']}"
@@ -2527,6 +2606,93 @@ def build_page2(samsara, date_str) -> str:
             f"Open defects older than 24h are tracked by the fleet alert job.</div>")
 
 
+def build_page_fleet(samsara, date_str) -> str:
+    """Page 4: Fleet Operations — MPG, idle, speeding, driver safety scores."""
+    fleet = (samsara or {}).get("fleet", {}) or {}
+    mpg_rows = fleet.get("mpg") or []
+    idle_rows = fleet.get("idle") or []
+    speeders = fleet.get("speeders") or []
+    score_top = fleet.get("scores_top") or []
+    score_bottom = fleet.get("scores_bottom") or []
+
+    # Top tiles — fleet-wide summary numbers.
+    fleet_mpg = fleet.get("fleet_mpg")
+    fleet_score = fleet.get("fleet_score")
+    fleet_idle = fleet.get("fleet_idle_hours")
+    fleet_gallons = fleet.get("fleet_gallons")
+    fleet_miles = fleet.get("fleet_miles")
+    tiles = (
+        _tile("Fleet MPG", (f"{fleet_mpg:.2f}" if _isnum(fleet_mpg) else "n/a"),
+              _pill("latest IFTA month", "mute"))
+        + _tile("Fleet miles &middot; latest IFTA", num(fleet_miles), _pill("from IFTA", "mute"))
+        + _tile("Fleet idle hours &middot; 30d", num(fleet_idle), _pill("Samsara engine states", "mute"))
+        + _tile("Fleet avg safety score",
+                (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
+                _pill("0&ndash;100, higher better", "mute"))
+    )
+
+    # Top 5 MPG (best) — the highlights, plus a bottom-5 table further down.
+    def _rank_table(rows, cols, fmt_row, span=4):
+        if not rows:
+            return f"<tr><td colspan='{span}' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
+        body = "".join(fmt_row(r) for r in rows)
+        return _table(cols, ["left", "right", "right", "right"], body)
+
+    top5_mpg = mpg_rows[:5]
+    bot5_mpg = list(reversed(mpg_rows[-5:])) if len(mpg_rows) >= 5 else []
+    mpg_top_tbl = _rank_table(
+        top5_mpg, ["Truck", "MPG", "Miles", "Gallons"],
+        lambda r: _tr([r["unit"], f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
+                      ["left", "right", "right", "right"], [None, "good", None, None]))
+    mpg_bot_tbl = _rank_table(
+        bot5_mpg, ["Truck", "MPG", "Miles", "Gallons"],
+        lambda r: _tr([r["unit"], f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
+                      ["left", "right", "right", "right"], [None, "bad", None, None]))
+
+    # Top 5 idle hours.
+    idle_tbl = _rank_table(
+        idle_rows, ["Truck", "Idle hrs", "Engine hrs", "Idle %"],
+        lambda r: _tr([r["unit"], f"{r['idle_hours']:.1f}", f"{r['engine_hours']:.1f}",
+                       (f"{r['idle_pct']*100:.0f}%" if r.get("idle_pct") else "n/a")],
+                      ["left", "right", "right", "right"], [None, "bad", None, "warn"]))
+
+    # Top 5 speeders.
+    spd_tbl = _rank_table(
+        speeders, ["Driver", "Speeding events", "", ""],
+        lambda r: _tr([r["driver"], str(r["count"]), "", ""],
+                      ["left", "right", "right", "right"], [None, "bad", None, None]))
+
+    # Driver safety: top 5 and bottom 5.
+    score_top_tbl = _rank_table(
+        score_top, ["Driver", "Score", "", ""],
+        lambda r: _tr([r["driver"], str(r["score"]), "", ""],
+                      ["left", "right", "right", "right"], [None, "good", None, None]))
+    score_bot_tbl = _rank_table(
+        score_bottom, ["Driver", "Score", "", ""],
+        lambda r: _tr([r["driver"], str(r["score"]), "", ""],
+                      ["left", "right", "right", "right"], [None, "bad", None, None]))
+
+    return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 4, date_str)}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Best MPG &middot; top 5 trucks (latest IFTA month)')}"
+            f"{mpg_top_tbl}"
+            f"{_section('Worst MPG &middot; bottom 5 trucks (latest IFTA month)')}"
+            f"{mpg_bot_tbl}"
+            f"{_section('Top idlers &middot; last 30 days')}"
+            f"{idle_tbl}"
+            f"{_section('Top speeders &middot; last 7 days')}"
+            f"{spd_tbl}"
+            f"{_section('Safest drivers &middot; top 5 by safety score')}"
+            f"{score_top_tbl}"
+            f"{_section('Highest-risk drivers &middot; bottom 5 by safety score')}"
+            f"{score_bot_tbl}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Sources: Samsara IFTA (MPG), Samsara engine-state history (idle, 30 days), "
+            f"Samsara Safety Events filtered by Event Type (speeding, 7 days), "
+            f"Samsara Driver Safety Scores (per-driver composite, last 6 months).</div>")
+
+
 def build_page3(qb_ar, date_str) -> str:
     rows = ""
     for r in (qb_ar or {}).get("rows", []):
@@ -2539,7 +2705,7 @@ def build_page3(qb_ar, date_str) -> str:
     total_row = (f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>"
                  f"Total 31+ days overdue</td><td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
                  f"border-top:2px solid {LINE};'>{money(total31)}</td><td style='border-top:2px solid {LINE};'></td></tr>")
-    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 4, date_str)}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 5, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
             f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
@@ -2652,7 +2818,7 @@ def build_page5(uninv, date_str) -> str:
     shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
     more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
             f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
-    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 5, date_str)}"
+    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 6, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
@@ -2677,7 +2843,7 @@ def build_page6(alvys_ar, date_str) -> str:
         body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
                      str(c["oldest_days"]), money(c["amount"])],
                     ["left", "right", "right", "right"], [None, None, "bad", "bad"])
-    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 6, date_str)}"
+    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 7, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
@@ -2720,7 +2886,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 7, date_str)}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 8, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -2735,7 +2901,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 8, date_str)
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 9, date_str)
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 7 for the customer-level reconciliation.")
@@ -2802,7 +2968,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 
 def build_page9(samba, date_str) -> str:
-    header = _header('Driver Compliance &mdash; SambaSafety', 9, date_str)
+    header = _header('Driver Compliance &mdash; SambaSafety', 10, date_str)
     footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
               f"Source: SambaSafety driver monitoring.</div>")
@@ -2929,6 +3095,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # render order.
             f"{wrap(build_page4(mileage, date_str))}{pb}"
             f"{wrap(build_page2(samsara, date_str))}{pb}"
+            # Fleet Operations is rendered position 4 (after Safety detail), so
+            # MPG / Idle / Speeding / Driver Scores sit next to the safety
+            # context they tie back to. AR Overdue shifts to position 5.
+            f"{wrap(build_page_fleet(samsara, date_str))}{pb}"
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
             f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
