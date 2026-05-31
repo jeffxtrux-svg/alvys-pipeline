@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
-  # (touch bump #4: add FuelEnergy sheet — OBD-based per-vehicle MPG, no IFTA)
+  # (touch bump #5: MPG now computed from Trips data in scorecard, no Samsara endpoint needed)
   push:
     branches:
       - claude/claude-md-docs-Es64x

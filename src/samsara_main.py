@@ -394,14 +394,11 @@ def main() -> int:
     )
 
     log.info("=" * 60)
-    log.info("Step 12a/12: Fuel & Energy usage (last 30 days, OBD-based MPG)")
+    log.info("Step 12/12: IFTA (last 3 months, fallback MPG source)")
     log.info("=" * 60)
-    raw_fuel_energy = client.fetch_fuel_energy_usage(
-        now - datetime.timedelta(days=30), now)
-
-    log.info("=" * 60)
-    log.info("Step 12b/12: IFTA (last 3 months, kept as fallback)")
-    log.info("=" * 60)
+    # Note: /fleet/reports/fuel-energy/usage doesn't exist in Samsara's API
+    # (404). MPG is now computed from Trips data in compute_samsara; IFTA
+    # remains as a fallback.
     ifta_sheets: dict[str, pd.DataFrame] = {}
     for months_ago in range(3):
         target = (now.replace(day=1) - datetime.timedelta(days=months_ago * 28)).replace(day=1)
@@ -476,7 +473,6 @@ def main() -> int:
         "DVIR_Defects":   df_dvir_defects,
         "EngineIdle":     df_idle,
         "DriverSafetyScores": df_driver_scores,
-        "FuelEnergy":     flatten(raw_fuel_energy, "FuelEnergy"),
         **ifta_sheets,
     }
 

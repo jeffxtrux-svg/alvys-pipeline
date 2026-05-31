@@ -1505,21 +1505,78 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 if vid and vnm:
                     id_to_truck[vid] = _truck_label(vnm)
 
-    # Source preference: FuelEnergy (OBD-direct, last 30d) wins when present,
-    # IFTA falls back. The FuelEnergy sheet doesn't depend on IFTA report
-    # generation in Samsara, so it works for fleets that don't use Samsara's
-    # IFTA workflow.
-    fuel_energy = sheets.get("FuelEnergy")
+    # MPG source preference:
+    #   1. Aggregate Trips data (per-trip fuelConsumed* + distance straight
+    #      from OBD — works for any Samsara fleet, no IFTA dependency).
+    #   2. FuelEnergy sheet (legacy, currently empty because the endpoint we
+    #      hit returns 404 — kept for forward-compat if Samsara adds one).
+    #   3. IFTA sheet (last fallback).
+    mpg_built = False
+    trips_df_for_mpg = sheets.get("Trips")
+    if trips_df_for_mpg is not None and not trips_df_for_mpg.empty:
+        t_veh = (_find_col(trips_df_for_mpg, ["vehiclename", "vehicle.name", "vehicle name"])
+                 or _find_col(trips_df_for_mpg, ["vehicleid", "vehicle.id"]))
+        t_dist = _find_col(trips_df_for_mpg, ["distancemiles", "distance.miles", "distancemeters", "distance.meters"])
+        t_fuel = (_find_col(trips_df_for_mpg, ["fuelconsumedml", "fuel.consumed.ml", "fuelusedml", "fuel.consumed", "fuelused"])
+                  or _find_col(trips_df_for_mpg, ["fuelconsumed", "fuel"]))
+        log.info("Trips MPG probe: veh=%s dist=%s fuel=%s", t_veh, t_dist, t_fuel)
+        if t_veh and t_dist and t_fuel:
+            td = trips_df_for_mpg[[t_veh, t_dist, t_fuel]].copy()
+            td["_dist"] = pd.to_numeric(td[t_dist], errors="coerce").fillna(0)
+            td["_fuel"] = pd.to_numeric(td[t_fuel], errors="coerce").fillna(0)
+            # Convert distance/fuel based on column-name unit hints.
+            if "meter" in str(t_dist).lower():
+                td["_miles"] = td["_dist"] / 1609.344
+            else:
+                td["_miles"] = td["_dist"]
+            fn = str(t_fuel).lower()
+            if "ml" in fn or "milliliter" in fn:
+                td["_gallons"] = td["_fuel"] / 3785.411784
+            elif "liter" in fn:
+                td["_gallons"] = td["_fuel"] / 3.785411784
+            else:
+                td["_gallons"] = td["_fuel"]
+            agg = td.groupby(t_veh, dropna=True).agg(_miles=("_miles", "sum"),
+                                                     _gallons=("_gallons", "sum")).reset_index()
+            agg = agg[(agg["_miles"] > 0) & (agg["_gallons"] > 0)]
+            if not agg.empty:
+                agg["_mpg"] = agg["_miles"] / agg["_gallons"]
+                fleet_mpg = agg["_miles"].sum() / agg["_gallons"].sum()
+                out["fleet"]["fleet_mpg"] = float(fleet_mpg)
+                out["fleet"]["fleet_miles"] = float(agg["_miles"].sum())
+                out["fleet"]["fleet_gallons"] = float(agg["_gallons"].sum())
+                agg = agg.sort_values("_mpg", ascending=False).reset_index(drop=True)
+                def _unit_label_trips(raw):
+                    s = str(raw).strip()
+                    if s in id_to_truck:
+                        return id_to_truck[s]
+                    return _truck_label(s)
+                out["fleet"]["mpg"] = [
+                    {"unit": _unit_label_trips(r[t_veh]), "mpg": round(r["_mpg"], 2),
+                     "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
+                    for _, r in agg.iterrows()
+                ]
+                log.info("MPG source: Trips (%d trucks)", len(out["fleet"]["mpg"]))
+                mpg_built = True
+            else:
+                log.warning("Trips MPG: aggregated table empty after positive-only filter")
+        else:
+            # Useful for diagnosis the next time the schema changes.
+            log.warning("Trips MPG: required columns not all present — "
+                        "columns sampled: %s", list(trips_df_for_mpg.columns)[:20])
+
     ifta = None
-    if fuel_energy is not None and not fuel_energy.empty:
-        ifta = fuel_energy
-        log.info("MPG source: FuelEnergy (%d rows)", len(fuel_energy))
-    else:
-        ifta_keys = sorted([k for k in sheets if k.startswith("IFTA_")], reverse=True)
-        if ifta_keys:
-            ifta = sheets[ifta_keys[0]]
-            log.info("MPG source: IFTA fallback (%s)", ifta_keys[0])
-    if ifta is not None and not ifta.empty:
+    if not mpg_built:
+        fuel_energy = sheets.get("FuelEnergy")
+        if fuel_energy is not None and not fuel_energy.empty:
+            ifta = fuel_energy
+            log.info("MPG source: FuelEnergy sheet (%d rows)", len(fuel_energy))
+        else:
+            ifta_keys = sorted([k for k in sheets if k.startswith("IFTA_")], reverse=True)
+            if ifta_keys:
+                ifta = sheets[ifta_keys[0]]
+                log.info("MPG source: IFTA fallback (%s)", ifta_keys[0])
+    if not mpg_built and ifta is not None and not ifta.empty:
         # Look for name FIRST (so "vehicleName" / "vehicle.name" beats the
         # broader "vehicle" substring that would otherwise grab vehicleId).
         v_col = (_find_col(ifta, ["vehiclename", "vehicle.name", "vehicle_name", "vehicle name", "unitname", "unit name"])
