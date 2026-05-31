@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: expose component events alongside composite safety score)
+  # (touch bump: idle table shows all trucks ranked by avg/wk worst-to-best)
   push:
     branches:
       - claude/claude-md-docs-Es64x

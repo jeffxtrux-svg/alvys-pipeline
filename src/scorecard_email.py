@@ -1491,23 +1491,33 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # Idle hours per truck (top 5 idlers) from EngineIdle sheet.
     idle = sheets.get("EngineIdle")
     if idle is not None and not idle.empty and "Idle Hours" in idle.columns:
-        top = idle.sort_values("Idle Hours", ascending=False).head(5)
         wk_keys = ["W1", "W2", "W3", "W4", "Cur"]
+        complete_keys = wk_keys[:-1]   # exclude current partial week
         def _idle_driver(name) -> str:
             if not name or str(name).lower() == "nan":
                 return ""
             return "" if _is_excluded_driver(name) else str(name).strip()
-        out["fleet"]["idle"] = [
-            {"unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
-             "driver": _idle_driver(r.get("Driver Name")),
-             "idle_hours": float(r.get("Idle Hours") or 0),
-             "engine_hours": float(r.get("Engine Hours") or 0),
-             "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
-                          if r.get("Engine Hours") else 0),
-             "weeks_idle": [float(r.get(f"Idle_{k}") or 0) for k in wk_keys],
-             "weeks_engine": [float(r.get(f"Engine_{k}") or 0) for k in wk_keys]}
-            for _, r in top.iterrows()
-        ]
+        # All vehicles, ranked worst-to-best by **Avg / wk over the 4 complete
+        # settlement weeks** (current partial week excluded). Largest idle
+        # average = worst, so descending sort.
+        rows = []
+        for _, r in idle.iterrows():
+            weeks_idle = [float(r.get(f"Idle_{k}") or 0) for k in wk_keys]
+            weeks_engine = [float(r.get(f"Engine_{k}") or 0) for k in wk_keys]
+            avg_wk = sum(weeks_idle[:-1]) / max(1, len(complete_keys))
+            rows.append({
+                "unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
+                "driver": _idle_driver(r.get("Driver Name")),
+                "idle_hours": float(r.get("Idle Hours") or 0),
+                "engine_hours": float(r.get("Engine Hours") or 0),
+                "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
+                             if r.get("Engine Hours") else 0),
+                "weeks_idle": weeks_idle,
+                "weeks_engine": weeks_engine,
+                "avg_wk": avg_wk,
+            })
+        rows.sort(key=lambda x: x["avg_wk"], reverse=True)
+        out["fleet"]["idle"] = rows
         out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
         # Settlement-week date-range labels (reuse the same helpers Driver
         # Mileage uses so both pages match).
@@ -2789,7 +2799,7 @@ def build_page_fleet(samsara, date_str) -> str:
         idle_body = ""
         for r in idle_rows:
             weeks = r.get("weeks_idle") or [0] * n_weeks
-            avg_wk = (sum(weeks[:complete_weeks]) / complete_weeks) if complete_weeks else 0
+            avg_wk = r.get("avg_wk", (sum(weeks[:complete_weeks]) / complete_weeks) if complete_weeks else 0)
             wk_cells = "".join(
                 _icell(f"{weeks[k]:.1f}" if weeks[k] else "&ndash;", "right", cur=(k == cur_idx))
                 for k in range(n_weeks))
@@ -2864,7 +2874,7 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{mpg_top_tbl}"
             f"{_section('Worst MPG &middot; bottom 5 trucks (latest IFTA month)')}"
             f"{mpg_bot_tbl}"
-            f"{_section('Top idlers &middot; by settlement week &middot; current week tinted')}"
+            f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
             f"{idle_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
