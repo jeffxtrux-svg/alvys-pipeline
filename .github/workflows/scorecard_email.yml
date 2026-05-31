@@ -12,6 +12,12 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+  # One-shot verification trigger — DELETE this push block after the run finishes.
+  push:
+    branches:
+      - claude/claude-md-docs-Es64x
+    paths:
+      - .github/workflows/scorecard_email.yml
   schedule:
     # Two cron entries, 15 min apart, as redundancy against GitHub Actions
     # schedule drops. GitHub's cron is documented as best-effort — runs at
