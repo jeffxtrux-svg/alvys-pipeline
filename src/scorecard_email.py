@@ -1493,17 +1493,31 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # but the human-readable truck number ("45209") lives on the Vehicles
     # sheet. Build an id -> name map so the MPG list can be keyed by truck
     # number — that's what every other table on the page joins by.
+    def _exact_or_find(df, exact: str, fallback_needles: list[str]) -> str | None:
+        """Prefer a column whose name is exactly `exact` (case-insensitive);
+        fall back to a substring search. Avoids `_find_col(['id'])` grabbing
+        'externalIds' before the actual 'id' column."""
+        if df is None:
+            return None
+        target = exact.lower()
+        for c in df.columns:
+            if str(c).lower() == target:
+                return c
+        return _find_col(df, fallback_needles)
+
     vehicles_df = sheets.get("Vehicles")
     id_to_truck: dict[str, str] = {}
     if vehicles_df is not None and not vehicles_df.empty:
-        v_id = _find_col(vehicles_df, ["id"])
-        v_nm = _find_col(vehicles_df, ["name"])
+        v_id = _exact_or_find(vehicles_df, "id", ["vehicleid", "vehicle.id"])
+        v_nm = _exact_or_find(vehicles_df, "name", ["vehiclename", "vehicle.name"])
         if v_id and v_nm:
             for _, r in vehicles_df.iterrows():
                 vid = str(r.get(v_id) or "").strip()
                 vnm = str(r.get(v_nm) or "").strip()
                 if vid and vnm:
                     id_to_truck[vid] = _truck_label(vnm)
+        log.info("Vehicles id->truck map: %d entries (id col=%s, name col=%s)",
+                 len(id_to_truck), v_id, v_nm)
 
     # MPG source preference:
     #   1. Aggregate Trips data (per-trip fuelConsumed* + distance straight

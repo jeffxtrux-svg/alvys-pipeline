@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: MPG computed from Trips aggregation, no Samsara endpoint)
+  # (touch bump: fix Vehicles id/name column lookup — exact match before fuzzy)
   push:
     branches:
       - claude/claude-md-docs-Es64x
