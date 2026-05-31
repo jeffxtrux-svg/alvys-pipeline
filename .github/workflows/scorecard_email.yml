@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump to re-fire after Samsara refresh w/ driver names)
+  # (touch bump to re-fire after Samsara KPI fixes — IFTA + safety scores now populated)
   push:
     branches:
       - claude/claude-md-docs-Es64x
