@@ -1521,7 +1521,7 @@ def _detail_rows(df: pd.DataFrame, dates: pd.Series, fields: list[tuple]) -> lis
 # ----------------------------------------------------------------------
 # Settlement week runs Wed 3:00 PM -> following Wed 2:59 PM, America/Chicago.
 CHI_TZ = "America/Chicago"
-SETTLEMENT_WEEKS = 4
+SETTLEMENT_WEEKS = 5   # 4 complete prior weeks + current partial week
 SETTLEMENT_DOW = 2   # Wednesday (Mon=0)
 SETTLEMENT_HOUR = 15  # 3:00 PM
 
@@ -1667,10 +1667,11 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
     week_totals = [sum(r["weeks"][k] for r in rows) for k in range(SETTLEMENT_WEEKS)]
     cur_idx = SETTLEMENT_WEEKS - 1
     drivers_cur = sum(1 for r in rows if r["weeks"][cur_idx] > 0)
-    # Average distinct drivers running per week across the displayed window —
-    # for the "avg drivers/wk" reference next to the per-driver miles avg.
+    # Average distinct drivers running per week — averaged over the complete
+    # prior weeks only (the current partial week would drag it low).
     drivers_per_week = [sum(1 for r in rows if r["weeks"][k] > 0) for k in range(SETTLEMENT_WEEKS)]
-    avg_drivers_per_week = (sum(drivers_per_week) / SETTLEMENT_WEEKS) if SETTLEMENT_WEEKS else None
+    complete_weeks = SETTLEMENT_WEEKS - 1
+    avg_drivers_per_week = (sum(drivers_per_week[:complete_weeks]) / complete_weeks) if complete_weeks else None
     return {
         "labels": [_wk_label(s) for s in starts],
         "rows": rows,
@@ -2761,12 +2762,15 @@ def build_page4(mileage, date_str) -> str:
             + hcell("Total", "right") + hcell("Avg / wk", "right")
             + hcell("Start &rarr; End &middot; this week", "left") + "</tr>")
 
+    # Avg / wk excludes the current (partial) week so it reflects a true
+    # full-week run-rate rather than getting dragged low mid-week.
+    complete_weeks = SETTLEMENT_WEEKS - 1
     body = ""
     for r in rows:
         wk_cells = "".join(
             mcell(num(r["weeks"][k]) if r["weeks"][k] else "&ndash;", "right", cur=(k == cur))
             for k in range(SETTLEMENT_WEEKS))
-        avg_wk = (r["total"] / SETTLEMENT_WEEKS) if SETTLEMENT_WEEKS else 0
+        avg_wk = ((r["total"] - r["weeks"][cur]) / complete_weeks) if complete_weeks else 0
         body += ("<tr>"
                  + mcell(r["driver"], "left")
                  + mcell(r["trucks"] or "&ndash;", "left")
@@ -2780,10 +2784,10 @@ def build_page4(mileage, date_str) -> str:
             bg = f"background:{ACCENTBG};" if cur else ""
             return (f"<td align='{al}' style='padding:9px 8px;font-size:12.5px;font-weight:800;color:{INK};"
                     f"border-top:2px solid {LINE};{bg}'>{text}</td>")
-        # Total row's "Avg / wk" cell averages the column totals — same as
-        # grand_total / SETTLEMENT_WEEKS, but spelled as the row average so
-        # column math is verifiable.
-        grand_avg = (m.get("grand_total") / SETTLEMENT_WEEKS) if SETTLEMENT_WEEKS else 0
+        # Total row's "Avg / wk" cell mirrors the per-row formula: full-week
+        # run-rate that excludes the partial current week.
+        gt = m.get("grand_total") or 0
+        grand_avg = ((gt - week_totals[cur]) / complete_weeks) if complete_weeks else 0
         body += ("<tr>" + tcell("Total", "left") + tcell("", "left")
                  + "".join(tcell(num(week_totals[k]), "right", cur=(k == cur)) for k in range(SETTLEMENT_WEEKS))
                  + tcell(num(m.get("grand_total")), "right")
@@ -2804,7 +2808,7 @@ def build_page4(mileage, date_str) -> str:
             f"{table}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Settlement weeks run Wed 3:00 PM &rarr; the following Wed 2:59 PM (America/Chicago); the current "
-            f"week is tinted. Each trip leg is credited to its Driver 1 / Truck / miles and bucketed by its own "
+            f"week is tinted. Avg / wk excludes the current (partial) week. Each trip leg is credited to its Driver 1 / Truck / miles and bucketed by its own "
             f"actual delivery (last stop arrival). Cancelled and not-yet-delivered legs are excluded; asset fleet "
             f"only. Source: Alvys API (Trips, via the pipeline file).</div>")
 
