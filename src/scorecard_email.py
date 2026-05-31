@@ -1431,6 +1431,27 @@ def _truck_label(v) -> str:
     return s
 
 
+def _normalize_id(v) -> str:
+    """Normalize a Samsara id (vehicleId / driverId) to its canonical
+    decimal-integer string. Handles pandas' float coercion of large ints:
+    int -> '281474985134847', float -> '281474985134847.0' / '2.8e+14' →
+    all converge to '281474985134847'. Non-numeric strings pass through."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    try:
+        f = float(s)
+    except (TypeError, ValueError):
+        return s
+    if f != f:  # NaN check
+        return ""
+    if float(int(f)) == f:
+        return str(int(f))
+    return s
+
+
 def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if not sheets:
         return None
@@ -1524,12 +1545,12 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         v_nm = _exact_or_find(vehicles_df, "name", ["vehiclename", "vehicle.name"])
         if v_id and v_nm:
             for _, r in vehicles_df.iterrows():
-                vid = str(r.get(v_id) or "").strip()
+                vid = _normalize_id(r.get(v_id))
                 vnm = str(r.get(v_nm) or "").strip()
                 if vid and vnm:
                     id_to_truck[vid] = _truck_label(vnm)
-        log.info("Vehicles id->truck map: %d entries (id col=%s, name col=%s)",
-                 len(id_to_truck), v_id, v_nm)
+        log.info("Vehicles id->truck map: %d entries (id col=%s, name col=%s, sample=%s)",
+                 len(id_to_truck), v_id, v_nm, list(id_to_truck.items())[:2])
 
     # MPG source preference:
     #   1. Aggregate Trips data (per-trip fuelConsumed* + distance straight
@@ -1573,10 +1594,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 out["fleet"]["fleet_gallons"] = float(agg["_gallons"].sum())
                 agg = agg.sort_values("_mpg", ascending=False).reset_index(drop=True)
                 def _unit_label_trips(raw):
-                    s = str(raw).strip()
+                    s = _normalize_id(raw)
                     if s in id_to_truck:
                         return id_to_truck[s]
-                    return _truck_label(s)
+                    return _truck_label(str(raw).strip())
                 out["fleet"]["mpg"] = [
                     {"unit": _unit_label_trips(r[t_veh]), "mpg": round(r["_mpg"], 2),
                      "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
@@ -1642,10 +1663,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 # column held vehicleId we go through id_to_truck; if it
                 # already held the truck name we pass through.
                 def _unit_label(raw):
-                    s = str(raw).strip()
+                    s = _normalize_id(raw)
                     if s in id_to_truck:
                         return id_to_truck[s]
-                    return _truck_label(s)
+                    return _truck_label(str(raw).strip())
                 out["fleet"]["mpg"] = [
                     {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
                      "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
@@ -1687,18 +1708,19 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     d_nm = _exact_or_find(drivers_df, "name", ["drivername", "driver.name"])
                     if d_id and d_nm:
                         for _, dr in drivers_df.iterrows():
-                            did = str(dr.get(d_id) or "").strip()
+                            did = _normalize_id(dr.get(d_id))
                             dnm = str(dr.get(d_nm) or "").strip()
                             if did and dnm:
                                 drv_id_to_name[did] = dnm
+                log.info("Drivers id->name map: %d entries", len(drv_id_to_name))
                 td = trips_df[[t_vname, t_dname, t_end]].copy()
                 td["_end"] = pd.to_datetime(td[t_end], errors="coerce", utc=True)
                 td = td.dropna(subset=["_end"]).sort_values("_end", ascending=False)
                 using_driver_id = "id" in str(t_dname).lower()
                 for _, r in td.iterrows():
-                    raw_v = str(r[t_vname]).strip()
-                    vn = id_to_truck.get(raw_v) or _truck_label(raw_v)
-                    raw_d = str(r[t_dname]).strip()
+                    raw_v = _normalize_id(r[t_vname])
+                    vn = id_to_truck.get(raw_v) or _truck_label(str(r[t_vname]).strip())
+                    raw_d = _normalize_id(r[t_dname])
                     # If we're looking up by driver id, ONLY accept rows we
                     # could resolve to a real name. Raw '0' / unknown ids
                     # represent unassigned trips and shouldn't surface in
@@ -1706,7 +1728,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     if using_driver_id:
                         dn = drv_id_to_name.get(raw_d)
                     else:
-                        dn = raw_d
+                        dn = str(r[t_dname]).strip()
                     if not vn or not dn or dn.lower() in ("nan", "0", ""):
                         continue
                     if vn in recent_driver_by_truck:
@@ -3570,11 +3592,24 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
-    return build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
+    html = build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
                       margin_projection=margin_projection)
+    # Stash the compute dicts on the returned string-like-thing so main()
+    # can pass them to the lint checks without re-running everything.
+    return _ReportResult(html, samsara=samsara, qb_ar=qb_ar, alvys_ar=alvys_ar)
+
+
+class _ReportResult(str):
+    """str subclass that carries the compute dicts as attributes — lets
+    build_report keep returning a string for all existing callers while
+    main() pulls the lint context off it."""
+    def __new__(cls, html: str, **ctx):
+        inst = super().__new__(cls, html)
+        inst._ctx = ctx
+        return inst
 
 
 # ----------------------------------------------------------------------
@@ -3743,8 +3778,23 @@ def main() -> int:
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
                         sambasafety_sheets=samba_sheets)
-    subject = f"XFreight Executive Brief — {datetime.now():%b %d, %Y}"
-    send_email(token, from_upn, to_emails, subject, html)
+    # Pre-send lint — catches regressions of bugs we've already hit
+    # (driver column showing '0', MPG join broken, excluded truck leaked).
+    # See src/scorecard_lint.py for the registered checks.
+    try:
+        from src.scorecard_lint import lint, format_findings, subject_prefix
+        ctx = getattr(html, "_ctx", {}) or {}
+        findings = lint(str(html), **ctx)
+        if findings:
+            log.warning("Scorecard lint findings:\n%s", format_findings(findings))
+        else:
+            log.info("Scorecard lint: clean")
+        prefix = subject_prefix(findings)
+    except Exception as e:
+        log.warning("Scorecard lint skipped (%s: %s)", type(e).__name__, e)
+        prefix = ""
+    subject = f"{prefix}XFreight Executive Brief — {datetime.now():%b %d, %Y}"
+    send_email(token, from_upn, to_emails, subject, str(html))
     # Archive the brief for the Karpathy-Wiki librarian to compile.
     try:
         from src.karpathy_writer import frontmatter, save
