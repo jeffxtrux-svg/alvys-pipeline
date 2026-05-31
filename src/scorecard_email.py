@@ -1694,12 +1694,20 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 td = trips_df[[t_vname, t_dname, t_end]].copy()
                 td["_end"] = pd.to_datetime(td[t_end], errors="coerce", utc=True)
                 td = td.dropna(subset=["_end"]).sort_values("_end", ascending=False)
+                using_driver_id = "id" in str(t_dname).lower()
                 for _, r in td.iterrows():
                     raw_v = str(r[t_vname]).strip()
                     vn = id_to_truck.get(raw_v) or _truck_label(raw_v)
                     raw_d = str(r[t_dname]).strip()
-                    dn = drv_id_to_name.get(raw_d) or raw_d
-                    if not vn or not dn or dn.lower() == "nan":
+                    # If we're looking up by driver id, ONLY accept rows we
+                    # could resolve to a real name. Raw '0' / unknown ids
+                    # represent unassigned trips and shouldn't surface in
+                    # the table as the literal text "0".
+                    if using_driver_id:
+                        dn = drv_id_to_name.get(raw_d)
+                    else:
+                        dn = raw_d
+                    if not vn or not dn or dn.lower() in ("nan", "0", ""):
                         continue
                     if vn in recent_driver_by_truck:
                         continue
