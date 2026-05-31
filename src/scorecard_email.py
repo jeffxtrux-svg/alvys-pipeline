@@ -1531,13 +1531,33 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             df = df[~df[nm_col].apply(_is_excluded_driver)] if nm_col in df.columns else df
             if not df.empty:
                 out["fleet"]["fleet_score"] = float(df["_score"].mean())
-                # All drivers, worst-to-best — replaces the separate top-5 /
-                # bottom-5 tables. Keep scores_top/scores_bottom for callers
-                # that still reference them.
+                # Detect the component-event columns Samsara returns alongside
+                # the composite safetyScore. Names vary slightly by API
+                # version, so search for each.
+                accel_col = _find_col(df, ["harshacceleration", "harsh_acceleration", "harshaccel"])
+                brake_col = _find_col(df, ["harshbraking", "harsh_braking", "harshbrake"])
+                turn_col = _find_col(df, ["harshturning", "harsh_turning", "harshturn"])
+                speed_col = _find_col(df, ["speedingcount", "speeding_count", "speeding"])
+                crash_col = _find_col(df, ["crashcount", "crash_count", "crash"])
+                miles_col = _find_col(df, ["totaldistancedrivenmiles", "distancedrivenmiles", "totalmiles"])
+                def _i(r, col):
+                    if not col:
+                        return None
+                    v = pd.to_numeric(pd.Series([r.get(col)]), errors="coerce").iloc[0]
+                    return int(v) if _isnum(v) else None
+
                 ranked = df.sort_values("_score", ascending=True)
                 def _row(r):
-                    return {"driver": str(r.get(nm_col) or r.get("driverId") or ""),
-                            "score": int(round(r["_score"]))}
+                    return {
+                        "driver": str(r.get(nm_col) or r.get("driverId") or ""),
+                        "score": int(round(r["_score"])),
+                        "harsh_accel": _i(r, accel_col),
+                        "harsh_brake": _i(r, brake_col),
+                        "harsh_turn": _i(r, turn_col),
+                        "speeding": _i(r, speed_col),
+                        "crashes": _i(r, crash_col),
+                        "miles": _i(r, miles_col),
+                    }
                 out["fleet"]["scores_all"] = [_row(r) for _, r in ranked.iterrows()]
                 out["fleet"]["scores_top"] = list(reversed(out["fleet"]["scores_all"][-5:]))
                 out["fleet"]["scores_bottom"] = out["fleet"]["scores_all"][:5]
@@ -2800,8 +2820,9 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    # Driver safety: all drivers ranked worst-to-best. The lowest scores
-    # (highest risk) get the red treatment so they're easy to spot at the top.
+    # Driver safety: all drivers ranked worst-to-best with the underlying
+    # event components that drive the composite score. Lowest scores get
+    # red so they pop at the top.
     scores_all = fleet.get("scores_all") or []
     def _score_kind(s: int) -> str:
         if s < 90:
@@ -2809,10 +2830,32 @@ def build_page_fleet(samsara, date_str) -> str:
         if s < 100:
             return "warn"
         return "good"
-    score_all_tbl = _rank_table(
-        scores_all, ["Driver", "Score", "", ""],
-        lambda r: _tr([r["driver"], str(r["score"]), "", ""],
-                      ["left", "right", "right", "right"], [None, _score_kind(r["score"]), None, None]))
+    def _evt(v):
+        return "&ndash;" if v is None else str(v)
+    def _evt_kind(v):
+        # Highlight any non-zero count in red so events draw the eye.
+        if v is None or v == 0:
+            return None
+        return "bad"
+    if scores_all:
+        headers = ["Driver", "Score", "Harsh accel", "Harsh brake", "Harsh turn", "Speeding", "Crashes"]
+        body = ""
+        for r in scores_all:
+            body += _tr(
+                [r["driver"], str(r["score"]),
+                 _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
+                 _evt(r.get("harsh_turn")), _evt(r.get("speeding")),
+                 _evt(r.get("crashes"))],
+                ["left", "right", "right", "right", "right", "right", "right"],
+                [None, _score_kind(r["score"]),
+                 _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
+                 _evt_kind(r.get("harsh_turn")), _evt_kind(r.get("speeding")),
+                 _evt_kind(r.get("crashes"))])
+        score_all_tbl = _table(headers,
+                               ["left", "right", "right", "right", "right", "right", "right"],
+                               body)
+    else:
+        score_all_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
 
     return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 4, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
