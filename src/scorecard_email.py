@@ -1566,9 +1566,19 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         t_dist = _find_col(trips_df_for_mpg, ["distancemiles", "distance.miles", "distancemeters", "distance.meters"])
         t_fuel = (_find_col(trips_df_for_mpg, ["fuelconsumedml", "fuel.consumed.ml", "fuelusedml", "fuel.consumed", "fuelused"])
                   or _find_col(trips_df_for_mpg, ["fuelconsumed", "fuel"]))
-        log.info("Trips MPG probe: veh=%s dist=%s fuel=%s", t_veh, t_dist, t_fuel)
+        # Date column for MTD filtering — Samsara Trips carry endTime.
+        t_end = _find_col(trips_df_for_mpg, ["endtime", "end time"])
+        log.info("Trips MPG probe: veh=%s dist=%s fuel=%s end=%s", t_veh, t_dist, t_fuel, t_end)
         if t_veh and t_dist and t_fuel:
-            td = trips_df_for_mpg[[t_veh, t_dist, t_fuel]].copy()
+            cols = [t_veh, t_dist, t_fuel] + ([t_end] if t_end else [])
+            td = trips_df_for_mpg[cols].copy()
+            # Filter to MTD so the tile labels (Fleet MPG · MTD, Best MPG MTD)
+            # actually match the aggregation window.
+            if t_end:
+                td["_end"] = pd.to_datetime(td[t_end], errors="coerce", utc=True)
+                mtd_start = pd.Timestamp.now(tz="UTC").normalize().replace(day=1)
+                td = td[td["_end"] >= mtd_start]
+                log.info("Trips MPG: filtered to MTD (%s+) -> %d rows", mtd_start.date(), len(td))
             td["_dist"] = pd.to_numeric(td[t_dist], errors="coerce").fillna(0)
             td["_fuel"] = pd.to_numeric(td[t_fuel], errors="coerce").fillna(0)
             # Convert distance/fuel based on column-name unit hints.
@@ -1781,14 +1791,18 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                  [r["unit"] for r in rows[:6]])
         out["fleet"]["idle"] = rows
         out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
-        # Backfill driver name onto MPG rows so Best/Worst MPG tables
-        # show who's driving each truck. Uses the same driver map we just
-        # built (static assignment + Trips fallback) so the source of
-        # truth is consistent across both tables on the page.
-        driver_by_truck = {r["unit"]: r.get("driver", "") for r in rows if r.get("driver")}
+        # Backfill driver name onto MPG rows. Source the FULL Trips-based
+        # driver map (covers trucks with trips but no engine state history,
+        # like 43193) — falling back to the idle rows' static-assignment
+        # driver if the truck isn't in the Trips map.
+        static_driver_by_truck = {r["unit"]: r.get("driver", "")
+                                  for r in rows if r.get("driver")}
         for m in out["fleet"].get("mpg", []) or []:
-            if not m.get("driver"):
-                m["driver"] = driver_by_truck.get(m.get("unit"), "")
+            if m.get("driver"):
+                continue
+            unit = m.get("unit")
+            m["driver"] = (recent_driver_by_truck.get(unit)
+                           or static_driver_by_truck.get(unit, ""))
         # Settlement-week date-range labels (reuse the same helpers Driver
         # Mileage uses so both pages match).
         try:
@@ -3012,8 +3026,8 @@ def build_page_fleet(samsara, date_str) -> str:
     fleet_miles = fleet.get("fleet_miles")
     tiles = (
         _tile("Fleet MPG", (f"{fleet_mpg:.2f}" if _isnum(fleet_mpg) else "n/a"),
-              _pill("latest IFTA month", "mute"))
-        + _tile("Fleet miles &middot; latest IFTA", num(fleet_miles), _pill("from IFTA", "mute"))
+              _pill("MTD", "mute"))
+        + _tile("Fleet miles &middot; MTD", num(fleet_miles), _pill("Samsara OBD", "mute"))
         + _tile("Fleet idle hours &middot; 30d", num(fleet_idle), _pill("Samsara engine states", "mute"))
         + _tile("Fleet avg safety score",
                 (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
@@ -3159,9 +3173,9 @@ def build_page_fleet(samsara, date_str) -> str:
     return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 4, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
-            f"{_section('Best MPG &middot; top 5 trucks (latest IFTA month)')}"
+            f"{_section('Best MPG &middot; top 5 trucks (MTD)')}"
             f"{mpg_top_tbl}"
-            f"{_section('Worst MPG &middot; bottom 5 trucks (latest IFTA month)')}"
+            f"{_section('Worst MPG &middot; bottom 5 trucks (MTD)')}"
             f"{mpg_bot_tbl}"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
             f"{idle_tbl}"
