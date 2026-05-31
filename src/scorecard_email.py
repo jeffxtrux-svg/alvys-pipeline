@@ -1488,11 +1488,32 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
     # MPG per truck: pull all IFTA_YYYY_MM sheets (most recent month wins per
     # vehicle when duplicated). Compute MPG = miles / gallons.
+    #
+    # Samsara's IFTA vehicle report carries `vehicleId` (internal numeric id)
+    # but the human-readable truck number ("45209") lives on the Vehicles
+    # sheet. Build an id -> name map so the MPG list can be keyed by truck
+    # number — that's what every other table on the page joins by.
+    vehicles_df = sheets.get("Vehicles")
+    id_to_truck: dict[str, str] = {}
+    if vehicles_df is not None and not vehicles_df.empty:
+        v_id = _find_col(vehicles_df, ["id"])
+        v_nm = _find_col(vehicles_df, ["name"])
+        if v_id and v_nm:
+            for _, r in vehicles_df.iterrows():
+                vid = str(r.get(v_id) or "").strip()
+                vnm = str(r.get(v_nm) or "").strip()
+                if vid and vnm:
+                    id_to_truck[vid] = _truck_label(vnm)
+
     ifta_keys = sorted([k for k in sheets if k.startswith("IFTA_")], reverse=True)
     if ifta_keys:
         ifta = sheets[ifta_keys[0]]
         if ifta is not None and not ifta.empty:
-            v_col = _find_col(ifta, ["vehicle name", "vehicle", "unit name", "unit"])
+            # Look for name FIRST (so "vehicleName" / "vehicle.name" beats the
+            # broader "vehicle" substring that would otherwise grab vehicleId).
+            v_col = (_find_col(ifta, ["vehiclename", "vehicle.name", "vehicle_name", "vehicle name", "unitname", "unit name"])
+                     or _find_col(ifta, ["vehicleid", "vehicle.id", "vehicle"])
+                     or _find_col(ifta, ["unit"]))
             mi_col = _find_col(ifta, ["miles", "distance"])
             ga_col = _find_col(ifta, ["gallons", "fuel"])
             if v_col and mi_col and ga_col:
@@ -1507,8 +1528,16 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     out["fleet"]["fleet_miles"] = float(df["_miles"].sum())
                     out["fleet"]["fleet_gallons"] = float(df["_gallons"].sum())
                     df = df.sort_values("_mpg", ascending=False).reset_index(drop=True)
+                    # Resolve the value in v_col to a truck number — if the
+                    # column held vehicleId we go through id_to_truck; if it
+                    # already held the truck name we pass through.
+                    def _unit_label(raw):
+                        s = str(raw).strip()
+                        if s in id_to_truck:
+                            return id_to_truck[s]
+                        return _truck_label(s)
                     out["fleet"]["mpg"] = [
-                        {"unit": str(r[v_col]), "mpg": round(r["_mpg"], 2),
+                        {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
                          "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
                         for _, r in df.iterrows()
                     ]
