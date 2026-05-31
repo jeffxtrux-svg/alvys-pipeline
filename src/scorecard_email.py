@@ -1371,6 +1371,16 @@ def _coaching_by_window(events: pd.DataFrame, driver_col: str, dates: pd.Series)
     return out
 
 
+def _truck_label(v) -> str:
+    """Strip the trailing '.0' pandas adds when a numeric truck number flows
+    through the workbook as float. '45209.0' -> '45209'; non-numeric strings
+    (e.g. 'TRK-007') pass through unchanged."""
+    s = str(v).strip()
+    if s.endswith(".0") and s[:-2].lstrip("-").isdigit():
+        return s[:-2]
+    return s
+
+
 def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if not sheets:
         return None
@@ -1468,7 +1478,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if idle is not None and not idle.empty and "Idle Hours" in idle.columns:
         top = idle.sort_values("Idle Hours", ascending=False).head(5)
         out["fleet"]["idle"] = [
-            {"unit": str(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
+            {"unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
              "idle_hours": float(r.get("Idle Hours") or 0),
              "engine_hours": float(r.get("Engine Hours") or 0),
              "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
