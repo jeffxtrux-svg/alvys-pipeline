@@ -1160,6 +1160,16 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
         })
     rows.sort(key=lambda x: ({"31&ndash;60": 0, "61&ndash;90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
     total_ar = pd.to_numeric(data[amt_col], errors="coerce").dropna().sum() if amt_col in data.columns else None
+    # Past-due = everything not in Current. Tile shows this so the headline AR
+    # number captures the full overdue book, not just 31+. Page 5's detailed
+    # table still scopes to 31+ for actionable focus.
+    past_due_total = 0.0
+    for _, r in data.iterrows():
+        if "current" in str(r.get("Section", "")).lower():
+            continue
+        a = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
+        if _isnum(a):
+            past_due_total += float(a)
 
     # Open AR rolled up by customer across ALL buckets (for the QB-vs-Alvys reconciliation).
     by_customer: dict[str, dict] = {}
@@ -1177,6 +1187,7 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
                                       "customer": name, "amount": float(amt)})
 
     return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
+            "total_past_due": past_due_total,
             "total_ar": float(total_ar) if _isnum(total_ar) else None,
             "by_customer": by_customer, "open_invoices": open_invoices}
 
@@ -2186,7 +2197,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     empty_td = "<td class='tile-empty' width='25%' style='padding:6px;'></td>"
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _tile_div("Total receivables &middot; AR", money(qb_ar.get("total_ar") if qb_ar else None), _pill("X-Trux + X-Linx", "mute"))
-                 + _tile_div("AR 31+ overdue", money(qb_ar.get("total31") if qb_ar else None), _pill("see pg 5", "bad"))
+                 + _tile_div("AR past due", money(qb_ar.get("total_past_due") if qb_ar else None), _pill("see pg 5", "bad"))
                  + "</td>")
     _xt, _xl = (alvys_entities or {}).get("X-Trux", {}), (alvys_entities or {}).get("X-Linx", {})
     # Top-line tiles = whole company (X-Trux + X-Linx), matching the entity table's Total row.
