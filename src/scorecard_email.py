@@ -1668,23 +1668,46 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         trips_df = sheets.get("Trips")
         recent_driver_by_truck: dict[str, str] = {}
         if trips_df is not None and not trips_df.empty:
-            t_vname = _find_col(trips_df, ["vehiclename", "vehicle.name", "vehicle name"])
-            t_dname = _find_col(trips_df, ["drivername", "driver.name", "driver name"])
+            # Trips carries vehicleId, not a name field — resolve through
+            # id_to_truck after the lookup. Same fallback chain as MPG.
+            t_vname = (_find_col(trips_df, ["vehiclename", "vehicle.name", "vehicle name"])
+                       or _find_col(trips_df, ["vehicleid", "vehicle.id"]))
+            t_dname = (_find_col(trips_df, ["drivername", "driver.name", "driver name"])
+                       or _find_col(trips_df, ["driverid", "driver.id"]))
             t_end = _find_col(trips_df, ["endtime", "end time", "endts", "endms"])
+            log.info("Trips driver-fallback probe: veh=%s drv=%s end=%s",
+                     t_vname, t_dname, t_end)
             if t_vname and t_dname and t_end:
+                # If the driver column is an id (not a name), build an id->name
+                # map from the Drivers sheet.
+                drivers_df = sheets.get("Drivers")
+                drv_id_to_name: dict[str, str] = {}
+                if "id" in str(t_dname).lower() and drivers_df is not None and not drivers_df.empty:
+                    d_id = _exact_or_find(drivers_df, "id", ["driverid", "driver.id"])
+                    d_nm = _exact_or_find(drivers_df, "name", ["drivername", "driver.name"])
+                    if d_id and d_nm:
+                        for _, dr in drivers_df.iterrows():
+                            did = str(dr.get(d_id) or "").strip()
+                            dnm = str(dr.get(d_nm) or "").strip()
+                            if did and dnm:
+                                drv_id_to_name[did] = dnm
                 td = trips_df[[t_vname, t_dname, t_end]].copy()
                 td["_end"] = pd.to_datetime(td[t_end], errors="coerce", utc=True)
                 td = td.dropna(subset=["_end"]).sort_values("_end", ascending=False)
                 for _, r in td.iterrows():
-                    vn = _truck_label(r[t_vname])
-                    dn = r[t_dname]
-                    if not vn or not dn or str(dn).lower() == "nan":
+                    raw_v = str(r[t_vname]).strip()
+                    vn = id_to_truck.get(raw_v) or _truck_label(raw_v)
+                    raw_d = str(r[t_dname]).strip()
+                    dn = drv_id_to_name.get(raw_d) or raw_d
+                    if not vn or not dn or dn.lower() == "nan":
                         continue
                     if vn in recent_driver_by_truck:
                         continue
                     if _is_excluded_driver(dn):
                         continue
-                    recent_driver_by_truck[vn] = str(dn).strip()
+                    recent_driver_by_truck[vn] = dn
+                log.info("Trips driver-fallback resolved: %d trucks",
+                         len(recent_driver_by_truck))
         # Build a truck -> MPG map from the IFTA-driven mpg list compiled
         # above. Normalize both keys with _truck_label so '45209.0' (idle
         # source) matches '45209' (IFTA source).
@@ -1693,6 +1716,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             k = _truck_label(m.get("unit") or "")
             if k and _isnum(m.get("mpg")):
                 mpg_by_unit[k] = float(m["mpg"])
+        log.info("MPG join: mpg_by_unit keys sample=%s",
+                 list(mpg_by_unit.keys())[:6])
         # All vehicles, ranked worst-to-best by **Avg / wk over the 4 complete
         # settlement weeks** (current partial week excluded). Largest idle
         # average = worst, so descending sort.
@@ -1718,6 +1743,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             })
         rows.sort(key=lambda x: x["avg_wk"], reverse=True)
         rows = [r for r in rows if not _is_excluded_truck(r["unit"])]
+        log.info("MPG join: idle row units sample=%s",
+                 [r["unit"] for r in rows[:6]])
         out["fleet"]["idle"] = rows
         out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
         # Settlement-week date-range labels (reuse the same helpers Driver
