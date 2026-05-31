@@ -304,7 +304,7 @@ class SamsaraClient:
             items = data
         elif isinstance(data, dict):
             # Try common wrapper keys before giving up.
-            for k in ("vehicles", "records", "items", "ifta", "ifta_vehicles"):
+            for k in ("vehicleReports", "vehicles", "records", "items", "ifta", "ifta_vehicles"):
                 v = data.get(k)
                 if isinstance(v, list):
                     items = v
@@ -386,17 +386,33 @@ class SamsaraClient:
                  len(driver_ids), start.date(), end.date())
         out: list[dict] = []
         for did in driver_ids:
-            # _safe_get handles the {"data": {...}} envelope and returns a list
-            # of records — a dict response gets wrapped into a single-element list.
             # Samsara's Driver Safety Score lives under the legacy `/v1/` path —
-            # the modern `/fleet/...` namespace 404s for this resource.
-            recs = self._safe_get(f"/v1/fleet/drivers/{did}/safety/score",
-                                  {"startMs": start_ms, "endMs": end_ms})
-            if not recs:
+            # the modern `/fleet/...` namespace 404s for this resource. The v1
+            # response is the score object itself at the top level (no
+            # `{"data": ...}` envelope), so _get_pages would silently report
+            # "0 records" for every driver. Fetch directly instead.
+            try:
+                resp = self._session.get(
+                    f"{BASE_URL}/v1/fleet/drivers/{did}/safety/score",
+                    headers=self._headers(),
+                    params={"startMs": start_ms, "endMs": end_ms},
+                    timeout=60,
+                )
+                if resp.status_code == 404:
+                    continue   # no score for this driver
+                if resp.status_code != 200:
+                    log.warning("Driver %s safety score → HTTP %d: %s",
+                                did, resp.status_code, resp.text[:200])
+                    continue
+                rec = resp.json()
+            except Exception as e:
+                log.warning("Driver %s safety score fetch failed: %s", did, e)
                 continue
-            rec = recs[0] if isinstance(recs[0], dict) else None
-            if not rec:
+            if not isinstance(rec, dict):
                 continue
+            # Some v1 endpoints still wrap in {"data": {...}} — handle both.
+            if "data" in rec and isinstance(rec["data"], dict):
+                rec = rec["data"]
             rec["driverId"] = did
             out.append(rec)
         log.info("Total driver safety score records: %d", len(out))
