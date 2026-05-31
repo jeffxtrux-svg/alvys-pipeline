@@ -1497,6 +1497,14 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             if not name or str(name).lower() == "nan":
                 return ""
             return "" if _is_excluded_driver(name) else str(name).strip()
+        # Build a truck -> MPG map from the IFTA-driven mpg list compiled
+        # above. Normalize both keys with _truck_label so '45209.0' (idle
+        # source) matches '45209' (IFTA source).
+        mpg_by_unit: dict[str, float] = {}
+        for m in out["fleet"].get("mpg", []) or []:
+            k = _truck_label(m.get("unit") or "")
+            if k and _isnum(m.get("mpg")):
+                mpg_by_unit[k] = float(m["mpg"])
         # All vehicles, ranked worst-to-best by **Avg / wk over the 4 complete
         # settlement weeks** (current partial week excluded). Largest idle
         # average = worst, so descending sort.
@@ -1505,8 +1513,9 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             weeks_idle = [float(r.get(f"Idle_{k}") or 0) for k in wk_keys]
             weeks_engine = [float(r.get(f"Engine_{k}") or 0) for k in wk_keys]
             avg_wk = sum(weeks_idle[:-1]) / max(1, len(complete_keys))
+            unit = _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or "")
             rows.append({
-                "unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
+                "unit": unit,
                 "driver": _idle_driver(r.get("Driver Name")),
                 "idle_hours": float(r.get("Idle Hours") or 0),
                 "engine_hours": float(r.get("Engine Hours") or 0),
@@ -1515,6 +1524,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 "weeks_idle": weeks_idle,
                 "weeks_engine": weeks_engine,
                 "avg_wk": avg_wk,
+                "mpg": mpg_by_unit.get(unit),
             })
         rows.sort(key=lambda x: x["avg_wk"], reverse=True)
         out["fleet"]["idle"] = rows
@@ -2795,6 +2805,7 @@ def build_page_fleet(samsara, date_str) -> str:
                      + _ihcell("Total", "right")
                      + _ihcell("Avg / wk", "right")
                      + _ihcell("Idle %", "right")
+                     + _ihcell("MPG", "right")
                      + "</tr>")
         idle_body = ""
         for r in idle_rows:
@@ -2810,6 +2821,8 @@ def build_page_fleet(samsara, date_str) -> str:
             total_style = f"color:{BAD};font-weight:700;"
             total_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{total_style}"
                           f"border-bottom:1px solid {LINE};'>{r['idle_hours']:.1f}</td>")
+            mpg_val = r.get("mpg")
+            mpg_txt = f"{mpg_val:.2f}" if _isnum(mpg_val) else "&ndash;"
             idle_body += ("<tr>"
                           + _icell(r["unit"], "left")
                           + _icell(r.get("driver") or "&mdash;", "left")
@@ -2817,6 +2830,7 @@ def build_page_fleet(samsara, date_str) -> str:
                           + total_cell
                           + _icell(f"{avg_wk:.1f}", "right")
                           + pct_cell
+                          + _icell(mpg_txt, "right")
                           + "</tr>")
         idle_tbl = (f"<tr><td colspan='4' style='padding:0 6px;'><table width='100%' cellpadding='0' cellspacing='0' "
                     f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"

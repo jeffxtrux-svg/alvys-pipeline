@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: idle table shows all trucks ranked by avg/wk worst-to-best)
+  # (touch bump: add MPG column to idle table, joined from IFTA)
   push:
     branches:
       - claude/claude-md-docs-Es64x
