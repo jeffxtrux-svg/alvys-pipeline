@@ -157,6 +157,54 @@ def _severity_for(event_type: str | None) -> str | None:
     return "Low"
 
 
+def build_engine_idle(raw_engine_history: list[dict]) -> pd.DataFrame:
+    """Aggregate engineStates transitions into idle / running / off hours per vehicle.
+
+    Samsara emits a stream of `{time, value}` transitions per vehicle. Each
+    state is in effect from its timestamp until the next transition. Sum
+    durations by state and convert to hours.
+    """
+    rows = []
+    for rec in raw_engine_history or []:
+        states = rec.get("engineStates") or []
+        if not isinstance(states, list) or len(states) < 2:
+            continue
+        # Sort by time (string ISO sorts lexicographically when same TZ)
+        try:
+            states = sorted(states, key=lambda s: s.get("time", ""))
+        except Exception:
+            pass
+        totals = {"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0}
+        for i in range(len(states) - 1):
+            t0 = pd.to_datetime(states[i].get("time"), errors="coerce", utc=True)
+            t1 = pd.to_datetime(states[i + 1].get("time"), errors="coerce", utc=True)
+            if pd.isna(t0) or pd.isna(t1):
+                continue
+            secs = (t1 - t0).total_seconds()
+            if secs <= 0:
+                continue
+            val = states[i].get("value") or ""
+            # Samsara uses "Idle" / "On" / "Off" — "Running" appears in some
+            # accounts. Map anything else to On so total time accounts.
+            key = val if val in totals else ("On" if val else "Off")
+            totals[key] = totals.get(key, 0.0) + secs
+        rows.append({
+            "Vehicle ID": rec.get("id"),
+            "Vehicle Name": rec.get("name"),
+            "Idle Hours": round(totals.get("Idle", 0) / 3600, 2),
+            "On Hours": round(totals.get("On", 0) / 3600, 2),
+            "Running Hours": round(totals.get("Running", 0) / 3600, 2),
+            "Off Hours": round(totals.get("Off", 0) / 3600, 2),
+            "Engine Hours": round(
+                (totals.get("Idle", 0) + totals.get("On", 0) + totals.get("Running", 0)) / 3600, 2
+            ),
+        })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("Idle Hours", ascending=False).reset_index(drop=True)
+    return df
+
+
 def _hos_violation_type(rec: dict) -> str | None:
     return (
         rec.get("violationType")
@@ -291,7 +339,22 @@ def main() -> int:
     raw_dvirs = client.fetch_dvirs(start_safety, now)
 
     log.info("=" * 60)
-    log.info("Step 10/10: IFTA (last 3 months)")
+    log.info("Step 10/12: Engine state history (idle time, 30 days)")
+    log.info("=" * 60)
+    raw_engine_history = client.fetch_engine_state_history(
+        now - datetime.timedelta(days=30), now
+    )
+
+    log.info("=" * 60)
+    log.info("Step 11/12: Driver safety scores (%d days)", safety_days_back)
+    log.info("=" * 60)
+    driver_ids = [d["id"] for d in raw_drivers if "id" in d]
+    raw_driver_scores = client.fetch_driver_safety_scores(
+        driver_ids, start_safety, now
+    )
+
+    log.info("=" * 60)
+    log.info("Step 12/12: IFTA (last 3 months)")
     log.info("=" * 60)
     ifta_sheets: dict[str, pd.DataFrame] = {}
     for months_ago in range(3):
@@ -331,6 +394,18 @@ def main() -> int:
     log.info("  DVIR_Defects: %d rows (exploded from %d DVIRs)",
              len(df_dvir_defects), len(raw_dvirs))
 
+    df_idle = build_engine_idle(raw_engine_history)
+    log.info("  EngineIdle: %d rows (aggregated from %d vehicles' state history)",
+             len(df_idle), len(raw_engine_history))
+
+    df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
+    # Stamp the driver name onto each row by joining with the drivers sheet.
+    if not df_driver_scores.empty and "driverId" in df_driver_scores.columns:
+        drivers_df = flatten(raw_drivers, "Drivers")
+        if not drivers_df.empty and "id" in drivers_df.columns and "name" in drivers_df.columns:
+            name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
+            df_driver_scores["Driver Name"] = df_driver_scores["driverId"].astype(str).map(name_by_id)
+
     sheets: dict[str, pd.DataFrame] = {
         "Vehicles":       flatten(raw_vehicles,  "Vehicles"),
         "Drivers":        flatten(raw_drivers,   "Drivers"),
@@ -342,6 +417,8 @@ def main() -> int:
         "HOS_Violations": df_hosv,
         "DVIRs":          flatten(raw_dvirs,     "DVIRs"),
         "DVIR_Defects":   df_dvir_defects,
+        "EngineIdle":     df_idle,
+        "DriverSafetyScores": df_driver_scores,
         **ifta_sheets,
     }
 
