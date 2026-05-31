@@ -1551,6 +1551,29 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             if not name or str(name).lower() == "nan":
                 return ""
             return "" if _is_excluded_driver(name) else str(name).strip()
+        # Fallback driver lookup for trucks Samsara has no static assignment
+        # for: take the most recent driver-of-record from the Trips sheet.
+        # Keyed by truck label so it matches EngineIdle's Vehicle Name.
+        trips_df = sheets.get("Trips")
+        recent_driver_by_truck: dict[str, str] = {}
+        if trips_df is not None and not trips_df.empty:
+            t_vname = _find_col(trips_df, ["vehiclename", "vehicle.name", "vehicle name"])
+            t_dname = _find_col(trips_df, ["drivername", "driver.name", "driver name"])
+            t_end = _find_col(trips_df, ["endtime", "end time", "endts", "endms"])
+            if t_vname and t_dname and t_end:
+                td = trips_df[[t_vname, t_dname, t_end]].copy()
+                td["_end"] = pd.to_datetime(td[t_end], errors="coerce", utc=True)
+                td = td.dropna(subset=["_end"]).sort_values("_end", ascending=False)
+                for _, r in td.iterrows():
+                    vn = _truck_label(r[t_vname])
+                    dn = r[t_dname]
+                    if not vn or not dn or str(dn).lower() == "nan":
+                        continue
+                    if vn in recent_driver_by_truck:
+                        continue
+                    if _is_excluded_driver(dn):
+                        continue
+                    recent_driver_by_truck[vn] = str(dn).strip()
         # Build a truck -> MPG map from the IFTA-driven mpg list compiled
         # above. Normalize both keys with _truck_label so '45209.0' (idle
         # source) matches '45209' (IFTA source).
@@ -1568,9 +1591,11 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             weeks_engine = [float(r.get(f"Engine_{k}") or 0) for k in wk_keys]
             avg_wk = sum(weeks_idle[:-1]) / max(1, len(complete_keys))
             unit = _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or "")
+            primary_driver = _idle_driver(r.get("Driver Name"))
+            driver_name = primary_driver or recent_driver_by_truck.get(unit, "")
             rows.append({
                 "unit": unit,
-                "driver": _idle_driver(r.get("Driver Name")),
+                "driver": driver_name,
                 "idle_hours": float(r.get("Idle Hours") or 0),
                 "engine_hours": float(r.get("Engine Hours") or 0),
                 "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
