@@ -2897,22 +2897,16 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
     wrap = lambda inner: f"<div style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
-    # Mobile-responsive overrides. Email clients that support media queries
-    # (Apple Mail, iOS Mail, Gmail mobile app, modern webmail) will stack the
-    # 4-column tile rows into a single column at narrow widths. Clients that
-    # don't support media queries (Outlook desktop, older Gmail web) fall back
-    # to the desktop 4-column layout — they're on wide screens anyway.
+    # Mobile rendering deliberately keeps the desktop 4-column tile layout —
+    # readers preferred seeing all four tiles in a row (with shrink-to-fit
+    # text) over the responsive 1-up / 2-up stack patterns we tried.
+    # `td.tile` / `td.tile-empty` classes remain on the cells in case we
+    # want to revisit responsive overrides later. The .scroll-wide and
+    # padding-trim rules below are kept since they don't affect the tile
+    # layout and still help wide tables / headers on small screens.
     mobile_css = (
         "<style>"
-        # Tile rows: 2-up on phones (each tile takes 50% width, wraps to the
-        # next row naturally). inline-block is the most-compatible email
-        # pattern for this — iOS Mail, Apple Mail, Gmail mobile, modern
-        # webmail all honor it. Empty filler cells collapse.
         "@media only screen and (max-width:600px){"
-        "td.tile{display:inline-block !important;width:50% !important;"
-        "vertical-align:top !important;padding:6px !important;"
-        "box-sizing:border-box !important;}"
-        "td.tile-empty{display:none !important;}"
         # Wide tables (driver mileage, AR reconciliation, bill matching) get
         # horizontal scroll instead of squishing.
         ".scroll-wide{overflow-x:auto !important;-webkit-overflow-scrolling:touch;}"
