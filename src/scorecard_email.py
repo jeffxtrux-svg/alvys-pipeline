@@ -2904,10 +2904,14 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     # to the desktop 4-column layout — they're on wide screens anyway.
     mobile_css = (
         "<style>"
-        # Tile rows: each tile gets its own line on phones, hidden when empty.
+        # Tile rows: 2-up on phones (each tile takes 50% width, wraps to the
+        # next row naturally). inline-block is the most-compatible email
+        # pattern for this — iOS Mail, Apple Mail, Gmail mobile, modern
+        # webmail all honor it. Empty filler cells collapse.
         "@media only screen and (max-width:600px){"
-        "td.tile{display:block !important;width:100% !important;"
-        "padding:6px 12px !important;box-sizing:border-box;}"
+        "td.tile{display:inline-block !important;width:50% !important;"
+        "vertical-align:top !important;padding:6px !important;"
+        "box-sizing:border-box !important;}"
         "td.tile-empty{display:none !important;}"
         # Wide tables (driver mileage, AR reconciliation, bill matching) get
         # horizontal scroll instead of squishing.
