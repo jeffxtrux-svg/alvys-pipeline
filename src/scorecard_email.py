@@ -684,6 +684,18 @@ _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 # drivers. Normalized via _norm_name so punctuation/case variations match.
 _DRIVER_EXCLUDE: frozenset[str] = frozenset({"tempd"})
 
+# Trucks removed from the fleet. Idle / MPG / driver tables drop them so
+# decommissioned units don't keep appearing in the brief after they're sold
+# or returned. Match against the truck label produced by _truck_label
+# (numeric strings, no ".0" suffix).
+_TRUCK_EXCLUDE: frozenset[str] = frozenset({"44204"})
+
+
+def _is_excluded_truck(unit) -> bool:
+    if unit is None:
+        return False
+    return _truck_label(str(unit).strip()) in _TRUCK_EXCLUDE
+
 
 def _is_excluded_driver(name) -> bool:
     """True if a Samsara driver name is a placeholder / test record that
@@ -1569,6 +1581,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     {"unit": _unit_label_trips(r[t_veh]), "mpg": round(r["_mpg"], 2),
                      "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
                     for _, r in agg.iterrows()
+                    if not _is_excluded_truck(_unit_label_trips(r[t_veh]))
                 ]
                 log.info("MPG source: Trips (%d trucks)", len(out["fleet"]["mpg"]))
                 mpg_built = True
@@ -1637,6 +1650,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
                      "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
                     for _, r in df.iterrows()
+                    if not _is_excluded_truck(_unit_label(r[v_col]))
                 ]
 
     # Idle hours per truck (top 5 idlers) from EngineIdle sheet.
@@ -1703,6 +1717,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 "mpg": mpg_by_unit.get(unit),
             })
         rows.sort(key=lambda x: x["avg_wk"], reverse=True)
+        rows = [r for r in rows if not _is_excluded_truck(r["unit"])]
         out["fleet"]["idle"] = rows
         out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
         # Settlement-week date-range labels (reuse the same helpers Driver
