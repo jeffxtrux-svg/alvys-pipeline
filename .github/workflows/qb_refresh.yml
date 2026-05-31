@@ -16,6 +16,13 @@ name: Refresh QuickBooks data
 
 on:
   workflow_dispatch:
+  # One-shot verification trigger — DELETE this push block after the
+  # post-token-recovery run finishes successfully.
+  push:
+    branches:
+      - claude/claude-md-docs-Es64x
+    paths:
+      - .github/workflows/qb_refresh.yml
   # Schedule temporarily disabled during refresh-token recovery so a
   # scheduled run can't consume newly-minted tokens before manual verification.
   # Re-enable once one manual run rotates cleanly.
