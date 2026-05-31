@@ -1511,13 +1511,16 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             df = df.dropna(subset=["_score"])
             if not df.empty:
                 out["fleet"]["fleet_score"] = float(df["_score"].mean())
-                top = df.sort_values("_score", ascending=False).head(5)
-                bot = df.sort_values("_score", ascending=True).head(5)
+                # All drivers, worst-to-best — replaces the separate top-5 /
+                # bottom-5 tables. Keep scores_top/scores_bottom for callers
+                # that still reference them.
+                ranked = df.sort_values("_score", ascending=True)
                 def _row(r):
                     return {"driver": str(r.get(nm_col) or r.get("driverId") or ""),
                             "score": int(round(r["_score"]))}
-                out["fleet"]["scores_top"] = [_row(r) for _, r in top.iterrows()]
-                out["fleet"]["scores_bottom"] = [_row(r) for _, r in bot.iterrows()]
+                out["fleet"]["scores_all"] = [_row(r) for _, r in ranked.iterrows()]
+                out["fleet"]["scores_top"] = list(reversed(out["fleet"]["scores_all"][-5:]))
+                out["fleet"]["scores_bottom"] = out["fleet"]["scores_all"][:5]
 
     return out
 
@@ -2777,15 +2780,19 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    # Driver safety: top 5 and bottom 5.
-    score_top_tbl = _rank_table(
-        score_top, ["Driver", "Score", "", ""],
+    # Driver safety: all drivers ranked worst-to-best. The lowest scores
+    # (highest risk) get the red treatment so they're easy to spot at the top.
+    scores_all = fleet.get("scores_all") or []
+    def _score_kind(s: int) -> str:
+        if s < 90:
+            return "bad"
+        if s < 100:
+            return "warn"
+        return "good"
+    score_all_tbl = _rank_table(
+        scores_all, ["Driver", "Score", "", ""],
         lambda r: _tr([r["driver"], str(r["score"]), "", ""],
-                      ["left", "right", "right", "right"], [None, "good", None, None]))
-    score_bot_tbl = _rank_table(
-        score_bottom, ["Driver", "Score", "", ""],
-        lambda r: _tr([r["driver"], str(r["score"]), "", ""],
-                      ["left", "right", "right", "right"], [None, "bad", None, None]))
+                      ["left", "right", "right", "right"], [None, _score_kind(r["score"]), None, None]))
 
     return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 4, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
@@ -2798,12 +2805,10 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{idle_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
-            f"{_section('Safest drivers &middot; top 5 by safety score')}"
-            f"{score_top_tbl}"
-            f"{_section('Highest-risk drivers &middot; bottom 5 by safety score')}"
-            f"{score_bot_tbl}"
+            f"{_section('Driver safety scores &middot; all drivers, worst to best')}"
+            f"{score_all_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Sources: Samsara IFTA (MPG), Samsara engine-state history (idle, 30 days), "
+            f"Sources: Samsara IFTA (MPG), Samsara engine-state history (idle, last 5 settlement weeks), "
             f"Samsara Safety Events filtered by Event Type (speeding, 7 days), "
             f"Samsara Driver Safety Scores (per-driver composite, last 6 months).</div>")
 
