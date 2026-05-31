@@ -147,6 +147,42 @@ def check_ar_past_due_both_sources(html: str, ctx: dict) -> list[Finding]:
     return out
 
 
+def check_idle_gallons_present(html: str, ctx: dict) -> list[Finding]:
+    """If every idle row has zero/missing idle gallons but the underlying
+    EngineIdle sheet has idle hours, the OBD fuel-counter integration in
+    samsara_main isn't flowing (probably reading stale workbook before
+    Samsara finished updating it)."""
+    out: list[Finding] = []
+    samsara = ctx.get("samsara") or {}
+    idle = ((samsara.get("fleet") or {}).get("idle") or [])
+    if not idle:
+        return out
+    rows_with_hours = sum(1 for r in idle if (r.get("idle_hours") or 0) > 0)
+    rows_with_gal = sum(1 for r in idle
+                        if r.get("idle_gallons") and r.get("idle_gallons") > 0)
+    if rows_with_hours >= 5 and rows_with_gal == 0:
+        out.append(Finding("error", "idle_gallons_empty",
+                           f"{rows_with_hours} trucks have idle hours but zero "
+                           f"have idle gallons — OBD fuel column missing from "
+                           f"EngineIdle sheet (Samsara workbook out of date?)"))
+    return out
+
+
+def check_mpg_table_has_drivers(html: str, ctx: dict) -> list[Finding]:
+    """Best/Worst MPG entries should carry a driver name (em-dash is fine
+    for unassigned trucks, but never a literal missing/None)."""
+    out: list[Finding] = []
+    samsara = ctx.get("samsara") or {}
+    mpg = ((samsara.get("fleet") or {}).get("mpg") or [])
+    if not mpg:
+        return out
+    missing_key = sum(1 for m in mpg if "driver" not in m)
+    if missing_key == len(mpg):
+        out.append(Finding("error", "mpg_no_driver_key",
+                           "MPG entries lack 'driver' key — backfill step skipped?"))
+    return out
+
+
 def check_safety_scores_complete(html: str, ctx: dict) -> list[Finding]:
     """Every driver in scores_all needs a name and a numeric score."""
     out: list[Finding] = []
@@ -172,6 +208,8 @@ CHECKS: list[Callable[[str, dict], list[Finding]]] = [
     check_excluded_driver_absent,
     check_ar_past_due_both_sources,
     check_safety_scores_complete,
+    check_idle_gallons_present,
+    check_mpg_table_has_drivers,
 ]
 
 

@@ -1600,7 +1600,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     return _truck_label(str(raw).strip())
                 out["fleet"]["mpg"] = [
                     {"unit": _unit_label_trips(r[t_veh]), "mpg": round(r["_mpg"], 2),
-                     "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
+                     "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1),
+                     "driver": ""}  # filled below after id_to_truck + recent map are built
                     for _, r in agg.iterrows()
                     if not _is_excluded_truck(_unit_label_trips(r[t_veh]))
                 ]
@@ -1669,7 +1670,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     return _truck_label(str(raw).strip())
                 out["fleet"]["mpg"] = [
                     {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
-                     "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1)}
+                     "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1),
+                     "driver": ""}
                     for _, r in df.iterrows()
                     if not _is_excluded_truck(_unit_label(r[v_col]))
                 ]
@@ -1779,6 +1781,14 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                  [r["unit"] for r in rows[:6]])
         out["fleet"]["idle"] = rows
         out["fleet"]["fleet_idle_hours"] = float(idle["Idle Hours"].sum())
+        # Backfill driver name onto MPG rows so Best/Worst MPG tables
+        # show who's driving each truck. Uses the same driver map we just
+        # built (static assignment + Trips fallback) so the source of
+        # truth is consistent across both tables on the page.
+        driver_by_truck = {r["unit"]: r.get("driver", "") for r in rows if r.get("driver")}
+        for m in out["fleet"].get("mpg", []) or []:
+            if not m.get("driver"):
+                m["driver"] = driver_by_truck.get(m.get("unit"), "")
         # Settlement-week date-range labels (reuse the same helpers Driver
         # Mileage uses so both pages match).
         try:
@@ -3019,14 +3029,22 @@ def build_page_fleet(samsara, date_str) -> str:
 
     top5_mpg = mpg_rows[:5]
     bot5_mpg = list(reversed(mpg_rows[-5:])) if len(mpg_rows) >= 5 else []
-    mpg_top_tbl = _rank_table(
-        top5_mpg, ["Truck", "MPG", "Miles", "Gallons"],
-        lambda r: _tr([r["unit"], f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
-                      ["left", "right", "right", "right"], [None, "good", None, None]))
-    mpg_bot_tbl = _rank_table(
-        bot5_mpg, ["Truck", "MPG", "Miles", "Gallons"],
-        lambda r: _tr([r["unit"], f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
-                      ["left", "right", "right", "right"], [None, "bad", None, None]))
+    mpg_headers = ["Truck", "Driver", "MPG", "Miles", "Gallons"]
+    mpg_aligns = ["left", "left", "right", "right", "right"]
+
+    def _mpg_row(r, mpg_kind: str | None) -> str:
+        return _tr([r["unit"], r.get("driver") or "&mdash;",
+                    f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
+                   mpg_aligns, [None, None, mpg_kind, None, None])
+
+    mpg_top_tbl = (_table(mpg_headers, mpg_aligns,
+                          "".join(_mpg_row(r, "good") for r in top5_mpg))
+                   if top5_mpg
+                   else f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
+    mpg_bot_tbl = (_table(mpg_headers, mpg_aligns,
+                          "".join(_mpg_row(r, "bad") for r in bot5_mpg))
+                   if bot5_mpg
+                   else f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
 
     # Top 5 idle hours — laid out like the Driver Mileage page: 5 settlement
     # weeks (Wed 3pm CT → Wed 2:59pm CT), current tinted, Avg / wk averaged
