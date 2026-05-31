@@ -1,0 +1,119 @@
+# Karpathy-Wiki auto-compile — runs the librarian rules in
+# Karpathy-Wiki/CLAUDE.md against the /raw inbox + current /wiki state,
+# writes back into /wiki, and commits the changes.
+#
+# Uses the Claude Code GitHub Action so the run bills against the Claude
+# subscription tied to the OAuth token (CLAUDE_CODE_OAUTH_TOKEN) instead of
+# metered Anthropic API usage.
+
+name: Compile Karpathy-Wiki
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 12:15 UTC = 6:15am CST / 7:15am CDT, after the brief lands in /raw.
+    - cron: '15 12 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+  # OIDC token required by anthropics/claude-code-action so it can
+  # authenticate against the Claude Code GitHub App without a static
+  # CLAUDE_CODE_OAUTH_TOKEN secret. Without this the action fails with
+  # "Could not fetch an OIDC token" during setupGitHubToken.
+  id-token: write
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Run librarian (Claude Code)
+        uses: anthropics/claude-code-action@v1
+        # Some action versions only read the OAuth token from the env, others
+        # only from the `with:` input. Pass it both ways so either works.
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The Action's default sandbox is read-mostly — it allows Read,
+          # Glob, Grep, Bash, but BLOCKS Write/Edit/MultiEdit unless we
+          # opt in. Without these the librarian runs successfully but can't
+          # actually save any /wiki pages (you'll see permission_denials_count
+          # > 0 and "No /wiki changes from this run" in the next step).
+          claude_args: '--allowed-tools "Read,Glob,Grep,Bash,Write,Edit,MultiEdit"'
+          prompt: |
+            You are the Karpathy-Wiki librarian. Your instructions live in
+            `Karpathy-Wiki/CLAUDE.md` — read that file first, follow it
+            exactly.
+
+            Today's task:
+              1. Read the librarian rules in `Karpathy-Wiki/CLAUDE.md`.
+              2. Read every file under `Karpathy-Wiki/raw/` (modified in the
+                 last 30 days takes priority).
+              3. Read the current state of `Karpathy-Wiki/wiki/` so you
+                 don't duplicate existing pages.
+              4. Compile what's new: create or update pages in
+                 `Karpathy-Wiki/wiki/`, cross-link with [[wikilinks]], and
+                 rewrite `Karpathy-Wiki/wiki/index.md` so it lists every
+                 page grouped by topic with a one-line description.
+
+            Hard rules (enforce on yourself):
+              - NEVER modify, delete, or rename anything under
+                `Karpathy-Wiki/raw/`.
+              - Only write under `Karpathy-Wiki/wiki/`.
+              - Don't touch any other directory in the repo (src/, .github/,
+                docs/, tests/, etc.).
+              - Don't fabricate facts to fill gaps; if a topic is thin in
+                /raw, write a short stub and link it.
+
+            When you're done, list what you created, what you updated, and
+            any source contradictions you noticed.
+
+      - name: Commit /wiki updates
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if ! git status --porcelain Karpathy-Wiki/wiki 2>/dev/null | grep -q .; then
+            echo "No /wiki changes from this run."
+            exit 0
+          fi
+          # Sanity: refuse to commit if the agent touched /raw or anything
+          # outside Karpathy-Wiki/wiki/.
+          if git status --porcelain Karpathy-Wiki/raw 2>/dev/null | grep -q .; then
+            echo "ERROR: /raw was modified — refusing to commit."
+            git diff --stat Karpathy-Wiki/raw
+            exit 1
+          fi
+          OUT_OF_TREE=$(git status --porcelain | awk '{print $2}' | grep -v '^Karpathy-Wiki/wiki/' || true)
+          if [ -n "$OUT_OF_TREE" ]; then
+            echo "ERROR: agent touched files outside Karpathy-Wiki/wiki/:"
+            echo "$OUT_OF_TREE"
+            exit 1
+          fi
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          BRANCH="${GITHUB_REF_NAME}"
+          # The Claude Code Action sets up its own git auth during the
+          # librarian step and removes it on exit, leaving the remote URL
+          # without credentials. Re-point origin at an authenticated URL
+          # built from the workflow's GITHUB_TOKEN so push (and fetch)
+          # work again. x-access-token is the documented username GitHub
+          # expects for Actions tokens.
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git add Karpathy-Wiki/wiki
+          git commit -m "wiki: librarian compile $(date -u +%Y-%m-%dT%H:%M)"
+          for delay in 1 2 4 8 16; do
+            git fetch origin "$BRANCH" 2>/dev/null || true
+            git rebase "origin/$BRANCH" 2>/dev/null || { git rebase --abort 2>/dev/null || true; }
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push conflicted, retrying in ${delay}s..."
+            sleep "$delay"
+          done
+          echo "Failed to push after retries"; exit 1

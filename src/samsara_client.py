@@ -285,3 +285,82 @@ class SamsaraClient:
             return items
         log.warning("IFTA: no data for %d-%s", year, month_name)
         return []
+
+    def fetch_engine_state_history(self, start: datetime.datetime,
+                                   end: datetime.datetime) -> list[dict]:
+        """Per-vehicle engine state transitions via `GET /fleet/vehicles/stats/history`.
+
+        Returns the raw stat-history records (one per vehicle) with an
+        ``engineStates`` array of `{time, value}` transitions across the window.
+        Callers aggregate seconds in each state (Idle / On / Off) per vehicle.
+
+        Samsara caps the request window — page through in <=7-day chunks to stay
+        well under the limit. The endpoint accepts ms-since-epoch timestamps.
+        """
+        log.info("Fetching engine state history (%s -> %s)…", start.date(), end.date())
+        all_items: dict[str, dict] = {}
+        chunk = datetime.timedelta(days=7)
+        cur = start
+        while cur < end:
+            chunk_end = min(cur + chunk, end)
+            params = {
+                "types": "engineStates",
+                "startTime": cur.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "endTime": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            try:
+                items = self._safe_get("/fleet/vehicles/stats/history", params)
+            except Exception as exc:
+                log.warning("Engine state history chunk %s -> %s failed: %s",
+                            cur.date(), chunk_end.date(), exc)
+                cur = chunk_end
+                continue
+            # Merge transitions per vehicle id across chunks.
+            for rec in items or []:
+                vid = rec.get("id")
+                if not vid:
+                    continue
+                slot = all_items.setdefault(vid, {"id": vid, "name": rec.get("name"),
+                                                  "engineStates": []})
+                states = (rec.get("engineStates") or [])
+                if isinstance(states, list):
+                    slot["engineStates"].extend(states)
+                # Preserve other top-level keys (vehicle name, etc.) if newer chunk has them
+                if not slot.get("name"):
+                    slot["name"] = rec.get("name")
+            cur = chunk_end
+        log.info("Total vehicles with engine state history: %d", len(all_items))
+        return list(all_items.values())
+
+    def fetch_driver_safety_scores(self, driver_ids: list[str],
+                                   start: datetime.datetime,
+                                   end: datetime.datetime) -> list[dict]:
+        """Per-driver composite safety score via
+        ``GET /fleet/drivers/{driverId}/safety/score?startMs=&endMs=``.
+
+        Loops the driver list — Samsara doesn't expose a fleet-wide list
+        endpoint for this. Returns the score JSON with the driver id stamped
+        in so the caller can match back to the Drivers sheet.
+
+        Individual driver failures are logged and skipped (no driver shouldn't
+        kill the whole pull).
+        """
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        log.info("Fetching driver safety scores for %d drivers (%s -> %s)…",
+                 len(driver_ids), start.date(), end.date())
+        out: list[dict] = []
+        for did in driver_ids:
+            # _safe_get handles the {"data": {...}} envelope and returns a list
+            # of records — a dict response gets wrapped into a single-element list.
+            recs = self._safe_get(f"/fleet/drivers/{did}/safety/score",
+                                  {"startMs": start_ms, "endMs": end_ms})
+            if not recs:
+                continue
+            rec = recs[0] if isinstance(recs[0], dict) else None
+            if not rec:
+                continue
+            rec["driverId"] = did
+            out.append(rec)
+        log.info("Total driver safety score records: %d", len(out))
+        return out
