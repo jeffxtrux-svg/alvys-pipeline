@@ -12,6 +12,11 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+
+  # TEMPORARY: one-shot trigger on push (removed right after).
+  push:
+    branches: [claude/scorecard-oneshot-11]
+
   schedule:
     # Two cron entries, 15 min apart, as redundancy against GitHub Actions
     # schedule drops. GitHub's cron is documented as best-effort — runs at
