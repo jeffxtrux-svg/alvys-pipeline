@@ -827,6 +827,13 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     factor = (dim / dom) if dom else None
 
     mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
+    # Settled MTD mask: this month, non-cancelled, with driver rate entered.
+    # Used to floor the projection at actual settled margin — at month-end
+    # (or any time this month's actual margin% exceeds the t90 blend) the
+    # estimate should never read below what we've actually earned.
+    settled_mtd_mask = mtd_mask.copy()
+    if "Driver Rate" in loads.columns:
+        settled_mtd_mask = settled_mtd_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
     trail_start = now - pd.Timedelta(days=days)
     trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
     if "Driver Rate" in loads.columns:
@@ -834,17 +841,31 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
 
     out: dict = {"days_in_month": dim, "day_of_month": dom, "trailing_days": days}
     combined_booked = combined_t_rev = combined_t_cost = 0.0
+    combined_settled_margin = 0.0
 
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
         booked = float(_col_any(loads[mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_cost = float(_col(loads[trail_mask & ent_mask], "Driver Rate").fillna(0).sum())
+        # Actual settled MTD margin for this entity — used as a floor on the
+        # forward estimate so it never reports below what's already earned.
+        s_rev = float(_col_any(loads[settled_mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
+        s_cost = float(_col(loads[settled_mtd_mask & ent_mask], "Driver Rate").fillna(0).sum())
+        settled_margin = s_rev - s_cost
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
         proj_rev = (booked * factor) if (booked and factor) else None
-        proj_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
+        t90_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
+        # Floor at actual settled — handles the end-of-month case (factor=1.0)
+        # where t90 underestimates a hot-running month, and is also correct
+        # mid-month since you can't project less than you've already booked.
+        if t90_margin is not None and settled_margin > t90_margin:
+            proj_margin = settled_margin
+        else:
+            proj_margin = t90_margin
         out[ent] = {
             "booked_mtd": booked or None,
+            "settled_mtd_margin": settled_margin or None,
             "trailing_margin_pct": m_pct,
             "projected_revenue": proj_rev,
             "projected_margin": proj_margin,
@@ -852,12 +873,16 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         combined_booked += booked
         combined_t_rev += t_rev
         combined_t_cost += t_cost
+        combined_settled_margin += settled_margin
 
     c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
     c_proj_rev = (combined_booked * factor) if (combined_booked and factor) else None
-    c_proj_margin = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
+    _c_t90 = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
+    c_proj_margin = (_c_t90 if (_c_t90 is not None and combined_settled_margin <= _c_t90)
+                     else (combined_settled_margin or _c_t90))
     out["combined"] = {
         "booked_mtd": combined_booked or None,
+        "settled_mtd_margin": combined_settled_margin or None,
         "trailing_margin_pct": c_pct,
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,

@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: add MPG column to idle table, joined from IFTA)
+  # (touch bump: estimated margin floor at actual settled MTD)
   push:
     branches:
       - claude/claude-md-docs-Es64x
