@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: scorecard after fresh Samsara w/ 5-week idle columns)
+  # (touch bump: filter out 'tempd' placeholder driver from rankings)
   push:
     branches:
       - claude/claude-md-docs-Es64x

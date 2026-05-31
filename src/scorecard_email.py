@@ -680,6 +680,19 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 # Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
 _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 
+# Samsara driver records that are placeholders / test accounts, not real
+# drivers. Normalized via _norm_name so punctuation/case variations match.
+_DRIVER_EXCLUDE: frozenset[str] = frozenset({"tempd"})
+
+
+def _is_excluded_driver(name) -> bool:
+    """True if a Samsara driver name is a placeholder / test record that
+    should be dropped from the brief (safety scores, mileage rankings, etc.)."""
+    if name is None:
+        return False
+    n = _norm_name(name)
+    return any(n == e or n.startswith(e + " ") for e in _DRIVER_EXCLUDE)
+
 # QuickBooks company files that have an Alvys (TMS) counterpart. All AR reporting
 # and the QB-vs-Alvys reconciliation are scoped to these two so the two systems
 # compare like-for-like; the other QB companies (Truk-Way Leasing, N&J Trailers,
@@ -1444,7 +1457,9 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 top = (spd[dcol].astype(str).str.strip()
                        .replace({"": "(unknown)", "nan": "(unknown)"})
                        .value_counts().head(5))
-                out["fleet"]["speeders"] = [{"driver": k, "count": int(v)} for k, v in top.items()]
+                out["fleet"]["speeders"] = [{"driver": k, "count": int(v)}
+                                            for k, v in top.items()
+                                            if not _is_excluded_driver(k)]
 
     # MPG per truck: pull all IFTA_YYYY_MM sheets (most recent month wins per
     # vehicle when duplicated). Compute MPG = miles / gallons.
@@ -1478,11 +1493,13 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if idle is not None and not idle.empty and "Idle Hours" in idle.columns:
         top = idle.sort_values("Idle Hours", ascending=False).head(5)
         wk_keys = ["W1", "W2", "W3", "W4", "Cur"]
+        def _idle_driver(name) -> str:
+            if not name or str(name).lower() == "nan":
+                return ""
+            return "" if _is_excluded_driver(name) else str(name).strip()
         out["fleet"]["idle"] = [
             {"unit": _truck_label(r.get("Vehicle Name") or r.get("Vehicle ID") or ""),
-             "driver": (str(r.get("Driver Name")).strip()
-                        if r.get("Driver Name") and str(r.get("Driver Name")).lower() != "nan"
-                        else ""),
+             "driver": _idle_driver(r.get("Driver Name")),
              "idle_hours": float(r.get("Idle Hours") or 0),
              "engine_hours": float(r.get("Engine Hours") or 0),
              "idle_pct": (float(r.get("Idle Hours") or 0) / float(r.get("Engine Hours") or 1)
@@ -1509,6 +1526,9 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             df = scores.copy()
             df["_score"] = pd.to_numeric(df[sc_col], errors="coerce")
             df = df.dropna(subset=["_score"])
+            # Drop placeholder / test driver records before computing the
+            # fleet average or building any ranking.
+            df = df[~df[nm_col].apply(_is_excluded_driver)] if nm_col in df.columns else df
             if not df.empty:
                 out["fleet"]["fleet_score"] = float(df["_score"].mean())
                 # All drivers, worst-to-best — replaces the separate top-5 /
