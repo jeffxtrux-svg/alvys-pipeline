@@ -153,12 +153,23 @@ The Samsara refresh didn't upload `Samsara/Samsara Master.xlsx`.
 ### absent  SambaSafety Master  (optional)
 **Expected** until the SambaSafety export feed is wired up — page 9 renders a
 placeholder and the run is not flagged as failed.
-- **To wire it up:** configure a scheduled export in the SambaSafety admin
-  portal that lands a workbook at `SambaSafety/SambaSafety_Master.xlsx` in
-  OneDrive, with a `Drivers` sheet (driver, license #, state, status,
-  expiration, risk score, risk category) and a `Violations` sheet (driver,
-  date, type, points, state, severity). `compute_sambasafety` fuzzy-matches
-  column names, so minor header variations are fine. Override the path with
+- **To wire it up:** SambaSafety doesn't natively output a single 2-sheet
+  workbook. The recommended pipeline:
+  1. Schedule two reports in SambaSafety to email `jeff@xfreight.net`:
+     **Overview → Risk Index Report** and **MVR Activity → Violations**.
+  2. Save both attachments to OneDrive as
+     `SambaSafety/risk_index_report.csv` and `SambaSafety/violationsReport.csv`
+     (manually or via a Power Automate rule on the SambaSafety sender).
+  3. Run `python -m src.sambasafety_combine --risk-index <path> --violations
+     <path> --out output/sambasafety/SambaSafety_Master.xlsx` to produce the
+     merged workbook, then upload it to OneDrive at
+     `SambaSafety/SambaSafety_Master.xlsx`. The combine module re-maps
+     SambaSafety's raw columns into the `Drivers` + `Violations` sheets and
+     headers `compute_sambasafety` expects (e.g. risk score buckets
+     Clean/Activity/Exception → Low/Medium/High so the "high risk" detector
+     fires; violation scores → Major/Moderate/Minor severity).
+- `compute_sambasafety` fuzzy-matches column names, so minor header
+  variations are fine. Override the OneDrive path with
   `SCORECARD_SAMBASAFETY_PATH` if you put it elsewhere.
 
 ### Scorecard ran but no email arrived

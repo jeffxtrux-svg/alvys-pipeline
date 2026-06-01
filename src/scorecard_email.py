@@ -96,7 +96,8 @@ RPM_GOAL_PLAUSIBLE_BAND = (1.50, 5.00)     # cost/mi outside this is flagged
 # SambaSafety driver-compliance thresholds (page 9).
 LICENSE_EXPIRY_WARN_DAYS = 30     # flag licenses expiring within this many days
 SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk category column
-VIOLATION_WINDOW_DAYS = 30        # "recent" window for new violations / MVR alerts
+VIOLATION_WINDOW_DAYS = 365       # MVR violations are historical records, not real-time
+                                  # alerts — a year matches how SambaSafety surfaces them
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
