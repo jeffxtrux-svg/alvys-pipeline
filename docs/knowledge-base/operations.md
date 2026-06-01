@@ -157,17 +157,27 @@ placeholder and the run is not flagged as failed.
   workbook. The recommended pipeline:
   1. Schedule two reports in SambaSafety to email `jeff@xfreight.net`:
      **Overview → Risk Index Report** and **MVR Activity → Violations**.
-  2. Save both attachments to OneDrive as
-     `SambaSafety/risk_index_report.csv` and `SambaSafety/violationsReport.csv`
-     (manually or via a Power Automate rule on the SambaSafety sender).
-  3. Run `python -m src.sambasafety_combine --risk-index <path> --violations
-     <path> --out output/sambasafety/SambaSafety_Master.xlsx` to produce the
-     merged workbook, then upload it to OneDrive at
-     `SambaSafety/SambaSafety_Master.xlsx`. The combine module re-maps
-     SambaSafety's raw columns into the `Drivers` + `Violations` sheets and
-     headers `compute_sambasafety` expects (e.g. risk score buckets
-     Clean/Activity/Exception → Low/Medium/High so the "high risk" detector
-     fires; violation scores → Major/Moderate/Minor severity).
+  2. Get both attachments into OneDrive as
+     `SambaSafety/risk_index_report.csv` and `SambaSafety/violationsReport.csv`.
+     Three ways, pick one:
+     - **Manual drop** — open each email, save the CSVs to OneDrive. Works
+       today, ~1 min/day.
+     - **Power Automate flow** — recommended for hands-free. Watch
+       `jeff@xfreight.net` for `no-reply@sambasafety.com` emails with
+       attachments, save attachments to `OneDrive/SambaSafety/`. Set up
+       once, runs forever.
+     - **SambaSafety API** — long-term replacement; out of scope here.
+  3. The **`Refresh SambaSafety data`** workflow runs daily at 10:30 UTC
+     (4:30am CST / 5:30am CDT, an hour before the scorecard email). It
+     reads both CSVs from OneDrive, runs `src.sambasafety_combine`, and
+     uploads `SambaSafety_Master.xlsx` back to the same folder. Trigger it
+     manually from the Actions tab the first time so you don't have to wait
+     for the cron.
+  4. The combine module re-maps SambaSafety's raw columns into the
+     `Drivers` + `Violations` sheets and headers `compute_sambasafety`
+     expects (e.g. risk score buckets Clean/Activity/Exception →
+     Low/Medium/High so the "high risk" detector fires; violation scores →
+     Major/Moderate/Minor severity).
 - `compute_sambasafety` fuzzy-matches column names, so minor header
   variations are fine. Override the OneDrive path with
   `SCORECARD_SAMBASAFETY_PATH` if you put it elsewhere.
