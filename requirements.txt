@@ -4,3 +4,7 @@ openpyxl==3.1.5
 python-dotenv==1.0.1
 gspread==6.1.2
 google-auth==2.29.0
+# LLM-based scorecard review (opt-in via ANTHROPIC_API_KEY in scorecard_email.yml).
+# Import is lazy — pipeline runs without it, just no LLM layer in the lint.
+anthropic==0.79.0
+pydantic==2.10.4

@@ -3820,20 +3820,28 @@ def main() -> int:
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
                         sambasafety_sheets=samba_sheets)
-    # Pre-send lint — catches regressions of bugs we've already hit
-    # (driver column showing '0', MPG join broken, excluded truck leaked).
-    # See src/scorecard_lint.py for the registered checks.
+    # Pre-send review — two layers:
+    #   1. scorecard_lint  — rule-based, always on, catches known regressions
+    #   2. scorecard_review — LLM-based (Claude), opt-in via ANTHROPIC_API_KEY,
+    #      catches the things rules miss (plausibility, format drift, etc.)
+    # Both produce Finding objects; merged together so subject_prefix counts
+    # errors from either source.
     try:
         from src.scorecard_lint import lint, format_findings, subject_prefix
         ctx = getattr(html, "_ctx", {}) or {}
         findings = lint(str(html), **ctx)
+        try:
+            from src.scorecard_review import review as llm_review
+            findings.extend(llm_review(str(html), **ctx))
+        except Exception as e:
+            log.warning("LLM scorecard review skipped (%s: %s)", type(e).__name__, e)
         if findings:
-            log.warning("Scorecard lint findings:\n%s", format_findings(findings))
+            log.warning("Scorecard review findings:\n%s", format_findings(findings))
         else:
-            log.info("Scorecard lint: clean")
+            log.info("Scorecard review: clean (rules + LLM)")
         prefix = subject_prefix(findings)
     except Exception as e:
-        log.warning("Scorecard lint skipped (%s: %s)", type(e).__name__, e)
+        log.warning("Scorecard review skipped (%s: %s)", type(e).__name__, e)
         prefix = ""
     subject = f"{prefix}XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, str(html))

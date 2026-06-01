@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: MPG labels say 'MTD (Based on Samsara)')
+  # (touch bump: LLM scorecard reviewer added, opt-in via ANTHROPIC_API_KEY)
   push:
     branches:
       - claude/claude-md-docs-Es64x
@@ -67,6 +67,8 @@ jobs:
           # the wrong (un-settled) one. The sharing URL resolves to the right item.
           SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+          # Opt-in LLM scorecard reviewer (Claude). Unset = rule-based lint only.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive
