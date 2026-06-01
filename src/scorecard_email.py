@@ -783,8 +783,21 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     """Estimate full-month settled margin per entity.
 
     Formula per entity:
-        projected_revenue = (booked MTD revenue) * (days_in_month / day_of_month)
+        days_remaining    = days_in_month - day_of_month
+        daily_run_rate    = trailing_{days}_revenue / {days}
+        projected_revenue = booked MTD revenue + daily_run_rate * days_remaining
         projected_margin  = projected_revenue * trailing_{days}_margin_pct
+
+    The projection is "actuals booked so far + the recent daily pace applied to
+    the rest of the month." This deliberately replaces the older naive month-
+    pace extrapolation (booked * days_in_month / day_of_month), which on day 1
+    multiplied a single day's bookings by ~30 and swung wildly early in the
+    month. The run-rate form is anchored to the trailing daily revenue instead,
+    so early-month estimates track reality; on the final day days_remaining is
+    0, so it collapses to pure month-to-date actuals — identical closed-month
+    behavior to the old formula (the parity check is unaffected). It is exactly
+    the elapsed-fraction blend of the month-pace and trailing run-rate, written
+    in the more intuitive actuals-plus-remainder form.
 
     Booked MTD revenue = all non-cancelled loads with Scheduled Pickup in the
     current month — includes loads that haven't yet had driver pay entered, so
@@ -811,7 +824,7 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
 
     now = pd.Timestamp.now()
     dim, dom = now.days_in_month, now.day
-    factor = (dim / dom) if dom else None
+    days_remaining = max(dim - dom, 0)
 
     mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
     trail_start = now - pd.Timedelta(days=days)
@@ -828,7 +841,9 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_cost = float(_col(loads[trail_mask & ent_mask], "Driver Rate").fillna(0).sum())
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
-        proj_rev = (booked * factor) if (booked and factor) else None
+        daily_run_rate = (t_rev / days) if days else 0.0
+        proj_rev = booked + daily_run_rate * days_remaining
+        proj_rev = proj_rev if proj_rev > 0 else None
         proj_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
         out[ent] = {
             "booked_mtd": booked or None,
@@ -841,7 +856,9 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         combined_t_cost += t_cost
 
     c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
-    c_proj_rev = (combined_booked * factor) if (combined_booked and factor) else None
+    c_daily_run_rate = (combined_t_rev / days) if days else 0.0
+    c_proj_rev = combined_booked + c_daily_run_rate * days_remaining
+    c_proj_rev = c_proj_rev if c_proj_rev > 0 else None
     c_proj_margin = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
     out["combined"] = {
         "booked_mtd": combined_booked or None,
