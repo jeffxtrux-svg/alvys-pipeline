@@ -177,7 +177,7 @@ def review(html: str, **ctx) -> list:
 
     try:
         response = client.with_options(timeout=180.0).messages.parse(
-            model="claude-opus-4-8",
+            model="claude-sonnet-4-6",
             max_tokens=8000,
             system=[{
                 "type": "text",
@@ -185,7 +185,7 @@ def review(html: str, **ctx) -> list:
                 "cache_control": {"type": "ephemeral"},
             }],
             thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
+            output_config={"effort": "medium"},
             output_format=ReviewResult,
             messages=[{"role": "user", "content": user_msg}],
         )
