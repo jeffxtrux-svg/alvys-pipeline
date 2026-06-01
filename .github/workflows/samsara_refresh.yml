@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   # One-shot verification trigger — DELETE this push block after the run.
-  # (touch bump #8: fetch engineStates and OBD fuel in separate calls)
+  # (touch bump #9: heuristic idle-gallons fallback when OBD fuel is missing)
   push:
     branches:
       - claude/claude-md-docs-Es64x

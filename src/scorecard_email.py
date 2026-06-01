@@ -3271,7 +3271,8 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{_section('Driver safety scores &middot; all drivers, worst to best')}"
             f"{score_all_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Sources: Samsara IFTA (MPG), Samsara engine-state history (idle, last 5 settlement weeks), "
+            f"Sources: Samsara Trips (MPG), Samsara engine-state history (idle, last 5 settlement weeks; "
+            f"idle gallons = idle_hours &times; 0.8 gph fleet-average heuristic), "
             f"Samsara Safety Events filtered by Event Type (speeding, 7 days), "
             f"Samsara Driver Safety Scores (per-driver composite, last 6 months).</div>")
 

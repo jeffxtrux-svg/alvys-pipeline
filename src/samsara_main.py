@@ -157,6 +157,14 @@ def _severity_for(event_type: str | None) -> str | None:
     return "Low"
 
 
+# Class-8 sleeper trucks burn ~0.8 gal/hr at idle per DOE / EPA studies
+# (engine-only — APU-equipped trucks are lower, heavy-AC trucks can be
+# higher; this is a fleet-average heuristic). Used as a fallback when
+# Samsara's OBD fuel-counter signal isn't returned for a vehicle, which
+# is the case for XFreight's current Samsara plan / truck mix.
+IDLE_FUEL_RATE_GPH = 0.8
+
+
 def build_engine_idle(raw_engine_history: list[dict],
                       driver_by_vehicle_id: dict[str, str] | None = None,
                       now: pd.Timestamp | None = None) -> pd.DataFrame:
@@ -264,6 +272,15 @@ def build_engine_idle(raw_engine_history: list[dict],
                 f1 = fuel_at(t1)
                 if f0 is not None and f1 is not None and f1 >= f0:
                     per_week[idx]["IdleGal"] += (f1 - f0)
+
+        # Heuristic fallback: when the OBD fuel counter isn't returned for a
+        # given vehicle/week, fall back to idle_hours * IDLE_FUEL_RATE_GPH.
+        # Class-8 fleet-average idle burn (~0.8 gal/hr) so the Idle Gal column
+        # always populates, even on trucks Samsara doesn't surface fuel
+        # telemetry for.
+        for k in range(5):
+            if per_week[k]["IdleGal"] == 0 and per_week[k]["Idle"] > 0:
+                per_week[k]["IdleGal"] = (per_week[k]["Idle"] / 3600) * IDLE_FUEL_RATE_GPH
 
         vid = rec.get("id")
         row = {
