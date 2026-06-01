@@ -1,3 +1,7 @@
+# DO NOT EDIT — frozen snapshot of scorecard_email.py taken on 2026-06-01
+# before the insight-redesign rewrite. Revert with:
+#     cp src/scorecard_email_v1_backup.py src/scorecard_email.py
+
 """
 Daily executive brief email for XFreight leadership.
 
@@ -2605,7 +2609,7 @@ def compute_drag_attribution(
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
-                rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None) -> str:
+                rpm_goal_trend=None, drag=None, margin_projection=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -2956,28 +2960,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     _goal_rpm = (rpm_goal or {}).get("goal_rpm")
     _goal_txt = f"goal {rpm(_goal_rpm)}" if _isnum(_goal_rpm) else "goal pending QB cost-out"
-    # Insights-driven bottom-line bar + action items + coaching cards.
-    # Rule-based templates from scorecard_insights.py — $0 ongoing cost.
-    # Falls back to the legacy hand-crafted blurb if anything raises.
-    _insights_bottom = None
-    _insights_actions: list = []
-    _insights_coaching: list = []
-    try:
-        from src import scorecard_insights as _insights
-        _insights_bottom = _insights.bottom_line(
-            alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
-            margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist)
-        _insights_actions = _insights.action_items(
-            alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
-            rpm_goal=rpm_goal, uninvoiced=uninvoiced)
-        _insights_coaching = _insights.coaching_cards(samsara=samsara)
-    except Exception as e:
-        log.warning("scorecard_insights failed (%s: %s) — using legacy blurb",
-                    type(e).__name__, e)
-
     # Every number gets an explicit scope/window so the blurb is comparable to
     # other views in the email and to Power BI (which uses different windows).
-    legacy_bottom = (f"{_lead_phrase(wmtd, rpm_goal)} "
+    bottom = (f"{_lead_phrase(wmtd, rpm_goal)} "
               f"For X-Trux/XFreight asset loads (MTD): "
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
@@ -2985,8 +2970,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"(X-Trux + X-Linx snapshot &mdash; see pg 5). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
-        legacy_bottom += f" {drag['text']}"
-    bottom = _insights_bottom if _insights_bottom else legacy_bottom
+        bottom += f" {drag['text']}"
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
@@ -3025,66 +3009,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                        if _mtd_label != "MTD"
                        else "Revenue / cost / margin by entity &middot; MTD")
 
-    # Action-item cards — derived from threshold breaches by
-    # scorecard_insights.action_items(). Max 3. Renders as a 3-col row of
-    # colored cards immediately under the Bottom Line bar.
-    action_items_html = ""
-    if _insights_actions:
-        _kind_color = {"bad": (BAD, BADBG), "warn": (WARN, WARNBG),
-                       "good": (GOOD, GOODBG)}
-        _cards = []
-        for sev, title, body in _insights_actions:
-            fg, bg = _kind_color.get(sev, (MUTE, "#eef2f7"))
-            _cards.append(
-                f"<td width='33%' valign='top' style='padding:6px;'>"
-                f"<div style='background:{bg};border-radius:10px;padding:14px 14px 12px;"
-                f"border-left:4px solid {fg};'>"
-                f"<div style='font-size:11px;letter-spacing:.5px;text-transform:uppercase;"
-                f"color:{fg};font-weight:800;margin-bottom:6px;'>{title}</div>"
-                f"<div style='font-size:13px;color:{INK};line-height:1.45;'>{body}</div>"
-                f"</div></td>")
-        # Pad to 3 cols so the row stays balanced
-        while len(_cards) < 3:
-            _cards.append("<td width='33%' style='padding:6px;'></td>")
-        action_items_html = (
-            f"<div style='padding:4px 18px 0;'>"
-            f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;"
-            f"color:{MUTE};font-weight:800;padding:8px 6px 4px;'>Act today</div>"
-            f"<table width='100%' cellpadding='0' cellspacing='0'>"
-            f"<tr>{''.join(_cards)}</tr></table></div>")
-
-    # Coaching cards — per-driver talk tracks tied to idle thresholds.
-    coaching_html = ""
-    if _insights_coaching:
-        _cards = []
-        for name_line, fact, talk in _insights_coaching:
-            _cards.append(
-                f"<td width='33%' valign='top' style='padding:6px;'>"
-                f"<div style='background:{TILEBG};border:1px solid {LINE};"
-                f"border-radius:10px;border-left:4px solid {ACCENT};"
-                f"padding:14px 14px 12px;'>"
-                f"<div style='font-size:11px;letter-spacing:.5px;text-transform:uppercase;"
-                f"color:{INK};font-weight:800;margin-bottom:4px;'>{name_line}</div>"
-                f"<div style='font-size:11px;color:{MUTE};margin-bottom:8px;'>{fact}</div>"
-                f"<div style='font-size:12px;color:{INK};line-height:1.4;font-style:italic;'>"
-                f"{talk}</div></div></td>")
-        while len(_cards) < 3:
-            _cards.append("<td width='33%' style='padding:6px;'></td>")
-        coaching_html = (
-            f"<div style='padding:4px 18px 0;'>"
-            f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;"
-            f"color:{MUTE};font-weight:800;padding:8px 6px 4px;'>Coaching this week &middot; "
-            f"derived from idle ranking</div>"
-            f"<table width='100%' cellpadding='0' cellspacing='0'>"
-            f"<tr>{''.join(_cards)}</tr></table></div>")
-
     return (f"{_header('Morning Executive Brief', 1, date_str)}"
             f"<div style='padding:18px 24px 4px;'><div style='background:#0f2742;border-radius:10px;padding:14px 18px;"
             f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
             f"{rollover_banner}"
-            f"{action_items_html}"
-            f"{coaching_html}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{warn_row}"
             f"{_section('XFreight Overview')}"
@@ -3729,30 +3658,6 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
     wrap = lambda inner: f"<div style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
-
-    # Per-page insight strips — bridge from the page 1 narrative to detail.
-    # Falls back to empty dict if scorecard_insights raises.
-    _page_strips: dict = {}
-    try:
-        from src import scorecard_insights as _insights
-        _page_strips = _insights.page_strips(
-            alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
-            uninvoiced=uninvoiced)
-    except Exception as e:
-        log.warning("page_strips failed (%s: %s)", type(e).__name__, e)
-
-    def _strip(page_n: int) -> str:
-        s = _page_strips.get(page_n)
-        if not s:
-            return ""
-        return (
-            f"<div style='padding:8px 24px 0;'>"
-            f"<div style='background:{ACCENTBG};border-left:4px solid {ACCENT};"
-            f"border-radius:6px;padding:10px 14px;color:{INK};font-size:12.5px;"
-            f"line-height:1.45;'>"
-            f"<span style='color:{ACCENT};font-weight:800;letter-spacing:.5px;"
-            f"text-transform:uppercase;font-size:10px;'>"
-            f"Context from today's brief</span><br>{s}</div></div>")
     # Mobile rendering deliberately keeps the desktop 4-column tile layout —
     # readers preferred seeing all four tiles in a row (with shrink-to-fit
     # text) over the responsive 1-up / 2-up stack patterns we tried.
@@ -3776,25 +3681,25 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
             # follows the entity-level summary. Safety and AR pages then come
             # behind it. Function names build_page<N> are kept for stability,
             # but the page-number arguments in _header reflect the actual
             # render order.
-            f"{wrap(_strip(2) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
+            f"{wrap(build_page4(mileage, date_str))}{pb}"
+            f"{wrap(build_page2(samsara, date_str))}{pb}"
             # Fleet Operations is rendered position 4 (after Safety detail), so
             # MPG / Idle / Speeding / Driver Scores sit next to the safety
             # context they tie back to. AR Overdue shifts to position 5.
-            f"{wrap(_strip(4) + build_page_fleet(samsara, date_str))}{pb}"
-            f"{wrap(_strip(5) + build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(_strip(6) + build_page5(uninvoiced, date_str))}{pb}"
-            f"{wrap(_strip(7) + build_page6(alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(8) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(9) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(10) + build_page9(samba, date_str))}"
+            f"{wrap(build_page_fleet(samsara, date_str))}{pb}"
+            f"{wrap(build_page3(qb_ar, date_str))}{pb}"
+            f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
+            f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page9(samba, date_str))}"
             f"</body></html>")
 
 
