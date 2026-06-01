@@ -2967,9 +2967,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _insights_bottom = _insights.bottom_line(
             alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
             margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist)
+        _prior_snapshot = None
+        try:
+            from src.scorecard_snapshots import read_prior_snapshot
+            _prior_snapshot = read_prior_snapshot()
+        except Exception as e:
+            log.warning("prior snapshot load failed: %s", e)
         _insights_actions = _insights.action_items(
             alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
-            rpm_goal=rpm_goal, uninvoiced=uninvoiced)
+            rpm_goal=rpm_goal, uninvoiced=uninvoiced,
+            prior_snapshot=_prior_snapshot)
         _insights_coaching = _insights.coaching_cards(samsara=samsara)
     except Exception as e:
         log.warning("scorecard_insights failed (%s: %s) — using legacy blurb",
@@ -3829,6 +3836,16 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
                       margin_projection=margin_projection)
+    # Write today's snapshot for tomorrow's trend-aware action items.
+    # The Karpathy-Wiki commit step in the workflow picks it up automatically.
+    try:
+        from src.scorecard_snapshots import collect_kpis, write_snapshot
+        kpis = collect_kpis(alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar,
+                            samsara=samsara, uninvoiced=uninvoiced,
+                            rpm_goal=rpm_goal)
+        write_snapshot(kpis)
+    except Exception as e:
+        log.warning("Snapshot write skipped (%s: %s)", type(e).__name__, e)
     # Stash the compute dicts on the returned string-like-thing so main()
     # can pass them to the lint checks without re-running everything.
     return _ReportResult(html, samsara=samsara, qb_ar=qb_ar, alvys_ar=alvys_ar)

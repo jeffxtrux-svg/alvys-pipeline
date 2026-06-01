@@ -135,10 +135,16 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
 def action_items(*, alvys: dict | None, qb_ar: dict | None,
                  alvys_ar: dict | None, samsara: dict | None,
                  rpm_goal: dict | None, uninvoiced: dict | None,
+                 prior_snapshot: dict | None = None,
                  max_items: int = 3) -> list[tuple[str, str, str]]:
     """Return up to `max_items` action cards, severity-sorted (bad first).
-    Each tuple is (severity, title, body) where severity is 'bad' / 'warn'."""
+    Each tuple is (severity, title, body) where severity is 'bad' / 'warn'.
+
+    If `prior_snapshot` is provided (from scorecard_snapshots.read_prior_snapshot),
+    real trend labels like 'CLIMBING' / 'GROWING' surface only when the
+    delta from the snapshot exceeds the configured threshold."""
     items: list[tuple[str, str, str]] = []
+    prior = prior_snapshot or {}
 
     # 1. Top idler — almost always the highest-leverage coaching opportunity.
     idle = ((samsara or {}).get("fleet") or {}).get("idle") or []
@@ -168,16 +174,26 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 body += f" Closing it ≈ {_money(annual)} annual uplift."
             items.append(("warn", "RPM BELOW GOAL", body))
 
-    # 3. AR 31-60 bucket — leading indicator of write-off risk. Surface
-    # only when the bucket is materially large vs total 31+ (we don't have
-    # prior-month-bucket data to verify 'climbing', so the label is
-    # descriptive, not directional).
+    # 3. AR 31-60 bucket — leading indicator of write-off risk. If we have
+    # a prior snapshot AND today's value is materially higher, fire the
+    # 'CLIMBING' card; otherwise fall back to a descriptive 'BUCKET' card
+    # only when the bucket is materially large vs total 31+.
     if qb_ar:
         totals = qb_ar.get("totals") or {}
         v_31_60 = totals.get("31&ndash;60") or totals.get("31-60") or 0
         total_31_plus = qb_ar.get("total31") or 0
         share = (v_31_60 / total_31_plus) if total_31_plus else 0
-        if v_31_60 > 20000 or (v_31_60 > 10000 and share > 0.20):
+        prior_31_60 = prior.get("qb_ar_31_60")
+        if (_isnum(prior_31_60) and prior_31_60 > 0
+                and v_31_60 > prior_31_60 * 1.20 and v_31_60 > 5000):
+            delta = v_31_60 - prior_31_60
+            since = f" since {prior.get('date', 'last snapshot')}"
+            items.append((
+                "warn",
+                "AR 31-60 CLIMBING",
+                f"{_money(v_31_60)} in 31-60 (+{_money(delta)}{since}). "
+                f"Collections call list on pg 5."))
+        elif v_31_60 > 20000 or (v_31_60 > 10000 and share > 0.20):
             items.append((
                 "warn",
                 "AR 31-60 BUCKET",
@@ -185,12 +201,23 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 f"Collections call list on pg 5."))
 
     # 4. Un-invoiced loads (gap between Alvys revenue and QB invoicing).
-    # Label is descriptive — we don't have prior-day count to verify it's
-    # actually growing.
+    # Fire 'GROWING' label when count is up materially vs prior snapshot.
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
-        if n >= 10 or amt > 50000:
+        prior_n = prior.get("uninvoiced_count")
+        prior_amt = prior.get("uninvoiced_amt")
+        growing = (_isnum(prior_n) and prior_n > 0
+                   and (n - prior_n) >= 3 and n >= 10)
+        if growing:
+            delta_n = int(n - prior_n)
+            since = f" since {prior.get('date', 'last snapshot')}"
+            items.append((
+                "warn",
+                "UN-INVOICED LOADS GROWING",
+                f"{n} delivered Alvys loads not yet invoiced (+{delta_n}{since}). "
+                f"{_money(amt)} total. See pg 6."))
+        elif n >= 10 or amt > 50000:
             items.append((
                 "warn",
                 "UN-INVOICED LOADS",
