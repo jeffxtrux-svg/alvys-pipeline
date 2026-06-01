@@ -6,12 +6,6 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
-  # Temporary: one-shot on-demand run via a push to the working branch.
-  # Remove with a commit message containing [skip ci].
-  push:
-    branches:
-      - claude/claude-md-docs-iVb3S
-
   # Cron times are in UTC. Adjust for Central time as needed.
   # Below = 5am, 12pm, 6pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
   schedule:

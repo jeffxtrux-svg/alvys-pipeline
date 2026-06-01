@@ -12,6 +12,11 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+  push:
+    # Temporary one-shot trigger, scoped to this working branch only.
+    # Remove with a commit message containing [skip ci].
+    branches:
+      - claude/claude-md-docs-iVb3S
   schedule:
     # Two cron entries, 15 min apart, as redundancy against GitHub Actions
     # schedule drops. GitHub's cron is documented as best-effort — runs at
