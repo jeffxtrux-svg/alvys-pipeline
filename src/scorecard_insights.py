@@ -159,7 +159,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 f"TOP IDLER · {driver.upper()}",
                 f"Truck {top.get('unit', '—')} · {_pct(idle_pct)} idle. "
                 f"~{_money(fuel_cost)}/mo of fuel burned parked. "
-                f"See pg 4 for ranking and talk track."))
+                f"See pg 3 for ranking and talk track."))
 
     # 2. RPM goal gap.
     if rpm_goal:
@@ -192,13 +192,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 "AR 31-60 CLIMBING",
                 f"{_money(v_31_60)} in 31-60 (+{_money(delta)}{since}). "
-                f"Collections call list on pg 5."))
+                f"Collections call list on pg 6."))
         elif v_31_60 > 20000 or (v_31_60 > 10000 and share > 0.20):
             items.append((
                 "warn",
                 "AR 31-60 BUCKET",
                 f"{_money(v_31_60)} in 31-60 ({_pct(share)} of 31+ total). "
-                f"Collections call list on pg 5."))
+                f"Collections call list on pg 6."))
 
     # 4. Un-invoiced loads (gap between Alvys revenue and QB invoicing).
     # Fire 'GROWING' label when count is up materially vs prior snapshot.
@@ -216,13 +216,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 "UN-INVOICED LOADS GROWING",
                 f"{n} delivered Alvys loads not yet invoiced (+{delta_n}{since}). "
-                f"{_money(amt)} total. See pg 6."))
+                f"{_money(amt)} total. See pg 7."))
         elif n >= 10 or amt > 50000:
             items.append((
                 "warn",
                 "UN-INVOICED LOADS",
                 f"{n} delivered Alvys loads not yet invoiced in QB "
-                f"({_money(amt)}). See pg 6."))
+                f"({_money(amt)}). See pg 7."))
 
     # 5. Safety event — only surface if 24h count is non-zero.
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
@@ -309,6 +309,7 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
     """One short callout per detail page, keyed by page number."""
     out: dict[int, str] = {}
 
+    # === OPERATIONAL ===
     # Page 2 — Driver Mileage
     mtd = (alvys or {}).get("mtd") or {}
     miles = mtd.get("miles")
@@ -316,52 +317,54 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
         out[2] = (f"Page 1's mileage tile shows {_num(miles)} miles "
                   f"period-to-date. Per-driver breakdown below.")
 
-    # Page 3 — Safety Detail
-    win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
-    e24 = win24.get("24h") if isinstance(win24, dict) else 0
-    out[3] = (f"Page 1's safety summary captured {int(e24 or 0)} event(s) "
-              f"in last 24h. Per-event detail and coaching status below.")
-
-    # Page 4 — Fleet Operations
+    # Page 3 — Fleet Operations
     idle = ((samsara or {}).get("fleet") or {}).get("idle") or []
     if idle:
         top = idle[0]
-        out[4] = (f"Page 1's coaching cards came from this data. Top idler: "
+        out[3] = (f"Page 1's coaching cards came from this data. Top idler: "
                   f"{(top.get('driver') or 'Unassigned').upper()} "
                   f"({top.get('unit', '—')}) at {_pct(top.get('idle_pct'))}.")
 
-    # Page 5 — AR Overdue 31+
+    # === SAFETY ===
+    # Page 4 — Safety Detail
+    win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
+    e24 = win24.get("24h") if isinstance(win24, dict) else 0
+    out[4] = (f"Page 1's safety summary captured {int(e24 or 0)} event(s) "
+              f"in last 24h. Per-event detail and coaching status below.")
+
+    # Page 5 — SambaSafety
+    out[5] = ("Page 1's fleet safety score is a Samsara average. Per-driver "
+              "license / MVR / risk scores from SambaSafety MVR pull below.")
+
+    # === ACCOUNTING ===
+    # Page 6 — AR Overdue 31+
     if qb_ar:
         total31 = qb_ar.get("total31") or 0
-        out[5] = (f"Page 1 flagged {_money(total31)} in 31+ AR. "
+        out[6] = (f"Page 1 flagged {_money(total31)} in 31+ AR. "
                   f"This is the collections call list. JW Logistics omitted "
                   f"per standing policy.")
 
-    # Page 6 — Un-invoiced loads
+    # Page 7 — Un-invoiced loads
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
-        out[6] = (f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
+        out[7] = (f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
                   f"delivered-but-not-yet-invoiced loads ({_money(amt)}).")
 
-    # Page 7 — 90+ AR by customer
+    # Page 8 — 90+ AR by customer
     if alvys_ar:
         d91 = alvys_ar.get("d91plus") or 0
         if d91:
-            out[7] = (f"Page 1's AR insight noted growth in aging. The "
+            out[8] = (f"Page 1's AR insight noted growth in aging. The "
                       f"{_money(d91)} below is the 90+ slice — escalate to "
                       f"collections.")
 
-    # Page 8 — QB↔Alvys recon
-    out[8] = ("Page 1's $QB-vs-Alvys gap broken down per customer. Top rows = "
+    # Page 9 — QB↔Alvys recon
+    out[9] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
               "biggest contributors to the variance.")
 
-    # Page 9 — Bill-by-bill match
-    out[9] = ("Page 8 showed customer-level variances. This page drills to "
-              "individual unmatched invoices.")
-
-    # Page 10 — SambaSafety (when populated)
-    out[10] = ("Page 1's fleet safety score is a Samsara average. Per-driver "
-               "license / MVR / risk scores from SambaSafety MVR pull below.")
+    # Page 10 — Bill-by-bill match
+    out[10] = ("Page 9 showed customer-level variances. This page drills to "
+               "individual unmatched invoices.")
 
     return out
