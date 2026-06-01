@@ -3173,12 +3173,52 @@ def build_page2(samsara, date_str) -> str:
     coach_rows = rows_coach()
     coach_count = coach_rows.count("<tr>")
 
+    # Driver safety scores table (moved here from the Fleet Operations page
+    # so all safety content lives on one page). All drivers ranked
+    # worst-to-best; lowest scores get the red treatment so they pop.
+    fleet = (samsara or {}).get("fleet", {}) or {}
+    scores_all = fleet.get("scores_all") or []
+    def _score_kind(s: int) -> str:
+        if s < 90:
+            return "bad"
+        if s < 100:
+            return "warn"
+        return "good"
+    def _evt(v):
+        return "&ndash;" if v is None else str(v)
+    def _evt_kind(v):
+        if v is None or v == 0:
+            return None
+        return "bad"
+    if scores_all:
+        s_headers = ["Driver", "Score", "Harsh accel", "Harsh brake",
+                     "Harsh turn", "Speeding", "Crashes"]
+        body = ""
+        for r in scores_all:
+            body += _tr(
+                [r["driver"], str(r["score"]),
+                 _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
+                 _evt(r.get("harsh_turn")), _evt(r.get("speeding")),
+                 _evt(r.get("crashes"))],
+                ["left", "right", "right", "right", "right", "right", "right"],
+                [None, _score_kind(r["score"]),
+                 _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
+                 _evt_kind(r.get("harsh_turn")), _evt_kind(r.get("speeding")),
+                 _evt_kind(r.get("crashes"))])
+        score_all_tbl = _table(s_headers,
+                               ["left", "right", "right", "right", "right",
+                                "right", "right"], body)
+    else:
+        score_all_tbl = (f"<tr><td colspan='7' style='padding:12px 8px;"
+                         f"color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
+    fleet_score = fleet.get("fleet_score")
+
     return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 4, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
             f"{_tile('Open DVIR defects &middot; 24h', num(w('dvir')), '')}"
-            f"{_tile('Coaching flagged &middot; 24h', num(coach_count), '')}</tr>"
+            f"{_tile('Fleet avg safety score', (f'{fleet_score:.0f}' if _isnum(fleet_score) else 'n/a'), _pill('0&ndash;100 &middot; higher better', 'mute'))}</tr>"
             f"{_section('HOS violations &mdash; last 24h')}"
             f"{_table(['Driver', 'Time', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], rows_hos())}"
             f"{_section('Safety events &mdash; last 24h')}"
@@ -3187,9 +3227,13 @@ def build_page2(samsara, date_str) -> str:
             f"{_table(['Unit', 'Driver', 'Time', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_dvir())}"
             f"{_section('Coaching flagged &mdash; last 24h')}"
             f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
+            f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
+            f"{score_all_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Last 24 hours only. Source: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
-            f"Open defects older than 24h are tracked by the fleet alert job.</div>")
+            f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
+            f"Driver safety scores: Samsara Driver Safety Scores (per-driver composite, "
+            f"last 6 months). Open defects older than 24h are tracked by the fleet "
+            f"alert job.</div>")
 
 
 def build_page_fleet(samsara, date_str) -> str:
@@ -3317,44 +3361,10 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    # Driver safety: all drivers ranked worst-to-best with the underlying
-    # event components that drive the composite score. Lowest scores get
-    # red so they pop at the top.
-    scores_all = fleet.get("scores_all") or []
-    def _score_kind(s: int) -> str:
-        if s < 90:
-            return "bad"
-        if s < 100:
-            return "warn"
-        return "good"
-    def _evt(v):
-        return "&ndash;" if v is None else str(v)
-    def _evt_kind(v):
-        # Highlight any non-zero count in red so events draw the eye.
-        if v is None or v == 0:
-            return None
-        return "bad"
-    if scores_all:
-        headers = ["Driver", "Score", "Harsh accel", "Harsh brake", "Harsh turn", "Speeding", "Crashes"]
-        body = ""
-        for r in scores_all:
-            body += _tr(
-                [r["driver"], str(r["score"]),
-                 _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
-                 _evt(r.get("harsh_turn")), _evt(r.get("speeding")),
-                 _evt(r.get("crashes"))],
-                ["left", "right", "right", "right", "right", "right", "right"],
-                [None, _score_kind(r["score"]),
-                 _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
-                 _evt_kind(r.get("harsh_turn")), _evt_kind(r.get("speeding")),
-                 _evt_kind(r.get("crashes"))])
-        score_all_tbl = _table(headers,
-                               ["left", "right", "right", "right", "right", "right", "right"],
-                               body)
-    else:
-        score_all_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
+    # Driver safety scores moved to the Safety page (build_page2) so all
+    # safety content lives in one place.
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 3, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding', 3, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
@@ -3365,13 +3375,11 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{idle_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
-            f"{_section('Driver safety scores &middot; all drivers, worst to best')}"
-            f"{score_all_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Sources: Samsara Trips (MPG), Samsara engine-state history (idle, last 5 settlement weeks; "
             f"idle gallons = idle_hours &times; 0.8 gph fleet-average heuristic), "
-            f"Samsara Safety Events filtered by Event Type (speeding, 7 days), "
-            f"Samsara Driver Safety Scores (per-driver composite, last 6 months).</div>")
+            f"Samsara Safety Events filtered by Event Type (speeding, 7 days). "
+            f"Driver safety scores moved to the Safety page (pg 4).</div>")
 
 
 def build_page3(qb_ar, date_str) -> str:

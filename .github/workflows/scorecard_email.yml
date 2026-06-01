@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: pages 2-10 grouped into OPERATIONAL / SAFETY / ACCOUNTING)
+  # (touch bump: move Driver Safety Scores table from Fleet Ops to Safety page)
   push:
     branches:
       - claude/claude-md-docs-Es64x
