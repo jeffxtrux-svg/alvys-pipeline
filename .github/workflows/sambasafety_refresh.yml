@@ -1,0 +1,56 @@
+# SambaSafety data refresh — runs daily, reads the two raw CSV exports
+# from OneDrive/SambaSafety/, merges them via src.sambasafety_combine, and
+# uploads SambaSafety_Master.xlsx back to OneDrive so the scorecard's page 9
+# stays current.
+#
+# Until SambaSafety's API is wired up, the two source CSVs land in OneDrive
+# via Power Automate (or manual drop). See docs/knowledge-base/operations.md
+# for the setup steps.
+#
+# Required GitHub Secrets (shared with the rest of the pipeline):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+
+name: Refresh SambaSafety data
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 10:30 UTC = 4:30am CST (winter) / 5:30am CDT (summer).
+    # Runs an hour before the scorecard email job, so the merged workbook is
+    # always fresh when the scorecard reads it.
+    - cron: '30 10 * * *'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh SambaSafety_Master.xlsx
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SAMBASAFETY_OUTPUT_DIR: output/sambasafety
+        run: python -m src.sambasafety_main
+
+      - name: Upload output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sambasafety-master-${{ github.run_number }}
+          path: output/sambasafety/
+          retention-days: 7
