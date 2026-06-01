@@ -2604,7 +2604,7 @@ def build_page2(samsara, date_str) -> str:
     coach_rows = rows_coach()
     coach_count = coach_rows.count("<tr>")
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str)}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 4, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
@@ -2689,7 +2689,7 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["score"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 4, date_str)}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 3, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (latest IFTA month)')}"
@@ -2722,7 +2722,7 @@ def build_page3(qb_ar, date_str) -> str:
     total_row = (f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>"
                  f"Total 31+ days overdue</td><td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
                  f"border-top:2px solid {LINE};'>{money(total31)}</td><td style='border-top:2px solid {LINE};'></td></tr>")
-    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 5, date_str)}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 6, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
             f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
@@ -2835,7 +2835,7 @@ def build_page5(uninv, date_str) -> str:
     shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
     more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
             f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
-    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 6, date_str)}"
+    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 7, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
@@ -2860,7 +2860,7 @@ def build_page6(alvys_ar, date_str) -> str:
         body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
                      str(c["oldest_days"]), money(c["amount"])],
                     ["left", "right", "right", "right"], [None, None, "bad", "bad"])
-    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 7, date_str)}"
+    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 8, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
@@ -2903,7 +2903,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 8, date_str)}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 9, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -2918,7 +2918,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 9, date_str)
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 10, date_str)
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 7 for the customer-level reconciliation.")
@@ -2985,7 +2985,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 
 def build_page9(samba, date_str) -> str:
-    header = _header('Driver Compliance &mdash; SambaSafety', 10, date_str)
+    header = _header('Driver Compliance &mdash; SambaSafety', 5, date_str)
     footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
               f"Source: SambaSafety driver monitoring.</div>")
@@ -3104,24 +3104,25 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection))}{pb}"
-            # Driver Mileage runs immediately after the Executive Brief (whose
-            # last section is X-Linx Overview) so the per-driver weekly view
-            # follows the entity-level summary. Safety and AR pages then come
-            # behind it. Function names build_page<N> are kept for stability,
-            # but the page-number arguments in _header reflect the actual
-            # render order.
+            # Pages 2-10 are grouped into three sections that follow the
+            # Executive Brief: OPERATIONS, then SAFETY, then ACCOUNTING.
+            # Function names build_page<N> are kept for stability, but both the
+            # render order below and the page-number arguments in each _header
+            # reflect the grouped order, not the old N.
+            #
+            # OPERATIONS — driver mileage + fleet efficiency.
             f"{wrap(build_page4(mileage, date_str))}{pb}"
-            f"{wrap(build_page2(samsara, date_str))}{pb}"
-            # Fleet Operations is rendered position 4 (after Safety detail), so
-            # MPG / Idle / Speeding / Driver Scores sit next to the safety
-            # context they tie back to. AR Overdue shifts to position 5.
             f"{wrap(build_page_fleet(samsara, date_str))}{pb}"
+            # SAFETY — 24h safety/compliance detail + SambaSafety driver compliance.
+            f"{wrap(build_page2(samsara, date_str))}{pb}"
+            f"{wrap(build_page9(samba, date_str))}{pb}"
+            # ACCOUNTING — AR overdue, the un-billed gap, AR aging, and the two
+            # QB-vs-Alvys reconciliations.
             f"{wrap(build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(build_page5(uninvoiced, date_str))}{pb}"
             f"{wrap(build_page6(alvys_ar, date_str))}{pb}"
             f"{wrap(build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(build_page9(samba, date_str))}"
+            f"{wrap(build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
