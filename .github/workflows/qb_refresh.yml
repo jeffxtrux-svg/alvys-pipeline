@@ -16,6 +16,11 @@ name: Refresh QuickBooks data
 
 on:
   workflow_dispatch:
+  # Temporary: one-shot on-demand run via a push to the working branch.
+  # Remove with a commit message containing [skip ci].
+  push:
+    branches:
+      - claude/claude-md-docs-iVb3S
   schedule:
     # Run concurrently with Alvys + Samsara at 5:00am CST so the scorecard
     # (5:30am CST) has all three feeds fresh in OneDrive. Each connector

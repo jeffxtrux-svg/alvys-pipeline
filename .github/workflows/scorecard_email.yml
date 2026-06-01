@@ -12,13 +12,6 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
-  push:
-    # Temporary: lets a push to this working branch fire a one-shot brief on
-    # demand (the runner holds the live Azure/OneDrive secrets). Scoped to the
-    # single branch so it can't trigger from anywhere else. Remove with a
-    # commit message containing [skip ci] so the removal doesn't send again.
-    branches:
-      - claude/claude-md-docs-iVb3S
   schedule:
     # Two cron entries, 15 min apart, as redundancy against GitHub Actions
     # schedule drops. GitHub's cron is documented as best-effort — runs at
