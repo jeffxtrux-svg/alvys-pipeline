@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: fire scorecard one-shot to inspect current state)
+  # (touch bump: month-rollover resilience for early-month MTD tiles)
   push:
     branches:
       - claude/claude-md-docs-Es64x

@@ -235,6 +235,25 @@ def _windows() -> dict[str, pd.Timestamp]:
     }
 
 
+def _rollover_state(mtd_settled_count: int) -> tuple[bool, pd.Timestamp | None,
+                                                     pd.Timestamp | None, str]:
+    """Detect the month-rollover edge case where MTD has just turned over and
+    every MTD tile would otherwise read 'n/a'. On day 1-3 of a month with
+    fewer than ~5 settled MTD loads, swap the MTD numbers for the previous
+    completed month so the brief stays useful instead of going blank.
+
+    Returns `(active, last_month_start, last_month_end, mtd_label)`. The
+    label is 'MTD' when inactive and e.g. 'May 2026' when active — caller
+    surfaces it on tile labels and a banner."""
+    now = pd.Timestamp.now()
+    if now.day > 3 or mtd_settled_count >= 5:
+        return False, None, None, "MTD"
+    mtd_start = now.normalize().replace(day=1)
+    lm_end = mtd_start - pd.Timedelta(seconds=1)
+    lm_start = lm_end.normalize().replace(day=1)
+    return True, lm_start, lm_end, lm_start.strftime("%b %Y")
+
+
 # ----------------------------------------------------------------------
 # Alvys operational KPIs (from the manual Alvys Master 2026 file)
 # ----------------------------------------------------------------------
@@ -287,6 +306,19 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
     out = {key: _alvys_metrics(loads[dates >= start]) for key, start in win_specs}
 
+    # Month-rollover resilience: on day 1-3 of a month with sparse MTD, the
+    # tiles would all read 'n/a' because no settled loads have landed yet.
+    # Swap MTD for the previous completed month so the brief stays useful.
+    mtd_count = int((dates >= w["mtd"]).sum())
+    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_count)
+    out["rollover"] = rollover
+    out["mtd_label"] = mtd_label
+    if rollover:
+        out["rollover_start"] = lm_start
+        out["rollover_end"] = lm_end
+        lm_mask = (dates >= lm_start) & (dates <= lm_end)
+        out["mtd"] = _alvys_metrics(loads[lm_mask])
+
     # RPM and deadhead are asset-carrier metrics — compute an X-Trux/XFreight-only
     # variant (exclude X-Linx brokerage) for those tiles.
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
@@ -295,7 +327,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         a_loads, a_dates = loads[is_asset], dates[is_asset]
         out["asset"] = {key: _alvys_metrics(a_loads[a_dates >= start]) for key, start in win_specs}
         # Fleet metrics (X-Trux/XFreight, MTD): active trucks + miles per truck.
-        a_mtd = a_loads[a_dates >= w["mtd"]]
+        if rollover:
+            a_mtd_mask = (a_dates >= lm_start) & (a_dates <= lm_end)
+            out["asset"]["mtd"] = _alvys_metrics(a_loads[a_mtd_mask])
+            a_mtd = a_loads[a_mtd_mask]
+        else:
+            a_mtd = a_loads[a_dates >= w["mtd"]]
         truck_col = _find_col(a_loads, ["truck"])
         active = None
         if truck_col:
@@ -341,15 +378,23 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if not office_col:
         return {}
-    if start is None:
-        start = _windows()[window_key]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     mask = pd.Series(True, index=loads.index)
     if "Load Status" in loads.columns:
         mask &= loads["Load Status"].astype(str).str.lower() != "cancelled"
+    # Default-path month-rollover resilience: when no explicit start/end was
+    # passed and we're using MTD on day 1-3 of a sparse new month, fall back
+    # to the previous completed month so the table doesn't go all-n/a.
+    if start is None and window_key == "mtd":
+        mtd_start = _windows()["mtd"]
+        rollover, lm_start, lm_end, _ = _rollover_state(int((dates >= mtd_start).sum()))
+        if rollover:
+            start, end = lm_start, lm_end
+    if start is None:
+        start = _windows()[window_key]
     mask &= dates >= start
     if end is not None:
-        mask &= dates < end
+        mask &= dates < end if end < _windows()["now"] else dates <= end
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
@@ -839,10 +884,22 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     factor = (dim / dom) if dom else None
 
     mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
-    # Settled MTD mask: this month, non-cancelled, with driver rate entered.
-    # Used to floor the projection at actual settled margin — at month-end
-    # (or any time this month's actual margin% exceeds the t90 blend) the
-    # estimate should never read below what we've actually earned.
+    # Month-rollover resilience: on day 1-3 of a sparse new month, the "EST.
+    # MARGIN" tile is meaningless (no MTD data to project). Pivot the entire
+    # computation to the previous completed month — proj/actual then both
+    # reflect last month's final settled margin.
+    mtd_count = int(mtd_mask.sum())
+    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_count)
+    if rollover:
+        mtd_mask = (dates >= lm_start) & (dates <= lm_end) & not_cancelled
+        dim = (lm_end.day)   # last completed month had this many days
+        dom = dim            # treat it as "complete" so factor = 1.0
+        factor = 1.0
+    # Settled MTD mask: this month (or last month under rollover), non-cancelled,
+    # with driver rate entered. Used to floor the projection at actual settled
+    # margin — at month-end (or any time this month's actual margin% exceeds
+    # the t90 blend) the estimate should never read below what we've actually
+    # earned.
     settled_mtd_mask = mtd_mask.copy()
     if "Driver Rate" in loads.columns:
         settled_mtd_mask = settled_mtd_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
@@ -899,6 +956,8 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
+    out["rollover"] = rollover
+    out["mtd_label"] = mtd_label
     return out
 
 
@@ -2653,11 +2712,19 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _de = _mp.get("day_of_month", 0)
     _td = _mp.get("trailing_days", 90)
     _month_lbl = pd.Timestamp.now().strftime("%B")
+    # Under month-rollover, the "estimate" is just last completed month's
+    # actual settled margin — relabel so the tile doesn't read "Est. June"
+    # while showing May's final number.
+    _est_prefix = "May" if False else "Est."  # placeholder, set below
+    if _mp.get("rollover"):
+        _tile_label = f"{_mp.get('mtd_label', 'Prior month')} margin &middot; final"
+    else:
+        _tile_label = f"Est. {_month_lbl} margin"
     def _proj_tile(ent_key, pill_text):
         ent = _mp.get(ent_key) or {}
         sub = (_pill(pill_text, "mute")
                + f" &middot; {_de}/{_dim}d &middot; t{_td} {pct(ent.get('trailing_margin_pct'))}")
-        return _tile(f"Est. {_month_lbl} margin", money(ent.get("projected_margin")), sub)
+        return _tile(_tile_label, money(ent.get("projected_margin")), sub)
     # Order: Combined projection in the leftmost slot (visually anchors the
     # row's lead number), per-entity projections in the middle, and the plain
     # Loads count on the right.
@@ -2916,15 +2983,34 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             t = pd.Timestamp(data_asof)
         asof = f"Alvys data as of {t:%b %d, %Y %I:%M %p %Z}. "
 
+    # Month-rollover banner: when MTD has just turned over and we've swapped
+    # the MTD numbers for last month's totals, surface that clearly at the top
+    # so a reader doesn't think the numbers are wrong.
+    rollover_banner = ""
+    if (alvys or {}).get("rollover"):
+        lm_label = alvys.get("mtd_label", "last month")
+        rollover_banner = (
+            f"<div style='padding:8px 24px 0;'>"
+            f"<div style='background:{WARNBG};border-left:4px solid {WARN};border-radius:6px;"
+            f"padding:10px 14px;color:{INK};font-size:13px;'>"
+            f"<b>Month rollover</b> &middot; only {pd.Timestamp.now().day} day(s) into the new month. "
+            f"MTD tiles below show <b>{lm_label}</b> final numbers until enough loads accumulate."
+            f"</div></div>")
+    _mtd_label = (alvys or {}).get("mtd_label", "MTD")
+    _entity_section = (f"Revenue / cost / margin by entity &middot; {_mtd_label}"
+                       if _mtd_label != "MTD"
+                       else "Revenue / cost / margin by entity &middot; MTD")
+
     return (f"{_header('Morning Executive Brief', 1, date_str)}"
             f"<div style='padding:18px 24px 4px;'><div style='background:#0f2742;border-radius:10px;padding:14px 18px;"
             f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
             f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
+            f"{rollover_banner}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{warn_row}"
             f"{_section('XFreight Overview')}"
             f"<tr>{t1}</tr><tr>{t1b}</tr>"
-            f"{_section('Revenue / cost / margin by entity &middot; MTD')}"
+            f"{_section(_entity_section)}"
             f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
             f"{mtd_note}"
             f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
