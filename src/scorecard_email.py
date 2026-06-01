@@ -235,18 +235,20 @@ def _windows() -> dict[str, pd.Timestamp]:
     }
 
 
-def _rollover_state(mtd_settled_count: int) -> tuple[bool, pd.Timestamp | None,
+def _rollover_state(mtd_revenue_loads: int) -> tuple[bool, pd.Timestamp | None,
                                                      pd.Timestamp | None, str]:
     """Detect the month-rollover edge case where MTD has just turned over and
-    every MTD tile would otherwise read 'n/a'. On day 1-3 of a month with
-    fewer than ~5 settled MTD loads, swap the MTD numbers for the previous
-    completed month so the brief stays useful instead of going blank.
+    every MTD tile would otherwise read 'n/a'. Active when we're on day 1-3
+    of a month AND not a single load with non-zero revenue has landed for
+    the new month yet — i.e., there is literally nothing to show. As soon
+    as the FIRST revenue-bearing load lands (or the 4th of the month rolls
+    in), rollover flips off and the brief reverts to live MTD actuals.
 
     Returns `(active, last_month_start, last_month_end, mtd_label)`. The
     label is 'MTD' when inactive and e.g. 'May 2026' when active — caller
     surfaces it on tile labels and a banner."""
     now = pd.Timestamp.now()
-    if now.day > 3 or mtd_settled_count >= 5:
+    if now.day > 3 or mtd_revenue_loads >= 1:
         return False, None, None, "MTD"
     mtd_start = now.normalize().replace(day=1)
     lm_end = mtd_start - pd.Timedelta(seconds=1)
@@ -306,11 +308,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
     out = {key: _alvys_metrics(loads[dates >= start]) for key, start in win_specs}
 
-    # Month-rollover resilience: on day 1-3 of a month with sparse MTD, the
-    # tiles would all read 'n/a' because no settled loads have landed yet.
-    # Swap MTD for the previous completed month so the brief stays useful.
-    mtd_count = int((dates >= w["mtd"]).sum())
-    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_count)
+    # Month-rollover resilience: on day 1-3 of a month with NO revenue-bearing
+    # loads yet, the tiles would all read 'n/a'. Swap MTD for the previous
+    # completed month until the first revenue load lands (or day 4 rolls in).
+    _mtd_rev = _col_any(loads[dates >= w["mtd"]], ["Customer Revenue", "Revenue"]).fillna(0)
+    mtd_revenue_loads = int((_mtd_rev > 0).sum())
+    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_revenue_loads)
     out["rollover"] = rollover
     out["mtd_label"] = mtd_label
     if rollover:
@@ -383,11 +386,12 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     if "Load Status" in loads.columns:
         mask &= loads["Load Status"].astype(str).str.lower() != "cancelled"
     # Default-path month-rollover resilience: when no explicit start/end was
-    # passed and we're using MTD on day 1-3 of a sparse new month, fall back
-    # to the previous completed month so the table doesn't go all-n/a.
+    # passed and we're using MTD on day 1-3 of a new month, fall back to the
+    # previous completed month UNTIL the first revenue-bearing load lands.
     if start is None and window_key == "mtd":
         mtd_start = _windows()["mtd"]
-        rollover, lm_start, lm_end, _ = _rollover_state(int((dates >= mtd_start).sum()))
+        _rev_mtd = _col_any(loads[dates >= mtd_start], ["Customer Revenue", "Revenue"]).fillna(0)
+        rollover, lm_start, lm_end, _ = _rollover_state(int((_rev_mtd > 0).sum()))
         if rollover:
             start, end = lm_start, lm_end
     if start is None:
@@ -884,12 +888,12 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     factor = (dim / dom) if dom else None
 
     mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
-    # Month-rollover resilience: on day 1-3 of a sparse new month, the "EST.
-    # MARGIN" tile is meaningless (no MTD data to project). Pivot the entire
-    # computation to the previous completed month — proj/actual then both
-    # reflect last month's final settled margin.
-    mtd_count = int(mtd_mask.sum())
-    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_count)
+    # Month-rollover resilience: on day 1-3 with no revenue-bearing loads yet,
+    # the "EST. MARGIN" tile is meaningless (nothing to project from). Pivot
+    # to last completed month until the first revenue load lands.
+    _mtd_rev = _col_any(loads[mtd_mask], ["Customer Revenue", "Revenue"]).fillna(0)
+    mtd_revenue_loads = int((_mtd_rev > 0).sum())
+    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_revenue_loads)
     if rollover:
         mtd_mask = (dates >= lm_start) & (dates <= lm_end) & not_cancelled
         dim = (lm_end.day)   # last completed month had this many days
