@@ -6,11 +6,6 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
-  push:
-    # Temporary one-shot trigger — remove after the fresh pull lands.
-    branches:
-      - claude/claude-md-docs-iVb3S
-
   # Same UTC schedule as Alvys: 5am, 12pm, 6pm Central
   schedule:
     - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
