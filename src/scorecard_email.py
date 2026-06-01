@@ -3026,8 +3026,9 @@ def build_page_fleet(samsara, date_str) -> str:
     fleet_miles = fleet.get("fleet_miles")
     tiles = (
         _tile("Fleet MPG", (f"{fleet_mpg:.2f}" if _isnum(fleet_mpg) else "n/a"),
-              _pill("MTD", "mute"))
-        + _tile("Fleet miles &middot; MTD", num(fleet_miles), _pill("Samsara OBD", "mute"))
+              _pill("MTD (Based on Samsara)", "mute"))
+        + _tile("Fleet miles &middot; MTD", num(fleet_miles),
+                _pill("MTD (Based on Samsara)", "mute"))
         + _tile("Fleet idle hours &middot; 30d", num(fleet_idle), _pill("Samsara engine states", "mute"))
         + _tile("Fleet avg safety score",
                 (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
@@ -3173,9 +3174,9 @@ def build_page_fleet(samsara, date_str) -> str:
     return (f"{_header('Fleet Operations &mdash; MPG / Idle / Speeding / Driver Scores', 4, date_str)}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
-            f"{_section('Best MPG &middot; top 5 trucks (MTD)')}"
+            f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
             f"{mpg_top_tbl}"
-            f"{_section('Worst MPG &middot; bottom 5 trucks (MTD)')}"
+            f"{_section('Worst MPG &middot; bottom 5 trucks (MTD &middot; Based on Samsara)')}"
             f"{mpg_bot_tbl}"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
             f"{idle_tbl}"
