@@ -1896,16 +1896,22 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
     # Driver safety scores — top 5 and bottom 5 from DriverSafetyScores sheet.
     scores = sheets.get("DriverSafetyScores")
+    log.info("DriverSafetyScores: %s, cols=%s",
+             "empty" if scores is None or scores.empty else f"{len(scores)} rows",
+             list(scores.columns[:10]) if scores is not None and not scores.empty else [])
     if scores is not None and not scores.empty:
-        sc_col = _find_col(scores, ["safetyscore", "score"])
+        sc_col = _find_col(scores, ["safetyscore", "score", "totalnumberofpoints"])
         nm_col = _find_col(scores, ["driver name", "name"]) or "driverId"
+        log.info("DriverSafetyScores: sc_col=%s nm_col=%s", sc_col, nm_col)
         if sc_col:
             df = scores.copy()
             df["_score"] = pd.to_numeric(df[sc_col], errors="coerce")
             df = df.dropna(subset=["_score"])
+            log.info("DriverSafetyScores: %d rows with numeric score", len(df))
             # Drop placeholder / test driver records before computing the
             # fleet average or building any ranking.
             df = df[~df[nm_col].apply(_is_excluded_driver)] if nm_col in df.columns else df
+            log.info("DriverSafetyScores: %d rows after exclusion filter", len(df))
             if not df.empty:
                 out["fleet"]["fleet_score"] = float(df["_score"].mean())
                 # Detect the component-event columns Samsara returns alongside
