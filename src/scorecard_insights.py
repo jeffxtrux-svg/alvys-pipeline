@@ -168,27 +168,34 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 body += f" Closing it ≈ {_money(annual)} annual uplift."
             items.append(("warn", "RPM BELOW GOAL", body))
 
-    # 3. AR 31-60 climbing — leading indicator of write-off risk.
+    # 3. AR 31-60 bucket — leading indicator of write-off risk. Surface
+    # only when the bucket is materially large vs total 31+ (we don't have
+    # prior-month-bucket data to verify 'climbing', so the label is
+    # descriptive, not directional).
     if qb_ar:
         totals = qb_ar.get("totals") or {}
         v_31_60 = totals.get("31&ndash;60") or totals.get("31-60") or 0
-        if v_31_60 > 5000:
+        total_31_plus = qb_ar.get("total31") or 0
+        share = (v_31_60 / total_31_plus) if total_31_plus else 0
+        if v_31_60 > 20000 or (v_31_60 > 10000 and share > 0.20):
             items.append((
                 "warn",
-                "AR 31-60 CLIMBING",
-                f"{_money(v_31_60)} aging into 31-60. Collections call list "
-                f"on pg 5."))
+                "AR 31-60 BUCKET",
+                f"{_money(v_31_60)} in 31-60 ({_pct(share)} of 31+ total). "
+                f"Collections call list on pg 5."))
 
     # 4. Un-invoiced loads (gap between Alvys revenue and QB invoicing).
+    # Label is descriptive — we don't have prior-day count to verify it's
+    # actually growing.
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
         if n >= 10 or amt > 50000:
             items.append((
                 "warn",
-                "UN-INVOICED LOADS GROWING",
-                f"{n} delivered loads not yet invoiced ({_money(amt)}). "
-                f"See pg 6."))
+                "UN-INVOICED LOADS",
+                f"{n} delivered Alvys loads not yet invoiced in QB "
+                f"({_money(amt)}). See pg 6."))
 
     # 5. Safety event — only surface if 24h count is non-zero.
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}

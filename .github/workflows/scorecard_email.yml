@@ -13,7 +13,7 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   # One-shot verification trigger — DELETE this push block after the run finishes.
-  # (touch bump: rule-based insights — bottom line + action items + coaching)
+  # (touch bump: fix misleading 'climbing/growing' labels — no trend data)
   push:
     branches:
       - claude/claude-md-docs-Es64x
