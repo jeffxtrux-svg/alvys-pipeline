@@ -2446,6 +2446,10 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
             model= str(r.get("Model", "")).strip() if pd.notna(r.get("Model", None)) else ""
             year = str(r.get("Year", "")).strip() if pd.notna(r.get("Year", None)) else ""
             status = str(r.get("Status", "")).strip()
+            # Active-only filter: keep blanks (treat as active) and explicit
+            # "Active"; drop "Inactive", "Sold", "OutOfService", "Retired", etc.
+            if status and status.lower() != "active":
+                continue
             annual_ts, annual_days = _days_until(r.get(annual_col) if annual_col else None)
             reg_ts,    reg_days    = _days_until(r.get(reg_col) if reg_col else None)
             # Trucks-only extras — silently absent on the Trailers sheet.
