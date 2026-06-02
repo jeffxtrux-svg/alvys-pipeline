@@ -45,22 +45,39 @@ def test_empty_inputs_return_empty_dict():
 
 
 def test_basic_projection_math():
+    # The formula is the run-rate blend:
+    #   projected_revenue = booked_mtd + daily_run_rate * days_remaining
+    #   daily_run_rate    = trailing_90_revenue / 90
+    # (The old naive "booked * factor" extrapolation was replaced because it
+    # swung too wildly on day 1-2 of the month.)
     now = _now()
     # MTD: 1 settled load/day in the current month at rev=5000, cost=3500 (30% margin)
     rows = [_row("X-Trux", pd.Timestamp(now.year, now.month, d), 5000, 3500)
             for d in range(1, now.day + 1)]
-    # Trailing-90 history pushed fully into PRIOR months so it doesn't pollute
-    # booked_mtd. Range covers the 30 days before the current month started.
+    # 30 prior-month settled loads at the same rate.
     prior_end = pd.Timestamp(now.year, now.month, 1) - pd.Timedelta(days=1)
     for d in range(30):
         rows.append(_row("X-Trux", prior_end - pd.Timedelta(days=d), 5000, 3500))
 
     p = compute_margin_projection(_sheets(rows))
     xt = p["X-Trux"]
-    factor = p["days_in_month"] / p["day_of_month"]
+
+    # Booked MTD and trailing margin % are unaffected by the formula change.
     assert xt["booked_mtd"] == 5000 * now.day
     assert round(xt["trailing_margin_pct"], 4) == 0.30
-    assert round(xt["projected_revenue"], 2) == round(xt["booked_mtd"] * factor, 2)
+
+    # Run-rate formula: compute expected projected_revenue from first principles.
+    # Trailing window picks up all settled loads in the last 90 days, which
+    # here is 30 prior-month loads + all current-month loads (their timestamps
+    # are midnight which is before pd.Timestamp.now()).
+    t_rev = (30 + now.day) * 5000
+    daily_rr = t_rev / 90
+    days_remaining = max(now.days_in_month - now.day, 0)
+    expected_proj_rev = 5000 * now.day + daily_rr * days_remaining
+    assert abs(xt["projected_revenue"] - expected_proj_rev) < 0.01
+
+    # Projected margin = projected_revenue × trailing margin % (floor is settled
+    # margin which is ≤ proj_margin when the month has positive trailing rate).
     assert round(xt["projected_margin"], 2) == round(xt["projected_revenue"] * 0.30, 2)
 
 

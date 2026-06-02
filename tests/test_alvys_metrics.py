@@ -196,7 +196,12 @@ def test_revenue_per_mile_tile_matches_alvys_metrics_rpm():
 # cross-check against the report. Pinning the MTD basis so it doesn't drift.
 # ---------------------------------------------------------------------------
 def test_bottom_line_uses_mtd_asset_rpm_and_deadhead():
-    from src.scorecard_email import build_page1, rpm as rpm_fmt, pct as pct_fmt
+    # The insights-driven bottom line shows RPM only when actual < goal (via
+    # rpm_goal).  We supply rpm_goal so the RPM gap sentence fires, and set
+    # actual=mtd_rpm so we can verify the MTD value (not 7d) surfaces.
+    # Deadhead is no longer surfaced in the bottom-line paragraph — it moved
+    # to the action-item cards — so that check has been removed.
+    from src.scorecard_email import build_page1, rpm as rpm_fmt
 
     mtd_rpm, mtd_dh = 2.694, 0.06095
     d7_rpm, d7_dh = 2.500, 0.050    # deliberately different so we can tell
@@ -217,22 +222,33 @@ def test_bottom_line_uses_mtd_asset_rpm_and_deadhead():
         "X-Linx": {"revenue": 200_000, "cost": 160_000, "margin": 40_000,
                    "margin_pct": 0.20, "loads": 80, "unsettled": 2},
     }
+    # actual_rpm = mtd_rpm (MTD basis), goal slightly higher → gap sentence fires.
+    rpm_goal = {"actual_rpm": mtd_rpm, "goal_rpm": mtd_rpm + 0.30,
+                "cost_per_mile": 2.10, "pay_per_mile": 1.80,
+                "overhead_per_mile": 0.30, "overhead_total": 52500.0,
+                "overhead_companies": ["X-Trux, Inc.", "X-Linx Inc"],
+                "pay_miles": 19_464, "pay_loads": 8,
+                "ytd_miles": 19_464, "pay_window_used": 10,
+                "pay_window_fallback": False, "cost_plausible": True,
+                "overhead_alloc": 1.0, "overhead_per_mile_xtrux_only": 0.18,
+                "profit_per_mile": 0.30, "target_margin": 0.05,
+                "target_or": 0.95,
+                "gap": 0.30, "worksheet_overhead": 0.28,
+                "worksheet_cost_per_mile": 2.08}
     html = build_page1(
         alvys, ent, {}, {"total_ar": 1e6, "total31": 2e5},
         ([], []), ([], []),
         {"windows": {}, "coaching": {}, "trend": {}, "detail": {}},
         "Today",
+        rpm_goal=rpm_goal,
     )
 
-    # The MTD values must appear in the bottom-line blurb.
-    assert f"RPM {rpm_fmt(mtd_rpm)}" in html, \
-        f"Bottom-line RPM should be {rpm_fmt(mtd_rpm)} (MTD asset) not the 7d value"
-    assert f"deadhead {pct_fmt(mtd_dh)}" in html, \
-        f"Bottom-line deadhead should be {pct_fmt(mtd_dh)} (MTD asset) not the 7d value"
+    # RPM gap sentence must use actual_rpm (= mtd_rpm), not the 7d value.
+    assert f"RPM ${mtd_rpm:.2f}" in html, \
+        f"Bottom-line RPM should be ${mtd_rpm:.2f} (MTD basis) not the 7d value"
 
-    # And the 7d values must NOT appear in the bottom-line context — if they
-    # do, the bottom-line drifted back to the w7a source.
-    assert f"RPM {rpm_fmt(d7_rpm)}" not in html, \
+    # 7d RPM must NOT appear (would mean the code drifted to the 7d window).
+    assert f"RPM ${d7_rpm:.2f}" not in html, \
         "Bottom-line is showing the 7d RPM — must use MTD asset slice instead"
 
     # The window label should match the data window.
