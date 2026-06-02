@@ -153,12 +153,10 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
         if _isnum(actual) and _isnum(cpm) and miles_mtd:
             xt_pl = miles_mtd * (actual - cpm)
             combined = xt_pl + (float(xl_margin) if _isnum(xl_margin) else 0.0)
-            xl_clause = (f" + X-Linx margin {_money(xl_margin)}"
-                         if _isnum(xl_margin) else "")
+            verdict = "profit" if combined >= 0 else "loss"
             parts.append(
-                f"Combined {mtd_label} P/L: {_money(combined)} — X-Trux "
-                f"{_money(xt_pl)} ({_num(miles_mtd)} mi × (${actual:.2f} RPM − "
-                f"${cpm:.2f} CPM)){xl_clause}.")
+                f"X-Trux and X-Linx together are showing a {verdict} "
+                f"of {_money(abs(combined))} {mtd_label}.")
 
     # Idle cost — biggest unmonetized expense for most fleets.
     if samsara and samsara.get("fleet"):
