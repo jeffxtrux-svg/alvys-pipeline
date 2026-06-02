@@ -76,6 +76,10 @@ page will note both and link to the briefs that surfaced the gap.
 - For a chat session (Claude.ai or Claude Code on the web): paste the file
   content or share the GitHub link to the page you want context on.
 
+## See also
+
+- [[Index]] — the full map of compiled pages.
+
 ## Sources
 
 This page is meta — it has no `/raw` source. The auto-compiled pages will
