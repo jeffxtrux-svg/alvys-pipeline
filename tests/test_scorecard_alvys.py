@@ -176,6 +176,25 @@ def test_compute_alvys_drivers_returns_none_when_sheet_missing():
     assert compute_alvys_drivers({"Drivers": pd.DataFrame()}) is None
 
 
+def test_compute_alvys_drivers_handles_tz_aware_expirations():
+    """Alvys' /drivers endpoint returns ISO timestamps WITH timezone
+    (e.g. '2026-06-08T00:00:00+00:00'). `pd.Timestamp.now()` is tz-naive,
+    so any subtraction without stripping tz first raises TypeError.
+    This test pins down that the function tolerates either shape."""
+    NOW = pd.Timestamp(2026, 6, 2)   # tz-naive
+    tz_str = "2026-06-08T00:00:00+00:00"
+    sheets = {"Drivers": pd.DataFrame([
+        {"Id": "1", "Name": "Tz Driver", "Type": "Owner Operator", "Status": "Active",
+         "LicenseExpiresAt": tz_str, "MedicalExpiresAt": tz_str,
+         "TerminatedAt": None},
+    ])}
+    out = compute_alvys_drivers(sheets, now=NOW)
+    assert out["monitored"] == 1
+    # 6 days from Jun 2 → Jun 8
+    assert out["medical_critical_14"][0]["medical_days"] == 6
+    assert out["license_critical_14"][0]["license_days"] == 6
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
