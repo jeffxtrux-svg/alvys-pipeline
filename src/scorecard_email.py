@@ -304,26 +304,6 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
         log.info("Alvys mileage diag: loaded=%.0f + empty=%.0f = %.0f, "
                  "but Total-column sum=%.0f (ratio %.3f). Using loaded+empty.",
                  loaded, empty, total, total_col_sum, total_col_sum / total)
-    # One-time per-subset full inventory of every mileage-ish column found
-    # in the slice. Helps diagnose Power-BI-vs-scorecard divergence when the
-    # short candidate lists pick the wrong column.
-    if len(sub) and len(sub) < 200:  # only fires on small windows like MTD
-        mileage_cols = [c for c in sub.columns if "mileage" in str(c).lower()
-                        or "miles" in str(c).lower()]
-        if mileage_cols:
-            sums = {c: float(pd.to_numeric(sub[c], errors="coerce").fillna(0).sum())
-                    for c in mileage_cols}
-            # Also log distinct Load # count vs row count — Power BI counts
-            # distinct loads while we were summing every row, so if the
-            # workbook has duplicate rows per load we'd double the totals.
-            load_col = next((c for c in sub.columns
-                             if str(c).strip().lower() in {"load #", "load#", "load number"}),
-                            None)
-            n_distinct = (sub[load_col].nunique() if load_col else None)
-            log.info("Alvys mileage cols on %d-row slice (%s distinct Load #s): %s",
-                     len(sub),
-                     n_distinct if n_distinct is not None else "?",
-                     ", ".join(f"{c}={v:,.0f}" for c, v in sums.items()))
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
@@ -352,13 +332,21 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
         dates = dates.loc[loads.index]
     w = _windows()
+    # Bound each window to [start, now] — open-ended `dates >= start` was
+    # silently including loads with future-dated Scheduled Pickup, which
+    # Power BI's month-bucketed view excludes. For MTD this matters most:
+    # pre-booked loads later in the month inflated the denominator and
+    # halved the deadhead %.
+    now = w["now"]
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
-    out = {key: _alvys_metrics(loads[dates >= start]) for key, start in win_specs}
+    out = {key: _alvys_metrics(loads[(dates >= start) & (dates <= now)])
+           for key, start in win_specs}
 
     # Month-rollover resilience: on day 1-3 of a month with NO revenue-bearing
     # loads yet, the tiles would all read 'n/a'. Swap MTD for the previous
     # completed month until the first revenue load lands (or day 4 rolls in).
-    _mtd_rev = _col_any(loads[dates >= w["mtd"]], ["Customer Revenue", "Revenue"]).fillna(0)
+    _mtd_rev = _col_any(loads[(dates >= w["mtd"]) & (dates <= now)],
+                        ["Customer Revenue", "Revenue"]).fillna(0)
     mtd_revenue_loads = int((_mtd_rev > 0).sum())
     rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_revenue_loads)
     out["rollover"] = rollover
@@ -375,14 +363,15 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if office_col:
         is_asset = loads[office_col].map(_entity_group) == "X-Trux"
         a_loads, a_dates = loads[is_asset], dates[is_asset]
-        out["asset"] = {key: _alvys_metrics(a_loads[a_dates >= start]) for key, start in win_specs}
+        out["asset"] = {key: _alvys_metrics(a_loads[(a_dates >= start) & (a_dates <= now)])
+                        for key, start in win_specs}
         # Fleet metrics (X-Trux/XFreight, MTD): active trucks + miles per truck.
         if rollover:
             a_mtd_mask = (a_dates >= lm_start) & (a_dates <= lm_end)
             out["asset"]["mtd"] = _alvys_metrics(a_loads[a_mtd_mask])
             a_mtd = a_loads[a_mtd_mask]
         else:
-            a_mtd = a_loads[a_dates >= w["mtd"]]
+            a_mtd = a_loads[(a_dates >= w["mtd"]) & (a_dates <= now)]
         truck_col = _find_col(a_loads, ["truck"])
         active = None
         if truck_col:
