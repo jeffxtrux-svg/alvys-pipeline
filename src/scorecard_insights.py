@@ -217,11 +217,11 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"{int(d['days_to_exp'])} days from expiration.")
 
     # Alvys-side driver compliance — DOT medical card + CDL. Per Jeff:
-    # drop the aggregate "X medical cards expiring within 30d" sentence
-    # and instead list every driver in the 30-day window individually,
-    # using a possessive-style sentence that matches how Jeff reads it.
+    # only name drivers inside the 14-day window in the BOTTOM LINE
+    # (same urgency cutoff as the license sentences). The wider 30-day
+    # list still appears on page 2.
     if alvys_drivers:
-        for d in alvys_drivers.get("medical_issues_30") or []:
+        for d in alvys_drivers.get("medical_critical_14") or []:
             name = str(d.get("name", "")).strip() or "Driver"
             exp = d.get("medical_exp")
             try:
