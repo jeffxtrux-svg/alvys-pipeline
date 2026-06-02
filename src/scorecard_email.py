@@ -313,8 +313,16 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
         if mileage_cols:
             sums = {c: float(pd.to_numeric(sub[c], errors="coerce").fillna(0).sum())
                     for c in mileage_cols}
-            log.info("Alvys mileage cols on %d-row slice: %s",
+            # Also log distinct Load # count vs row count — Power BI counts
+            # distinct loads while we were summing every row, so if the
+            # workbook has duplicate rows per load we'd double the totals.
+            load_col = next((c for c in sub.columns
+                             if str(c).strip().lower() in {"load #", "load#", "load number"}),
+                            None)
+            n_distinct = (sub[load_col].nunique() if load_col else None)
+            log.info("Alvys mileage cols on %d-row slice (%s distinct Load #s): %s",
                      len(sub),
+                     n_distinct if n_distinct is not None else "?",
                      ", ".join(f"{c}={v:,.0f}" for c, v in sums.items()))
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
