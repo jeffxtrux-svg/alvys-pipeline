@@ -304,6 +304,18 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
         log.info("Alvys mileage diag: loaded=%.0f + empty=%.0f = %.0f, "
                  "but Total-column sum=%.0f (ratio %.3f). Using loaded+empty.",
                  loaded, empty, total, total_col_sum, total_col_sum / total)
+    # One-time per-subset full inventory of every mileage-ish column found
+    # in the slice. Helps diagnose Power-BI-vs-scorecard divergence when the
+    # short candidate lists pick the wrong column.
+    if len(sub) and len(sub) < 200:  # only fires on small windows like MTD
+        mileage_cols = [c for c in sub.columns if "mileage" in str(c).lower()
+                        or "miles" in str(c).lower()]
+        if mileage_cols:
+            sums = {c: float(pd.to_numeric(sub[c], errors="coerce").fillna(0).sum())
+                    for c in mileage_cols}
+            log.info("Alvys mileage cols on %d-row slice: %s",
+                     len(sub),
+                     ", ".join(f"{c}={v:,.0f}" for c, v in sums.items()))
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
