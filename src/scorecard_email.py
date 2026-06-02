@@ -2319,6 +2319,11 @@ def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | Non
             ts = pd.to_datetime(r[col], errors="coerce")
             if pd.isna(ts):
                 return None, None
+            # Alvys returns ISO timestamps with timezone; `now` is tz-naive
+            # (and so is the rest of the scorecard's date arithmetic), so
+            # strip tz before subtracting. We only care about the date.
+            if getattr(ts, "tz", None) is not None:
+                ts = ts.tz_localize(None)
             return ts, int((ts.normalize() - now.normalize()).days)
 
         lic_exp, lic_days = _days(lic_exp_c)
