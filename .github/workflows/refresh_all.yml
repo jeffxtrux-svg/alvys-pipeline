@@ -19,9 +19,12 @@ on:
   workflow_dispatch:
     inputs:
       include_scorecard:
-        description: 'Send the scorecard email after refreshes complete'
-        type: boolean
-        default: true
+        description: 'Send the scorecard email after refreshes complete (true/false)'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: 'true'
 
 jobs:
   alvys:
@@ -47,6 +50,6 @@ jobs:
   scorecard:
     name: Scorecard email
     needs: [alvys, samsara, quickbooks, sambasafety]
-    if: ${{ inputs.include_scorecard }}
+    if: inputs.include_scorecard != 'false'
     uses: ./.github/workflows/scorecard_email.yml
     secrets: inherit
