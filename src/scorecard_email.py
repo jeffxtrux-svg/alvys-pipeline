@@ -304,6 +304,19 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
         log.info("Alvys mileage diag: loaded=%.0f + empty=%.0f = %.0f, "
                  "but Total-column sum=%.0f (ratio %.3f). Using loaded+empty.",
                  loaded, empty, total, total_col_sum, total_col_sum / total)
+    # One-time per-subset diagnostic of full metrics — fires on small slices
+    # (MTD-sized). Surfaces rev/mile/empty/load count so a Power BI mismatch
+    # can be pinpointed to revenue, miles, or row-count.
+    if 0 < len(sub) < 200:
+        rpm_val = (revenue / total) if total else None
+        dh_val = (empty / total) if total else None
+        log.info("Alvys slice metrics (%d rows): rev=%.2f loaded=%.0f empty=%.0f "
+                 "total=%.0f rpm=%.4f dh=%.4f",
+                 len(sub),
+                 float(revenue) if pd.notna(revenue) else 0.0,
+                 loaded, empty, total,
+                 rpm_val if rpm_val is not None else 0,
+                 dh_val if dh_val is not None else 0)
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
