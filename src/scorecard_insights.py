@@ -73,7 +73,8 @@ WEEKS_PER_MONTH = 4.33
 def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 samsara: dict | None, rpm_goal: dict | None,
                 margin_projection: dict | None,
-                qb_ar: dict | None, ar_hist: tuple | None = None) -> str:
+                qb_ar: dict | None, ar_hist: tuple | None = None,
+                samba: dict | None = None) -> str:
     """Generate the bottom-line paragraph. Joins 3-4 sentences picked
     from threshold-triggered templates."""
     parts: list[str] = []
@@ -123,6 +124,23 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                     f"{len(values)} months ({_money(first)} → {_money(last)}). "
                     f"Watch the 31-60 bucket — that's the leading edge.")
 
+    # SambaSafety — surface expiring licenses or MVR high-risk count.
+    if samba:
+        n_high = len(samba.get("high_risk") or [])
+        lic_issues = samba.get("license_issues") or []
+        soon = [d for d in lic_issues
+                if isinstance(d.get("days_to_exp"), int)
+                and 0 <= d["days_to_exp"] <= 30]
+        bits = []
+        if soon:
+            bits.append(f"{len(soon)} license"
+                        f"{'s' if len(soon) != 1 else ''} expiring within 30d")
+        if n_high:
+            bits.append(f"{n_high} driver{'s' if n_high != 1 else ''} "
+                        f"high-risk per MVR")
+        if bits:
+            parts.append("Driver compliance: " + " · ".join(bits) + " (pg 2).")
+
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
                      "see entity table and detail pages for the read.")
@@ -136,6 +154,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                  alvys_ar: dict | None, samsara: dict | None,
                  rpm_goal: dict | None, uninvoiced: dict | None,
                  prior_snapshot: dict | None = None,
+                 samba: dict | None = None,
                  max_items: int = 3) -> list[tuple[str, str, str]]:
     """Return up to `max_items` action cards, severity-sorted (bad first).
     Each tuple is (severity, title, body) where severity is 'bad' / 'warn'.
@@ -159,7 +178,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 f"TOP IDLER · {driver.upper()}",
                 f"Truck {top.get('unit', '—')} · {_pct(idle_pct)} idle. "
                 f"~{_money(fuel_cost)}/mo of fuel burned parked. "
-                f"See pg 4 for the full idle ranking and talk track."))
+                f"See pg 6 for the full idle ranking and talk track."))
 
     # 2. RPM goal gap.
     if rpm_goal:
@@ -224,14 +243,52 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 f"{n} delivered Alvys loads not yet invoiced in QB "
                 f"({_money(amt)}). See pg 8."))
 
-    # 5. Safety event — only surface if 24h count is non-zero.
+    # 5. SambaSafety — expiring license is hard-deadline operational risk;
+    # an expired CDL grounds the truck immediately. Surface as 'bad' if
+    # anything is already expired or expires within 7 days, otherwise as
+    # 'warn' for the 30-day horizon.
+    if samba:
+        lic_issues = samba.get("license_issues") or []
+        expired = [d for d in lic_issues if d.get("expired")]
+        soon_7 = [d for d in lic_issues
+                  if isinstance(d.get("days_to_exp"), int)
+                  and 0 <= d["days_to_exp"] <= 7]
+        soon_30 = [d for d in lic_issues
+                   if isinstance(d.get("days_to_exp"), int)
+                   and 0 <= d["days_to_exp"] <= 30]
+        if expired or soon_7:
+            worst = (expired + soon_7)[0]
+            days = worst.get("days_to_exp")
+            when = ("EXPIRED" if (worst.get("expired") and
+                                   (days is None or days < 0))
+                    else f"expires in {int(days or 0)}d")
+            items.append((
+                "bad",
+                f"CDL {when} · {str(worst.get('name', '')).upper()}",
+                f"{len(expired)} expired + {len(soon_7)} expiring within 7d. "
+                f"Pull driver off the board until renewed. See pg 2."))
+        elif soon_30:
+            items.append((
+                "warn",
+                "CDL RENEWALS UPCOMING",
+                f"{len(soon_30)} driver{'s' if len(soon_30) != 1 else ''} "
+                f"with license expiring within 30d. See pg 2."))
+        n_high = len(samba.get("high_risk") or [])
+        if n_high:
+            items.append((
+                "warn",
+                f"MVR HIGH RISK · {n_high} DRIVER{'S' if n_high != 1 else ''}",
+                f"Per latest SambaSafety MVR scan. See pg 2 for names."))
+
+    # 6. Safety event — only surface if 24h count is non-zero.
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
     e24 = win24.get("24h") if isinstance(win24, dict) else None
     if _isnum(e24) and e24 > 0:
         items.append((
             "warn",
             "SAFETY EVENT · 24h",
-            f"{int(e24)} event(s) in last 24h. See pg 5 for detail."))
+            f"{int(e24)} event{'s' if int(e24) != 1 else ''} in last 24h. "
+            f"See pg 3 for detail."))
 
     # Severity-sort: bad first, then warn.
     items.sort(key=lambda x: 0 if x[0] == "bad" else 1)
@@ -305,45 +362,69 @@ def _pick_talk_track(idle_pct: float, mpg: float | None,
 # ----------------------------------------------------------------------
 def page_strips(*, alvys: dict | None, qb_ar: dict | None,
                 alvys_ar: dict | None, samsara: dict | None,
-                uninvoiced: dict | None) -> dict[int, str]:
+                uninvoiced: dict | None,
+                samba: dict | None = None) -> dict[int, str]:
     """One short callout per detail page, keyed by page number."""
     out: dict[int, str] = {}
 
+    # === SAFETY ===
+    # Page 2 — SambaSafety (MVR + license)
+    if samba and samba.get("monitored"):
+        bits = [f"{int(samba['monitored'])} drivers monitored"]
+        n_lic = len(samba.get("license_issues") or [])
+        if n_lic:
+            bits.append(f"{n_lic} license issue{'s' if n_lic != 1 else ''}")
+        n_high = len(samba.get("high_risk") or [])
+        if n_high:
+            bits.append(f"{n_high} high-risk per MVR")
+        n_viol = len(samba.get("violations") or [])
+        if n_viol:
+            bits.append(f"{n_viol} violation{'s' if n_viol != 1 else ''} in last "
+                        f"{int(samba.get('window_days') or 365)}d")
+        strip = " · ".join(bits) + "."
+        ranked = samba.get("ranked") or []
+        if ranked:
+            worst = ranked[0]
+            score = worst.get("score")
+            if _isnum(score):
+                strip += (f" Worst risk: {str(worst.get('name', '')).upper()} "
+                          f"(score {score:.0f}).")
+        out[2] = strip
+    else:
+        out[2] = ("SambaSafety MVR data not loaded this run &mdash; check "
+                  "OneDrive/SambaSafety/ for the daily CSV drops.")
+
+    # Page 3 — Safety Detail (Samsara events / HOS / DVIR / coaching)
+    win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
+    e24 = win24.get("24h") if isinstance(win24, dict) else 0
+    out[3] = (f"Page 1's safety summary captured {int(e24 or 0)} event"
+              f"{'s' if int(e24 or 0) != 1 else ''} in last 24h. "
+              f"Per-event detail and coaching status below.")
+
     # === OPERATIONAL ===
-    # Page 2 — Driver Mileage
+    # Page 4 — Driver Mileage
     mtd = (alvys or {}).get("mtd") or {}
     miles = mtd.get("miles")
     if _isnum(miles):
-        out[2] = (f"Page 1's mileage tile shows {_num(miles)} miles "
+        out[4] = (f"Page 1's mileage tile shows {_num(miles)} miles "
                   f"period-to-date. Per-driver breakdown below.")
 
-    # Page 3 — Fleet Operations (MPG / speeding)
+    # Page 5 — Fleet Operations (MPG / speeding)
     fleet = (samsara or {}).get("fleet") or {}
     fleet_mpg = fleet.get("fleet_mpg")
     if _isnum(fleet_mpg):
-        out[3] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
+        out[5] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
                   f"Best/worst trucks and speeders below; full idle ranking "
-                  f"is on page 4.")
+                  f"is on page 6.")
 
-    # Page 4 — Fleet Idle (its own page)
+    # Page 6 — Fleet Idle (its own page)
     idle = fleet.get("idle") or []
     if idle:
         top = idle[0]
-        out[4] = (f"Page 1's coaching cards came from this data. Worst idler: "
+        out[6] = (f"Page 1's coaching cards came from this data. Worst idler: "
                   f"{(top.get('driver') or 'Unassigned').upper()} "
                   f"({top.get('unit', '—')}) at {_pct(top.get('idle_pct'))}. "
                   f"All trucks ranked worst-to-best by avg idle / week below.")
-
-    # === SAFETY ===
-    # Page 5 — Safety Detail
-    win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
-    e24 = win24.get("24h") if isinstance(win24, dict) else 0
-    out[5] = (f"Page 1's safety summary captured {int(e24 or 0)} event(s) "
-              f"in last 24h. Per-event detail and coaching status below.")
-
-    # Page 6 — SambaSafety
-    out[6] = ("Page 1's fleet safety score is a Samsara average. Per-driver "
-              "license / MVR / risk scores from SambaSafety MVR pull below.")
 
     # === ACCOUNTING ===
     # Page 7 — AR Overdue 31+

@@ -113,6 +113,7 @@ alvys-pipeline/
 | [connector-alvys.md](./connector-alvys.md) | Work on the Alvys pull, column mappings, or lookups |
 | [connector-samsara.md](./connector-samsara.md) | Work on Samsara data or the fleet email alerts |
 | [connector-quickbooks.md](./connector-quickbooks.md) | Work on QuickBooks, the 5-company loop, or token rotation |
+| [connector-sambasafety.md](./connector-sambasafety.md) | Work on SambaSafety MVR — the CSV-drop refresh job, the column re-map, or page 2 of the scorecard |
 | [onedrive-and-alerts.md](./onedrive-and-alerts.md) | Understand the OneDrive upload layer and the Azure app registration |
 | [automation-and-secrets.md](./automation-and-secrets.md) | Understand the GitHub Actions schedules and every secret/env var |
 | [powerbi.md](./powerbi.md) | Understand how Power BI consumes the data (both paths) |
