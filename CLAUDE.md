@@ -118,18 +118,27 @@ upload `output/` as a 7-day artifact (`if: always()`):
 | `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 11,18,0 * * *` |
 | `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `0 11,18,0 * * *` |
 | `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 13 * * *` |
-| `scorecard_email.yml` | read OneDrive → email daily brief (8 pages) | `30 11 * * *` |
+| `scorecard_email.yml` | read OneDrive → email daily brief (11 pages) | `30 11 * * *` |
 
-The daily brief (`src/scorecard_email.py`) is 8 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`):
+The daily brief (`src/scorecard_email.py`) is 11 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–11 are grouped into three sections (an `OPERATIONAL` / `SAFETY` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
-1. Bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
-2. Safety detail (last 24h events / HOS violations / DVIR defects / coaching).
-3. AR overdue (31+ days) from QuickBooks.
-4. Driver mileage by settlement week.
-5. Delivered Alvys loads not yet invoiced (the un-billed gap behind most of the QB-vs-Alvys variance).
-6. Customers with Alvys AR aging 90+ days.
-7. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance).
-8. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention).
+1. **Overview** — bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
+
+   *OPERATIONAL (pages 2–4):*
+2. Driver mileage by settlement week (`build_page4`).
+3. Fleet operations — MPG best/worst + speeders (`build_page_fleet`).
+4. Fleet idle — all trucks ranked by avg idle/wk over 5 settlement weeks, with per-week idle hours, idle %, idle-gallons est. (`idle_hours × 0.8 gph` fallback) and MPG (`build_page_idle`).
+
+   *SAFETY (pages 5–6):*
+5. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works).
+6. Driver compliance — SambaSafety (`build_page9`, optional; absent if the SambaSafety file isn't in OneDrive).
+
+   *ACCOUNTING (pages 7–11):*
+7. AR overdue (31+ days) from QuickBooks (`build_page3`).
+8. Delivered Alvys loads not yet invoiced — the un-billed gap behind most of the QB-vs-Alvys variance (`build_page5`).
+9. Customers with Alvys AR aging 90+ days (`build_page6`).
+10. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
+11. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
 
 Crons are fixed UTC: the three pulls (Alvys / Samsara / QB) fire concurrently at **5:00am CST** (6:00am CDT) / 12pm / 6pm Central; the scorecard email follows **30 min later at 5:30am CST** (6:30am CDT). The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`

@@ -157,24 +157,90 @@ def _severity_for(event_type: str | None) -> str | None:
     return "Low"
 
 
-def build_engine_idle(raw_engine_history: list[dict]) -> pd.DataFrame:
-    """Aggregate engineStates transitions into idle / running / off hours per vehicle.
+# Class-8 sleeper trucks burn ~0.8 gal/hr at idle per DOE / EPA studies
+# (engine-only — APU-equipped trucks are lower, heavy-AC trucks can be
+# higher; this is a fleet-average heuristic). Used as a fallback when
+# Samsara's OBD fuel-counter signal isn't returned for a vehicle, which
+# is the case for XFreight's current Samsara plan / truck mix.
+IDLE_FUEL_RATE_GPH = 0.8
 
-    Samsara emits a stream of `{time, value}` transitions per vehicle. Each
-    state is in effect from its timestamp until the next transition. Sum
-    durations by state and convert to hours.
+
+def build_engine_idle(raw_engine_history: list[dict],
+                      driver_by_vehicle_id: dict[str, str] | None = None,
+                      now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Aggregate engineStates transitions into idle / running / off hours per vehicle,
+    bucketed by **settlement week** (Wed 3 PM Chicago → next Wed 2:59 PM).
+
+    Produces a per-vehicle row with:
+      - per-week idle + engine hours (5 weeks: W1..W4 complete + Cur partial)
+      - aggregate Idle / On / Off / Running / Engine totals across the window
+      - Driver Name (from /fleet/vehicles staticAssignedDriver, if provided)
+
+    Each transition is credited to whichever settlement week its start time
+    falls in. Transitions older than the 5-week window are dropped.
     """
+    chi = "America/Chicago"
+    now = now or pd.Timestamp.now(tz=chi)
+    if now.tzinfo is None:
+        now = now.tz_localize(chi)
+    # Wed=2 (Mon=0). Anchor each week at Wed 15:00 Chicago.
+    days_since_wed = (now.weekday() - 2) % 7
+    cur_start = (now - pd.Timedelta(days=days_since_wed)).normalize() + pd.Timedelta(hours=15)
+    if cur_start > now:
+        cur_start -= pd.Timedelta(weeks=1)
+    starts = [cur_start - pd.Timedelta(weeks=k) for k in range(5)][::-1]  # oldest first
+    window_start = starts[0]
+    week_labels = ["W1", "W2", "W3", "W4", "Cur"]
+
     rows = []
+    dmap = driver_by_vehicle_id or {}
     for rec in raw_engine_history or []:
         states = rec.get("engineStates") or []
         if not isinstance(states, list) or len(states) < 2:
             continue
-        # Sort by time (string ISO sorts lexicographically when same TZ)
         try:
             states = sorted(states, key=lambda s: s.get("time", ""))
         except Exception:
             pass
-        totals = {"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0}
+        # Parse the parallel fuel-consumed counter (cumulative gallons since
+        # current ignition cycle; resets each time vehicle starts). Build a
+        # sorted list of (timestamp_utc, gallons) for interpolation lookup.
+        fuel_raw = rec.get("obdFuelGallonsConsumedSinceVehicleStarted") or []
+        fuel_samples: list[tuple[pd.Timestamp, float]] = []
+        for fs in fuel_raw:
+            ft = pd.to_datetime(fs.get("time"), errors="coerce", utc=True)
+            fv = fs.get("value")
+            if pd.isna(ft) or fv is None:
+                continue
+            try:
+                fuel_samples.append((ft, float(fv)))
+            except (TypeError, ValueError):
+                continue
+        fuel_samples.sort(key=lambda x: x[0])
+
+        def fuel_at(t: pd.Timestamp) -> float | None:
+            """Linear-interpolate the cumulative-fuel reading at time t.
+            Returns None if t is outside the sample range."""
+            if not fuel_samples:
+                return None
+            if t <= fuel_samples[0][0]:
+                return fuel_samples[0][1]
+            if t >= fuel_samples[-1][0]:
+                return fuel_samples[-1][1]
+            # Binary search would be faster; linear is fine at this scale.
+            for i in range(len(fuel_samples) - 1):
+                t0, v0 = fuel_samples[i]
+                t1, v1 = fuel_samples[i + 1]
+                if t0 <= t <= t1:
+                    span = (t1 - t0).total_seconds()
+                    if span <= 0:
+                        return v1
+                    frac = (t - t0).total_seconds() / span
+                    return v0 + frac * (v1 - v0)
+            return None
+
+        per_week = [{"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0,
+                     "IdleGal": 0.0} for _ in range(5)]
         for i in range(len(states) - 1):
             t0 = pd.to_datetime(states[i].get("time"), errors="coerce", utc=True)
             t1 = pd.to_datetime(states[i + 1].get("time"), errors="coerce", utc=True)
@@ -183,22 +249,62 @@ def build_engine_idle(raw_engine_history: list[dict]) -> pd.DataFrame:
             secs = (t1 - t0).total_seconds()
             if secs <= 0:
                 continue
+            t0_chi = t0.tz_convert(chi)
+            if t0_chi < window_start:
+                continue
+            # Bucket: which of the 5 settlement weeks contains t0?
+            idx = None
+            for k in range(5):
+                end = starts[k + 1] if k < 4 else (starts[4] + pd.Timedelta(weeks=1))
+                if starts[k] <= t0_chi < end:
+                    idx = k
+                    break
+            if idx is None:
+                continue
             val = states[i].get("value") or ""
-            # Samsara uses "Idle" / "On" / "Off" — "Running" appears in some
-            # accounts. Map anything else to On so total time accounts.
-            key = val if val in totals else ("On" if val else "Off")
-            totals[key] = totals.get(key, 0.0) + secs
-        rows.append({
-            "Vehicle ID": rec.get("id"),
+            key = val if val in per_week[idx] else ("On" if val else "Off")
+            per_week[idx][key] += secs
+            # Idle-only fuel: integrate the cumulative-gallons curve across
+            # the idle interval. Skip if a counter reset (ignition cycle)
+            # happened mid-interval — those become negative deltas.
+            if key == "Idle":
+                f0 = fuel_at(t0)
+                f1 = fuel_at(t1)
+                if f0 is not None and f1 is not None and f1 >= f0:
+                    per_week[idx]["IdleGal"] += (f1 - f0)
+
+        # Heuristic fallback: when the OBD fuel counter isn't returned for a
+        # given vehicle/week, fall back to idle_hours * IDLE_FUEL_RATE_GPH.
+        # Class-8 fleet-average idle burn (~0.8 gal/hr) so the Idle Gal column
+        # always populates, even on trucks Samsara doesn't surface fuel
+        # telemetry for.
+        for k in range(5):
+            if per_week[k]["IdleGal"] == 0 and per_week[k]["Idle"] > 0:
+                per_week[k]["IdleGal"] = (per_week[k]["Idle"] / 3600) * IDLE_FUEL_RATE_GPH
+
+        vid = rec.get("id")
+        row = {
+            "Vehicle ID": vid,
             "Vehicle Name": rec.get("name"),
-            "Idle Hours": round(totals.get("Idle", 0) / 3600, 2),
-            "On Hours": round(totals.get("On", 0) / 3600, 2),
-            "Running Hours": round(totals.get("Running", 0) / 3600, 2),
-            "Off Hours": round(totals.get("Off", 0) / 3600, 2),
-            "Engine Hours": round(
-                (totals.get("Idle", 0) + totals.get("On", 0) + totals.get("Running", 0)) / 3600, 2
-            ),
-        })
+            "Driver Name": dmap.get(str(vid)) if vid is not None else None,
+        }
+        for k, lab in enumerate(week_labels):
+            pw = per_week[k]
+            row[f"Idle_{lab}"] = round(pw["Idle"] / 3600, 2)
+            row[f"Engine_{lab}"] = round((pw["Idle"] + pw["On"] + pw["Running"]) / 3600, 2)
+            row[f"IdleGal_{lab}"] = round(pw["IdleGal"], 1)
+        tot_idle = sum(per_week[k]["Idle"] for k in range(5))
+        tot_on = sum(per_week[k]["On"] for k in range(5))
+        tot_off = sum(per_week[k]["Off"] for k in range(5))
+        tot_run = sum(per_week[k]["Running"] for k in range(5))
+        tot_idle_gal = sum(per_week[k]["IdleGal"] for k in range(5))
+        row["Idle Hours"] = round(tot_idle / 3600, 2)
+        row["On Hours"] = round(tot_on / 3600, 2)
+        row["Off Hours"] = round(tot_off / 3600, 2)
+        row["Running Hours"] = round(tot_run / 3600, 2)
+        row["Engine Hours"] = round((tot_idle + tot_on + tot_run) / 3600, 2)
+        row["Idle Gallons"] = round(tot_idle_gal, 1)
+        rows.append(row)
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values("Idle Hours", ascending=False).reset_index(drop=True)
@@ -339,10 +445,10 @@ def main() -> int:
     raw_dvirs = client.fetch_dvirs(start_safety, now)
 
     log.info("=" * 60)
-    log.info("Step 10/12: Engine state history (idle time, 30 days)")
+    log.info("Step 10/12: Engine state history (idle time, 36 days = 5 settlement weeks)")
     log.info("=" * 60)
     raw_engine_history = client.fetch_engine_state_history(
-        now - datetime.timedelta(days=30), now
+        now - datetime.timedelta(days=36), now
     )
 
     log.info("=" * 60)
@@ -354,8 +460,11 @@ def main() -> int:
     )
 
     log.info("=" * 60)
-    log.info("Step 12/12: IFTA (last 3 months)")
+    log.info("Step 12/12: IFTA (last 3 months, fallback MPG source)")
     log.info("=" * 60)
+    # Note: /fleet/reports/fuel-energy/usage doesn't exist in Samsara's API
+    # (404). MPG is now computed from Trips data in compute_samsara; IFTA
+    # remains as a fallback.
     ifta_sheets: dict[str, pd.DataFrame] = {}
     for months_ago in range(3):
         target = (now.replace(day=1) - datetime.timedelta(days=months_ago * 28)).replace(day=1)
@@ -394,9 +503,20 @@ def main() -> int:
     log.info("  DVIR_Defects: %d rows (exploded from %d DVIRs)",
              len(df_dvir_defects), len(raw_dvirs))
 
-    df_idle = build_engine_idle(raw_engine_history)
-    log.info("  EngineIdle: %d rows (aggregated from %d vehicles' state history)",
-             len(df_idle), len(raw_engine_history))
+    # Build a vehicle_id -> assigned-driver-name map from /fleet/vehicles so
+    # the EngineIdle sheet can call out who's been parked. Samsara puts the
+    # current assignment under staticAssignedDriver{id,name}.
+    driver_by_vehicle: dict[str, str] = {}
+    for v in raw_vehicles or []:
+        vid = v.get("id")
+        d = v.get("staticAssignedDriver") or {}
+        nm = d.get("name") if isinstance(d, dict) else None
+        if vid is not None and nm:
+            driver_by_vehicle[str(vid)] = nm
+    df_idle = build_engine_idle(raw_engine_history, driver_by_vehicle)
+    log.info("  EngineIdle: %d rows (aggregated from %d vehicles' state history, "
+             "%d with assigned driver)",
+             len(df_idle), len(raw_engine_history), len(driver_by_vehicle))
 
     df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
     # Stamp the driver name onto each row by joining with the drivers sheet.

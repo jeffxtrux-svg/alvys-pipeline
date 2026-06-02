@@ -332,35 +332,98 @@ class SamsaraClient:
         log.info("Total vehicles with engine state history: %d", len(all_items))
         return list(all_items.values())
 
+    def _raw_get_json(self, path: str, params: dict | None = None) -> dict | None:
+        """Single GET that returns the parsed JSON body (dict) or None on any
+        non-200 / error. Unlike _get_pages it does NOT assume a paginated
+        ``{"data": [...]}`` envelope — used by endpoints (like the v1 safety
+        score) that return a bare object."""
+        url = f"{BASE_URL}{path}"
+        try:
+            resp = self._session.get(url, headers=self._headers(),
+                                     params=params or {}, timeout=120)
+            if resp.status_code != 200:
+                log.warning("GET %s → HTTP %d: %s", path, resp.status_code, resp.text[:200])
+                return None
+            return resp.json()
+        except Exception as e:
+            log.warning("GET %s → %s — skipping", path, e)
+            return None
+
+    @staticmethod
+    def _extract_score_record(payload: dict | None) -> dict | None:
+        """Pull the per-driver score object out of whatever envelope the API
+        returned. Handles bare ``{"safetyScore": ...}`` (v1), ``{"data": {...}}``
+        and ``{"data": [{...}]}`` (modern) shapes."""
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data", payload)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        return data if isinstance(data, dict) else None
+
     def fetch_driver_safety_scores(self, driver_ids: list[str],
                                    start: datetime.datetime,
                                    end: datetime.datetime) -> list[dict]:
-        """Per-driver composite safety score via
-        ``GET /fleet/drivers/{driverId}/safety/score?startMs=&endMs=``.
+        """Per-driver composite safety score.
 
-        Loops the driver list — Samsara doesn't expose a fleet-wide list
-        endpoint for this. Returns the score JSON with the driver id stamped
-        in so the caller can match back to the Drivers sheet.
+        Samsara has shuffled this endpoint's path over API versions — the
+        plain ``/fleet/drivers/{id}/safety/score`` now returns a bare
+        ``404 page not found`` for every driver. So we follow the codebase's
+        "discover by fallback" pattern: probe a list of candidate path
+        templates with the first driver, keep whichever one actually returns
+        a score, then loop the rest of the drivers on that path.
 
-        Individual driver failures are logged and skipped (no driver shouldn't
-        kill the whole pull).
+        Returns the score JSON per driver with ``driverId`` stamped in so the
+        caller can match back to the Drivers sheet. Fail-soft: if no candidate
+        works the list comes back empty and the brief shows "n/a" rather than
+        crashing.
         """
         start_ms = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)
+        # (path_template, params_builder) candidates, highest-confidence first.
+        # v1 is the long-stable legacy endpoint (bare object, startMs/endMs);
+        # the non-v1 path is kept for forward-compat if Samsara restores it.
+        candidates = [
+            ("/v1/fleet/drivers/{id}/safety/score",
+             lambda did: {"startMs": start_ms, "endMs": end_ms}),
+            ("/fleet/drivers/{id}/safety/score",
+             lambda did: {"startMs": start_ms, "endMs": end_ms}),
+        ]
         log.info("Fetching driver safety scores for %d drivers (%s -> %s)…",
                  len(driver_ids), start.date(), end.date())
+        if not driver_ids:
+            log.info("Total driver safety score records: 0 (no drivers)")
+            return []
+
+        # --- Discover a working path with the first driver ---
+        probe_id = driver_ids[0]
+        chosen = None
+        first_rec = None
+        for tmpl, build in candidates:
+            payload = self._raw_get_json(tmpl.format(id=probe_id), build(probe_id))
+            rec = self._extract_score_record(payload)
+            if rec is not None:
+                chosen = (tmpl, build)
+                first_rec = rec
+                log.info("Driver safety score: using endpoint %s", tmpl)
+                break
+        if chosen is None:
+            log.warning("Driver safety score: no candidate endpoint returned data "
+                        "(tried %s) — scores unavailable this run",
+                        ", ".join(c[0] for c in candidates))
+            return []
+
+        tmpl, build = chosen
         out: list[dict] = []
-        for did in driver_ids:
-            # _safe_get handles the {"data": {...}} envelope and returns a list
-            # of records — a dict response gets wrapped into a single-element list.
-            recs = self._safe_get(f"/fleet/drivers/{did}/safety/score",
-                                  {"startMs": start_ms, "endMs": end_ms})
-            if not recs:
-                continue
-            rec = recs[0] if isinstance(recs[0], dict) else None
+        first_rec["driverId"] = probe_id
+        out.append(first_rec)
+        for did in driver_ids[1:]:
+            rec = self._extract_score_record(
+                self._raw_get_json(tmpl.format(id=did), build(did)))
             if not rec:
                 continue
             rec["driverId"] = did
             out.append(rec)
+            time.sleep(0.05)  # stay under the rate limit
         log.info("Total driver safety score records: %d", len(out))
         return out
