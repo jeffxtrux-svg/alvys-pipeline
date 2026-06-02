@@ -118,9 +118,9 @@ upload `output/` as a 7-day artifact (`if: always()`):
 | `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 11,18,0 * * *` |
 | `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `0 11,18,0 * * *` |
 | `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 13 * * *` |
-| `scorecard_email.yml` | read OneDrive → email daily brief (11 pages) | `30 11 * * *` |
+| `scorecard_email.yml` | read OneDrive → email daily brief (10 pages) | `30 11 * * *` |
 
-The daily brief (`src/scorecard_email.py`) is 11 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–11 are grouped into three sections (an `OPERATIONAL` / `SAFETY` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
+The daily brief (`src/scorecard_email.py`) is 10 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–10 are grouped into three sections (an `OPERATIONAL` / `SAFETY` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
 1. **Overview** — bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
 
@@ -133,12 +133,11 @@ The daily brief (`src/scorecard_email.py`) is 11 pages scoped to **X-Trux + X-Li
 5. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works).
 6. Driver compliance — SambaSafety (`build_page9`, optional; absent if the SambaSafety file isn't in OneDrive).
 
-   *ACCOUNTING (pages 7–11):*
+   *ACCOUNTING (pages 7–10):*
 7. AR overdue (31+ days) from QuickBooks (`build_page3`).
-8. Delivered Alvys loads not yet invoiced — the un-billed gap behind most of the QB-vs-Alvys variance (`build_page5`).
-9. Customers with Alvys AR aging 90+ days (`build_page6`).
-10. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
-11. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
+8. Alvys accounting — un-invoiced loads + customers aging 90+ days, combined (`build_page5`). Top half is the un-billed gap behind most of the QB-vs-Alvys variance; bottom half is the 90+ collections list.
+9. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
+10. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
 
 Crons are fixed UTC: the three pulls (Alvys / Samsara / QB) fire concurrently at **5:00am CST** (6:00am CDT) / 12pm / 6pm Central; the scorecard email follows **30 min later at 5:30am CST** (6:30am CDT). The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
