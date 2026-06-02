@@ -2406,7 +2406,10 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
             ts = ts.tz_localize(None)
         return ts, int((ts.normalize() - now.normalize()).days)
 
-    def _parse_sheet(df):
+    _TRAILER_EXCLUDE = {"preload 1", "preload 2", "preload 3", "preload 4", "preload 5"}
+    _TRUCK_EXCLUDE   = {"test"}
+
+    def _parse_sheet(df, exclude: set[str] | None = None):
         if df is None or df.empty:
             return []
         rows = []
@@ -2417,6 +2420,8 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
             unit = str(r[unit_col]).strip() if unit_col and pd.notna(r.get(unit_col)) else "—"
             if not unit or unit.lower() in {"nan", "none"}:
                 unit = "—"
+            if exclude and unit.lower() in exclude:
+                continue
             vin  = str(r.get("VIN", "")).strip() if pd.notna(r.get("VIN", None)) else ""
             make = str(r.get("Make", "")).strip() if pd.notna(r.get("Make", None)) else ""
             model= str(r.get("Model", "")).strip() if pd.notna(r.get("Model", None)) else ""
@@ -2441,8 +2446,8 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
         ))
         return rows
 
-    tractors = _parse_sheet(trucks_df)
-    trailers = _parse_sheet(trailers_df)
+    tractors = _parse_sheet(trucks_df,   exclude=_TRUCK_EXCLUDE)
+    trailers = _parse_sheet(trailers_df, exclude=_TRAILER_EXCLUDE)
 
     def _counts(rows, key):
         overdue = sum(1 for r in rows if isinstance(r.get(key), int) and r[key] < 0)
