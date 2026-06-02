@@ -187,25 +187,20 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                     f"{len(values)} months ({_money(first)} → {_money(last)}). "
                     f"Watch the 31-60 bucket — that's the leading edge.")
 
-    # SambaSafety — surface expiring licenses or MVR high-risk count.
+    # SambaSafety — surface MVR high-risk count + per-driver license
+    # expirations. Per Jeff: drop the aggregate "X licenses expiring
+    # within 30d" sentence — the per-driver names below carry the same
+    # information without adding a count summary on top.
     if samba:
         n_high = len(samba.get("high_risk") or [])
         lic_issues = samba.get("license_issues") or []
-        soon = [d for d in lic_issues
-                if isinstance(d.get("days_to_exp"), int)
-                and 0 <= d["days_to_exp"] <= 30]
-        bits = []
-        if soon:
-            bits.append(f"{len(soon)} license"
-                        f"{'s' if len(soon) != 1 else ''} expiring within 30d")
         if n_high:
-            bits.append(f"{n_high} driver{'s' if n_high != 1 else ''} "
-                        f"high-risk per MVR")
-        if bits:
-            parts.append("Driver compliance: " + " · ".join(bits) + " (pg 2).")
+            parts.append(
+                f"Driver compliance: {n_high} driver"
+                f"{'s' if n_high != 1 else ''} high-risk per MVR (pg 2).")
 
-        # Per Jeff: name every driver inside the 14-day window with their
-        # exact expiration date — short-fuse renewals are operationally
+        # Name every driver inside the 14-day window with their exact
+        # expiration date — short-fuse renewals are operationally
         # critical and shouldn't get hidden inside the aggregate count.
         critical = [d for d in lic_issues
                     if isinstance(d.get("days_to_exp"), int)
@@ -221,19 +216,12 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"{name} license will expire on {date_str}, and that is "
                 f"{int(d['days_to_exp'])} days from expiration.")
 
-    # Alvys-side driver compliance — CDL + DOT medical card. Mirrors the
-    # SambaSafety license treatment above: 30-day aggregate + name-out
-    # for anything inside 14 days. Listed even when SambaSafety is the
-    # primary license source because Alvys is the system of record for
-    # medical-card expiration (SambaSafety doesn't carry it).
+    # Alvys-side driver compliance — DOT medical card + CDL. Per Jeff:
+    # drop the aggregate "X medical cards expiring within 30d" sentence
+    # and instead list every driver in the 30-day window individually,
+    # using a possessive-style sentence that matches how Jeff reads it.
     if alvys_drivers:
-        med30 = alvys_drivers.get("medical_issues_30") or []
-        if med30:
-            parts.append(
-                f"Driver compliance (Alvys): {len(med30)} medical "
-                f"card{'s' if len(med30) != 1 else ''} expiring within 30d "
-                f"(pg 2).")
-        for d in alvys_drivers.get("medical_critical_14") or []:
+        for d in alvys_drivers.get("medical_issues_30") or []:
             name = str(d.get("name", "")).strip() or "Driver"
             exp = d.get("medical_exp")
             try:
@@ -241,8 +229,8 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             except Exception:
                 date_str = "(unknown date)"
             parts.append(
-                f"{name} DOT medical card will expire on {date_str}, and "
-                f"that is {int(d['medical_days'])} days from expiration.")
+                f"{name}'s med card will expire on {date_str} which is "
+                f"{int(d['medical_days'])} days away.")
         # Alvys can also flag CDL expirations — surface only when SambaSafety
         # didn't already cover the same driver (avoid double-naming).
         samba_named = {(_str_name(d) or "").lower()
