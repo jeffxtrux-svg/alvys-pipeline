@@ -3006,7 +3006,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _insights_bottom = _insights.bottom_line(
             alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
             margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist,
-            samba=samba)
+            samba=samba, alvys_entities=alvys_entities)
         _prior_snapshot = None
         try:
             from src.scorecard_snapshots import read_prior_snapshot
