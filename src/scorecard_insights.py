@@ -137,6 +137,29 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"≈ {_money(annual_uplift)} of annual margin uplift "
                 f"(per rate-per-mile-goal methodology).")
 
+    # Combined MTD profit/loss vs cost-per-mile:
+    #   X-Trux P/L  = miles × (actual_rpm − cost_per_mile)
+    #   X-Linx P/L  = X-Linx dollar margin (from compute_alvys_entities)
+    #   Combined    = sum
+    # Per Jeff's spec — gives a single dollar read on whether X-Trux is
+    # paying for itself against its loaded cost basis, then layers X-Linx
+    # margin on top.
+    if rpm_goal:
+        actual = rpm_goal.get("actual_rpm")
+        cpm = rpm_goal.get("cost_per_mile")
+        miles_mtd = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("miles") \
+            or ((alvys or {}).get("mtd") or {}).get("miles") or 0
+        xl_margin = (ents.get("X-Linx") or {}).get("margin")
+        if _isnum(actual) and _isnum(cpm) and miles_mtd:
+            xt_pl = miles_mtd * (actual - cpm)
+            combined = xt_pl + (float(xl_margin) if _isnum(xl_margin) else 0.0)
+            xl_clause = (f" + X-Linx margin {_money(xl_margin)}"
+                         if _isnum(xl_margin) else "")
+            parts.append(
+                f"Combined {mtd_label} P/L: {_money(combined)} — X-Trux "
+                f"{_money(xt_pl)} ({_num(miles_mtd)} mi × (${actual:.2f} RPM − "
+                f"${cpm:.2f} CPM)){xl_clause}.")
+
     # Idle cost — biggest unmonetized expense for most fleets.
     if samsara and samsara.get("fleet"):
         idle_h = samsara["fleet"].get("fleet_idle_hours")
