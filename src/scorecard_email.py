@@ -3289,6 +3289,38 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
+    # AR Days to Receive (DSO) and AP Days to Pay (DPO). QB P&L is YTD
+    # ("This Fiscal Year"); we use day-of-year as the denominator-period.
+    # Scope to X-Trux + X-Linx so it matches the AR/AP balances shown above.
+    _now = pd.Timestamp.now()
+    _ytd_days = _now.dayofyear
+    _ytd_income = sum(
+        v["income"] for k, v in (qb_pnl or {}).items()
+        if str(k).strip().lower() in _AR_COMPANIES and _isnum(v.get("income"))
+    )
+    _ytd_expenses = sum(
+        (v.get("cogs") or 0) + (v.get("opex") or 0)
+        for k, v in (qb_pnl or {}).items()
+        if str(k).strip().lower() in _AR_COMPANIES
+    )
+    _cur_ar = (qb_ar or {}).get("total_ar") if qb_ar else None
+    _cur_ap = ap_vals[-1] if ap_vals else None
+    _avg_daily_rev = (_ytd_income / _ytd_days) if (_ytd_income and _ytd_days) else None
+    _avg_daily_exp = (_ytd_expenses / _ytd_days) if (_ytd_expenses and _ytd_days) else None
+    dso_days = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
+    dpo_days = (_cur_ap / _avg_daily_exp) if (_isnum(_cur_ap) and _avg_daily_exp) else None
+    def _days_str(x):
+        return f"{x:,.0f} days" if _isnum(x) else "n/a"
+    # Goal context: DSO ≤ 45 days is healthy for trucking. DPO ≥ 30 is fine.
+    dso_kind = "good" if (_isnum(dso_days) and dso_days <= 45) else ("warn" if (_isnum(dso_days) and dso_days <= 60) else "bad")
+    dpo_kind = "good" if (_isnum(dpo_days) and dpo_days >= 30) else "mute"
+    ar_ap_days_row = (
+        _tile("AR Days to Receive", _days_str(dso_days),
+              f"goal &le; 45 " + _pill("DSO", dso_kind))
+        + _tile("AP Days to Pay", _days_str(dpo_days),
+                f"vendor terms " + _pill("DPO", dpo_kind))
+        + empty_td + empty_td)
+
     def _dir(vals, noun):
         if not vals:
             return f"{noun} history pending."
@@ -3559,6 +3591,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                if goal_tiles else "")
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
+            f"<tr>{ar_ap_days_row}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr><tr>{alvys_ar_row_b}</tr>"
                if alvys_ar_row else "")
