@@ -16,6 +16,7 @@ name: Refresh QuickBooks data
 
 on:
   workflow_dispatch:
+  workflow_call:
   schedule:
     # Run concurrently with Alvys + Samsara at 5:00am CST so the scorecard
     # (5:30am CST) has all three feeds fresh in OneDrive. Each connector

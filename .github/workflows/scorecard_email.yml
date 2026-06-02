@@ -12,6 +12,11 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+  # Reusable so the "Refresh All" workflow can call it after the four
+  # source refreshes succeed. The script bypasses its "sent today" marker
+  # whenever GITHUB_EVENT_NAME is workflow_dispatch, including when called
+  # via workflow_call from a manual Refresh All run.
+  workflow_call:
   schedule:
     # Defense in depth against GitHub Actions schedule drops — GitHub's cron
     # is documented as best-effort, and during high load runs are silently

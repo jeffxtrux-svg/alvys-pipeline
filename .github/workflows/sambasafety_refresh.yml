@@ -14,6 +14,7 @@ name: Refresh SambaSafety data
 
 on:
   workflow_dispatch:
+  workflow_call:
   schedule:
     # 10:30 UTC = 4:30am CST (winter) / 5:30am CDT (summer).
     # Runs an hour before the scorecard email job, so the merged workbook is

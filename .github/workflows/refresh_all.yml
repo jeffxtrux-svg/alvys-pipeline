@@ -1,0 +1,52 @@
+# Refresh All Sources (and optional scorecard email).
+#
+# Manual one-click trigger that fans out to Alvys, Samsara, QuickBooks, and
+# SambaSafety in parallel, then optionally sends the executive brief once
+# all four refreshes finish.
+#
+# Use this from the Actions tab when you need the dashboard data refreshed
+# on demand (e.g., to test a new mapping, after fixing a column, or when
+# the morning cron dropped). Each child workflow inherits its own secrets,
+# env vars, and timeouts from its existing definition — this file is just
+# the orchestrator.
+#
+# The four refresh jobs run in parallel (independent OneDrive folders, no
+# contention). The scorecard waits for all four to finish AND succeed.
+
+name: Refresh All Sources (dashboard)
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_scorecard:
+        description: 'Send the scorecard email after refreshes complete'
+        type: boolean
+        default: true
+
+jobs:
+  alvys:
+    name: Alvys
+    uses: ./.github/workflows/refresh.yml
+    secrets: inherit
+
+  samsara:
+    name: Samsara
+    uses: ./.github/workflows/samsara_refresh.yml
+    secrets: inherit
+
+  quickbooks:
+    name: QuickBooks
+    uses: ./.github/workflows/qb_refresh.yml
+    secrets: inherit
+
+  sambasafety:
+    name: SambaSafety
+    uses: ./.github/workflows/sambasafety_refresh.yml
+    secrets: inherit
+
+  scorecard:
+    name: Scorecard email
+    needs: [alvys, samsara, quickbooks, sambasafety]
+    if: ${{ inputs.include_scorecard }}
+    uses: ./.github/workflows/scorecard_email.yml
+    secrets: inherit

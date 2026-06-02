@@ -6,6 +6,9 @@ on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
 
+  # Reusable so the "Refresh All" workflow can call it.
+  workflow_call:
+
   # Same UTC schedule as Alvys: 5am, 12pm, 6pm Central
   schedule:
     - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
