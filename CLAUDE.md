@@ -125,7 +125,7 @@ The daily brief (`src/scorecard_email.py`) is 10 pages scoped to **X-Trux + X-Li
 1. **Overview** — bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
 
    *SAFETY (pages 2–3):*
-2. Driver compliance — SambaSafety MVR + license status (`build_page9`, optional; absent if the SambaSafety file isn't in OneDrive). See `docs/knowledge-base/connector-sambasafety.md`.
+2. Driver compliance — SambaSafety MVR + license status, plus DOT medical-card expirations from the Alvys Drivers sheet (`build_page9`; SambaSafety section is optional, medical-card section needs only the Alvys feed). See `docs/knowledge-base/connector-sambasafety.md` and `docs/knowledge-base/connector-alvys.md`.
 3. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works).
 
    *OPERATIONAL (pages 4–6):*

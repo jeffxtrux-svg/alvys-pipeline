@@ -134,6 +134,42 @@ A run writes to `output/_debug/`:
 - `sample_trip_carrier.json` — the `trip.Carrier` shape (brokered X-LINX trips
   carry `Carrier.Rate.Amount`, used for "Carrier Rate").
 
+## Drivers sheet — CDL + DOT medical card tracking
+
+In addition to Fuel / Loads / Trips, `write_master_xlsx` writes a
+**`Drivers`** sheet to `Alvys_Master.xlsx`. The sheet is a compact
+projection of the `/drivers` API response — only the fields the
+scorecard's driver-compliance page needs:
+
+| Column | Source field | Notes |
+|--------|--------------|-------|
+| Id | `Id` | Alvys driver UUID |
+| Name | `Name` | Full name |
+| Type | `Type` | Owner Operator / Company Driver / etc |
+| Status | `Status` | Active / Inactive / Terminated |
+| LicenseNum | `LicenseNum` | CDL number |
+| LicenseState | `LicenseState` | Issuing state |
+| **LicenseExpiresAt** | `LicenseExpiresAt` | CDL expiration date |
+| **MedicalExpiresAt** | `MedicalExpiresAt` | **DOT medical card / DOT physical** expiration |
+| HiredAt | `HiredAt` | |
+| TerminatedAt | `TerminatedAt` | Null = active |
+
+`compute_alvys_drivers` in `scorecard_email.py` reads this sheet,
+filters out terminated/inactive drivers, and buckets the rest into:
+
+- `license_issues_30` / `medical_issues_30` — pipeline view (any
+  expiration inside 30 days).
+- `license_critical_14` / `medical_critical_14` — operationally urgent
+  (inside 14 days). These get named individually in the BOTTOM LINE.
+
+A 7-day window inside that triggers the `DOT MEDICAL CARD · NAME`
+action card (severity `bad`) — an expired CDL or medical card grounds
+the truck the same way.
+
+Page 2 of the scorecard renders a "DOT medical card · expirations
+within 30d" table from this data, alongside the SambaSafety license /
+MVR sections — so page 2 becomes a single-stop driver-compliance view.
+
 ## Common tasks
 
 - **A column is blank that shouldn't be** → open `output/_debug/sample_*.json`,
@@ -141,5 +177,9 @@ A run writes to `output/_debug/`:
 - **Pull more/less history** → set `ALVYS_START_DATE` (env or workflow).
 - **Rate-limited (HTTP 429)** → bump the `time.sleep(0.2)` in
   `alvys_client._paginate_search`.
+- **Medical card or CDL expiration column blank on page 2** → Alvys
+  renamed the driver field. Check `sample_drivers.json` for the new
+  key and update the candidate list in `compute_alvys_drivers`
+  (`_col(...)` calls near the top of the function).
 
 See [operations.md](./operations.md) for the full runbook.

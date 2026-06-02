@@ -30,6 +30,25 @@ def get_required(key: str) -> str:
         sys.exit(f"ERROR: required env var {key} not set. Check your .env file.")
     return val
 
+
+def _build_drivers_df(raw_drivers: list[dict]):
+    """Project the Alvys driver records into a compact DataFrame for the
+    `Drivers` sheet. Schema chosen to match what the scorecard reader
+    expects for driver compliance — `LicenseExpiresAt` (CDL) and
+    `MedicalExpiresAt` (DOT medical card) are the two operational
+    deadlines we want to surface."""
+    import pandas as pd
+    cols = ["Id", "Name", "Type", "Status", "LicenseNum", "LicenseState",
+            "LicenseExpiresAt", "MedicalExpiresAt", "HiredAt", "TerminatedAt"]
+    if not raw_drivers:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for d in raw_drivers:
+        if not isinstance(d, dict):
+            continue
+        rows.append({c: d.get(c) for c in cols})
+    return pd.DataFrame(rows, columns=cols)
+
 def main() -> int:
     setup_logging()
     load_dotenv()
@@ -211,9 +230,18 @@ def main() -> int:
     fuel_df = transform_records(raw_fuel, FUEL_COLUMNS)
     report_blank_columns(fuel_df, "Fuel")
 
+    # --- Build Drivers sheet from cached driver records ---
+    # Compact projection: only the fields the scorecard's driver-compliance
+    # page needs (license + medical-card expiration). Keeps the workbook size
+    # essentially unchanged (~30 drivers vs 8k+ loads).
+    drivers_df = _build_drivers_df(lookups.raw_drivers)
+    log.info("Drivers: %d records → %d active",
+             len(drivers_df), int((drivers_df["TerminatedAt"].isna()).sum())
+                              if "TerminatedAt" in drivers_df.columns else len(drivers_df))
+
     # --- Write ---
     output_path = output_dir / "Alvys_Master.xlsx"
-    write_master_xlsx(loads_df, trips_df, fuel_df, output_path)
+    write_master_xlsx(loads_df, trips_df, fuel_df, output_path, drivers_df=drivers_df)
 
     log.info("=" * 60)
     log.info("SUCCESS — output written to %s", output_path.resolve())

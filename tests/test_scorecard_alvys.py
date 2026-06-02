@@ -19,7 +19,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_alvys_entities, _alvys_health  # noqa: E402
+from src.scorecard_email import compute_alvys_entities, _alvys_health, compute_alvys_drivers  # noqa: E402
 
 APR_START = pd.Timestamp(2026, 4, 1)
 APR_END = pd.Timestamp(2026, 5, 1)
@@ -135,6 +135,45 @@ def test_health_flags_empty_driver_rate_column():
 
 def test_health_clean_when_columns_present():
     assert _alvys_health(_loads()) == []
+
+
+def test_compute_alvys_drivers_filters_terminated_and_buckets_windows():
+    """Drivers sheet → active drivers only, with CDL + DOT medical bucketing."""
+    NOW = pd.Timestamp(2026, 6, 2)
+    sheets = {"Drivers": pd.DataFrame([
+        # Critical: medical expires in 6 days (inside the 14-day window)
+        {"Id": "1", "Name": "Bob Trucker", "Type": "Owner Operator", "Status": "Active",
+         "LicenseExpiresAt": pd.Timestamp("2027-01-15"),
+         "MedicalExpiresAt": pd.Timestamp("2026-06-08"),
+         "TerminatedAt": None},
+        # 30-day pipeline but not critical
+        {"Id": "2", "Name": "Carol Driver", "Type": "Company Driver", "Status": "Active",
+         "LicenseExpiresAt": pd.Timestamp("2026-06-20"),   # 18 days
+         "MedicalExpiresAt": pd.Timestamp("2026-06-25"),   # 23 days
+         "TerminatedAt": None},
+        # Terminated — must be excluded
+        {"Id": "3", "Name": "Ex Employee", "Type": "Company Driver", "Status": "Inactive",
+         "LicenseExpiresAt": pd.Timestamp("2026-06-03"),
+         "MedicalExpiresAt": pd.Timestamp("2026-06-03"),
+         "TerminatedAt": pd.Timestamp("2025-12-31")},
+        # Way outside any window
+        {"Id": "4", "Name": "Future Driver", "Type": "Owner Operator", "Status": "Active",
+         "LicenseExpiresAt": pd.Timestamp("2028-01-01"),
+         "MedicalExpiresAt": pd.Timestamp("2028-01-01"),
+         "TerminatedAt": None},
+    ])}
+    out = compute_alvys_drivers(sheets, now=NOW)
+    assert out["monitored"] == 3   # Ex Employee excluded
+    assert [d["name"] for d in out["medical_critical_14"]] == ["Bob Trucker"]
+    assert {d["name"] for d in out["medical_issues_30"]} == {"Bob Trucker", "Carol Driver"}
+    assert [d["name"] for d in out["license_issues_30"]] == ["Carol Driver"]
+    assert out["license_critical_14"] == []   # 18 days is outside the <14d window
+
+
+def test_compute_alvys_drivers_returns_none_when_sheet_missing():
+    assert compute_alvys_drivers(None) is None
+    assert compute_alvys_drivers({}) is None
+    assert compute_alvys_drivers({"Drivers": pd.DataFrame()}) is None
 
 
 if __name__ == "__main__":

@@ -61,6 +61,13 @@ def _num(v) -> str:
     return f"{float(v):,.0f}"
 
 
+def _str_name(d: dict | None) -> str:
+    if not isinstance(d, dict):
+        return ""
+    n = d.get("name") or d.get("Name") or ""
+    return str(n).strip()
+
+
 # Tuning constants — change here without hunting through templates.
 IDLE_GPH = 0.8                # fleet-average idle burn (Class-8 sleeper)
 DIESEL_PRICE = 3.80           # $/gal — refresh quarterly
@@ -76,7 +83,8 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 margin_projection: dict | None,
                 qb_ar: dict | None, ar_hist: tuple | None = None,
                 samba: dict | None = None,
-                alvys_entities: dict | None = None) -> str:
+                alvys_entities: dict | None = None,
+                alvys_drivers: dict | None = None) -> str:
     """Generate the bottom-line paragraph. Joins 3-4 sentences picked
     from threshold-triggered templates."""
     parts: list[str] = []
@@ -213,6 +221,47 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"{name} license will expire on {date_str}, and that is "
                 f"{int(d['days_to_exp'])} days from expiration.")
 
+    # Alvys-side driver compliance — CDL + DOT medical card. Mirrors the
+    # SambaSafety license treatment above: 30-day aggregate + name-out
+    # for anything inside 14 days. Listed even when SambaSafety is the
+    # primary license source because Alvys is the system of record for
+    # medical-card expiration (SambaSafety doesn't carry it).
+    if alvys_drivers:
+        med30 = alvys_drivers.get("medical_issues_30") or []
+        if med30:
+            parts.append(
+                f"Driver compliance (Alvys): {len(med30)} medical "
+                f"card{'s' if len(med30) != 1 else ''} expiring within 30d "
+                f"(pg 2).")
+        for d in alvys_drivers.get("medical_critical_14") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            exp = d.get("medical_exp")
+            try:
+                date_str = exp.strftime("%b %d, %Y") if exp is not None else "(unknown date)"
+            except Exception:
+                date_str = "(unknown date)"
+            parts.append(
+                f"{name} DOT medical card will expire on {date_str}, and "
+                f"that is {int(d['medical_days'])} days from expiration.")
+        # Alvys can also flag CDL expirations — surface only when SambaSafety
+        # didn't already cover the same driver (avoid double-naming).
+        samba_named = {(_str_name(d) or "").lower()
+                       for d in (samba or {}).get("license_issues") or []
+                       if isinstance(d.get("days_to_exp"), int)
+                       and 0 <= d["days_to_exp"] < 14}
+        for d in alvys_drivers.get("license_critical_14") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            if name.lower() in samba_named:
+                continue
+            exp = d.get("license_exp")
+            try:
+                date_str = exp.strftime("%b %d, %Y") if exp is not None else "(unknown date)"
+            except Exception:
+                date_str = "(unknown date)"
+            parts.append(
+                f"{name} CDL will expire on {date_str}, and that is "
+                f"{int(d['license_days'])} days from expiration.")
+
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
                      "see entity table and detail pages for the read.")
@@ -227,6 +276,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                  rpm_goal: dict | None, uninvoiced: dict | None,
                  prior_snapshot: dict | None = None,
                  samba: dict | None = None,
+                 alvys_drivers: dict | None = None,
                  max_items: int = 3) -> list[tuple[str, str, str]]:
     """Return up to `max_items` action cards, severity-sorted (bad first).
     Each tuple is (severity, title, body) where severity is 'bad' / 'warn'.
@@ -351,6 +401,30 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 f"MVR HIGH RISK · {n_high} DRIVER{'S' if n_high != 1 else ''}",
                 f"Per latest SambaSafety MVR scan. See pg 2 for names."))
+
+    # 5b. Alvys DOT medical card — expired or expiring within 7d is a
+    # hard-deadline operational risk (an expired medical card grounds the
+    # truck the same as an expired CDL). Surface as 'bad' for the 7-day
+    # critical window, 'warn' for the 30-day pipeline.
+    if alvys_drivers:
+        med_all = alvys_drivers.get("medical_issues_30") or []
+        med_7 = [d for d in med_all
+                 if isinstance(d.get("medical_days"), int)
+                 and 0 <= d["medical_days"] <= 7]
+        if med_7:
+            worst = med_7[0]
+            days = worst.get("medical_days")
+            items.append((
+                "bad",
+                f"DOT MEDICAL CARD · {str(worst.get('name', '')).upper()}",
+                f"Expires in {int(days or 0)}d ({len(med_7)} driver{'s' if len(med_7) != 1 else ''} "
+                f"inside 7d). Pull from board until renewed. See pg 2."))
+        elif med_all:
+            items.append((
+                "warn",
+                "DOT MEDICAL RENEWALS UPCOMING",
+                f"{len(med_all)} driver{'s' if len(med_all) != 1 else ''} "
+                f"with medical card expiring within 30d. See pg 2."))
 
     # 6. Safety event — only surface if 24h count is non-zero.
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}

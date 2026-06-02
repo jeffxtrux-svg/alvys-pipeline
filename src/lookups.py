@@ -37,6 +37,11 @@ carriers:             dict[str, str]  = {}
 factoring_by_carrier: dict[str, str]  = {}
 truck_fuel_cards:     dict[str, dict] = {}   # TruckId → {CardNumber, DeductFromName, DeductFuel}
 
+# Raw driver records — kept so the pipeline can write a Drivers sheet to
+# Alvys_Master.xlsx (CDL + medical-card expiration for the scorecard's
+# driver-compliance page). Populated by build_lookups().
+raw_drivers: list[dict] = []
+
 # NEW: Customer + invoice lookups (Round 4)
 customers_by_id:           dict[str, dict] = {}   # CustomerId → full customer record
 customer_invoice_by_load:  dict[str, dict] = {}   # LoadNumber → customer invoice record
@@ -166,6 +171,10 @@ def build_lookups(client) -> None:
             # Save trucks for fuel-card extraction
             if label == "trucks":
                 raw_trucks = records
+            # Save drivers for the Drivers sheet (CDL + medical-card tracking)
+            if label == "drivers":
+                global raw_drivers
+                raw_drivers = list(records or [])
 
             sample_pairs = list(target.items())[:3]
             log.info("  %-9s: %d records  | first keys: %s",
