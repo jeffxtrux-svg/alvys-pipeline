@@ -3675,7 +3675,7 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 5, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 6, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
@@ -3782,7 +3782,7 @@ def build_page_idle(samsara, date_str) -> str:
     else:
         idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
 
-    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 6, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 7, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
@@ -3805,7 +3805,7 @@ def build_page3(qb_ar, date_str) -> str:
     total_row = (f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>"
                  f"Total 31+ days overdue</td><td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
                  f"border-top:2px solid {LINE};'>{money(total31)}</td><td style='border-top:2px solid {LINE};'></td></tr>")
-    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 7, date_str, section='ACCOUNTING')}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue (31+ days)', 8, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
             f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
@@ -3889,7 +3889,7 @@ def build_page4(mileage, date_str) -> str:
              f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
              f"{head}{body}</table></td></tr>")
 
-    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 4, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 5, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
@@ -3936,7 +3936,7 @@ def build_page5(uninv, alvys_ar, date_str) -> str:
                         str(c["oldest_days"]), money(c["amount"])],
                        ["left", "right", "right", "right"], [None, None, "bad", "bad"])
 
-    return (f"{_header('Alvys Accounting &mdash; Un-invoiced &amp; Aged AR', 8, date_str, section='ACCOUNTING')}"
+    return (f"{_header('Alvys Accounting &mdash; Un-invoiced &amp; Aged AR', 9, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{uninv_tiles}</tr>"
             f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
@@ -3985,7 +3985,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 9, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 10, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -4000,7 +4000,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 10, date_str, section='ACCOUNTING')
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 11, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")

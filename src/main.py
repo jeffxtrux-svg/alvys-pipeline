@@ -81,11 +81,22 @@ def _build_equipment_df(records: list[dict], kind: str):
     found_annual = any(df["AnnualInspectionDue"].notna())
     found_reg    = any(df["RegistrationExpires"].notna())
     import logging
-    logging.getLogger("main").info(
+    log_main = logging.getLogger("main")
+    log_main.info(
         "  %s equipment: %d records | AnnualInspectionDue=%s | RegistrationExpires=%s",
-        kind, len(df), "found" if found_annual else "NOT FOUND — check sample_%ss.json for field names",
-        "found" if found_reg else "NOT FOUND — check sample_%ss.json for field names"
+        kind, len(df),
+        "found" if found_annual else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
+        "found" if found_reg else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
     )
+    # Always dump the top-level keys of the first record so we can tune
+    # the candidate lists even when the JSON sample isn't accessible.
+    if records and isinstance(records[0], dict):
+        keys = sorted(records[0].keys())
+        log_main.info("  %s sample keys (%d): %s", kind, len(keys), ", ".join(keys))
+        date_like = [k for k in keys
+                     if any(t in k.lower() for t in ("date", "expir", "inspect", "due", "registr", "plate"))]
+        if date_like:
+            log_main.info("  %s date/inspection/registration-ish keys: %s", kind, ", ".join(date_like))
     return df
 
 
@@ -166,7 +177,12 @@ def main() -> int:
 
     # --- Debug: dump first record from each endpoint ---
     import json
-    for name, records in [("loads", raw_loads), ("trips", raw_trips), ("fuel", raw_fuel)]:
+    for name, records in [("loads",    raw_loads),
+                          ("trips",    raw_trips),
+                          ("fuel",     raw_fuel),
+                          ("trucks",   lookups.raw_trucks),
+                          ("trailers", lookups.raw_trailers),
+                          ("drivers",  lookups.raw_drivers)]:
         if records:
             sample_path = debug_dir / f"sample_{name}.json"
             with open(sample_path, "w") as f:
