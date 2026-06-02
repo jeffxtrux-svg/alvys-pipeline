@@ -6,7 +6,7 @@ Generates three things from the day's computed KPIs:
   * bottom_line(...)     -> one-paragraph signal for the top of page 1
   * action_items(...)    -> 0-3 'act today' cards, severity-coded
   * coaching_cards(...)  -> per-driver talk tracks for the worst idlers
-  * page_strips(...)     -> per-page contextual notes (pages 3-10)
+  * page_strips(...)     -> per-page contextual notes (pages 2-10)
 
 Templates are quantitative — they plug in the live numbers — and reference
 the methodology in `docs/knowledge-base/` rather than restating it. The
@@ -353,27 +353,29 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
                   f"This is the collections call list. JW Logistics omitted "
                   f"per standing policy.")
 
-    # Page 8 — Un-invoiced loads
+    # Page 8 — Alvys un-invoiced + 90+ AR (combined)
+    pg8_parts = []
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
-        out[8] = (f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
-                  f"delivered-but-not-yet-invoiced loads ({_money(amt)}).")
-
-    # Page 9 — 90+ AR by customer
+        pg8_parts.append(
+            f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
+            f"delivered-but-not-yet-invoiced loads ({_money(amt)}).")
     if alvys_ar:
         d91 = alvys_ar.get("d91plus") or 0
         if d91:
-            out[9] = (f"Page 1's AR insight noted growth in aging. The "
-                      f"{_money(d91)} below is the 90+ slice — escalate to "
-                      f"collections.")
+            pg8_parts.append(
+                f"Below that, {_money(d91)} of 90+ AR — escalate to "
+                f"collections.")
+    if pg8_parts:
+        out[8] = " ".join(pg8_parts)
 
-    # Page 10 — QB↔Alvys recon
-    out[10] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
-               "biggest contributors to the variance.")
+    # Page 9 — QB↔Alvys recon
+    out[9] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
+              "biggest contributors to the variance.")
 
-    # Page 11 — Bill-by-bill match
-    out[11] = ("Page 10 showed customer-level variances. This page drills to "
+    # Page 10 — Bill-by-bill match
+    out[10] = ("Page 9 showed customer-level variances. This page drills to "
                "individual unmatched invoices.")
 
     return out

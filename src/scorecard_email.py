@@ -2255,7 +2255,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 11
+PAGE_COUNT = 10
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -2332,7 +2332,7 @@ def _section(t, span=4):
 
 def _header(sub, pg, date_str, section=None):
     """Page header with optional section chip ('OPERATIONAL', 'SAFETY',
-    'ACCOUNTING') above the title — used to group detail pages 2-11 into
+    'ACCOUNTING') above the title — used to group detail pages 2-10 into
     visually distinct sections."""
     section_html = ""
     if section:
@@ -3544,60 +3544,56 @@ def build_page4(mileage, date_str) -> str:
             f"only. Source: Alvys API (Trips, via the pipeline file).</div>")
 
 
-def build_page5(uninv, date_str) -> str:
+def build_page5(uninv, alvys_ar, date_str) -> str:
     u = uninv or {}
     rows_data = u.get("rows", [])
     od = u.get("oldest_days")
-    tiles = (_tile("Loads delivered, not invoiced", num(u.get("count")), _pill("X-Trux + X-Linx", "mute"))
-             + _tile("Un-invoiced revenue", money(u.get("total_revenue")), _pill("to bill", "warn"))
-             + _tile("Oldest delivered", (num(od) + " days" if _isnum(od) else "n/a"), _pill("since delivery", "bad"))
-             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
-    body = ""
+    a = alvys_ar or {}
+    custs = a.get("d91plus_customers") or []
+    n_loads = sum(c["loads"] for c in custs)
+
+    uninv_tiles = (_tile("Loads delivered, not invoiced", num(u.get("count")), _pill("X-Trux + X-Linx", "mute"))
+                   + _tile("Un-invoiced revenue", money(u.get("total_revenue")), _pill("to bill", "warn"))
+                   + _tile("Oldest delivered", (num(od) + " days" if _isnum(od) else "n/a"), _pill("since delivery", "bad"))
+                   + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
+    uninv_body = ""
     for r in rows_data:
         dd = r["days"] or 0
         k = "bad" if dd >= 14 else ("warn" if dd >= 7 else None)
         days_txt = str(r["days"]) if r["days"] is not None else "&ndash;"
         cust = r["customer"] or "&mdash; (no customer name)"
-        body += _tr([r["load"], cust, r["entity"], r["delivered"], days_txt, money(r["revenue"])],
-                    ["left", "left", "left", "left", "right", "right"],
-                    [None, None, None, None, k, None])
+        uninv_body += _tr([r["load"], cust, r["entity"], r["delivered"], days_txt, money(r["revenue"])],
+                          ["left", "left", "left", "left", "right", "right"],
+                          [None, None, None, None, k, None])
     shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
-    more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
-            f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
-    return (f"{_header('Alvys &mdash; Delivered, Not Yet Invoiced', 8, date_str, section='ACCOUNTING')}"
-            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"<tr>{tiles}</tr>"
-            f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
-            f"{_table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'], ['left', 'left', 'left', 'left', 'right', 'right'], body + more)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
-            f"QuickBooks-vs-Alvys AR gap. X-Trux Inc + X-Linx Inc (JW Logistics excluded); &lsquo;Delivered&rsquo; "
-            f"is the actual last-stop arrival (Scheduled Delivery if arrival is missing). "
-            f"Source: Alvys API (Loads, via the pipeline file).</div>")
+    uninv_more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                  f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
 
-
-def build_page6(alvys_ar, date_str) -> str:
-    a = alvys_ar or {}
-    custs = a.get("d91plus_customers") or []
-    n_loads = sum(c["loads"] for c in custs)
-    tiles = (_tile("90+ days AR", money(a.get("d91plus")), _pill("X-Trux + X-Linx", "bad"))
-             + _tile("Customers 90+", num(len(custs)), _pill("over 90 days", "bad"))
-             + _tile("Loads 90+", num(n_loads), _pill("open invoices", "mute"))
-             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
-    body = ""
+    ar_tiles = (_tile("90+ days AR", money(a.get("d91plus")), _pill("X-Trux + X-Linx", "bad"))
+                + _tile("Customers 90+", num(len(custs)), _pill("over 90 days", "bad"))
+                + _tile("Loads 90+", num(n_loads), _pill("open invoices", "mute"))
+                + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
+    ar_body = ""
     for c in custs:
-        body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
-                     str(c["oldest_days"]), money(c["amount"])],
-                    ["left", "right", "right", "right"], [None, None, "bad", "bad"])
-    return (f"{_header('Alvys AR &mdash; Customers Aging 90+ Days', 9, date_str, section='ACCOUNTING')}"
+        ar_body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
+                        str(c["oldest_days"]), money(c["amount"])],
+                       ["left", "right", "right", "right"], [None, None, "bad", "bad"])
+
+    return (f"{_header('Alvys Accounting &mdash; Un-invoiced &amp; Aged AR', 8, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"<tr>{tiles}</tr>"
+            f"<tr>{uninv_tiles}</tr>"
+            f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
+            f"{_table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'], ['left', 'left', 'left', 'left', 'right', 'right'], uninv_body + uninv_more)}"
+            f"<tr>{ar_tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
-            f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], body)}"
+            f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], ar_body)}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
-            f"Open invoiced balances aged &gt;90 days past the Customer Due Date (Invoiced Date + 30d if none). "
-            f"X-Trux Inc + X-Linx Inc, JW Logistics excluded. Many may already be paid in QuickBooks &mdash; "
-            f"see the page-1 AR reconciliation note. Source: Alvys API (Loads, via the pipeline file).</div>")
+            f"Top: delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
+            f"QuickBooks-vs-Alvys AR gap. &lsquo;Delivered&rsquo; is the actual last-stop arrival "
+            f"(Scheduled Delivery if arrival is missing). "
+            f"Bottom: open invoiced balances aged &gt;90 days past the Customer Due Date (Invoiced Date + 30d if none); "
+            f"many may already be paid in QuickBooks &mdash; see the page-1 AR reconciliation note. "
+            f"X-Trux Inc + X-Linx Inc, JW Logistics excluded. Source: Alvys API (Loads, via the pipeline file).</div>")
 
 
 def build_page7(qb_ar, alvys_ar, date_str) -> str:
@@ -3632,7 +3628,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 10, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 9, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -3647,10 +3643,10 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 11, date_str, section='ACCOUNTING')
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 10, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
-               "numbers, or there is no open AR. See page 10 for the customer-level reconciliation.")
+               "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
         return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_brief(msg, 'warn')}</table>"
                 f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
@@ -3660,7 +3656,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
         # Neither invoice # nor Load # overlapped QB's Num — show samples to compare formats.
         msg = ("Couldn&rsquo;t match bills: neither the Alvys invoice number nor the Alvys Load # overlaps the "
                "QuickBooks invoice &lsquo;Num&rsquo;. Sample identifiers below &mdash; the two systems appear to "
-               "number invoices differently. Use page 10 (by customer) meanwhile.")
+               "number invoices differently. Use page 9 (by customer) meanwhile.")
         srows = ""
         al_s, qb_s = b.get("alvys_sample", []), b.get("qb_sample", [])
         for i in range(max(len(al_s), len(qb_s))):
@@ -3710,7 +3706,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
             f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
             f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
             f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
-            f"differently and this view is partial &mdash; use page 10. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+            f"differently and this view is partial &mdash; use page 9. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
 def build_page9(samba, date_str) -> str:
@@ -3863,12 +3859,13 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # behind it. Function names build_page<N> are kept for stability,
             # but the page-number arguments in _header reflect the actual
             # render order.
-            # Pages 2-11 grouped into three sections:
+            # Pages 2-10 grouped into three sections:
             #   OPERATIONAL  (pages 2-4): driver mileage, fleet operations,
             #                              fleet idle (its own page)
             #   SAFETY       (pages 5-6): events/HOS/DVIR detail, SambaSafety
-            #   ACCOUNTING   (pages 7-11): AR overdue, un-invoiced, 90+ AR,
-            #                              QB-vs-Alvys reconciliation, bill match
+            #   ACCOUNTING   (pages 7-10): AR overdue; combined Alvys
+            #                              un-invoiced + 90+ AR;
+            #                              QB-vs-Alvys reconciliation; bill match
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- OPERATIONAL --
@@ -3880,10 +3877,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(6) + build_page9(samba, date_str))}{pb}"
             # -- ACCOUNTING --
             f"{wrap(_strip(7) + build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(_strip(8) + build_page5(uninvoiced, date_str))}{pb}"
-            f"{wrap(_strip(9) + build_page6(alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(10) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(11) + build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(8) + build_page5(uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(9) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(10) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
