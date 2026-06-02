@@ -84,16 +84,17 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     mtd_label = (alvys or {}).get("mtd_label", "MTD")
     ents = alvys_entities or {}
 
-    # X-Trux lead — asset trucking. Margin % here is driver-pay share of
-    # revenue (Driver Rate ÷ Revenue), so a lower number is better. RPM is
-    # the optimization target — see the next sentence.
+    # X-Trux lead — asset trucking. Margin % = (Revenue − Driver Rate) /
+    # Revenue (= 1 − driver-pay share). 60-70% is normal because only
+    # owner-op settlement is subtracted at this layer; fuel / truck /
+    # overhead come out via the RPM goal in the next sentence.
     xt = ents.get("X-Trux") or {}
     xt_rev = xt.get("revenue")
     xt_mgn = xt.get("margin_pct")
     if _isnum(xt_rev) and _isnum(xt_mgn):
         parts.append(
             f"X-Trux {mtd_label}: {_money(xt_rev)} revenue, "
-            f"{_pct(xt_mgn)} margin (driver-pay share of revenue).")
+            f"{_pct(xt_mgn)} margin (revenue net of driver pay).")
 
     # X-Linx lead — brokerage. Target margin is 17.5% (carrier-pay net).
     xl = ents.get("X-Linx") or {}

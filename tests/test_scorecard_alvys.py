@@ -2,12 +2,9 @@
 
 These lock in the contract that matches the Power BI XFreight Report:
   - cost / "Driver Rate" = SUM(Loads[Driver Rate])  (Carrier Rate is NOT added)
-  - margin = Customer Revenue - Driver Rate  (dollar amount; same for both entities)
-  - margin_pct is asymmetric:
-      * X-Trux (incl. XFreight, asset trucking) -> Driver Rate / Revenue
-        (the share of revenue paid out to owner-ops, lower-is-better)
-      * X-Linx (brokerage) -> (Revenue - Driver Rate) / Revenue
-        (conventional gross margin, keyed to the 17.5% target)
+  - margin = Customer Revenue - Driver Rate
+  - margin_pct = margin / Revenue  =  1 - (Driver Rate / Revenue)
+                                       (same formula for both entities)
   - entities are grouped by the Office slicer, not the Invoice As billing column
   - "Loads" counts every non-cancelled load in the window, not just revenue ones
 
@@ -53,20 +50,16 @@ def _loads():
 
 
 def test_margin_is_revenue_minus_driver_rate():
-    """Dollar `margin` column is revenue - driver rate for both entities."""
     e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
     xt = e["X-Trux"]
     assert round(xt["cost"]) == 500                  # SUM(Loads[Driver Rate]) for L1 (300) + L3 (200)
     assert round(xt["margin"]) == 500                # 1000 - 500
+    assert abs(xt["margin_pct"] - 0.50) < 1e-9       # 500 / 1000
 
 
-def test_margin_pct_is_asymmetric_xtrux_vs_xlinx():
-    """X-Trux margin_pct = cost/revenue (driver-pay share, lower-is-better).
-    X-Linx margin_pct = (revenue - cost)/revenue (conventional gross)."""
-    e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
-    xt = e["X-Trux"]      # rev=1000, cost=500 -> share=0.50 (50/50 happens to match either formula)
-    xl = e["X-Linx"]      # rev=500, cost=400  -> conventional gross = 0.20
-    # Use distinct numbers via a follow-up loaded set so we don't false-pass on 50/50.
+def test_margin_pct_equals_one_minus_driver_pay_share():
+    """Confirm margin_pct = 1 - (Driver Rate / Revenue) with distinct numbers
+    so a 50/50 case can't false-pass either direction of the formula."""
     distinct = {"Loads": pd.DataFrame([
         dict(Office="XFreight", **{"Invoice As": "XFreight"}, **{
             "Customer Revenue": 1000, "Driver Rate": 300, "Carrier Rate": 0,
@@ -78,13 +71,10 @@ def test_margin_pct_is_asymmetric_xtrux_vs_xlinx():
             "Scheduled Pickup": pd.Timestamp(2026, 4, 12), "Load Status": "Delivered"}),
     ])}
     d = compute_alvys_entities(distinct, start=APR_START, end=APR_END)
-    # X-Trux: 300 driver pay / 1000 revenue = 0.30 share (NOT 0.70 gross)
-    assert abs(d["X-Trux"]["margin_pct"] - 0.30) < 1e-9
-    # X-Linx: (1000 - 825)/1000 = 0.175 — exactly on the brokerage goal
+    # X-Trux: 1 - (300 / 1000) = 0.70
+    assert abs(d["X-Trux"]["margin_pct"] - 0.70) < 1e-9
+    # X-Linx: 1 - (825 / 1000) = 0.175 — exactly on the brokerage goal
     assert abs(d["X-Linx"]["margin_pct"] - 0.175) < 1e-9
-    # Sanity: the original 50/50 case still gives 0.50 for X-Trux and 0.20 for X-Linx
-    assert abs(xt["margin_pct"] - 0.50) < 1e-9
-    assert abs(xl["margin_pct"] - 0.20) < 1e-9
 
 
 def test_grouping_by_office_not_invoice_as():

@@ -433,20 +433,11 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         margin = revenue - cost
         # n_loads matches Power BI's Load Count (non-cancelled, settled).
         n_loads = len(settled)
-        # X-Trux (incl. XFreight): "Margin %" is the share of revenue paid out
-        # to owner-ops (Driver Rate ÷ Revenue) — more interpretable for an
-        # asset trucking + owner-op fleet than the conventional gross margin.
-        # X-Linx (brokerage): keep conventional gross margin so the 17.5%
-        # target lines up.
-        if ent == "X-Trux":
-            mpct = (cost / revenue) if revenue else None
-        else:
-            mpct = (margin / revenue) if revenue else None
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
             "margin": margin if revenue else None,
-            "margin_pct": mpct,
+            "margin_pct": (margin / revenue) if revenue else None,
             "loads": n_loads,
             "unsettled": n_unsettled,
         }
