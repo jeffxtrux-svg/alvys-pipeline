@@ -193,6 +193,27 @@ hands-on you want to be:
   The downstream contract is flexible — page 2 reads whatever
   `compute_sambasafety` returns.
 
+## DOT medical card / DOT physical — comes from Alvys, not SambaSafety
+
+SambaSafety's Risk Index Report carries license expirations but **not**
+DOT medical-card expirations. The scorecard's page 2 covers both anyway
+by reading the Alvys Drivers feed:
+
+- The Alvys pipeline (`src/main.py`) writes a `Drivers` sheet into
+  `Alvys Pipeline.xlsx` using `LicenseExpiresAt` + `MedicalExpiresAt`
+  from each driver record.
+- `compute_alvys_drivers` in the scorecard reads that sheet, filters to
+  active drivers (Status not Inactive, `TerminatedAt` is null), and
+  buckets each into 30-day pipeline / 14-day critical windows for both
+  CDL and DOT medical card.
+- Page 2 renders the `DOT medical card · expirations within 30d` table
+  under the SambaSafety blocks. Bottom-line gets per-driver sentences
+  for anything inside the 14-day window. Action items fire `DOT MEDICAL
+  CARD · NAME` (bad) for the 7-day critical window.
+
+Full details (which Alvys fields, which sheet schema) in
+[connector-alvys.md § Drivers sheet](./connector-alvys.md).
+
 ## See also
 
 - [operations.md § Scorecard email runbook](./operations.md) — debugging
@@ -202,3 +223,5 @@ hands-on you want to be:
   Graph permissions shared with this job.
 - [automation-and-secrets.md](./automation-and-secrets.md) — full
   secret table.
+- [connector-alvys.md](./connector-alvys.md) — the Drivers sheet
+  (CDL + DOT medical card) feed.

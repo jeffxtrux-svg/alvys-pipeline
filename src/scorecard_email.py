@@ -433,6 +433,10 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         margin = revenue - cost
         # n_loads matches Power BI's Load Count (non-cancelled, settled).
         n_loads = len(settled)
+        # Margin % matches the Power BI XFreight Report exactly:
+        # Margin ÷ Revenue = (Revenue − Driver Rate) ÷ Revenue. Both
+        # entities use this formula so the scorecard table and Power BI
+        # tile read identically.
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
@@ -2250,6 +2254,103 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     }
 
 
+# DOT medical card / CDL deadlines tracked from the Alvys Drivers sheet —
+# parallel to LICENSE_EXPIRY_WARN_DAYS but for the Alvys-side feed. The
+# 14-day "critical" cutoff is what triggers the per-driver name-out in
+# the BOTTOM LINE (vs the 30-day pipeline that stays in the aggregate
+# count).
+MEDICAL_EXPIRY_WARN_DAYS = 30
+DRIVER_EXPIRY_CRITICAL_DAYS = 14
+
+
+def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | None:
+    """Read the `Drivers` sheet from Alvys Pipeline.xlsx and return the
+    CDL + DOT-medical compliance shape the scorecard surfaces.
+
+    Returns a dict with:
+      monitored                  active driver count
+      drivers                    [{name, type, status, license_exp,
+                                   license_days, medical_exp,
+                                   medical_days, ...}]
+      license_issues_30          drivers w/ CDL expiring within 30d (sorted soonest first)
+      license_critical_14        drivers w/ CDL expiring within 14d (subset)
+      medical_issues_30          drivers w/ medical card expiring within 30d
+      medical_critical_14        drivers w/ medical card expiring within 14d
+      window_days_critical       14 (so the renderer can label the urgency window)
+    """
+    if not sheets:
+        return None
+    df = sheets.get("Drivers")
+    if df is None or df.empty:
+        return None
+    now = now or pd.Timestamp.now()
+
+    def _col(*candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    name_c = _col("Name", "Driver Name")
+    type_c = _col("Type", "DriverType")
+    status_c = _col("Status")
+    lic_exp_c = _col("LicenseExpiresAt", "License Expiration", "CDL Expiration")
+    med_exp_c = _col("MedicalExpiresAt", "Medical Expiration", "DOT Medical Expiration")
+    term_c = _col("TerminatedAt", "Terminated", "TerminationDate")
+
+    if not name_c:
+        return None
+
+    drivers = []
+    for _, r in df.iterrows():
+        name = str(r[name_c]).strip() if pd.notna(r[name_c]) else ""
+        if not name or name.lower() == "nan":
+            continue
+        terminated = pd.notna(r[term_c]) if term_c else False
+        if terminated:
+            continue   # skip ex-employees
+        status = str(r[status_c]).strip() if status_c and pd.notna(r[status_c]) else ""
+        if status.lower() in {"inactive", "terminated", "deleted"}:
+            continue
+
+        def _days(col):
+            if not col or pd.isna(r[col]):
+                return None, None
+            ts = pd.to_datetime(r[col], errors="coerce")
+            if pd.isna(ts):
+                return None, None
+            return ts, int((ts.normalize() - now.normalize()).days)
+
+        lic_exp, lic_days = _days(lic_exp_c)
+        med_exp, med_days = _days(med_exp_c)
+        drivers.append({
+            "name": name,
+            "type": (str(r[type_c]).strip() if type_c and pd.notna(r[type_c]) else ""),
+            "status": status or "Active",
+            "license_exp": lic_exp,
+            "license_days": lic_days,
+            "medical_exp": med_exp,
+            "medical_days": med_days,
+        })
+
+    def _within(window, key):
+        out = [d for d in drivers
+               if isinstance(d.get(key), int) and 0 <= d[key] <= window]
+        out.sort(key=lambda d: d[key])
+        return out
+
+    return {
+        "now": now,
+        "monitored": len(drivers),
+        "drivers": drivers,
+        "license_issues_30": _within(LICENSE_EXPIRY_WARN_DAYS, "license_days"),
+        "license_critical_14": _within(DRIVER_EXPIRY_CRITICAL_DAYS - 1, "license_days"),
+        "medical_issues_30": _within(MEDICAL_EXPIRY_WARN_DAYS, "medical_days"),
+        "medical_critical_14": _within(DRIVER_EXPIRY_CRITICAL_DAYS - 1, "medical_days"),
+        "window_days_critical": DRIVER_EXPIRY_CRITICAL_DAYS,
+    }
+
+
 # ----------------------------------------------------------------------
 # HTML design system
 # ----------------------------------------------------------------------
@@ -2644,7 +2745,7 @@ def compute_drag_attribution(
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
-                samba=None) -> str:
+                samba=None, alvys_drivers=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -3006,7 +3107,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _insights_bottom = _insights.bottom_line(
             alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
             margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist,
-            samba=samba)
+            samba=samba, alvys_entities=alvys_entities,
+            alvys_drivers=alvys_drivers)
         _prior_snapshot = None
         try:
             from src.scorecard_snapshots import read_prior_snapshot
@@ -3016,7 +3118,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _insights_actions = _insights.action_items(
             alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
             rpm_goal=rpm_goal, uninvoiced=uninvoiced,
-            prior_snapshot=_prior_snapshot, samba=samba)
+            prior_snapshot=_prior_snapshot, samba=samba,
+            alvys_drivers=alvys_drivers)
         _insights_coaching = _insights.coaching_cards(samsara=samsara)
     except Exception as e:
         log.warning("scorecard_insights failed (%s: %s) — using legacy blurb",
@@ -3711,16 +3814,19 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
             f"differently and this view is partial &mdash; use page 9. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
-def build_page9(samba, date_str) -> str:
-    header = _header('Driver Compliance &mdash; SambaSafety', 2, date_str, section='SAFETY')
+def build_page9(samba, date_str, alvys_drivers=None) -> str:
+    header = _header('Driver Compliance &mdash; SambaSafety + Alvys', 2, date_str, section='SAFETY')
     footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
-              f"Source: SambaSafety driver monitoring.</div>")
+              f"License + MVR: SambaSafety. DOT medical card: Alvys Drivers feed.</div>")
     if not samba or not samba.get("monitored"):
+        # SambaSafety not loaded — but Alvys medical-card data may still be available.
         return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_section('Driver compliance &middot; SambaSafety')}"
                 f"<tr><td colspan='4' style='padding:14px 6px;color:{MUTE};font-size:12.5px;'>"
-                f"SambaSafety data unavailable this run.</td></tr>{footer}")
+                f"SambaSafety data unavailable this run.</td></tr>"
+                + _alvys_medical_block(alvys_drivers)
+                + footer)
 
     def _md(ts):
         return "&mdash;" if pd.isna(ts) else f"{ts.month}/{ts.day}/{ts.strftime('%y')}"
@@ -3793,13 +3899,43 @@ def build_page9(samba, date_str) -> str:
             f"{_section('License status &middot; action needed')}{license_block}"
             f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
             f"{_section('Risk leaderboard &middot; highest-scoring drivers')}{risk_block}"
-            f"{footer}")
+            + _alvys_medical_block(alvys_drivers)
+            + footer)
+
+
+def _alvys_medical_block(alvys_drivers) -> str:
+    """DOT medical card status block — Alvys is the system of record.
+    Renders a section title + table (or a 'all good' brief). Safe to
+    call with None / empty data."""
+    if not alvys_drivers or not alvys_drivers.get("monitored"):
+        return ""
+    med30 = alvys_drivers.get("medical_issues_30") or []
+    title = _section('DOT medical card &middot; expirations within 30d &middot; Alvys Drivers feed')
+    if not med30:
+        return title + _brief(
+            "All active drivers have a current DOT medical card (none expiring within 30 days).",
+            "good")
+    rows = ""
+    for d in med30:
+        days = d.get("medical_days")
+        exp = d.get("medical_exp")
+        exp_txt = exp.strftime("%b %d, %Y") if exp is not None and not pd.isna(exp) else "&mdash;"
+        days_txt = f"{int(days)}d" if isinstance(days, int) else "&mdash;"
+        kind = "bad" if isinstance(days, int) and days <= 7 else "warn"
+        rows += _tr(
+            [d["name"], d.get("type") or "&mdash;", d.get("status") or "Active",
+             exp_txt, days_txt],
+            ["left", "left", "left", "left", "right"],
+            [None, None, None, kind, kind])
+    return title + _table(
+        ["Driver", "Type", "Status", "Medical expires", "Days"],
+        ["left", "left", "left", "left", "right"], rows)
 
 
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
-               margin_projection=None) -> str:
+               margin_projection=None, alvys_drivers=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -3854,7 +3990,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
             # follows the entity-level summary. Safety and AR pages then come
@@ -3872,7 +4008,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
-            f"{wrap(_strip(2) + build_page9(samba, date_str))}{pb}"
+            f"{wrap(_strip(2) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
             f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
             # -- OPERATIONAL --
             f"{wrap(_strip(4) + build_page4(mileage, date_str))}{pb}"
@@ -3910,13 +4046,17 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
+    # Alvys-side driver compliance (CDL + DOT medical card expirations).
+    # Read from the same Alvys Pipeline.xlsx as everything else — the
+    # `Drivers` sheet is added by src.main when the pipeline writes it.
+    alvys_drivers = compute_alvys_drivers(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
     html = build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
-                      margin_projection=margin_projection)
+                      margin_projection=margin_projection, alvys_drivers=alvys_drivers)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:

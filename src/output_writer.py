@@ -162,10 +162,17 @@ def write_master_xlsx(
     trips_df: pd.DataFrame,
     fuel_df: pd.DataFrame,
     output_path: Path,
+    drivers_df: pd.DataFrame | None = None,
 ) -> None:
     """Write Loads/Trips/Fuel sheets matching the manual Alvys_Master.xlsx
     exactly: sheet order (Fuel, Loads, Trips), per-column date formats, and
-    integer coercion for the business-number columns."""
+    integer coercion for the business-number columns.
+
+    `drivers_df` is optional — when provided, a fourth ``Drivers`` sheet
+    is appended with CDL + medical-card expiration data for the
+    scorecard's driver-compliance page. Schema is small (~30 rows × 10
+    cols) so it does not affect the existing tabs or their Power BI
+    queries."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     log.info("Writing %s", output_path)
@@ -183,8 +190,12 @@ def write_master_xlsx(
         fuel_df.to_excel(writer,  sheet_name="Fuel",  index=False)
         loads_df.to_excel(writer, sheet_name="Loads", index=False)
         trips_df.to_excel(writer, sheet_name="Trips", index=False)
+        if drivers_df is not None and not drivers_df.empty:
+            drivers_df.to_excel(writer, sheet_name="Drivers", index=False)
 
     log.info("  Fuel : %d rows × %d cols", len(fuel_df),  len(fuel_df.columns))
     log.info("  Loads: %d rows × %d cols", len(loads_df), len(loads_df.columns))
     log.info("  Trips: %d rows × %d cols", len(trips_df), len(trips_df.columns))
+    if drivers_df is not None and not drivers_df.empty:
+        log.info("  Drivers: %d rows × %d cols", len(drivers_df), len(drivers_df.columns))
     log.info("Done.")

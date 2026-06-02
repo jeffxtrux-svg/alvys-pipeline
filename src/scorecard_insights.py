@@ -61,10 +61,18 @@ def _num(v) -> str:
     return f"{float(v):,.0f}"
 
 
+def _str_name(d: dict | None) -> str:
+    if not isinstance(d, dict):
+        return ""
+    n = d.get("name") or d.get("Name") or ""
+    return str(n).strip()
+
+
 # Tuning constants — change here without hunting through templates.
 IDLE_GPH = 0.8                # fleet-average idle burn (Class-8 sleeper)
 DIESEL_PRICE = 3.80           # $/gal — refresh quarterly
 WEEKS_PER_MONTH = 4.33
+XLINX_MARGIN_GOAL = 0.175     # X-Linx brokerage margin target (revenue − carrier pay)
 
 
 # ----------------------------------------------------------------------
@@ -74,34 +82,89 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 samsara: dict | None, rpm_goal: dict | None,
                 margin_projection: dict | None,
                 qb_ar: dict | None, ar_hist: tuple | None = None,
-                samba: dict | None = None) -> str:
+                samba: dict | None = None,
+                alvys_entities: dict | None = None,
+                alvys_drivers: dict | None = None) -> str:
     """Generate the bottom-line paragraph. Joins 3-4 sentences picked
     from threshold-triggered templates."""
     parts: list[str] = []
 
-    mtd = (alvys or {}).get("mtd") or {}
     mtd_label = (alvys or {}).get("mtd_label", "MTD")
-    rev = mtd.get("revenue")
-    margin_pct = mtd.get("margin_pct")
-    if _isnum(rev) and _isnum(margin_pct):
-        parts.append(
-            f"{mtd_label} closed at {_money(rev)} revenue and "
-            f"{_pct(margin_pct)} margin"
-            + (" — above the trailing-90 baseline."
-               if margin_pct and margin_pct > 0.28 else "."))
+    ents = alvys_entities or {}
 
-    # RPM gap → annualized uplift potential.
+    # X-Trux lead — asset trucking. Margin % matches Power BI:
+    # (Revenue − Driver Rate) ÷ Revenue. Fuel / truck / overhead are NOT
+    # subtracted at this layer — those are absorbed via the RPM goal in
+    # the next sentence.
+    xt = ents.get("X-Trux") or {}
+    xt_rev = xt.get("revenue")
+    xt_mgn = xt.get("margin_pct")
+    if _isnum(xt_rev) and _isnum(xt_mgn):
+        parts.append(
+            f"X-Trux {mtd_label}: {_money(xt_rev)} revenue, "
+            f"{_pct(xt_mgn)} margin (matches Power BI).")
+
+    # X-Linx lead — brokerage. Target margin is 17.5% (carrier-pay net).
+    xl = ents.get("X-Linx") or {}
+    xl_rev = xl.get("revenue")
+    xl_mgn = xl.get("margin_pct")
+    if _isnum(xl_rev) and _isnum(xl_mgn):
+        delta = xl_mgn - XLINX_MARGIN_GOAL
+        verdict = (f"above the {_pct(XLINX_MARGIN_GOAL)} goal"
+                   if delta >= 0
+                   else f"{_pct(abs(delta))} below the {_pct(XLINX_MARGIN_GOAL)} goal")
+        parts.append(
+            f"X-Linx {mtd_label}: {_money(xl_rev)} revenue, "
+            f"{_pct(xl_mgn)} margin ({verdict}).")
+
+    # Fallback to combined MTD line only if neither entity had data — keeps
+    # the brief non-empty for any historical run where the entity split is
+    # unavailable.
+    if not parts:
+        mtd = (alvys or {}).get("mtd") or {}
+        rev = mtd.get("revenue")
+        margin_pct = mtd.get("margin_pct")
+        if _isnum(rev) and _isnum(margin_pct):
+            parts.append(
+                f"{mtd_label} closed at {_money(rev)} revenue and "
+                f"{_pct(margin_pct)} margin.")
+
+    # X-Trux RPM gap → annualized uplift potential. Brokerage is per-load
+    # not per-mile so the goal does not apply to X-Linx.
     if rpm_goal:
         actual = rpm_goal.get("actual_rpm")
         goal = rpm_goal.get("goal_rpm")
-        miles_mtd = mtd.get("miles") or 0
+        # Prefer X-Trux miles; fall back to combined if asset split missing.
+        miles_mtd = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("miles") \
+            or ((alvys or {}).get("mtd") or {}).get("miles") or 0
         if _isnum(actual) and _isnum(goal) and actual < goal and miles_mtd:
             gap = goal - actual
             annual_uplift = gap * miles_mtd * 12
             parts.append(
-                f"RPM ${actual:.2f} vs ${goal:.2f} goal; closing that gap "
+                f"X-Trux RPM ${actual:.2f} vs ${goal:.2f} goal; closing that gap "
                 f"≈ {_money(annual_uplift)} of annual margin uplift "
                 f"(per rate-per-mile-goal methodology).")
+
+    # Combined MTD profit/loss vs cost-per-mile:
+    #   X-Trux P/L  = miles × (actual_rpm − cost_per_mile)
+    #   X-Linx P/L  = X-Linx dollar margin (from compute_alvys_entities)
+    #   Combined    = sum
+    # Per Jeff's spec — gives a single dollar read on whether X-Trux is
+    # paying for itself against its loaded cost basis, then layers X-Linx
+    # margin on top.
+    if rpm_goal:
+        actual = rpm_goal.get("actual_rpm")
+        cpm = rpm_goal.get("cost_per_mile")
+        miles_mtd = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("miles") \
+            or ((alvys or {}).get("mtd") or {}).get("miles") or 0
+        xl_margin = (ents.get("X-Linx") or {}).get("margin")
+        if _isnum(actual) and _isnum(cpm) and miles_mtd:
+            xt_pl = miles_mtd * (actual - cpm)
+            combined = xt_pl + (float(xl_margin) if _isnum(xl_margin) else 0.0)
+            verdict = "profit" if combined >= 0 else "loss"
+            parts.append(
+                f"X-Trux and X-Linx together are showing a {verdict} "
+                f"of {_money(abs(combined))} {mtd_label}.")
 
     # Idle cost — biggest unmonetized expense for most fleets.
     if samsara and samsara.get("fleet"):
@@ -141,6 +204,64 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
         if bits:
             parts.append("Driver compliance: " + " · ".join(bits) + " (pg 2).")
 
+        # Per Jeff: name every driver inside the 14-day window with their
+        # exact expiration date — short-fuse renewals are operationally
+        # critical and shouldn't get hidden inside the aggregate count.
+        critical = [d for d in lic_issues
+                    if isinstance(d.get("days_to_exp"), int)
+                    and 0 <= d["days_to_exp"] < 14]
+        for d in critical:
+            name = str(d.get("name", "")).strip() or "Driver"
+            exp = d.get("exp")
+            try:
+                date_str = exp.strftime("%b %d, %Y") if exp is not None else "(unknown date)"
+            except Exception:
+                date_str = "(unknown date)"
+            parts.append(
+                f"{name} license will expire on {date_str}, and that is "
+                f"{int(d['days_to_exp'])} days from expiration.")
+
+    # Alvys-side driver compliance — CDL + DOT medical card. Mirrors the
+    # SambaSafety license treatment above: 30-day aggregate + name-out
+    # for anything inside 14 days. Listed even when SambaSafety is the
+    # primary license source because Alvys is the system of record for
+    # medical-card expiration (SambaSafety doesn't carry it).
+    if alvys_drivers:
+        med30 = alvys_drivers.get("medical_issues_30") or []
+        if med30:
+            parts.append(
+                f"Driver compliance (Alvys): {len(med30)} medical "
+                f"card{'s' if len(med30) != 1 else ''} expiring within 30d "
+                f"(pg 2).")
+        for d in alvys_drivers.get("medical_critical_14") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            exp = d.get("medical_exp")
+            try:
+                date_str = exp.strftime("%b %d, %Y") if exp is not None else "(unknown date)"
+            except Exception:
+                date_str = "(unknown date)"
+            parts.append(
+                f"{name} DOT medical card will expire on {date_str}, and "
+                f"that is {int(d['medical_days'])} days from expiration.")
+        # Alvys can also flag CDL expirations — surface only when SambaSafety
+        # didn't already cover the same driver (avoid double-naming).
+        samba_named = {(_str_name(d) or "").lower()
+                       for d in (samba or {}).get("license_issues") or []
+                       if isinstance(d.get("days_to_exp"), int)
+                       and 0 <= d["days_to_exp"] < 14}
+        for d in alvys_drivers.get("license_critical_14") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            if name.lower() in samba_named:
+                continue
+            exp = d.get("license_exp")
+            try:
+                date_str = exp.strftime("%b %d, %Y") if exp is not None else "(unknown date)"
+            except Exception:
+                date_str = "(unknown date)"
+            parts.append(
+                f"{name} CDL will expire on {date_str}, and that is "
+                f"{int(d['license_days'])} days from expiration.")
+
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
                      "see entity table and detail pages for the read.")
@@ -155,6 +276,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                  rpm_goal: dict | None, uninvoiced: dict | None,
                  prior_snapshot: dict | None = None,
                  samba: dict | None = None,
+                 alvys_drivers: dict | None = None,
                  max_items: int = 3) -> list[tuple[str, str, str]]:
     """Return up to `max_items` action cards, severity-sorted (bad first).
     Each tuple is (severity, title, body) where severity is 'bad' / 'warn'.
@@ -279,6 +401,30 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 f"MVR HIGH RISK · {n_high} DRIVER{'S' if n_high != 1 else ''}",
                 f"Per latest SambaSafety MVR scan. See pg 2 for names."))
+
+    # 5b. Alvys DOT medical card — expired or expiring within 7d is a
+    # hard-deadline operational risk (an expired medical card grounds the
+    # truck the same as an expired CDL). Surface as 'bad' for the 7-day
+    # critical window, 'warn' for the 30-day pipeline.
+    if alvys_drivers:
+        med_all = alvys_drivers.get("medical_issues_30") or []
+        med_7 = [d for d in med_all
+                 if isinstance(d.get("medical_days"), int)
+                 and 0 <= d["medical_days"] <= 7]
+        if med_7:
+            worst = med_7[0]
+            days = worst.get("medical_days")
+            items.append((
+                "bad",
+                f"DOT MEDICAL CARD · {str(worst.get('name', '')).upper()}",
+                f"Expires in {int(days or 0)}d ({len(med_7)} driver{'s' if len(med_7) != 1 else ''} "
+                f"inside 7d). Pull from board until renewed. See pg 2."))
+        elif med_all:
+            items.append((
+                "warn",
+                "DOT MEDICAL RENEWALS UPCOMING",
+                f"{len(med_all)} driver{'s' if len(med_all) != 1 else ''} "
+                f"with medical card expiring within 30d. See pg 2."))
 
     # 6. Safety event — only surface if 24h count is non-zero.
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
