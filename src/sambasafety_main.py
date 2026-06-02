@@ -1,45 +1,302 @@
-"""Daily SambaSafety refresh.
+"""Daily SambaSafety refresh — assembles ``SambaSafety_Master.xlsx`` and
+uploads it to OneDrive so the scorecard's page 2 stays current.
 
-Reads the two raw CSV exports from OneDrive's SambaSafety folder, merges them
-into ``SambaSafety_Master.xlsx`` (via ``src.sambasafety_combine``), and uploads
-the result back to the same folder so the scorecard's page 9 stays current.
+Two paths, picked by env vars:
 
-Until the SambaSafety API is wired up, the two CSVs land in OneDrive via one
-of: (a) Power Automate flow saving the daily emails' attachments, (b) Outlook
-rule, or (c) manual drop. This module is the next step in that pipeline — it
-turns the raw exports into the workbook the scorecard reads, on a daily cron.
+  1. **API mode (preferred)** — set ``SAMBASAFETY_API_TOKEN`` (and
+     optionally ``SAMBASAFETY_API_BASE_URL``, ``SAMBASAFETY_GROUP_NAME``).
+     Pulls drivers, licenses, license status, and existing MVR reports
+     directly from SambaSafety. No CSV step. Zero per-refresh cost
+     (only reads endpoints, never places new MVR orders).
+
+  2. **CSV-drop fallback** — used automatically when no API token is
+     present. Downloads ``risk_index_report.csv`` and
+     ``violationsReport.csv`` from OneDrive, merges them via
+     ``src.sambasafety_combine``. Bridges the gap during initial
+     onboarding, or when the API key is temporarily unavailable.
+
+Either path writes the same two-sheet workbook the scorecard reads:
+``Drivers`` + ``Violations`` — so downstream code is unchanged.
 
 Required env (same Azure app as the other refresh jobs):
     AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
     ONEDRIVE_USER_UPN
-Optional:
-    SAMBASAFETY_FOLDER            default "SambaSafety"
-    SAMBASAFETY_RISK_INDEX_FILE   default "risk_index_report.csv"
-    SAMBASAFETY_VIOLATIONS_FILE   default "violationsReport.csv"
-    SAMBASAFETY_OUT_FILE          default "SambaSafety_Master.xlsx"
-    SAMBASAFETY_OUTPUT_DIR        default "output/sambasafety" (local artifact)
+
+API-mode env:
+    SAMBASAFETY_API_TOKEN        the JWT from the envelope file
+    SAMBASAFETY_API_BASE_URL     default "https://api.sambasafety.io"
+                                 (use "https://api-demo.sambasafety.io"
+                                  to point at the demo environment)
+    SAMBASAFETY_GROUP_NAME       optional, default is "all groups merged"
+                                 — set this when you have multiple groups
+                                 and only want the X-Trux drivers.
+
+Shared env (both paths):
+    SAMBASAFETY_FOLDER           default "SambaSafety"
+    SAMBASAFETY_OUT_FILE         default "SambaSafety_Master.xlsx"
+    SAMBASAFETY_OUTPUT_DIR       default "output/sambasafety"
 
 Run locally:
     python -m src.sambasafety_main
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import sys
 from pathlib import Path
 
+import pandas as pd
 from dotenv import load_dotenv
 
 from .onedrive_upload import (
     download_file, ensure_folder, get_required, get_token, upload_file,
 )
 from .sambasafety_combine import combine_to_workbook
+from .sambasafety_client import SambaSafetyClient, SambaSafetyError
 
 
 log = logging.getLogger("sambasafety_main")
 
 
+# ----------------------------------------------------------------------
+# Workbook assembly from API responses
+# ----------------------------------------------------------------------
+def _full_name(person: dict) -> str:
+    parts = []
+    for k in ("firstName", "middleName", "lastName"):
+        v = (person.get(k) or "").strip()
+        if v:
+            parts.append(v)
+    return " ".join(parts)
+
+
+def _pick(d: dict, *keys, default=None):
+    """First non-empty value for the listed keys (case-insensitive)."""
+    if not isinstance(d, dict):
+        return default
+    lower = {k.lower(): k for k in d.keys()}
+    for k in keys:
+        actual = lower.get(k.lower())
+        if actual is None:
+            continue
+        v = d.get(actual)
+        if v not in (None, "", []):
+            return v
+    return default
+
+
+def _violations_from_mvr(mvr: dict, driver_name: str) -> list[dict]:
+    """Pull violation rows out of a single MVR report.
+
+    SambaSafety nests violations in a few different places depending on
+    the MVR product (Activity vs Intelligent vs Transactional). Probe
+    each in turn and yield whatever's there. Defensive against missing
+    keys — soft-fails to an empty list rather than raising."""
+    if not isinstance(mvr, dict):
+        return []
+    candidates = []
+    for k in ("violations", "convictions", "accidents", "events"):
+        v = mvr.get(k)
+        if isinstance(v, list):
+            candidates.extend(v)
+    # Some MVR products nest violations under a `.report` or .mvrReport key
+    for nest_key in ("report", "mvrReport", "mvrOrderResult", "Record"):
+        nested = mvr.get(nest_key)
+        if isinstance(nested, dict):
+            for k in ("violations", "convictions", "accidents", "events"):
+                v = nested.get(k)
+                if isinstance(v, list):
+                    candidates.extend(v)
+    out = []
+    for v in candidates:
+        if not isinstance(v, dict):
+            continue
+        out.append({
+            "Driver Name": driver_name,
+            "Date": _pick(v, "violationDate", "convictionDate",
+                          "offenseDate", "date"),
+            "Type": _pick(v, "violationDescription", "description",
+                          "type", "offense"),
+            "Points": _pick(v, "violationScore", "points", "score"),
+            "State": _pick(v, "state", "jurisdiction"),
+            "Severity": _pick(v, "severity", "level", "seriousness"),
+        })
+    return out
+
+
+def assemble_workbook_from_api(client: SambaSafetyClient,
+                               group_name_filter: str | None = None) -> bytes:
+    """Build ``SambaSafety_Master.xlsx`` directly from the API. Same
+    two-sheet schema the CSV path produces, so downstream is unchanged.
+
+    Strategy (all free):
+      1. List groups; if ``group_name_filter`` set, narrow to matching ones.
+      2. For each group: list people.
+      3. For each person: list licenses, fetch license status, list MVRs,
+         read the most recent MVR (for license expiration + violations).
+      4. Compose the Drivers + Violations sheets.
+    """
+    groups = client.list_groups()
+    log.info("Groups: %d total", len(groups))
+    for g in groups:
+        log.info("  - %s (id=%s)", g.get("groupName"), g.get("groupId"))
+
+    if group_name_filter:
+        before = len(groups)
+        nf = group_name_filter.strip().lower()
+        groups = [g for g in groups
+                  if nf in (g.get("groupName") or "").lower()]
+        log.info("Filtered to %d groups containing %r (was %d)",
+                 len(groups), group_name_filter, before)
+
+    drivers_rows: list[dict] = []
+    violations_rows: list[dict] = []
+
+    for g in groups:
+        gid = g.get("groupId")
+        gname = g.get("groupName") or "(unnamed)"
+        if not gid:
+            continue
+        people = client.list_people_in_group(gid)
+        log.info("Group %s: %d people", gname, len(people))
+        for person in people:
+            person_id = person.get("personId")
+            if not person_id:
+                continue
+            name = _full_name(person)
+            if not name:
+                continue
+            if (person.get("archiveStatus") is True
+                    or str(person.get("archiveStatus", "")).lower() == "true"):
+                continue   # terminated / archived driver — skip
+
+            licenses = []
+            try:
+                licenses = client.list_licenses_for_person(person_id)
+            except SambaSafetyError as e:
+                log.warning("  %s: licenses fetch failed (%s) — skipping driver",
+                            name, e)
+                continue
+
+            # Pick the CDL if any, else the first license.
+            cdl = next(
+                (lic for lic in licenses
+                 if lic.get("CDL") is True or lic.get("cdl") is True),
+                None)
+            primary = cdl or (licenses[0] if licenses else {})
+            license_id = primary.get("licenseId")
+            license_num = primary.get("licenseNumber", "")
+            license_state = primary.get("licenseState", "")
+
+            status_obj = None
+            if license_id:
+                try:
+                    status_obj = client.get_license_status(license_id)
+                except SambaSafetyError as e:
+                    log.warning("  %s: status fetch failed (%s)", name, e)
+            status_txt = (status_obj or {}).get("status", "Unknown")
+
+            # Read existing MVRs for license expiration + violations.
+            # Reading is free; we never call a Place-Order endpoint.
+            license_expiration = None
+            risk_score = None
+            risk_category = ""
+            try:
+                mvrs = client.list_mvrs_for_person(person_id)
+            except SambaSafetyError as e:
+                log.warning("  %s: MVR list failed (%s)", name, e)
+                mvrs = []
+            if mvrs:
+                mvrs_sorted = sorted(
+                    mvrs,
+                    key=lambda m: m.get("mvrDateTime", ""),
+                    reverse=True)
+                # Pull violations from every MVR; pull expiration / risk
+                # from the most recent one.
+                for i, m in enumerate(mvrs_sorted):
+                    mvr_id = m.get("mvrId") or m.get("reportId")
+                    if not mvr_id:
+                        continue
+                    try:
+                        full = client.get_mvr_report(mvr_id)
+                    except SambaSafetyError as e:
+                        log.warning("  %s: MVR %s fetch failed (%s)",
+                                    name, mvr_id, e)
+                        continue
+                    if full is None:
+                        continue
+                    violations_rows.extend(_violations_from_mvr(full, name))
+                    if i == 0:
+                        license_expiration = _pick(
+                            full, "licenseExpirationDate",
+                            "licenseExpiration", "expirationDate",
+                            "expiresAt")
+                        risk_score = _pick(
+                            full, "riskScore", "score", "currentRiskScore")
+                        risk_category = _pick(
+                            full, "riskCategory", "category",
+                            "riskLevel", default="")
+
+            drivers_rows.append({
+                "Driver Name": name,
+                "License Number": license_num,
+                "License State": license_state,
+                "License Status": status_txt,
+                "License Expiration": license_expiration,
+                "Risk Score": risk_score,
+                "Risk Category": risk_category,
+            })
+
+    log.info("Assembled %d driver row(s) and %d violation row(s)",
+             len(drivers_rows), len(violations_rows))
+
+    drivers_df = pd.DataFrame(drivers_rows, columns=[
+        "Driver Name", "License Number", "License State", "License Status",
+        "License Expiration", "Risk Score", "Risk Category",
+    ])
+    if "License Expiration" in drivers_df.columns:
+        drivers_df["License Expiration"] = pd.to_datetime(
+            drivers_df["License Expiration"], errors="coerce")
+    violations_df = pd.DataFrame(violations_rows, columns=[
+        "Driver Name", "Date", "Type", "Points", "State", "Severity",
+    ]).sort_values("Date", ascending=False, na_position="last") if violations_rows else \
+        pd.DataFrame(columns=["Driver Name", "Date", "Type", "Points",
+                              "State", "Severity"])
+    if "Date" in violations_df.columns and not violations_df.empty:
+        violations_df["Date"] = pd.to_datetime(
+            violations_df["Date"], errors="coerce")
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        drivers_df.to_excel(writer, sheet_name="Drivers", index=False)
+        violations_df.to_excel(writer, sheet_name="Violations", index=False)
+    return buf.getvalue()
+
+
+# ----------------------------------------------------------------------
+# CSV-drop fallback (existing behavior, untouched)
+# ----------------------------------------------------------------------
+def _build_from_csv(token: str, user_upn: str, folder: str) -> bytes:
+    risk_file = os.environ.get("SAMBASAFETY_RISK_INDEX_FILE",
+                               "risk_index_report.csv")
+    viol_file = os.environ.get("SAMBASAFETY_VIOLATIONS_FILE",
+                               "violationsReport.csv")
+    risk_path = f"{folder}/{risk_file}"
+    viol_path = f"{folder}/{viol_file}"
+    log.info("Downloading %s ...", risk_path)
+    risk_bytes = download_file(token, user_upn, risk_path)
+    log.info("  -> %d bytes", len(risk_bytes))
+    log.info("Downloading %s ...", viol_path)
+    viol_bytes = download_file(token, user_upn, viol_path)
+    log.info("  -> %d bytes", len(viol_bytes))
+    return combine_to_workbook(risk_bytes, viol_bytes)
+
+
+# ----------------------------------------------------------------------
+# Entry point
+# ----------------------------------------------------------------------
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -54,40 +311,47 @@ def main() -> int:
     user_upn = get_required("ONEDRIVE_USER_UPN")
 
     folder = os.environ.get("SAMBASAFETY_FOLDER", "SambaSafety").strip("/")
-    risk_file = os.environ.get("SAMBASAFETY_RISK_INDEX_FILE", "risk_index_report.csv")
-    viol_file = os.environ.get("SAMBASAFETY_VIOLATIONS_FILE", "violationsReport.csv")
-    out_file = os.environ.get("SAMBASAFETY_OUT_FILE", "SambaSafety_Master.xlsx")
-    output_dir = Path(os.environ.get("SAMBASAFETY_OUTPUT_DIR", "output/sambasafety"))
+    out_file = os.environ.get("SAMBASAFETY_OUT_FILE",
+                              "SambaSafety_Master.xlsx")
+    output_dir = Path(os.environ.get(
+        "SAMBASAFETY_OUTPUT_DIR", "output/sambasafety"))
 
-    risk_path = f"{folder}/{risk_file}"
-    viol_path = f"{folder}/{viol_file}"
+    api_token = os.environ.get("SAMBASAFETY_API_TOKEN", "").strip()
+    api_base = (os.environ.get("SAMBASAFETY_API_BASE_URL", "").strip()
+                or "https://api.sambasafety.io")
+    group_filter = os.environ.get("SAMBASAFETY_GROUP_NAME", "").strip() or None
 
     log.info("=" * 55)
-    log.info("SambaSafety refresh - reading from OneDrive/%s/", folder)
+    log.info("SambaSafety refresh")
+    if api_token:
+        log.info("  mode      : API (%s)", api_base)
+        if group_filter:
+            log.info("  group     : %s", group_filter)
+        log.info("  out file  : OneDrive/%s/%s", folder, out_file)
+    else:
+        log.info("  mode      : CSV drop (no SAMBASAFETY_API_TOKEN set)")
+        log.info("  source    : OneDrive/%s/", folder)
     log.info("=" * 55)
 
-    token = get_token(tenant_id, client_id, client_secret)
+    od_token = get_token(tenant_id, client_id, client_secret)
 
-    log.info("Downloading %s ...", risk_path)
-    risk_bytes = download_file(token, user_upn, risk_path)
-    log.info("  -> %d bytes", len(risk_bytes))
-
-    log.info("Downloading %s ...", viol_path)
-    viol_bytes = download_file(token, user_upn, viol_path)
-    log.info("  -> %d bytes", len(viol_bytes))
-
-    log.info("Combining into %s ...", out_file)
-    xlsx_bytes = combine_to_workbook(risk_bytes, viol_bytes)
+    if api_token:
+        client = SambaSafetyClient(api_token, base_url=api_base)
+        xlsx_bytes = assemble_workbook_from_api(
+            client, group_name_filter=group_filter)
+    else:
+        xlsx_bytes = _build_from_csv(od_token, user_upn, folder)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     local_path = output_dir / out_file
     local_path.write_bytes(xlsx_bytes)
-    log.info("Wrote local artifact %s (%d bytes)", local_path, len(xlsx_bytes))
+    log.info("Wrote local artifact %s (%d bytes)",
+             local_path, len(xlsx_bytes))
 
     log.info("Uploading -> OneDrive/%s/%s", folder, out_file)
-    ensure_folder(token, user_upn, folder)
+    ensure_folder(od_token, user_upn, folder)
     result = upload_file(
-        token=token, user_upn=user_upn,
+        token=od_token, user_upn=user_upn,
         folder_path=folder, filename=out_file, file_path=local_path,
     )
 

@@ -45,6 +45,19 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
+          # API mode (preferred, zero-cost) — set SAMBASAFETY_API_TOKEN to
+          # enable. When unset, the script falls back to the CSV-drop
+          # path that reads risk_index_report.csv + violationsReport.csv
+          # from OneDrive (existing behavior).
+          SAMBASAFETY_API_TOKEN: ${{ secrets.SAMBASAFETY_API_TOKEN }}
+          # Defaults to https://api.sambasafety.io. Override to
+          # https://api-demo.sambasafety.io to point at SambaSafety's
+          # demo environment.
+          SAMBASAFETY_API_BASE_URL: ${{ vars.SAMBASAFETY_API_BASE_URL }}
+          # Optional — when SambaSafety has multiple groups, set this to
+          # the X-Trux group name (substring match, case-insensitive) so
+          # only those drivers land in the scorecard.
+          SAMBASAFETY_GROUP_NAME: ${{ vars.SAMBASAFETY_GROUP_NAME }}
           SAMBASAFETY_OUTPUT_DIR: output/sambasafety
         run: python -m src.sambasafety_main
 

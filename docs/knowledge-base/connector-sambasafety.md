@@ -168,11 +168,54 @@ hands-on you want to be:
    attachment to `OneDrive/SambaSafety/`. Set up once, hands-free
    forever. The two CSV filenames stay consistent because the same
    SambaSafety report always emits the same filename.
-3. **SambaSafety API (future).** Long-term replacement. When wired,
-   `sambasafety_main.py` will be replaced with a `sambasafety_client.py`
-   that pulls directly — no CSV step, no OneDrive intermediate. The
-   downstream contract (`SambaSafety_Master.xlsx` with `Drivers` +
-   `Violations` sheets) stays the same so nothing else needs to change.
+3. **SambaSafety API (live).** Set `SAMBASAFETY_API_TOKEN` and the
+   refresh job switches automatically to API mode — no CSV step, no
+   OneDrive intermediate. See **"API mode"** below.
+
+## API mode (zero-cost replacement of the CSV bridge)
+
+When `SAMBASAFETY_API_TOKEN` is present in the workflow secrets,
+`sambasafety_main.py` uses `src.sambasafety_client.SambaSafetyClient`
+to assemble `SambaSafety_Master.xlsx` directly from REST endpoints.
+**Same workbook schema** (`Drivers` + `Violations` sheets) — downstream
+code is unchanged.
+
+### Why this is free
+
+SambaSafety's pricing is per **MVR order placed**, not per API call.
+The client only calls **read** endpoints in the License Monitoring
+family, plus reads from previously-placed MVRs (free to re-read):
+
+| Endpoint | Purpose | Cost |
+|---|---|---|
+| `GET /organization/v1/groups` | discover group IDs | $0 |
+| `GET /organization/v1/groups/{id}/people` | active driver roster | $0 |
+| `GET /organization/v1/people/{id}/licenses` | license # / state / CDL flag | $0 |
+| `GET /organization/v1/licenses/{id}/status` | VALID / SUSPENDED / EXPIRED | $0 |
+| `GET /reports/v1/people/{id}/motorvehiclereports` | list existing MVRs | $0 |
+| `GET /reports/v1/motorvehiclereports/{mvrId}` | read MVR content (expiration, violations, risk) | $0 |
+
+We never call any `POST /orders/...` endpoint, so we never trigger a
+fresh state pull and never pay a state fee. License expiration + risk
+score + violations all come from the **most recent existing MVR per
+driver**.
+
+### Configuration
+
+| Env / secret | Required | Default |
+|---|---|---|
+| `SAMBASAFETY_API_TOKEN` | yes (enables API mode) | — |
+| `SAMBASAFETY_API_BASE_URL` | no | `https://api.sambasafety.io` (prod). Use `https://api-demo.sambasafety.io` for the demo environment. |
+| `SAMBASAFETY_GROUP_NAME` | no | empty = all groups merged. Case-insensitive substring match. Set when you only want one group's drivers in the scorecard (e.g. `X-Trux`). |
+
+Auth header: `X-Api-Key: <jwt>`. The JWT is the bearer-style token from
+your SambaSafety envelope file — paste it as-is into the GitHub Secret.
+
+### Falling back
+
+If `SAMBASAFETY_API_TOKEN` is empty or missing, the script reverts to
+the CSV-drop path automatically — no errors, no special handling. So
+you can roll back to CSV by simply deleting the secret.
 
 ## When you most commonly edit something
 
