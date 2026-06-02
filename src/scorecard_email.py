@@ -45,11 +45,27 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
+from pathlib import Path
 from src.onedrive_upload import (
-    download_file, download_shared_file, get_file_modified, get_shared_modified, get_token,
+    download_file, download_shared_file, ensure_folder, get_file_modified,
+    get_shared_modified, get_token, upload_file,
 )
 
 log = logging.getLogger("scorecard_email")
+
+
+def _today_chicago_key() -> str:
+    """Today's date in America/Chicago time, as 'YYYY-MM-DD'. Used to key
+    the 'sent today' idempotency marker — the brief is a Chicago-morning
+    artifact, so the marker should roll at Chicago midnight, not UTC."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+_SENT_MARKER_FOLDER = "Scorecard"
 GRAPH = "https://graph.microsoft.com/v1.0"
 
 # Targets pulled from your Goals workbooks
@@ -4203,6 +4219,31 @@ def main() -> int:
     samba_path = os.environ.get("SCORECARD_SAMBASAFETY_PATH", "SambaSafety/SambaSafety_Master.xlsx")
 
     token = get_token(tenant, client, secret)
+
+    # Idempotency: if today's brief was already sent (marker file present in
+    # OneDrive), exit cleanly so backup cron runs don't email duplicates.
+    # Manual workflow_dispatch runs and the SCORECARD_SKIP_IDEMPOTENCY=1 env
+    # toggle both bypass the check so on-demand resends still work.
+    if (os.environ.get("GITHUB_EVENT_NAME", "").strip() != "workflow_dispatch"
+            and os.environ.get("SCORECARD_SKIP_IDEMPOTENCY", "").strip() != "1"):
+        today_key = _today_chicago_key()
+        marker_path = f"{_SENT_MARKER_FOLDER}/sent-{today_key}.txt"
+        try:
+            download_file(token, upn, marker_path)
+            log.info("=" * 55)
+            log.info("Today's brief was already sent (marker: %s)", marker_path)
+            log.info("Skipping. workflow_dispatch or SCORECARD_SKIP_IDEMPOTENCY=1 forces resend.")
+            log.info("=" * 55)
+            return 0
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else None
+            if code == 404:
+                log.info("No sent marker for %s — proceeding.", today_key)
+            else:
+                log.warning("Idempotency check HTTP %s; proceeding anyway.", code)
+        except Exception as e:
+            log.warning("Idempotency check failed (%s); proceeding anyway.", e)
+
     missing: list[str] = []
 
     alvys_sheets = data_asof = None
@@ -4278,6 +4319,27 @@ def main() -> int:
         prefix = ""
     subject = f"{prefix}XFreight Executive Brief — {datetime.now():%b %d, %Y}"
     send_email(token, from_upn, to_emails, subject, str(html))
+
+    # Write today's 'sent' marker so the staggered backup crons short-circuit.
+    # Failure to write the marker is non-fatal — at worst we re-send today.
+    try:
+        import tempfile
+        today_key = _today_chicago_key()
+        marker_name = f"sent-{today_key}.txt"
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+            tf.write(f"{today_key}\n{datetime.now().isoformat()}\n")
+            _marker_tmp = Path(tf.name)
+        try:
+            ensure_folder(token, upn, _SENT_MARKER_FOLDER)
+            upload_file(token=token, user_upn=upn,
+                        folder_path=_SENT_MARKER_FOLDER,
+                        filename=marker_name, file_path=_marker_tmp)
+            log.info("Marker written: %s/%s", _SENT_MARKER_FOLDER, marker_name)
+        finally:
+            _marker_tmp.unlink(missing_ok=True)
+    except Exception as e:
+        log.warning("Failed to write 'sent' marker (%s) — backup crons may resend.", e)
+
     # Archive the brief for the Karpathy-Wiki librarian to compile.
     try:
         from src.karpathy_writer import frontmatter, save

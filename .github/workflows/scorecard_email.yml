@@ -13,20 +13,21 @@ name: Daily KPI Scorecard Email
 on:
   workflow_dispatch:
   schedule:
-    # Two cron entries, 15 min apart, as redundancy against GitHub Actions
-    # schedule drops. GitHub's cron is documented as best-effort — runs at
-    # high-traffic minutes get silently dropped or delayed. If 5:30am CST
-    # (11:30 UTC) drops, the 5:45am CST (11:45 UTC) backup still produces
-    # the brief 15 minutes later. The script is idempotent (reads the
-    # latest OneDrive files each run) so on a normal day BOTH may fire and
-    # the team gets two identical briefs — a small annoyance well worth
-    # the silent-miss insurance.
+    # Defense in depth against GitHub Actions schedule drops — GitHub's cron
+    # is documented as best-effort, and during high load runs are silently
+    # dropped (e.g. 2026-06-02 lost both the 11:30 and 11:45 UTC triggers).
+    # We arm five staggered attempts; the scorecard script itself checks a
+    # "sent today" marker in OneDrive at startup and exits clean if today's
+    # brief already landed, so only the first cron that fires actually
+    # emails — the rest exit in seconds. Manual workflow_dispatch bypasses
+    # the marker check.
     #
-    # Both line up after the 5:00am Alvys/Samsara/QB refresh so all three
-    # feeds are fresh in OneDrive. GitHub cron is fixed UTC and ignores
-    # DST, so during Central Daylight Time these land at 6:30am / 6:45am.
+    # GitHub cron is fixed UTC and ignores DST. Times below show CST/CDT.
     - cron: '30 11 * * *'   # primary    5:30am CST / 6:30am CDT
-    - cron: '45 11 * * *'   # backup     5:45am CST / 6:45am CDT
+    - cron: '45 11 * * *'   # backup 1   5:45am CST / 6:45am CDT
+    - cron: '0 12 * * *'    # backup 2   6:00am CST / 7:00am CDT
+    - cron: '30 12 * * *'   # backup 3   6:30am CST / 7:30am CDT
+    - cron: '0 13 * * *'    # backup 4   7:00am CST / 8:00am CDT (last resort)
 
 permissions:
   contents: write
