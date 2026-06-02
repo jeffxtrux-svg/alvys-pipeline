@@ -196,6 +196,23 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
         if bits:
             parts.append("Driver compliance: " + " · ".join(bits) + " (pg 2).")
 
+        # Per Jeff: name every driver inside the 14-day window with their
+        # exact expiration date — short-fuse renewals are operationally
+        # critical and shouldn't get hidden inside the aggregate count.
+        critical = [d for d in lic_issues
+                    if isinstance(d.get("days_to_exp"), int)
+                    and 0 <= d["days_to_exp"] < 14]
+        for d in critical:
+            name = str(d.get("name", "")).strip() or "Driver"
+            exp = d.get("exp")
+            try:
+                date_str = exp.strftime("%b %d, %Y") if exp is not None else "(unknown date)"
+            except Exception:
+                date_str = "(unknown date)"
+            parts.append(
+                f"{name} license will expire on {date_str}, and that is "
+                f"{int(d['days_to_exp'])} days from expiration.")
+
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
                      "see entity table and detail pages for the read.")
