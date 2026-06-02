@@ -124,14 +124,14 @@ The daily brief (`src/scorecard_email.py`) is 10 pages scoped to **X-Trux + X-Li
 
 1. **Overview** — bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
 
-   *OPERATIONAL (pages 2–4):*
-2. Driver mileage by settlement week (`build_page4`).
-3. Fleet operations — MPG best/worst + speeders (`build_page_fleet`).
-4. Fleet idle — all trucks ranked by avg idle/wk over 5 settlement weeks, with per-week idle hours, idle %, idle-gallons est. (`idle_hours × 0.8 gph` fallback) and MPG (`build_page_idle`).
+   *SAFETY (pages 2–3):*
+2. Driver compliance — SambaSafety MVR + license status (`build_page9`, optional; absent if the SambaSafety file isn't in OneDrive). See `docs/knowledge-base/connector-sambasafety.md`.
+3. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works).
 
-   *SAFETY (pages 5–6):*
-5. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works).
-6. Driver compliance — SambaSafety (`build_page9`, optional; absent if the SambaSafety file isn't in OneDrive).
+   *OPERATIONAL (pages 4–6):*
+4. Driver mileage by settlement week (`build_page4`).
+5. Fleet operations — MPG best/worst + speeders (`build_page_fleet`).
+6. Fleet idle — all trucks ranked by avg idle/wk over 5 settlement weeks, with per-week idle hours, idle %, idle-gallons est. (`idle_hours × 0.8 gph` fallback) and MPG (`build_page_idle`).
 
    *ACCOUNTING (pages 7–10):*
 7. AR overdue (31+ days) from QuickBooks (`build_page3`).

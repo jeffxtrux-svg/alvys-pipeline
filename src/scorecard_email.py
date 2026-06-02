@@ -27,7 +27,7 @@ Optional:
     SCORECARD_ALVYS_PATH       default "Alvys Master 2026.xlsx"
     SCORECARD_QB_DIR           default "QuickBooks"
     SCORECARD_SAMSARA_PATH     default "Samsara/Samsara Master.xlsx"
-    SCORECARD_SAMBASAFETY_PATH default "SambaSafety/SambaSafety_Master.xlsx" (optional, page 9)
+    SCORECARD_SAMBASAFETY_PATH default "SambaSafety/SambaSafety_Master.xlsx" (optional, page 2)
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ RPM_GOAL_MIN_WINDOW_MILES = 5000    # …and this many miles, else widen the win
 RPM_GOAL_FALLBACK_WINDOWS = (30, 60, 90)   # widen to these (days) in order
 RPM_GOAL_PLAUSIBLE_BAND = (1.50, 5.00)     # cost/mi outside this is flagged
 
-# SambaSafety driver-compliance thresholds (page 9).
+# SambaSafety driver-compliance thresholds (page 2).
 LICENSE_EXPIRY_WARN_DAYS = 30     # flag licenses expiring within this many days
 SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk category column
 VIOLATION_WINDOW_DAYS = 365       # MVR violations are historical records, not real-time
@@ -2598,7 +2598,7 @@ def compute_drag_attribution(
         if hos24:
             bits.append(f"{hos24} HOS violation{'s' if hos24 != 1 else ''}")
         return {
-            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review page 5.",
+            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review page 3.",
             "metric": "safety", "kind": "bad",
         }
 
@@ -2643,7 +2643,8 @@ def compute_drag_attribution(
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
-                rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None) -> str:
+                rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
+                samba=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -2660,7 +2661,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     # AR Past Due tile shows both system-of-record (QuickBooks) and
     # operational (Alvys) totals so the reconciliation gap is visible at the
     # headline. Gap = Alvys − QB usually represents delivered loads not yet
-    # invoiced in QB (page 6 details).
+    # invoiced in QB (page 8 details).
     _qb_past_due = qb_ar.get("total_past_due") if qb_ar else None
     _alvys_past_due = (alvys_ar or {}).get("overdue") if alvys_ar else None
     _ar_gap = None
@@ -3004,7 +3005,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         from src import scorecard_insights as _insights
         _insights_bottom = _insights.bottom_line(
             alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
-            margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist)
+            margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist,
+            samba=samba)
         _prior_snapshot = None
         try:
             from src.scorecard_snapshots import read_prior_snapshot
@@ -3014,7 +3016,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _insights_actions = _insights.action_items(
             alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
             rpm_goal=rpm_goal, uninvoiced=uninvoiced,
-            prior_snapshot=_prior_snapshot)
+            prior_snapshot=_prior_snapshot, samba=samba)
         _insights_coaching = _insights.coaching_cards(samsara=samsara)
     except Exception as e:
         log.warning("scorecard_insights failed (%s: %s) — using legacy blurb",
@@ -3240,7 +3242,7 @@ def build_page2(samsara, date_str) -> str:
                          f"color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
     fleet_score = fleet.get("fleet_score")
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 5, date_str, section='SAFETY')}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
@@ -3265,8 +3267,8 @@ def build_page2(samsara, date_str) -> str:
 
 def build_page_fleet(samsara, date_str) -> str:
     """Page 3: Fleet Operations — MPG and speeding. Idle detail is its own
-    page (build_page_idle, pg 4); driver safety scores live on the Safety
-    page (build_page2)."""
+    page (build_page_idle, pg 6); driver safety scores live on the Safety
+    page (build_page2, pg 3)."""
     fleet = (samsara or {}).get("fleet", {}) or {}
     mpg_rows = fleet.get("mpg") or []
     speeders = fleet.get("speeders") or []
@@ -3281,7 +3283,7 @@ def build_page_fleet(samsara, date_str) -> str:
               _pill("MTD (Based on Samsara)", "mute"))
         + _tile("Fleet miles &middot; MTD", num(fleet_miles),
                 _pill("MTD (Based on Samsara)", "mute"))
-        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 4", "mute"))
+        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 6", "mute"))
         + _tile("Fleet avg safety score",
                 (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
                 _pill("0&ndash;100, higher better", "mute"))
@@ -3318,7 +3320,7 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 3, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 5, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
@@ -3329,8 +3331,8 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{spd_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
-            f"(speeding, 7 days). Idle detail is on the Fleet Idle page (pg 4); "
-            f"driver safety scores are on the Safety page (pg 5).</div>")
+            f"(speeding, 7 days). Idle detail is on the Fleet Idle page (pg 6); "
+            f"driver safety scores are on the Safety page (pg 3).</div>")
 
 
 def build_page_idle(samsara, date_str) -> str:
@@ -3425,7 +3427,7 @@ def build_page_idle(samsara, date_str) -> str:
     else:
         idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
 
-    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 4, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 6, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
@@ -3532,7 +3534,7 @@ def build_page4(mileage, date_str) -> str:
              f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
              f"{head}{body}</table></td></tr>")
 
-    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 2, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 4, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
@@ -3710,7 +3712,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 
 def build_page9(samba, date_str) -> str:
-    header = _header('Driver Compliance &mdash; SambaSafety', 6, date_str, section='SAFETY')
+    header = _header('Driver Compliance &mdash; SambaSafety', 2, date_str, section='SAFETY')
     footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
               f"Source: SambaSafety driver monitoring.</div>")
@@ -3813,7 +3815,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         from src import scorecard_insights as _insights
         _page_strips = _insights.page_strips(
             alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
-            uninvoiced=uninvoiced)
+            uninvoiced=uninvoiced, samba=samba)
     except Exception as e:
         log.warning("page_strips failed (%s: %s)", type(e).__name__, e)
 
@@ -3852,29 +3854,30 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
             # follows the entity-level summary. Safety and AR pages then come
             # behind it. Function names build_page<N> are kept for stability,
             # but the page-number arguments in _header reflect the actual
             # render order.
-            # Pages 2-10 grouped into three sections:
-            #   OPERATIONAL  (pages 2-4): driver mileage, fleet operations,
-            #                              fleet idle (its own page)
-            #   SAFETY       (pages 5-6): events/HOS/DVIR detail, SambaSafety
+            # Pages 2-10 grouped into three sections (SAFETY leads):
+            #   SAFETY       (pages 2-3): SambaSafety driver/MVR scan,
+            #                              Samsara events/HOS/DVIR detail
+            #   OPERATIONAL  (pages 4-6): driver mileage, fleet MPG/speeding,
+            #                              fleet idle
             #   ACCOUNTING   (pages 7-10): AR overdue; combined Alvys
             #                              un-invoiced + 90+ AR;
             #                              QB-vs-Alvys reconciliation; bill match
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
-            # -- OPERATIONAL --
-            f"{wrap(_strip(2) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(3) + build_page_fleet(samsara, date_str))}{pb}"
-            f"{wrap(_strip(4) + build_page_idle(samsara, date_str))}{pb}"
             # -- SAFETY --
-            f"{wrap(_strip(5) + build_page2(samsara, date_str))}{pb}"
-            f"{wrap(_strip(6) + build_page9(samba, date_str))}{pb}"
+            f"{wrap(_strip(2) + build_page9(samba, date_str))}{pb}"
+            f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
+            # -- OPERATIONAL --
+            f"{wrap(_strip(4) + build_page4(mileage, date_str))}{pb}"
+            f"{wrap(_strip(5) + build_page_fleet(samsara, date_str))}{pb}"
+            f"{wrap(_strip(6) + build_page_idle(samsara, date_str))}{pb}"
             # -- ACCOUNTING --
             f"{wrap(_strip(7) + build_page3(qb_ar, date_str))}{pb}"
             f"{wrap(_strip(8) + build_page5(uninvoiced, alvys_ar, date_str))}{pb}"
