@@ -206,10 +206,15 @@ driver**.
 |---|---|---|
 | `SAMBASAFETY_API_TOKEN` | yes (enables API mode) | — |
 | `SAMBASAFETY_API_BASE_URL` | no | `https://api.sambasafety.io` (prod). Use `https://api-demo.sambasafety.io` for the demo environment. |
+| `SAMBASAFETY_AUTH_SCHEME` | no | `bearer` (default — for JWT tokens like `eyJ…`, sent as `Authorization: Bearer <token>`). Set to `apikey` if SambaSafety gave you a non-JWT key, which goes in `X-Api-Key`. |
 | `SAMBASAFETY_GROUP_NAME` | no | empty = all groups merged. Case-insensitive substring match. Set when you only want one group's drivers in the scorecard (e.g. `X-Trux`). |
 
-Auth header: `X-Api-Key: <jwt>`. The JWT is the bearer-style token from
-your SambaSafety envelope file — paste it as-is into the GitHub Secret.
+**Auth note:** The JWT in the envelope file (anything starting with
+`eyJhbGciOiJIUzI1NiJ9.…`) is a bearer token, not an API key. Send it
+as `Authorization: Bearer <jwt>` — that's the default. SambaSafety's
+Postman collection defaults to `X-Api-Key` because they also issue
+non-JWT keys to some customers, but for JWT tokens that header will
+return HTTP 403.
 
 ### Falling back
 

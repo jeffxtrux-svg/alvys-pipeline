@@ -319,12 +319,18 @@ def main() -> int:
     api_token = os.environ.get("SAMBASAFETY_API_TOKEN", "").strip()
     api_base = (os.environ.get("SAMBASAFETY_API_BASE_URL", "").strip()
                 or "https://api.sambasafety.io")
+    # JWT tokens (eyJ...) are sent as Authorization: Bearer; hex/opaque keys
+    # are sent as X-Api-Key. Default to Bearer because the token in the
+    # envelope file is a JWT.
+    auth_scheme = (os.environ.get("SAMBASAFETY_AUTH_SCHEME", "").strip()
+                   or "bearer").lower()
     group_filter = os.environ.get("SAMBASAFETY_GROUP_NAME", "").strip() or None
 
     log.info("=" * 55)
     log.info("SambaSafety refresh")
     if api_token:
         log.info("  mode      : API (%s)", api_base)
+        log.info("  auth      : %s", auth_scheme)
         if group_filter:
             log.info("  group     : %s", group_filter)
         log.info("  out file  : OneDrive/%s/%s", folder, out_file)
@@ -336,9 +342,26 @@ def main() -> int:
     od_token = get_token(tenant_id, client_id, client_secret)
 
     if api_token:
-        client = SambaSafetyClient(api_token, base_url=api_base)
-        xlsx_bytes = assemble_workbook_from_api(
-            client, group_name_filter=group_filter)
+        client = SambaSafetyClient(
+            api_token, base_url=api_base, auth_scheme=auth_scheme)
+        try:
+            xlsx_bytes = assemble_workbook_from_api(
+                client, group_name_filter=group_filter)
+        except SambaSafetyError as e:
+            err = str(e)
+            if "HTTP 401" in err or "HTTP 403" in err:
+                log.error(
+                    "Auth rejected by SambaSafety (%s). Check that:\n"
+                    "  1. SAMBASAFETY_API_TOKEN matches the env in "
+                    "SAMBASAFETY_API_BASE_URL (demo token vs prod URL is "
+                    "a frequent cause).\n"
+                    "  2. SAMBASAFETY_AUTH_SCHEME — JWT-looking tokens "
+                    "(eyJ...) need 'bearer' (default); hex/opaque keys "
+                    "need 'apikey'.\n"
+                    "  3. The token hasn't expired (SambaSafety bearer "
+                    "tokens live ~1 hour from /oauth2/v1/token; envelope "
+                    "tokens may be longer-lived).", err)
+            raise
     else:
         xlsx_bytes = _build_from_csv(od_token, user_upn, folder)
 

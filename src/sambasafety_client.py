@@ -17,10 +17,20 @@ Endpoints used (all GET, all part of the standard subscription):
   GET /reports/v1/people/{personId}/motorvehiclereports
   GET /reports/v1/motorvehiclereports/{mvrId}
 
-Auth: header ``X-Api-Key: <jwt>``. The JWT lives in the
-``SAMBASAFETY_API_TOKEN`` GitHub Secret. We do NOT call /oauth2/v1/token
-because the API key itself already authenticates us; the OAuth flow is
-for the (less convenient) bearer-token alternative.
+Auth: SambaSafety supports two equivalent schemes (per their Postman
+collection). Pick at construction time:
+
+  * ``bearer`` (default) — ``Authorization: Bearer <jwt>``. Use this
+    when the token in your envelope looks like a JWT
+    (``eyJhbGciOiJIUzI1NiJ9.…``). SambaSafety also exposes a
+    ``POST /oauth2/v1/token`` endpoint that returns the same shape, but
+    if your envelope already contains a JWT you can send it directly.
+  * ``apikey`` — ``X-Api-Key: <key>``. Use this when SambaSafety gave
+    you a non-JWT key (typically a hex string).
+
+The ``SAMBASAFETY_AUTH_SCHEME`` env var picks between them at
+runtime; default is ``bearer``. We do NOT call /oauth2/v1/token because
+the JWT in the envelope is already the value the bearer header expects.
 
 Production base URL: ``https://api.sambasafety.io``
 Demo base URL:       ``https://api-demo.sambasafety.io``
@@ -60,16 +70,25 @@ class SambaSafetyClient:
     """
 
     def __init__(self, api_key: str, base_url: str | None = None,
-                 timeout: int = _REQUEST_TIMEOUT) -> None:
+                 timeout: int = _REQUEST_TIMEOUT,
+                 auth_scheme: str = "bearer") -> None:
         if not api_key:
             raise SambaSafetyError("api_key is required")
+        scheme = (auth_scheme or "bearer").strip().lower()
+        if scheme not in ("bearer", "apikey"):
+            raise SambaSafetyError(
+                f"auth_scheme must be 'bearer' or 'apikey', got {auth_scheme!r}")
         self.base_url = (base_url or _PROD_BASE).rstrip("/")
         self.timeout = timeout
+        self.auth_scheme = scheme
         self._headers = {
-            "X-Api-Key": api_key,
             "Accept": "application/json",
             "User-Agent": "alvys-pipeline/sambasafety-client",
         }
+        if scheme == "bearer":
+            self._headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            self._headers["X-Api-Key"] = api_key
 
     # ------------------------------------------------------------------
     # Low-level helpers

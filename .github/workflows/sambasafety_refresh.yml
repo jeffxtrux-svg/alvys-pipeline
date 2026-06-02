@@ -54,6 +54,10 @@ jobs:
           # https://api-demo.sambasafety.io to point at SambaSafety's
           # demo environment.
           SAMBASAFETY_API_BASE_URL: ${{ vars.SAMBASAFETY_API_BASE_URL }}
+          # Default 'bearer' (JWT-style token, Authorization: Bearer).
+          # Set to 'apikey' if SambaSafety gave you a non-JWT key sent
+          # via X-Api-Key header.
+          SAMBASAFETY_AUTH_SCHEME: ${{ vars.SAMBASAFETY_AUTH_SCHEME }}
           # Optional — when SambaSafety has multiple groups, set this to
           # the X-Trux group name (substring match, case-insensitive) so
           # only those drivers land in the scorecard.

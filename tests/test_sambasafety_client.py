@@ -67,11 +67,27 @@ def test_client_requires_api_key():
         pass
 
 
-def test_client_defaults_to_prod_base_url():
-    c = SambaSafetyClient("fake-token")
+def test_client_defaults_to_prod_base_url_and_bearer_auth():
+    c = SambaSafetyClient("fake-jwt")
     assert c.base_url == "https://api.sambasafety.io"
-    assert c._headers["X-Api-Key"] == "fake-token"
-    assert c._headers["Accept"] == "application/json"
+    assert c.auth_scheme == "bearer"
+    # JWT tokens go in Authorization: Bearer, not X-Api-Key.
+    assert c._headers["Authorization"] == "Bearer fake-jwt"
+    assert "X-Api-Key" not in c._headers
+
+
+def test_client_apikey_scheme_uses_x_api_key_header():
+    c = SambaSafetyClient("plain-key", auth_scheme="apikey")
+    assert c._headers["X-Api-Key"] == "plain-key"
+    assert "Authorization" not in c._headers
+
+
+def test_client_rejects_unknown_auth_scheme():
+    try:
+        SambaSafetyClient("fake", auth_scheme="oauth1")
+        raise AssertionError("expected SambaSafetyError for bad scheme")
+    except SambaSafetyError:
+        pass
 
 
 def test_client_accepts_custom_base_url_and_strips_trailing_slash():
