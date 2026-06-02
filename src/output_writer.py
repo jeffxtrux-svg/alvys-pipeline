@@ -163,16 +163,18 @@ def write_master_xlsx(
     fuel_df: pd.DataFrame,
     output_path: Path,
     drivers_df: pd.DataFrame | None = None,
+    trucks_df: pd.DataFrame | None = None,
+    trailers_df: pd.DataFrame | None = None,
 ) -> None:
     """Write Loads/Trips/Fuel sheets matching the manual Alvys_Master.xlsx
     exactly: sheet order (Fuel, Loads, Trips), per-column date formats, and
     integer coercion for the business-number columns.
 
-    `drivers_df` is optional — when provided, a fourth ``Drivers`` sheet
-    is appended with CDL + medical-card expiration data for the
-    scorecard's driver-compliance page. Schema is small (~30 rows × 10
-    cols) so it does not affect the existing tabs or their Power BI
-    queries."""
+    Optional extra sheets (do not affect Power BI queries):
+      Drivers  — CDL + medical-card expiration for driver-compliance page.
+      Trucks   — tractor inspection/registration due dates.
+      Trailers — trailer inspection/registration due dates.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     log.info("Writing %s", output_path)
@@ -192,10 +194,18 @@ def write_master_xlsx(
         trips_df.to_excel(writer, sheet_name="Trips", index=False)
         if drivers_df is not None and not drivers_df.empty:
             drivers_df.to_excel(writer, sheet_name="Drivers", index=False)
+        if trucks_df is not None and not trucks_df.empty:
+            trucks_df.to_excel(writer, sheet_name="Trucks", index=False)
+        if trailers_df is not None and not trailers_df.empty:
+            trailers_df.to_excel(writer, sheet_name="Trailers", index=False)
 
-    log.info("  Fuel : %d rows × %d cols", len(fuel_df),  len(fuel_df.columns))
-    log.info("  Loads: %d rows × %d cols", len(loads_df), len(loads_df.columns))
-    log.info("  Trips: %d rows × %d cols", len(trips_df), len(trips_df.columns))
+    log.info("  Fuel    : %d rows × %d cols", len(fuel_df),  len(fuel_df.columns))
+    log.info("  Loads   : %d rows × %d cols", len(loads_df), len(loads_df.columns))
+    log.info("  Trips   : %d rows × %d cols", len(trips_df), len(trips_df.columns))
     if drivers_df is not None and not drivers_df.empty:
-        log.info("  Drivers: %d rows × %d cols", len(drivers_df), len(drivers_df.columns))
+        log.info("  Drivers : %d rows × %d cols", len(drivers_df), len(drivers_df.columns))
+    if trucks_df is not None and not trucks_df.empty:
+        log.info("  Trucks  : %d rows × %d cols", len(trucks_df), len(trucks_df.columns))
+    if trailers_df is not None and not trailers_df.empty:
+        log.info("  Trailers: %d rows × %d cols", len(trailers_df), len(trailers_df.columns))
     log.info("Done.")

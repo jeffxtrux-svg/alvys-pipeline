@@ -42,6 +42,12 @@ truck_fuel_cards:     dict[str, dict] = {}   # TruckId → {CardNumber, DeductFr
 # driver-compliance page). Populated by build_lookups().
 raw_drivers: list[dict] = []
 
+# Raw truck + trailer records — kept so the pipeline can write Equipment
+# sheets to Alvys_Master.xlsx (inspection due dates for the scorecard's
+# equipment-compliance page). Populated by build_lookups().
+raw_trucks:   list[dict] = []
+raw_trailers: list[dict] = []
+
 # NEW: Customer + invoice lookups (Round 4)
 customers_by_id:           dict[str, dict] = {}   # CustomerId → full customer record
 customer_invoice_by_load:  dict[str, dict] = {}   # LoadNumber → customer invoice record
@@ -151,7 +157,8 @@ def build_lookups(client) -> None:
         ("trailers", client.fetch_trailers, trailers, "Id", _number_from_trailer),
         ("users",    client.fetch_users,    users,    "Id", _name_from_user),
     ]
-    raw_trucks: list[dict] = []
+    global raw_drivers, raw_trucks, raw_trailers
+    _local_raw_trucks: list[dict] = []
     for label, fetch_fn, target, key_field, name_fn in core:
         try:
             records = fetch_fn()
@@ -168,12 +175,15 @@ def build_lookups(client) -> None:
                 if rid:
                     target[rid] = name_fn(r)
 
-            # Save trucks for fuel-card extraction
+            # Save trucks for fuel-card extraction and the Equipment sheet.
             if label == "trucks":
-                raw_trucks = records
+                _local_raw_trucks = list(records or [])
+                raw_trucks = _local_raw_trucks
+            # Save trailers for the Equipment sheet.
+            if label == "trailers":
+                raw_trailers = list(records or [])
             # Save drivers for the Drivers sheet (CDL + medical-card tracking)
             if label == "drivers":
-                global raw_drivers
                 raw_drivers = list(records or [])
 
             sample_pairs = list(target.items())[:3]
@@ -184,8 +194,8 @@ def build_lookups(client) -> None:
             log.warning("  %-9s: FAILED (%s) — those columns will stay blank", label, e)
 
     # ---- Truck fuel cards (extracted from trucks, no extra API call) ----
-    log.info("Building truck_fuel_cards lookup from %d trucks", len(raw_trucks))
-    for truck in raw_trucks:
+    log.info("Building truck_fuel_cards lookup from %d trucks", len(_local_raw_trucks))
+    for truck in _local_raw_trucks:
         if not isinstance(truck, dict):
             continue
         truck_id = _try_keys(truck, ["Id"])

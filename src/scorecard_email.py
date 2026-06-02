@@ -2372,12 +2372,238 @@ def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | Non
     }
 
 
+_EQUIP_WARN_DAYS     = 60   # orange flag when due within 60 days
+_EQUIP_CRITICAL_DAYS = 30   # red flag when due within 30 days
+
+
+def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | None:
+    """Read Trucks and Trailers sheets from Alvys Pipeline.xlsx.
+
+    Returns a dict with:
+      tractors   [{unit, vin, annual_due, annual_days, reg_due, reg_days, status}]
+      trailers   [same shape]
+      tractors_overdue_annual   / _warn60   / _warn30   counts
+      trailers_overdue_annual   / _warn60   / _warn30
+      tractors_overdue_reg      / _warn60_reg / _warn30_reg
+      trailers_overdue_reg      / _warn60_reg / _warn30_reg
+      field_names_found          dict of which candidate fields matched
+    """
+    if not sheets:
+        return None
+    trucks_df   = sheets.get("Trucks")
+    trailers_df = sheets.get("Trailers")
+    if (trucks_df is None or trucks_df.empty) and (trailers_df is None or trailers_df.empty):
+        return None
+    now = now or pd.Timestamp.now()
+
+    def _days_until(val):
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None, None
+        ts = pd.to_datetime(val, errors="coerce")
+        if pd.isna(ts):
+            return None, None
+        if getattr(ts, "tz", None) is not None:
+            ts = ts.tz_localize(None)
+        return ts, int((ts.normalize() - now.normalize()).days)
+
+    def _parse_sheet(df):
+        if df is None or df.empty:
+            return []
+        rows = []
+        annual_col = next((c for c in df.columns if "AnnualInspection" in c or c == "AnnualInspectionDue"), None)
+        reg_col    = next((c for c in df.columns if "Registration" in c or "Expir" in c and c != annual_col), None)
+        unit_col   = next((c for c in ["Unit", "TruckNumber", "TrailerNumber", "Name", "UnitNumber"] if c in df.columns), None)
+        for _, r in df.iterrows():
+            unit = str(r[unit_col]).strip() if unit_col and pd.notna(r.get(unit_col)) else "—"
+            if not unit or unit.lower() in {"nan", "none"}:
+                unit = "—"
+            vin  = str(r.get("VIN", "")).strip() if pd.notna(r.get("VIN", None)) else ""
+            make = str(r.get("Make", "")).strip() if pd.notna(r.get("Make", None)) else ""
+            model= str(r.get("Model", "")).strip() if pd.notna(r.get("Model", None)) else ""
+            year = str(r.get("Year", "")).strip() if pd.notna(r.get("Year", None)) else ""
+            status = str(r.get("Status", "")).strip()
+            annual_ts, annual_days = _days_until(r.get(annual_col) if annual_col else None)
+            reg_ts,    reg_days    = _days_until(r.get(reg_col) if reg_col else None)
+            rows.append({
+                "unit":        unit,
+                "vin":         vin,
+                "make":        make,
+                "model":       model,
+                "year":        year,
+                "status":      status,
+                "annual_due":  annual_ts,
+                "annual_days": annual_days,
+                "reg_due":     reg_ts,
+                "reg_days":    reg_days,
+            })
+        rows.sort(key=lambda r: (
+            r["annual_days"] if isinstance(r["annual_days"], int) else 9999,
+        ))
+        return rows
+
+    tractors = _parse_sheet(trucks_df)
+    trailers = _parse_sheet(trailers_df)
+
+    def _counts(rows, key):
+        overdue = sum(1 for r in rows if isinstance(r.get(key), int) and r[key] < 0)
+        w30     = sum(1 for r in rows if isinstance(r.get(key), int) and 0 <= r[key] <= 30)
+        w60     = sum(1 for r in rows if isinstance(r.get(key), int) and 0 <= r[key] <= 60)
+        return overdue, w30, w60
+
+    t_od_a, t_w30_a, t_w60_a = _counts(tractors, "annual_days")
+    r_od_a, r_w30_a, r_w60_a = _counts(trailers, "annual_days")
+    t_od_r, t_w30_r, t_w60_r = _counts(tractors, "reg_days")
+    r_od_r, r_w30_r, r_w60_r = _counts(trailers, "reg_days")
+
+    annual_found = any(isinstance(r.get("annual_days"), int) for r in tractors + trailers)
+    reg_found    = any(isinstance(r.get("reg_days"),    int) for r in tractors + trailers)
+
+    return {
+        "tractors": tractors,
+        "trailers": trailers,
+        "tractors_overdue_annual": t_od_a, "tractors_warn30_annual": t_w30_a, "tractors_warn60_annual": t_w60_a,
+        "trailers_overdue_annual": r_od_a, "trailers_warn30_annual": r_w30_a, "trailers_warn60_annual": r_w60_a,
+        "tractors_overdue_reg":    t_od_r, "tractors_warn30_reg":    t_w30_r, "tractors_warn60_reg":    t_w60_r,
+        "trailers_overdue_reg":    r_od_r, "trailers_warn30_reg":    r_w30_r, "trailers_warn60_reg":    r_w60_r,
+        "annual_found": annual_found,
+        "reg_found":    reg_found,
+        "total_tractors": len(tractors),
+        "total_trailers": len(trailers),
+    }
+
+
+def build_page_equipment(equipment, date_str) -> str:
+    """Page 4 — Equipment Compliance (tractors + trailers inspection/registration)."""
+    header = _header("Equipment Compliance &mdash; Tractor &amp; Trailer Inspections", 4, date_str, section="SAFETY")
+
+    if not equipment:
+        return (header
+                + _brief("Equipment compliance data not yet loaded — run the Alvys refresh "
+                         "to populate the Trucks and Trailers sheets in Alvys Pipeline.xlsx.", "mute"))
+
+    annual_found = equipment.get("annual_found", False)
+    reg_found    = equipment.get("reg_found",    False)
+
+    if not annual_found and not reg_found:
+        pending_note = (
+            "<div style='padding:16px 24px;color:#64748b;font-size:13px;'>"
+            "Inspection due-date fields not yet matched. Run the Alvys refresh and check "
+            "<code>output/_debug/sample_trucks.json</code> for the actual field names, "
+            "then update the candidate list in <code>_build_equipment_df()</code>.</div>"
+        )
+        return header + pending_note
+
+    def _badge(days):
+        if days is None:
+            return f"<span style='color:{MUTE};'>—</span>"
+        if days < 0:
+            return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
+                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE {abs(days)}d</span>")
+        if days <= _EQUIP_CRITICAL_DAYS:
+            return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
+                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
+        if days <= _EQUIP_WARN_DAYS:
+            return (f"<span style='background:{WARNBG};color:{WARN};font-size:11px;"
+                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
+        return f"<span style='color:{MUTE};font-size:12px;'>{days}d</span>"
+
+    def _date_str(ts):
+        if ts is None or (isinstance(ts, float) and pd.isna(ts)):
+            return "—"
+        try:
+            return pd.Timestamp(ts).strftime("%b %d, %Y")
+        except Exception:
+            return "—"
+
+    def _equipment_table(rows, kind):
+        if not rows:
+            return (f"<div style='padding:8px 0;color:{MUTE};font-size:13px;'>"
+                    f"No {kind} records found.</div>")
+
+        show_annual = any(isinstance(r.get("annual_days"), int) for r in rows)
+        show_reg    = any(isinstance(r.get("reg_days"),    int) for r in rows)
+
+        th = f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>{{t}}</th>"
+        head_cols = [th.format(t="Unit")]
+        if any(r.get("year") or r.get("make") for r in rows):
+            head_cols.append(th.format(t="Year/Make"))
+        if show_annual:
+            head_cols.append(th.format(t="Annual Insp Due"))
+            head_cols.append(th.format(t="Days"))
+        if show_reg:
+            head_cols.append(th.format(t="Reg Expires"))
+            head_cols.append(th.format(t="Days"))
+
+        tbody = ""
+        for i, r in enumerate(rows):
+            bg = "#f8fafc" if i % 2 == 0 else "#fff"
+            td = f"<td style='padding:6px 8px;font-size:13px;border-bottom:1px solid {LINE};vertical-align:middle;'>{{v}}</td>"
+            label = r["unit"] or "—"
+            if r.get("status") and r["status"].lower() not in {"active", ""}:
+                label += f" <span style='color:{MUTE};font-size:11px;'>({r['status']})</span>"
+            cols_td = [td.format(v=label)]
+            if any(r.get("year") or r.get("make") for r in rows):
+                ym = " ".join(filter(None, [r.get("year"), r.get("make"), r.get("model")])) or "—"
+                cols_td.append(td.format(v=f"<span style='color:{MUTE};font-size:12px;'>{ym}</span>"))
+            if show_annual:
+                cols_td.append(td.format(v=_date_str(r.get("annual_due"))))
+                cols_td.append(td.format(v=_badge(r.get("annual_days"))))
+            if show_reg:
+                cols_td.append(td.format(v=_date_str(r.get("reg_due"))))
+                cols_td.append(td.format(v=_badge(r.get("reg_days"))))
+            tbody += f"<tr style='background:{bg};'>{''.join(cols_td)}</tr>"
+
+        return (f"<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse;'>"
+                f"<thead><tr>{''.join(head_cols)}</tr></thead>"
+                f"<tbody>{tbody}</tbody></table>")
+
+    def _summary_pill(overdue, warn30, warn60, label):
+        parts = []
+        if overdue:
+            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} OVERDUE</span>")
+        if warn30:
+            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn30} within 30d</span>")
+        elif warn60:
+            parts.append(f"<span style='background:{WARNBG};color:{WARN};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
+        if not parts:
+            parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
+        return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
+
+    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
+        summary = (f"<div style='padding:10px 0 6px;'>"
+                   + _summary_pill(overdue_a, w30_a, w60_a, "Annual inspection:")
+                   + "&nbsp;&nbsp;"
+                   + _summary_pill(overdue_r, w30_r, w60_r, "Registration:")
+                   + "</div>")
+        return (f"{_section(kind + ' &mdash; ' + str(len(rows)) + ' units')}"
+                + summary
+                + _equipment_table(rows, kind))
+
+    body = (
+        _section_block(
+            equipment["tractors"], "Tractors",
+            equipment["tractors_overdue_annual"], equipment["tractors_warn30_annual"], equipment["tractors_warn60_annual"],
+            equipment["tractors_overdue_reg"],    equipment["tractors_warn30_reg"],    equipment["tractors_warn60_reg"],
+        )
+        + _section_block(
+            equipment["trailers"], "Trailers",
+            equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
+            equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
+        )
+        + f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+        f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets. "
+        f"Red = overdue or &le;30d. Orange = 31&ndash;60d. Sort: soonest annual inspection first.</div>"
+    )
+
+    return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
+
+
 # ----------------------------------------------------------------------
 # HTML design system
 # ----------------------------------------------------------------------
 NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
 GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 10
+PAGE_COUNT = 11
 ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
 BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
 FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
@@ -3956,7 +4182,7 @@ def _alvys_medical_block(alvys_drivers) -> str:
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
-               margin_projection=None, alvys_drivers=None) -> str:
+               margin_projection=None, alvys_drivers=None, equipment=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -4018,12 +4244,13 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # behind it. Function names build_page<N> are kept for stability,
             # but the page-number arguments in _header reflect the actual
             # render order.
-            # Pages 2-10 grouped into three sections (SAFETY leads):
-            #   SAFETY       (pages 2-3): SambaSafety driver/MVR scan,
-            #                              Samsara events/HOS/DVIR detail
-            #   OPERATIONAL  (pages 4-6): driver mileage, fleet MPG/speeding,
+            # Pages 2-11 grouped into three sections (SAFETY leads):
+            #   SAFETY       (pages 2-4): SambaSafety driver/MVR scan,
+            #                              Samsara events/HOS/DVIR detail,
+            #                              Equipment compliance (tractor/trailer inspections)
+            #   OPERATIONAL  (pages 5-7): driver mileage, fleet MPG/speeding,
             #                              fleet idle
-            #   ACCOUNTING   (pages 7-10): AR overdue; combined Alvys
+            #   ACCOUNTING   (pages 8-11): AR overdue; combined Alvys
             #                              un-invoiced + 90+ AR;
             #                              QB-vs-Alvys reconciliation; bill match
             # Function names (build_pageN) are kept stable; the integer page
@@ -4031,15 +4258,16 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # -- SAFETY --
             f"{wrap(_strip(2) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
             f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
+            f"{wrap(_strip(4) + build_page_equipment(equipment, date_str))}{pb}"
             # -- OPERATIONAL --
-            f"{wrap(_strip(4) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(5) + build_page_fleet(samsara, date_str))}{pb}"
-            f"{wrap(_strip(6) + build_page_idle(samsara, date_str))}{pb}"
+            f"{wrap(_strip(5) + build_page4(mileage, date_str))}{pb}"
+            f"{wrap(_strip(6) + build_page_fleet(samsara, date_str))}{pb}"
+            f"{wrap(_strip(7) + build_page_idle(samsara, date_str))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(7) + build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(_strip(8) + build_page5(uninvoiced, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(9) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(10) + build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(8) + build_page3(qb_ar, date_str))}{pb}"
+            f"{wrap(_strip(9) + build_page5(uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(10) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(11) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
@@ -4071,13 +4299,15 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     # Read from the same Alvys Pipeline.xlsx as everything else — the
     # `Drivers` sheet is added by src.main when the pipeline writes it.
     alvys_drivers = compute_alvys_drivers(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    equipment = compute_alvys_equipment(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
     html = build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
-                      margin_projection=margin_projection, alvys_drivers=alvys_drivers)
+                      margin_projection=margin_projection, alvys_drivers=alvys_drivers,
+                      equipment=equipment)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:

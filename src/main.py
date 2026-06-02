@@ -31,6 +31,64 @@ def get_required(key: str) -> str:
     return val
 
 
+def _build_equipment_df(records: list[dict], kind: str):
+    """Project raw truck or trailer records into a compact DataFrame for the
+    Equipment sheet. Tries a broad set of candidate field names for each
+    compliance deadline so the code is resilient to Alvys schema variations.
+    kind is 'Truck' or 'Trailer'."""
+    import pandas as pd
+    # Candidate lists — Alvys may use any of these names.
+    _NAME_KEYS  = ["TruckNumber", "TruckNum", "TrailerNumber", "TrailerNum",
+                   "UnitNumber", "Number", "Name"]
+    _ANNUAL_KEYS = ["AnnualInspectionDate", "AnnualInspectionDueDate",
+                    "AnnualDueDate", "NextAnnualDate", "InspectionDueDate",
+                    "DOTInspectionDueDate", "DOTInspectionDate",
+                    "AnnualInspection", "NextInspectionDate"]
+    _REG_KEYS    = ["RegistrationExpirationDate", "RegistrationExpDate",
+                    "RegistrationExpiration", "RegExpDate",
+                    "PlateExpirationDate", "PlateExpDate", "PlateExpiration"]
+    _VIN_KEYS    = ["VIN", "Vin", "VinNumber"]
+
+    def _pick(d, keys):
+        for k in keys:
+            v = d.get(k)
+            if v is not None:
+                return v
+        return None
+
+    cols = ["Id", "Unit", "VIN", "Make", "Model", "Year", "Status",
+            "AnnualInspectionDue", "RegistrationExpires", "Type"]
+    if not records:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        rows.append({
+            "Id":                  r.get("Id"),
+            "Unit":                _pick(r, _NAME_KEYS),
+            "VIN":                 _pick(r, _VIN_KEYS),
+            "Make":                r.get("Make"),
+            "Model":               r.get("Model"),
+            "Year":                r.get("Year"),
+            "Status":              r.get("Status"),
+            "AnnualInspectionDue": _pick(r, _ANNUAL_KEYS),
+            "RegistrationExpires": _pick(r, _REG_KEYS),
+            "Type":                kind,
+        })
+    df = pd.DataFrame(rows, columns=cols)
+    # Log which candidate fields were actually found so admins can tune the list.
+    found_annual = any(df["AnnualInspectionDue"].notna())
+    found_reg    = any(df["RegistrationExpires"].notna())
+    import logging
+    logging.getLogger("main").info(
+        "  %s equipment: %d records | AnnualInspectionDue=%s | RegistrationExpires=%s",
+        kind, len(df), "found" if found_annual else "NOT FOUND — check sample_%ss.json for field names",
+        "found" if found_reg else "NOT FOUND — check sample_%ss.json for field names"
+    )
+    return df
+
+
 def _build_drivers_df(raw_drivers: list[dict]):
     """Project the Alvys driver records into a compact DataFrame for the
     `Drivers` sheet. Schema chosen to match what the scorecard reader
@@ -231,17 +289,22 @@ def main() -> int:
     report_blank_columns(fuel_df, "Fuel")
 
     # --- Build Drivers sheet from cached driver records ---
-    # Compact projection: only the fields the scorecard's driver-compliance
-    # page needs (license + medical-card expiration). Keeps the workbook size
-    # essentially unchanged (~30 drivers vs 8k+ loads).
     drivers_df = _build_drivers_df(lookups.raw_drivers)
     log.info("Drivers: %d records → %d active",
              len(drivers_df), int((drivers_df["TerminatedAt"].isna()).sum())
                               if "TerminatedAt" in drivers_df.columns else len(drivers_df))
 
+    # --- Build Equipment sheets (Trucks + Trailers) ---
+    # Projects the reference records into compact compliance-focused DataFrames.
+    # Field candidates are tried in order; debug JSON shows the actual keys.
+    trucks_df   = _build_equipment_df(lookups.raw_trucks,   "Truck")
+    trailers_df = _build_equipment_df(lookups.raw_trailers, "Trailer")
+
     # --- Write ---
     output_path = output_dir / "Alvys_Master.xlsx"
-    write_master_xlsx(loads_df, trips_df, fuel_df, output_path, drivers_df=drivers_df)
+    write_master_xlsx(loads_df, trips_df, fuel_df, output_path,
+                      drivers_df=drivers_df,
+                      trucks_df=trucks_df, trailers_df=trailers_df)
 
     log.info("=" * 60)
     log.info("SUCCESS — output written to %s", output_path.resolve())
