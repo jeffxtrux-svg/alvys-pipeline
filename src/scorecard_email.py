@@ -2429,17 +2429,33 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
             status = str(r.get("Status", "")).strip()
             annual_ts, annual_days = _days_until(r.get(annual_col) if annual_col else None)
             reg_ts,    reg_days    = _days_until(r.get(reg_col) if reg_col else None)
+            # Trucks-only extras — silently absent on the Trailers sheet.
+            mileage = r.get("LastMileage") if "LastMileage" in df.columns else None
+            try:
+                mileage_int = int(float(mileage)) if mileage not in (None, "", float("nan")) and pd.notna(mileage) else None
+            except (TypeError, ValueError):
+                mileage_int = None
+            oil_dt, oil_days = _days_until(r.get("LastOilChangeDate") if "LastOilChangeDate" in df.columns else None)
+            oil_mi = r.get("LastOilChangeMileage") if "LastOilChangeMileage" in df.columns else None
+            try:
+                oil_mi_int = int(float(oil_mi)) if oil_mi not in (None, "", float("nan")) and pd.notna(oil_mi) else None
+            except (TypeError, ValueError):
+                oil_mi_int = None
             rows.append({
-                "unit":        unit,
-                "vin":         vin,
-                "make":        make,
-                "model":       model,
-                "year":        year,
-                "status":      status,
-                "annual_due":  annual_ts,
-                "annual_days": annual_days,
-                "reg_due":     reg_ts,
-                "reg_days":    reg_days,
+                "unit":             unit,
+                "vin":              vin,
+                "make":             make,
+                "model":            model,
+                "year":             year,
+                "status":           status,
+                "annual_due":       annual_ts,
+                "annual_days":      annual_days,
+                "reg_due":          reg_ts,
+                "reg_days":         reg_days,
+                "last_mileage":     mileage_int,
+                "oil_change_date":  oil_dt,
+                "oil_change_days":  oil_days,
+                "oil_change_miles": oil_mi_int,
             })
         rows.sort(key=lambda r: (
             r["annual_days"] if isinstance(r["annual_days"], int) else 9999,
@@ -2525,8 +2541,12 @@ def build_page_equipment(equipment, date_str) -> str:
             return (f"<div style='padding:8px 0;color:{MUTE};font-size:13px;'>"
                     f"No {kind} records found.</div>")
 
-        show_annual = any(isinstance(r.get("annual_days"), int) for r in rows)
-        show_reg    = any(isinstance(r.get("reg_days"),    int) for r in rows)
+        show_annual  = any(isinstance(r.get("annual_days"), int) for r in rows)
+        show_reg     = any(isinstance(r.get("reg_days"),    int) for r in rows)
+        show_mileage = any(isinstance(r.get("last_mileage"), int) for r in rows)
+        show_oil     = any(r.get("oil_change_date") is not None
+                           or isinstance(r.get("oil_change_miles"), int)
+                           for r in rows)
 
         th = f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>{{t}}</th>"
         head_cols = [th.format(t="Unit")]
@@ -2538,6 +2558,10 @@ def build_page_equipment(equipment, date_str) -> str:
         if show_reg:
             head_cols.append(th.format(t="Reg Expires"))
             head_cols.append(th.format(t="Days"))
+        if show_mileage:
+            head_cols.append(th.format(t="Last Mileage"))
+        if show_oil:
+            head_cols.append(th.format(t="Last Oil Change"))
 
         tbody = ""
         for i, r in enumerate(rows):
@@ -2556,6 +2580,18 @@ def build_page_equipment(equipment, date_str) -> str:
             if show_reg:
                 cols_td.append(td.format(v=_date_str(r.get("reg_due"))))
                 cols_td.append(td.format(v=_badge(r.get("reg_days"))))
+            if show_mileage:
+                mi = r.get("last_mileage")
+                cols_td.append(td.format(v=f"{mi:,}" if isinstance(mi, int) else "—"))
+            if show_oil:
+                dt    = r.get("oil_change_date")
+                miles = r.get("oil_change_miles")
+                parts = []
+                if dt is not None:
+                    parts.append(_date_str(dt))
+                if isinstance(miles, int):
+                    parts.append(f"<span style='color:{MUTE};font-size:11px;'>@ {miles:,} mi</span>")
+                cols_td.append(td.format(v=" ".join(parts) if parts else "—"))
             tbody += f"<tr style='background:{bg};'>{''.join(cols_td)}</tr>"
 
         return (f"<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse;'>"

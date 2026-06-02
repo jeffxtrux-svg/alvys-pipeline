@@ -48,6 +48,16 @@ def _build_equipment_df(records: list[dict], kind: str):
                     "RegistrationExpiration", "RegExpDate",
                     "PlateExpirationDate", "PlateExpDate", "PlateExpiration"]
     _VIN_KEYS    = ["VIN", "Vin", "VinNumber"]
+    # Trucks only — last known mileage / odometer reading.
+    _MILEAGE_KEYS = ["LastMileage", "LastKnownMileage", "Odometer",
+                     "OdometerReading", "OdometerMiles", "CurrentMileage",
+                     "Mileage", "LastReportedMileage", "LastReportedOdometer",
+                     "CurrentOdometer"]
+    # Trucks only — last oil change (date and/or mileage).
+    _OIL_DATE_KEYS    = ["LastOilChangeDate", "LastOilChange",
+                         "OilChangeDate", "LastServiceDate"]
+    _OIL_MILEAGE_KEYS = ["LastOilChangeMileage", "LastOilChangeOdometer",
+                         "OilChangeMileage", "LastServiceMileage"]
 
     def _pick(d, keys):
         for k in keys:
@@ -57,7 +67,9 @@ def _build_equipment_df(records: list[dict], kind: str):
         return None
 
     cols = ["Id", "Unit", "VIN", "Make", "Model", "Year", "Status",
-            "AnnualInspectionDue", "RegistrationExpires", "Type"]
+            "AnnualInspectionDue", "RegistrationExpires",
+            "LastMileage", "LastOilChangeDate", "LastOilChangeMileage",
+            "Type"]
     if not records:
         return pd.DataFrame(columns=cols)
     rows = []
@@ -65,16 +77,19 @@ def _build_equipment_df(records: list[dict], kind: str):
         if not isinstance(r, dict):
             continue
         rows.append({
-            "Id":                  r.get("Id"),
-            "Unit":                _pick(r, _NAME_KEYS),
-            "VIN":                 _pick(r, _VIN_KEYS),
-            "Make":                r.get("Make"),
-            "Model":               r.get("Model"),
-            "Year":                r.get("Year"),
-            "Status":              r.get("Status"),
-            "AnnualInspectionDue": _pick(r, _ANNUAL_KEYS),
-            "RegistrationExpires": _pick(r, _REG_KEYS),
-            "Type":                kind,
+            "Id":                   r.get("Id"),
+            "Unit":                 _pick(r, _NAME_KEYS),
+            "VIN":                  _pick(r, _VIN_KEYS),
+            "Make":                 r.get("Make"),
+            "Model":                r.get("Model"),
+            "Year":                 r.get("Year"),
+            "Status":               r.get("Status"),
+            "AnnualInspectionDue":  _pick(r, _ANNUAL_KEYS),
+            "RegistrationExpires":  _pick(r, _REG_KEYS),
+            "LastMileage":          _pick(r, _MILEAGE_KEYS) if kind == "Truck" else None,
+            "LastOilChangeDate":    _pick(r, _OIL_DATE_KEYS) if kind == "Truck" else None,
+            "LastOilChangeMileage": _pick(r, _OIL_MILEAGE_KEYS) if kind == "Truck" else None,
+            "Type":                 kind,
         })
     df = pd.DataFrame(rows, columns=cols)
     # Log which candidate fields were actually found so admins can tune the list.
@@ -88,6 +103,17 @@ def _build_equipment_df(records: list[dict], kind: str):
         "found" if found_annual else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
         "found" if found_reg else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
     )
+    if kind == "Truck":
+        found_mi      = any(df["LastMileage"].notna())
+        found_oil_dt  = any(df["LastOilChangeDate"].notna())
+        found_oil_mi  = any(df["LastOilChangeMileage"].notna())
+        log_main.info(
+            "  %s extras: LastMileage=%s | LastOilChangeDate=%s | LastOilChangeMileage=%s",
+            kind,
+            "found" if found_mi     else "NOT FOUND",
+            "found" if found_oil_dt else "NOT FOUND",
+            "found" if found_oil_mi else "NOT FOUND",
+        )
     # Always dump the top-level keys of the first record so we can tune
     # the candidate lists even when the JSON sample isn't accessible.
     if records and isinstance(records[0], dict):
