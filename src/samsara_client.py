@@ -147,11 +147,33 @@ class SamsaraClient:
         return items
 
     def fetch_fault_codes(self) -> list[dict]:
-        """Active OBD diagnostic fault codes (DTC / check-engine / warning lights)."""
+        """Active OBD diagnostic fault codes (DTC / check-engine / warning lights).
+
+        Samsara retired the `nativeObdDtcCodes` stat type from
+        /fleet/vehicles/stats in 2025.  The endpoint returns 400 for that type,
+        which is caught here and logged at INFO so the alerts job stays green
+        while DTC data is unavailable.
+        """
         log.info("Fetching active fault codes…")
-        items = self._safe_get(
-            "/fleet/vehicles/stats", {"types": "nativeObdDtcCodes"}
-        )
+        try:
+            items = self._get_pages(
+                "/fleet/vehicles/stats", {"types": "nativeObdDtcCodes"}
+            )
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else "?"
+            msg = ""
+            try:
+                msg = exc.response.json().get("message", "")
+            except Exception:
+                pass
+            if code == 400 and "nativeObdDtcCodes" in msg:
+                log.info(
+                    "DTC fault-code endpoint returned 400 (stat type retired by Samsara)"
+                    " — skipping DTC check."
+                )
+            else:
+                log.warning("GET /fleet/vehicles/stats → HTTP %s — skipping DTC check.", code)
+            items = []
         log.info("Total fault-code vehicle records: %d", len(items))
         return items
 

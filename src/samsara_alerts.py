@@ -202,8 +202,8 @@ def main() -> int:
     tenant_id = os.environ.get("AZURE_TENANT_ID")
     client_id = os.environ.get("AZURE_CLIENT_ID")
     client_secret = os.environ.get("AZURE_CLIENT_SECRET")
-    from_upn = os.environ.get("ALERT_FROM_UPN", "jeff@xfreight.net")
-    to_raw = os.environ.get("ALERT_TO_EMAILS", from_upn)
+    from_upn = os.environ.get("ALERT_FROM_UPN") or "jeff@xfreight.net"
+    to_raw = os.environ.get("ALERT_TO_EMAILS") or from_upn
     to_emails = [e.strip() for e in to_raw.split(",") if e.strip()]
 
     client = SamsaraClient(api_token)
