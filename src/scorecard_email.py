@@ -293,7 +293,17 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     empty = _col_any(sub, ["Empty Mileage", "Empty Dispatch Mileage", "Empty Miles"]).sum()
     total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage",
                                "Total Miles", "Total Mileage"])
-    total = total_col.sum() if total_col.notna().any() else (loaded + empty)
+    total_col_sum = total_col.sum() if total_col.notna().any() else None
+    # Derive total from Loaded + Empty (matches Power BI's "Dispatch Mileage"
+    # DAX measure). If the workbook's `Total Dispatch Mileage` aggregate
+    # column is present and disagrees, log a one-line diagnostic so we can
+    # tell whether scorecard or PBI is off — but trust loaded+empty as the
+    # canonical denominator since it's what the DAX measure computes.
+    total = loaded + empty
+    if total_col_sum is not None and abs(total_col_sum - total) > 1.0 and total > 0:
+        log.info("Alvys mileage diag: loaded=%.0f + empty=%.0f = %.0f, "
+                 "but Total-column sum=%.0f (ratio %.3f). Using loaded+empty.",
+                 loaded, empty, total, total_col_sum, total_col_sum / total)
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
