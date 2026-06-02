@@ -218,15 +218,22 @@ def test_alvys_uninvoiced_pure_delivered_not_invoiced():
 # Samsara: tz-aware safety timestamps don't crash compute_samsara
 # ---------------------------------------------------------------------------
 def test_compute_samsara_handles_tz_aware_timestamps():
+    # Use relative dates so the test doesn't rot when "today" crosses a
+    # month boundary. The regression we're guarding is that tz-aware
+    # event timestamps don't crash compute_samsara — anything that lets
+    # the function return a valid dict counts as a pass.
+    today = pd.Timestamp.now().normalize()
+    one_day_ago = (today - pd.Timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    five_days_ago = (today - pd.Timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     events = pd.DataFrame({
-        "time": ["2026-05-28T01:00:00Z", "2026-05-27T12:00:00Z"],
+        "time": [one_day_ago, five_days_ago],
         "Event Type": ["Harsh Brake", "Speeding"],
         "Severity": ["high", "med"],
         "Driver Name": ["A", "B"], "Unit": ["T1", "T2"],
         "Status": ["needsReview", "reviewed"],
     })
     defects = pd.DataFrame({
-        "Reported": ["2026-05-28 00:10:00", "2026-04-01 00:00:00"],
+        "Reported": [one_day_ago, five_days_ago],
         "Unit": ["T1", "T2"], "Driver": ["A", "B"],
         "Defect": ["tire", "light"], "Defect Type": ["Tire", "Light"],
         "Resolved": [False, True],
@@ -234,7 +241,10 @@ def test_compute_samsara_handles_tz_aware_timestamps():
     out = compute_samsara({"SafetyEvents": events, "DVIR_Defects": defects})
     # The mere fact this returns without raising is the regression we're guarding.
     assert out is not None and "windows" in out
-    assert out["windows"]["events"]["mtd"] >= 1
+    # At least one of the relative-dated events should land in the 7d window
+    # (one_day_ago always does); use 7d not mtd because mtd resets to 0 on
+    # the 1st of every month no matter the fixture.
+    assert out["windows"]["events"]["7d"] >= 1
 
 
 def test_to_naive_dt_drops_timezone():

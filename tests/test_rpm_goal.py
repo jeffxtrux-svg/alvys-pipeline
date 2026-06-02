@@ -22,7 +22,21 @@ from src.scorecard_email import (  # noqa: E402
 )
 
 # Recent date inside both the short trailing pay window and the fiscal-YTD window.
-_RECENT = (pd.Timestamp.now().normalize() - pd.Timedelta(days=3))
+def _recent_in_current_month() -> pd.Timestamp:
+    """A date that is (a) within the last 10 days (so the rpm-goal pay
+    window picks it up) AND (b) guaranteed to be in the current month
+    (so compute_rpm_goal_trend's strict month-bucket lands it in the
+    current-month slot). Subtracting a flat 3 days breaks on Jun 2-3 etc.
+    when the run straddles a month boundary."""
+    today = pd.Timestamp.now().normalize()
+    # If we're in days 1-3 of the month, use today; otherwise use today-3
+    # so we exercise the "near-today but not today" path. Either way,
+    # both compute_rpm_goal (10d pay window) and compute_rpm_goal_trend
+    # (current-month bucket) see the same loads.
+    return today if today.day <= 3 else today - pd.Timedelta(days=3)
+
+
+_RECENT = _recent_in_current_month()
 
 
 def _sheets():
