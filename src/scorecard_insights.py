@@ -84,7 +84,8 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 qb_ar: dict | None, ar_hist: tuple | None = None,
                 samba: dict | None = None,
                 alvys_entities: dict | None = None,
-                alvys_drivers: dict | None = None) -> str:
+                alvys_drivers: dict | None = None,
+                prior_snapshot: dict | None = None) -> str:
     """Generate the bottom-line paragraph. Joins 3-4 sentences picked
     from threshold-triggered templates."""
     parts: list[str] = []
@@ -166,26 +167,18 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"X-Trux and X-Linx together are showing a {verdict} "
                 f"of {_money(abs(combined))} {mtd_label}.")
 
-    # Idle cost — biggest unmonetized expense for most fleets.
-    if samsara and samsara.get("fleet"):
-        idle_h = samsara["fleet"].get("fleet_idle_hours")
-        if _isnum(idle_h) and idle_h > 1000:
-            weekly_fuel = (idle_h * IDLE_GPH * DIESEL_PRICE) / WEEKS_PER_MONTH
+    # AR 31-60 bucket week-over-week change.
+    prior = prior_snapshot or {}
+    if qb_ar:
+        totals = qb_ar.get("totals") or {}
+        v_31_60 = totals.get("31&ndash;60") or totals.get("31–60") or totals.get("31-60") or 0
+        prior_31_60 = prior.get("qb_ar_31_60")
+        if _isnum(v_31_60) and _isnum(prior_31_60):
+            delta = float(v_31_60) - float(prior_31_60)
+            direction = "up" if delta >= 0 else "down"
             parts.append(
-                f"Biggest lever is idle: {_num(idle_h)} hrs in the window "
-                f"(~{_money(weekly_fuel)}/wk of fuel at "
-                f"{IDLE_GPH} gph × ${DIESEL_PRICE}/gal).")
-
-    # AR trend — only mention if the trajectory is up.
-    if ar_hist and len(ar_hist) == 2:
-        labels, values = ar_hist
-        if values and len(values) >= 2:
-            first, last = values[0], values[-1]
-            if _isnum(first) and _isnum(last) and last > first * 1.15:
-                parts.append(
-                    f"AR climbed {_money(last - first)} over "
-                    f"{len(values)} months ({_money(first)} → {_money(last)}). "
-                    f"Watch the 31-60 bucket — that's the leading edge.")
+                f"AR in the 31 to 60 bucket has went {direction} by "
+                f"{_money(abs(delta))} week over week.")
 
     # SambaSafety — surface MVR high-risk count + per-driver license
     # expirations. Per Jeff: drop the aggregate "X licenses expiring
