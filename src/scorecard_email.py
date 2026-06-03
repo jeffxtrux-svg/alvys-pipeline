@@ -311,7 +311,8 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     return {
         "loads": len(sub),
         "revenue": revenue if revenue else None,
-        "miles": total if total else None,           # Power BI "Dispatch Mileage"
+        "loaded": loaded if loaded else None,        # Loaded Dispatch Mileage
+        "miles": total if total else None,           # Power BI "Dispatch Mileage" (loaded+empty)
         "empty": empty if empty else None,
         "deadhead": (empty / total) if total else None,
         "rpm": (revenue / total) if total else None,
@@ -385,6 +386,22 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             "miles": miles_mtd,
             "miles_per_truck": (miles_mtd / active) if (active and miles_mtd) else None,
         }
+        # Structured verification log — compare these against Power BI's June row
+        # (XFreight + X-Trux filter, current month). Key fields: Dispatch Mileage,
+        # Empty Mileage, Dead Head %, Rev per Mile. Log every run so CI output
+        # can be spot-checked when the email and PBI diverge.
+        _vm = out["asset"]["mtd"]
+        log.info("=" * 60)
+        log.info("SCORECARD METRIC VERIFICATION (X-Trux+XFreight MTD)")
+        log.info("  Loads           : %d", _vm.get("loads") or 0)
+        log.info("  Revenue         : $%.2f", _vm.get("revenue") or 0)
+        log.info("  Loaded miles    : %.0f  ← PBI 'Loaded Dispatch Mileage'", _vm.get("loaded") or 0)
+        log.info("  Empty miles     : %.0f  ← PBI 'Empty Mileage'", _vm.get("empty") or 0)
+        log.info("  Dispatch miles  : %.0f  ← PBI 'Dispatch Mileage' (loaded+empty)", _vm.get("miles") or 0)
+        log.info("  Dead Head %%     : %.3f%%  ← PBI 'Dead Head %%'",
+                 (_vm.get("deadhead") or 0) * 100)
+        log.info("  Rev / Mile      : $%.4f  ← PBI 'Rev per Mile'", _vm.get("rpm") or 0)
+        log.info("=" * 60)
     return out
 
 
@@ -3143,17 +3160,31 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _xt_loads, _xt_miles = _xt.get("loads"), fleet.get("miles")
     _xt_rpm = ((alvys or {}).get("asset") or {}).get("mtd", {}).get("rpm")
     _xt_rpl = (_xt_rev / _xt_loads) if (_isnum(_xt_rev) and _isnum(_xt_loads) and _xt_loads) else None
+    _xt_asset = ((alvys or {}).get("asset") or {}).get("mtd", {})
+    _xt_empty = _xt_asset.get("empty")
+    _xt_loaded = _xt_asset.get("loaded")
+    # Subtitle shows raw inputs so the math can be verified against Power BI row-for-row.
+    _mi_sub = (f"{num(_xt_loaded)} loaded + {num(_xt_empty)} empty"
+               if _isnum(_xt_loaded) and _isnum(_xt_empty)
+               else _pill("X-Trux + XFreight", "mute"))
+    _rpm_sub_tile = (f"{money(_xt_rev)} &divide; {num(_xt_miles)} mi"
+                     if _isnum(_xt_rev) and _isnum(_xt_miles)
+                     else _pill("X-Trux", "mute"))
     # Tile order pairs mileage with rev/mile (slots 1 & 2) and loads with
     # rev/load (slots 3 & 4) so each $/X ratio sits next to its denominator.
-    xtrux_r1 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _pill("X-Trux + XFreight", "mute"))
-                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _pill("X-Trux", "mute"))
+    xtrux_r1 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _mi_sub)
+                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _rpm_sub_tile)
                 + _tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
-    _xt_asset = ((alvys or {}).get("asset") or {}).get("mtd", {})
     # Empty miles first (the raw number), Dead head % next (the ratio).
-    xtrux_r2 = (_tile("Empty miles &middot; MTD", num(_xt_asset.get("empty")), _pill("X-Trux + XFreight", "mute"))
-                + _tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
-                        f"goal &le;{pct(TARGET_DEADHEAD)} " + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+    _dh_sub = (f"{num(_xt_empty)} &divide; {num(_xt_miles)} mi &nbsp;"
+               + f"goal &le;{pct(TARGET_DEADHEAD)} "
+               + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True))
+               if _isnum(_xt_empty) and _isnum(_xt_miles)
+               else f"goal &le;{pct(TARGET_DEADHEAD)} "
+                    + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+    xtrux_r2 = (_tile("Empty miles &middot; MTD", num(_xt_empty), _pill("X-Trux + XFreight", "mute"))
+                + _tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")), _dh_sub)
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
                 + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
     margin_tile = _tile("XFreight Margin &middot; MTD", money(_co_margin or None), _pill("revenue &minus; cost", "mute"))
