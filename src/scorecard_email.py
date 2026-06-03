@@ -2323,6 +2323,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 # behind the wheel (the chart Samsara itself shows). Try ms
                 # first, fall back to seconds.
                 drive_ms_col = _find_col(df, [
+                    "totaltimedriven",          # totalTimeDrivenMs (Samsara v2)
+                    "totaldrivingms",           # totalDrivingMs
+                    "totaldriving",             # totalDrivingSeconds / Ms
+                    "activedriving",            # activeDrivingMs
                     "totaltimems", "totaltimemilliseconds",
                     "totaldrivetimems", "totaldrivetimemilliseconds",
                     "drivingtimems", "drivetimems",
@@ -2399,6 +2403,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         "timeoverspeedlimit", "overspeedlimitms",
                     ])
                     _dr_ms = _find_col(sheet_df, [
+                        "totaltimedriven",          # totalTimeDrivenMs (Samsara v2)
+                        "totaldrivingms",           # totalDrivingMs
+                        "totaldriving",             # totalDrivingSeconds / Ms
+                        "activedriving",            # activeDrivingMs
                         "totaltimems", "totaltimemilliseconds",
                         "totaldrivetimems", "totaldrivetimemilliseconds",
                         "drivingtimems", "drivetimems",
