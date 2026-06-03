@@ -328,6 +328,16 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if loads is None or loads.empty:
         log.warning("Alvys Loads sheet missing/empty")
         return None
+    # Power BI excludes Cancelled loads from all metrics. Diagnostic (2026-06-02)
+    # confirmed 15 Cancelled loads added +206 loaded / -85 empty miles vs PBI;
+    # excluding them brings all mileage/DH%/RPM metrics into exact alignment.
+    _status_col_name = _find_col(loads, ["load status", "status"])
+    if _status_col_name:
+        _n_before = len(loads)
+        loads = loads[loads[_status_col_name].astype(str).str.strip().str.lower() != "cancelled"]
+        _n_excl = _n_before - len(loads)
+        if _n_excl:
+            log.info("Excluded %d Cancelled loads to match Power BI view", _n_excl)
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     _date_col_used = next(
         (c for c in ALVYS_DATE_CANDIDATES
@@ -335,10 +345,6 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         None
     )
     log.info("DIAG: Loads date column selected = %r", _date_col_used)
-    # Note: do NOT exclude cancelled loads here. Power BI includes them so
-    # that credit/TONU adjustment rows (cancelled with negative revenue or
-    # mileage corrections) get netted into the totals — excluding them
-    # produced ~$720 / ~120-mile gaps vs PBI on the MTD slice.
     w = _windows()
     # Bound each window to [start, now] — open-ended `dates >= start` was
     # silently including loads with future-dated Scheduled Pickup, which
