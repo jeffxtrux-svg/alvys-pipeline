@@ -329,6 +329,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         log.warning("Alvys Loads sheet missing/empty")
         return None
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    _date_col_used = next(
+        (c for c in ALVYS_DATE_CANDIDATES
+         if c in loads.columns and _to_naive_dt(loads[c]).notna().sum() > 0),
+        None
+    )
+    log.info("DIAG: Loads date column selected = %r", _date_col_used)
     # Note: do NOT exclude cancelled loads here. Power BI includes them so
     # that credit/TONU adjustment rows (cancelled with negative revenue or
     # mileage corrections) get netted into the totals — excluding them
@@ -402,6 +408,31 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                  (_vm.get("deadhead") or 0) * 100)
         log.info("  Rev / Mile      : $%.4f  ← PBI 'Rev per Mile'", _vm.get("rpm") or 0)
         log.info("=" * 60)
+        # Diagnostic: identify which loads are included vs Power BI's 23
+        _status_col = _find_col(a_mtd, ["load status", "status"])
+        if _status_col:
+            log.info("DIAG X-Trux MTD status breakdown (%d loads):", len(a_mtd))
+            for _sv, _sn in a_mtd[_status_col].value_counts().items():
+                log.info("  %5d  %r", _sn, _sv)
+        else:
+            log.info("DIAG: No status column found; %d MTD loads", len(a_mtd))
+        _lc = _find_col(a_mtd, ["loaded mileage", "loaded dispatch"])
+        _ec = _find_col(a_mtd, ["empty mileage", "empty dispatch"])
+        _nc = _find_col(a_mtd, ["load number", "load #", "load num", "load id"])
+        if _date_col_used and _date_col_used in a_mtd.columns:
+            log.info("DIAG: X-Trux MTD sample rows (load, %s, status, loaded, empty):",
+                     _date_col_used)
+            for _, _r in a_mtd.head(15).iterrows():
+                try:
+                    _ld = float(_r[_lc]) if _lc and _r[_lc] == _r[_lc] else 0
+                    _em = float(_r[_ec]) if _ec and _r[_ec] == _r[_ec] else 0
+                except (TypeError, ValueError):
+                    _ld, _em = 0, 0
+                log.info("  load=%-10s  date=%s  status=%-22s  loaded=%.0f  empty=%.0f",
+                         str(_r[_nc])[:10] if _nc else "?",
+                         str(_r[_date_col_used])[:10],
+                         str(_r[_status_col])[:22] if _status_col else "?",
+                         _ld, _em)
     return out
 
 
