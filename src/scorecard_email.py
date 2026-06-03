@@ -4398,22 +4398,6 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    # Revenue per mile by customer — MTD, top 15, sorted by RPM desc.
-    _crpm = customer_rpm or []
-    if _crpm:
-        crpm_rows = "".join(
-            _tr([r["customer"], money(r["revenue"]), num(r["miles"]),
-                 str(r["loads"]), rpm(r["rpm"])],
-                ["left", "right", "right", "right", "right"],
-                [None, None, None, None,
-                 "good" if (r["rpm"] or 0) >= TARGET_RPM else "bad"])
-            for r in _crpm)
-        crpm_tbl = _table(["Customer", "Revenue MTD", "Miles MTD", "Loads", "Rev / Mile"],
-                          ["left", "right", "right", "right", "right"], crpm_rows)
-    else:
-        crpm_tbl = (f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>"
-                    f"(no data)</td></tr>")
-
     return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 7, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
@@ -4423,11 +4407,9 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"{mpg_bot_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
-            f"{_section('Revenue per mile by customer &middot; MTD &middot; X-Trux + X-Linx &middot; top 15')}"
-            f"{crpm_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
-            f"(speeding, 7 days). Revenue / mile by customer from Alvys pipeline (MTD loads). "
+            f"(speeding, 7 days). "
             f"Idle detail is on the Fleet Idle page (pg 6); "
             f"driver safety scores are on the Safety page (pg 3).</div>")
 
