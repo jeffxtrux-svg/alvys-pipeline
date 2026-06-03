@@ -856,6 +856,14 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     if total_mi.sum() == 0:
         loaded_mi = _col_any(loads, ["Loaded Dispatch Mileage", "Loaded Miles", "Loaded Mileage"]).fillna(0)
         total_mi = loaded_mi + empty_mi
+    # Diagnostic: log which mileage columns we actually matched in Master 2026.
+    _em_col = next((c for c in ["Empty Dispatch Mileage", "Empty Miles", "Empty Mileage"]
+                    if c in loads.columns), None)
+    _tm_col = next((c for c in ["Total Dispatch Mileage", "Total Miles", "Total Mileage"]
+                    if c in loads.columns), None)
+    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r total_col=%r "
+             "rows_after_filter=%d total_empty=%.0f total_miles=%.0f",
+             _em_col, _tm_col, len(loads), float(empty_mi.sum()), float(total_mi.sum()))
     labels, values = [], []
     for i, (yy, mm) in enumerate(_last_6_months()):
         mask = (dates.dt.year == yy) & (dates.dt.month == mm)
