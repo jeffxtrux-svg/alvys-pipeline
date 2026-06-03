@@ -3608,15 +3608,22 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
            + _proj_tile("X-Linx", "X-Linx")
            + loads_tile)
     # X-Trux Overview row 3: 6-month avg rev / mile trend — overall (X-Trux +
-    # XFreight asset fleet) plus a direct-customers vs broker-freight split.
+    # XFreight asset fleet) plus a direct-customers vs broker-freight split,
+    # with the dead-head % monthly trend sitting next to its tile on row 2.
     _rpm_d_labels, _rpm_d_values = ((rpm_trend or {}).get("direct") or ([], []))
     _rpm_b_labels, _rpm_b_values = ((rpm_trend or {}).get("broker") or ([], []))
     _rpm_c_labels, _rpm_c_values = ((rpm_trend or {}).get("combined") or ([], []))
     _rpm_sub = "monthly avg &middot; X-Trux + XFreight &middot; *MTD"
+    _dh_t = dh_trend or {}
+    _dh_trend_td = (_bar_chart("Dead head % &middot; 6-month trend",
+                               _dh_t.get("labels") or [], _dh_t.get("values") or [],
+                               "X-Trux + X-Linx &middot; *MTD",
+                               fmt=lambda v: f"{v:.1f}%")
+                    if _dh_t.get("labels") else empty_td)
     xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm)
                 + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm)
                 + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm)
-                + empty_td)
+                + _dh_trend_td)
 
     # X-Trux rate-per-mile goal: fully-loaded cost per mile (driver pay + shared
     # office overhead), then the profit-loaded goal rate, vs. what we actually run.
@@ -3709,54 +3716,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
-    # AR Days to Receive (DSO) — uses actual invoice-to-payment days from QB
-    # Payment records (same formula QB shows: avg days from invoice date to
-    # payment date across all paid invoices in the last 6 months, X-Trux only).
-    # Falls back to the balance÷revenue approximation when DSO history is absent.
-    def _days_str(x):
-        return f"{x:,.0f} days" if _isnum(x) else "n/a"
-
-    dso_labels, dso_vals, _dso_6mo_avg = dso_hist if dso_hist else ([], [], None)
-
-    # Tile shows the LAST 30 DAYS value = most recent month in the history
-    # (June* = MTD, which is the closest approximation to a rolling 30-day window).
-    # Falls back to the 6-month average if only one data point exists,
-    # then falls back to the balance÷revenue approximation when no QB history.
-    if dso_vals:
-        dso_tile_val = dso_vals[-1]   # most recent month ≈ last 30 days
-        log.info("DSO tile: using last-30d value %.1f days (month %s); 6mo avg %.1f",
-                 dso_tile_val, dso_labels[-1] if dso_labels else "?", _dso_6mo_avg or 0)
-    else:
-        dso_tile_val = None
-        log.info("DSO tile: no QB payment history — falling back to balance/revenue estimate")
-
-    if not _isnum(dso_tile_val):
-        _now = pd.Timestamp.now()
-        _ytd_days = _now.dayofyear
-        _ytd_income = sum(
-            v["income"] for k, v in (qb_pnl or {}).items()
-            if str(k).strip().lower() in _AR_COMPANIES and _isnum(v.get("income"))
-        )
-        _cur_ar = (qb_ar or {}).get("total_ar") if qb_ar else None
-        _avg_daily_rev = (_ytd_income / _ytd_days) if (_ytd_income and _ytd_days) else None
-        dso_tile_val = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
-
-    dso_kind = ("good" if (_isnum(dso_tile_val) and dso_tile_val < 40)
-                else ("warn" if (_isnum(dso_tile_val) and dso_tile_val < 55) else "bad"))
-
-    dso_tile_td = _tile("AR Days to Receive", _days_str(dso_tile_val),
-                        f"last 30 days &middot; goal &lt; 40 " + _pill("DSO", dso_kind))
-    dso_trend_td = _bar_chart(
-        "Avg days invoice &rarr; payment &middot; 6 months",
-        dso_labels, dso_vals,
-        "X-Trux paid invoices &middot; QB formula &middot; *MTD",
-        fmt=lambda v: f"{v:.0f}d",
-    ) if dso_labels else ""
-
     ar_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ar_chart}</tr><tr>{dso_tile_td}</tr>"
-                 + (f"<tr>{dso_trend_td}</tr>" if dso_trend_td else "")
-                 + f"</table></td>")
+                 f"<tr>{ar_chart}</tr></table></td>")
     ap_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
                  f"<tr>{ap_chart}</tr></table></td>")
 
@@ -3794,16 +3755,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                          "".join(_tr([nm, money(amt)], ["left", "right"], [None, "bad"])
                                  for nm, amt in _top5), span=4)
             )
-
-    # Dead-head % trend chart (if provided)
-    _dh_trend_chart = ""
-    if dh_trend and dh_trend.get("labels"):
-        _dh_trend_chart = _bar_chart(
-            "Dead head % by month &middot; 6 months",
-            dh_trend["labels"], dh_trend["values"],
-            "X-Trux + X-Linx &middot; *MTD",
-            fmt=lambda v: f"{v:.1f}%",
-        )
 
     # Safety tiles + trend charts
     sf = (samsara or {})
@@ -4067,8 +4018,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                if recon_row else "")
             + recon_detail
             + _top5_ar_html
-            + (f"{_section('Dead head % by month &middot; 6-month trend')}<tr>{_dh_trend_chart}</tr>"
-               if _dh_trend_chart else "")
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
