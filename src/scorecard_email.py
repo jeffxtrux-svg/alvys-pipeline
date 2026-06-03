@@ -832,7 +832,9 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     """Monthly dead-head % for last 6 months from the Alvys master Loads sheet.
 
     Formula matches Power BI: Empty Dispatch Mileage / Total Dispatch Mileage.
-    Scoped to X-Trux + X-Linx, excluding Cancelled loads.
+    Scoped to X-Trux (asset side, includes XFreight). X-Linx is excluded — Power BI
+    measures dead-head only on the asset side, because brokered loads don't have
+    a tracked empty-mileage leg and would dilute the denominator.
     """
     empty = {"labels": [], "values": []}
     if not alvys_sheets:
@@ -842,10 +844,10 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
         return empty
     if "Load Status" in loads.columns:
         loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
-    # X-Trux + X-Linx only (matches Power BI Office slicer)
+    # X-Trux only (matches Power BI Office slicer: XFreight + X-Trux checked, X-Linx unchecked)
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
-        loads = loads[loads[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+        loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     # Power BI: DIVIDE(SUM(Empty Dispatch Mileage), SUM(Total Dispatch Mileage))
     empty_mi = _col_any(loads, ["Empty Dispatch Mileage", "Empty Miles", "Empty Mileage"]).fillna(0)
@@ -3676,7 +3678,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _dh_t = dh_trend or {}
     _dh_trend_td = (_bar_chart("Dead head % &middot; 6-month trend",
                                _dh_t.get("labels") or [], _dh_t.get("values") or [],
-                               "X-Trux + X-Linx &middot; *MTD",
+                               "X-Trux + XFreight &middot; *MTD",
                                fmt=lambda v: f"{v:.1f}%")
                     if _dh_t.get("labels") else empty_td)
     xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm)
