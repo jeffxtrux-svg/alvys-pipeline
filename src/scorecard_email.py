@@ -2701,8 +2701,8 @@ def _pill(t, k):
             f"font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap'>{t}</span>")
 
 
-def _tile(label, value, sub):
-    return (f"<td class='tile' width='25%' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
+def _tile(label, value, sub, width="25%"):
+    return (f"<td class='tile' width='{width}' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
             f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;'>"
             f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
             f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
@@ -3412,22 +3412,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
-    # Alvys AR aging tiles (from pipeline file — has Customer Payments column).
-    # Five buckets render across two rows so the 91+ split stays prominent
-    # rather than being hidden inside a combined 61+ tile.
+    # Alvys AR aging tiles — all 5 buckets in a single row at 20% each.
     aar = alvys_ar or {}
     alvys_ar_row = ""
-    alvys_ar_row_b = ""
     if aar.get("total"):
+        _w = "20%"
         alvys_ar_row = (
-            _tile("Alvys AR &middot; Current", money(aar.get("current")), _pill("not overdue", "mute"))
-            + _tile("Alvys AR &middot; 1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"))
-            + _tile("Alvys AR &middot; 31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"))
-            + _tile("Alvys AR &middot; 61&ndash;90 days", money(aar.get("d61_90")), _pill("escalate", "bad"))
-        )
-        alvys_ar_row_b = (
-            _tile("Alvys AR &middot; 91+ days", money(aar.get("d91plus")), _pill("collections", "bad"))
-            + empty_td + empty_td + empty_td
+            _tile("Alvys AR &middot; Current", money(aar.get("current")), _pill("not overdue", "mute"), _w)
+            + _tile("Alvys AR &middot; 1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"), _w)
+            + _tile("Alvys AR &middot; 31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"), _w)
+            + _tile("Alvys AR &middot; 61&ndash;90 days", money(aar.get("d61_90")), _pill("escalate", "bad"), _w)
+            + _tile("Alvys AR &middot; 91+ days", money(aar.get("d91plus")), _pill("collections", "bad"), _w)
         )
 
     # AR reconciliation — QuickBooks (system of record) vs Alvys (TMS), X-Trux + X-Linx.
@@ -3628,7 +3623,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
             f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr><tr>{alvys_ar_row_b}</tr>"
+            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
                if alvys_ar_row else "")
             + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
                f"{_brief(recon_note, recon['kind'])}"
