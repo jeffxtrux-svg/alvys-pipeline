@@ -101,7 +101,11 @@ def build_dvir_defects(raw_dvirs: list[dict]) -> pd.DataFrame:
             return None
         unit = (_pick_named("asset", "vehicle", "trailer")
                 or dvir.get("assetName") or dvir.get("vehicleName") or dvir.get("trailerName"))
-        driver_name = (_pick_named("driver", "submittedBy", "createdBy", "inspector", "user")
+        # Production trailer DVIRs put the driver in authorSignature.signatoryUser.name,
+        # not under driver/submittedBy/etc — check that first.
+        auth_user = ((dvir.get("authorSignature") or {}).get("signatoryUser") or {})
+        driver_name = (auth_user.get("name") or auth_user.get("id")
+                       or _pick_named("driver", "submittedBy", "createdBy", "inspector", "user")
                        or dvir.get("driverName") or dvir.get("submittedByName") or dvir.get("createdByName"))
         # DVIR records from /fleet/dvirs/history use startTime (no createdAt*); defects
         # carry their own createdAtTime. Prefer the defect's, fall back to the DVIR's.

@@ -133,8 +133,10 @@ def _dvir_vehicle_name(dvir: dict) -> str:
 
 
 def _dvir_driver_name(dvir: dict) -> str:
-    # Most thorough: walk every possible nesting.
+    # Production trailer DVIRs put the driver in
+    # authorSignature.signatoryUser.name — check that first.
     for path in (
+        ("authorSignature", "signatoryUser", "name"),
         ("driver", "name"),
         ("submittedBy", "name"),
         ("createdBy", "name"),
