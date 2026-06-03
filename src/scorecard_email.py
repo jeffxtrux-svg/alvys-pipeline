@@ -3949,12 +3949,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     alvys_ar_row = ""
     if aar.get("total"):
         _w = "20%"
+        # Labels are intentionally short ("Current", "1-30 days", ...) — the
+        # section header above already qualifies them as "Alvys AR · aging by
+        # due date", and the long "Alvys AR ·" prefix squeezed the value text
+        # in 20%-wide tiles.
         alvys_ar_row = (
-            _tile("Alvys AR &middot; Current", money(aar.get("current")), _pill("not overdue", "mute"), _w)
-            + _tile("Alvys AR &middot; 1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"), _w)
-            + _tile("Alvys AR &middot; 31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"), _w)
-            + _tile("Alvys AR &middot; 61&ndash;90 days", money(aar.get("d61_90")), _pill("escalate", "bad"), _w)
-            + _tile("Alvys AR &middot; 91+ days", money(aar.get("d91plus")), _pill("collections", "bad"), _w)
+            _tile("Current", money(aar.get("current")), _pill("not overdue", "mute"), _w)
+            + _tile("1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"), _w)
+            + _tile("31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"), _w)
+            + _tile("61&ndash;90 days", money(aar.get("d61_90")), _pill("escalate", "bad"), _w)
+            + _tile("91+ days", money(aar.get("d91plus")), _pill("collections", "bad"), _w)
         )
 
     # AR reconciliation — QuickBooks (system of record) vs Alvys (TMS), X-Trux + X-Linx.
