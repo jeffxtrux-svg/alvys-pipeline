@@ -314,25 +314,32 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
         first_day = (first_day - datetime.timedelta(days=1)).replace(day=1)
     pay_start = first_day.isoformat()
     pay_end   = today.isoformat()
-    # Invoice window: look back an extra year to capture slow-pay invoices.
-    inv_start = (first_day - datetime.timedelta(days=365)).isoformat()
+    # Invoice window: look back 24 months to capture slow-pay invoices issued before the payment window.
+    inv_start = (first_day - datetime.timedelta(days=730)).isoformat()
 
     log.info("    DSO: payment window %s→%s  invoice window %s→%s",
              pay_start, pay_end, inv_start, pay_end)
 
-    # Step 1 — fetch Payments in the window.
+    # Step 1 — fetch ALL Payments in the window (paginated; QB cap is 1000/page).
+    payments: list[dict] = []
+    pay_start_pos = 1
     try:
-        r = client.get("query", {
-            "query": (f"SELECT * FROM Payment "
-                      f"WHERE TxnDate >= '{pay_start}' AND TxnDate <= '{pay_end}' "
-                      f"MAXRESULTS 1000"),
-            "minorversion": 75,
-        })
+        while True:
+            r = client.get("query", {
+                "query": (f"SELECT * FROM Payment "
+                          f"WHERE TxnDate >= '{pay_start}' AND TxnDate <= '{pay_end}' "
+                          f"STARTPOSITION {pay_start_pos} MAXRESULTS 1000"),
+                "minorversion": 75,
+            })
+            batch = r.get("QueryResponse", {}).get("Payment", [])
+            payments.extend(batch)
+            if len(batch) < 1000:
+                break
+            pay_start_pos += 1000
     except Exception as exc:
         log.warning("    DSO: Payment query failed for %s: %s", company_name, exc)
         return None
 
-    payments = r.get("QueryResponse", {}).get("Payment", [])
     log.info("    DSO: %d payments returned for %s", len(payments), company_name)
     if not payments:
         return None
@@ -378,21 +385,28 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
     if not inv_id_to_pay_dates:
         return None
 
-    # Step 3 — pre-load invoice dates using a date-range query (avoids IN clause).
+    # Step 3 — pre-load invoice dates using paginated date-range queries (QB cap is 1000/page).
     inv_dates: dict[str, datetime.date] = {}
+    inv_start_pos = 1
     try:
-        ri = client.get("query", {
-            "query": (f"SELECT Id, TxnDate FROM Invoice "
-                      f"WHERE TxnDate >= '{inv_start}' AND TxnDate <= '{pay_end}' "
-                      f"MAXRESULTS 1000"),
-            "minorversion": 75,
-        })
-        for inv in ri.get("QueryResponse", {}).get("Invoice", []):
-            try:
-                inv_dates[str(inv["Id"])] = datetime.date.fromisoformat(str(inv["TxnDate"])[:10])
-            except (KeyError, ValueError):
-                pass
-        log.info("    DSO: %d invoice dates loaded from QB", len(inv_dates))
+        while True:
+            ri = client.get("query", {
+                "query": (f"SELECT Id, TxnDate FROM Invoice "
+                          f"WHERE TxnDate >= '{inv_start}' AND TxnDate <= '{pay_end}' "
+                          f"STARTPOSITION {inv_start_pos} MAXRESULTS 1000"),
+                "minorversion": 75,
+            })
+            batch_inv = ri.get("QueryResponse", {}).get("Invoice", [])
+            for inv in batch_inv:
+                try:
+                    inv_dates[str(inv["Id"])] = datetime.date.fromisoformat(str(inv["TxnDate"])[:10])
+                except (KeyError, ValueError):
+                    pass
+            if len(batch_inv) < 1000:
+                break
+            inv_start_pos += 1000
+        log.info("    DSO: %d invoice dates loaded from QB (paginated, window %s→%s)",
+                 len(inv_dates), inv_start, pay_end)
     except Exception as exc:
         log.warning("    DSO: Invoice date query failed for %s: %s", company_name, exc)
         return None
@@ -418,7 +432,7 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
 
     if not month_days:
         log.warning("    DSO: no valid invoice-payment pairs for %s — "
-                    "check that Invoice MAXRESULTS 1000 covers the full date window", company_name)
+                    "check invoice window (%s → %s) and payment links", company_name, inv_start, pay_end)
         return None
 
     rows = []
