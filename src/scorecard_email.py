@@ -3807,27 +3807,39 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         ar_insight += " Receivables growing &mdash; watch the 91+ bucket."
 
     # Top-5 overdue AR customers (31+ days, by total balance) from QB.
-    _top5_ar_html = ""
-    if qb_ar and qb_ar.get("rows"):
-        _cust_31 = {}
-        for row in qb_ar["rows"]:
-            nm = row.get("customer", "") or ""
-            _cust_31.setdefault(nm, 0.0)
-            _cust_31[nm] += float(row.get("amount", 0))
-        _top5 = sorted(_cust_31.items(), key=lambda x: -x[1])[:5]
-        if _top5:
-            _t5rows = "".join(
-                _tr([nm, money(amt), row.get("bucket", "31+")],
-                    ["left", "right", "right"],
-                    [None, "bad", "warn"])
-                for nm, amt in _top5
-                for row in [next((r for r in qb_ar["rows"] if r.get("customer") == nm), {"bucket": "31+"})]
+    # Replaces the older "Alvys 61+ spot-check" and "Top 5 customers" tables
+    # with the same 4-tile + overdue-invoice detail visual as page 8.
+    _qb_overdue_html = ""
+    if qb_ar:
+        _totals = qb_ar.get("totals", {}) or {}
+        _total31 = qb_ar.get("total31")
+        _ovr_rows = qb_ar.get("rows", []) or []
+        if _total31 or _ovr_rows:
+            _tile_row = (
+                _tile("31&ndash;60 days", money(_totals.get("31&ndash;60")), _pill("watch", "warn"))
+                + _tile("61&ndash;90 days", money(_totals.get("61&ndash;90")), _pill("escalate", "warn"))
+                + _tile("91+ days", money(_totals.get("91+")), _pill("collections", "bad"))
+                + _tile("Total 31+", money(_total31), _pill("overdue", "bad"))
             )
-            _top5_ar_html = (
-                _section("Top 5 overdue customers (31+ days) &mdash; QuickBooks AR", span=4)
-                + _table(["Customer", "Balance", "Bucket"], ["left", "right", "right"],
-                         "".join(_tr([nm, money(amt)], ["left", "right"], [None, "bad"])
-                                 for nm, amt in _top5), span=4)
+            _ovr_body = ""
+            for r in _ovr_rows:
+                k = "bad" if r["bucket"] == "91+" else "warn"
+                _ovr_body += _tr(
+                    [r["customer"], r["invoice"], r["date"], r["due"], money(r["amount"]), r["bucket"]],
+                    ["left", "left", "left", "left", "right", "left"],
+                    [None, None, None, None, (k if r["bucket"] == "91+" else None), k],
+                )
+            _ovr_total = (
+                f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};"
+                f"border-top:2px solid {LINE};'>Total 31+ days overdue</td>"
+                f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
+                f"border-top:2px solid {LINE};'>{money(_total31)}</td>"
+                f"<td style='border-top:2px solid {LINE};'></td></tr>"
+            )
+            _qb_overdue_html = (
+                f"<tr>{_tile_row}</tr>"
+                f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
+                f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], _ovr_body + _ovr_total)}"
             )
 
     # Safety tiles + trend charts
@@ -3912,23 +3924,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                           f"({pct(recon['pct'])} of the balance) &mdash; likely invoices posted to "
                           "QuickBooks that Alvys hasn&rsquo;t billed or recorded yet. "
                           "Reconcile X-Trux + X-Linx to clear it.")
-
-    # Alvys 61+ balance detail — the oldest open balances to spot-check against QB.
-    rows61 = (alvys_ar or {}).get("d61plus_rows") or []
-    recon_detail = ""
-    if rows61:
-        body61 = ""
-        for r in rows61:
-            cust = r["customer"] or "&mdash; (no customer name)"
-            body61 += _tr([cust, r["load"], str(r["days"]), money(r["amount"])],
-                          ["left", "left", "right", "right"], [None, None, "bad", None])
-        n61 = (alvys_ar or {}).get("d61plus_n", len(rows61))
-        if n61 > len(rows61):
-            body61 += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
-                       f"Showing the {len(rows61)} largest of {n61} balances "
-                       f"({money((alvys_ar or {}).get('d61plus_total'))} total).</td></tr>")
-        recon_detail = (f"{_section('Alvys 61+ balances &mdash; spot-check against QuickBooks')}"
-                        f"{_table(['Customer', 'Load #', 'Days', 'Amount'], ['left', 'left', 'right', 'right'], body61)}")
 
     _goal_rpm = (rpm_goal or {}).get("goal_rpm")
     _goal_txt = f"goal {rpm(_goal_rpm)}" if _isnum(_goal_rpm) else "goal pending QB cost-out"
@@ -4090,8 +4085,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                if recon_row else "")
             + f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
             + f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            + recon_detail
-            + _top5_ar_html
+            + _qb_overdue_html
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
