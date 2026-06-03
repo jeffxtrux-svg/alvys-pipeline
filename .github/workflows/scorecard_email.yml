@@ -60,7 +60,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net,dan@xfreight.net,jackson@xfreight.net
           # Read the exact workbook the Power BI report uses, by its OneDrive sharing
           # URL — there is a second file of the same name, so reading by name picked
           # the wrong (un-settled) one. The sharing URL resolves to the right item.
@@ -102,7 +102,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          SCORECARD_TO_EMAILS: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net,dan@xfreight.net,jackson@xfreight.net
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
