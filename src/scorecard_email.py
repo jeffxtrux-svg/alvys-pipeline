@@ -829,7 +829,11 @@ def compute_avg_fuel_price(alvys_pipeline_sheets: dict | None) -> float | None:
 
 
 def compute_dh_trend(alvys_sheets: dict | None) -> dict:
-    """Monthly dead-head % for last 6 months from the Alvys master Loads sheet."""
+    """Monthly dead-head % for last 6 months from the Alvys master Loads sheet.
+
+    Formula matches Power BI: Empty Dispatch Mileage / Total Dispatch Mileage.
+    Scoped to X-Trux + X-Linx, excluding Cancelled loads.
+    """
     empty = {"labels": [], "values": []}
     if not alvys_sheets:
         return empty
@@ -838,15 +842,23 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
         return empty
     if "Load Status" in loads.columns:
         loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
+    # X-Trux + X-Linx only (matches Power BI Office slicer)
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if office_col:
+        loads = loads[loads[office_col].map(_entity_group).isin(ENTITY_ORDER)]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
-    loaded = _col_any(loads, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).fillna(0)
-    empty_mi = _col_any(loads, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).fillna(0)
+    # Power BI: DIVIDE(SUM(Empty Dispatch Mileage), SUM(Total Dispatch Mileage))
+    empty_mi = _col_any(loads, ["Empty Dispatch Mileage", "Empty Miles", "Empty Mileage"]).fillna(0)
+    total_mi = _col_any(loads, ["Total Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    # Fallback: if Total Dispatch Mileage column not present, compute from loaded + empty
+    if total_mi.sum() == 0:
+        loaded_mi = _col_any(loads, ["Loaded Dispatch Mileage", "Loaded Miles", "Loaded Mileage"]).fillna(0)
+        total_mi = loaded_mi + empty_mi
     labels, values = [], []
     for i, (yy, mm) in enumerate(_last_6_months()):
         mask = (dates.dt.year == yy) & (dates.dt.month == mm)
-        lo = float(loaded[mask].sum())
         em = float(empty_mi[mask].sum())
-        tot = lo + em
+        tot = float(total_mi[mask].sum())
         lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
         if i == 5:
             lab += "*"
