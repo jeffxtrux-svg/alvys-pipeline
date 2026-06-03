@@ -279,29 +279,18 @@ def _rollover_state(mtd_revenue_loads: int) -> tuple[bool, pd.Timestamp | None,
 # Alvys operational KPIs (from the manual Alvys Master 2026 file)
 # ----------------------------------------------------------------------
 def _alvys_metrics(sub: pd.DataFrame) -> dict:
-    # Power BI's Dead Head %, Rev per Mile, and Dispatch Mileage measures all
-    # use the workbook's Dispatch-Mileage columns:
-    #   Dead Head %      = SUM(Empty Dispatch Mileage) / SUM(Total Dispatch Mileage)
-    #   Dispatch Mileage = SUM(Total Dispatch Mileage)  (Loaded + Empty Dispatch)
-    # (confirmed in powerbi/queries/DAX_Measures.dax). The workbook also has
-    # billed columns ("Loaded Miles" / "Empty Miles") but PBI does NOT use them
-    # — billed miles drift from dispatch for in-progress loads. Pick Dispatch
-    # first so the tile ties to PBI's June row exactly.
+    # Power BI's DAX measure uses "Empty Dispatch Mileage / Total Dispatch
+    # Mileage", but PBI sources those columns via a Trips→Loads join that
+    # de-dupes when one Load has multiple Trips. Our scorecard reads the
+    # Master 2026 Loads sheet directly, where "Loaded Dispatch Mileage" can
+    # double-count for in-progress loads (one row per trip). The workbook's
+    # "Loaded Miles" / "Empty Miles" columns are billed values per Load with
+    # NO trip duplication, which is why those match PBI's monthly totals.
+    # So we pick the billed columns first and only fall back to dispatch.
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    loaded = _col_any(sub, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
-    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
-    total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage",
-                               "Total Miles", "Total Mileage"])
-    total_col_sum = total_col.sum() if total_col.notna().any() else None
-    # Prefer the workbook's Total Dispatch Mileage column directly (single
-    # source of truth in PBI's measure); fall back to loaded+empty if absent.
-    if total_col_sum is not None and total_col_sum > 0:
-        total = total_col_sum
-    else:
-        total = loaded + empty
-    if total_col_sum is not None and abs(total_col_sum - (loaded + empty)) > 1.0 and total > 0:
-        log.info("Alvys mileage diag: loaded+empty=%.0f vs Total-column=%.0f. Using Total.",
-                 loaded + empty, total_col_sum)
+    loaded = _col_any(sub, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).sum()
+    empty = _col_any(sub, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).sum()
+    total = loaded + empty
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
@@ -848,21 +837,19 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
-    # PBI DAX: Empty Dispatch Mileage / Total Dispatch Mileage. Prefer the
-    # workbook's Total Dispatch Mileage column directly; fall back to
-    # loaded+empty dispatch if absent.
-    empty_mi = _col_any(loads, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).fillna(0)
-    total_mi = _col_any(loads, ["Total Dispatch Mileage", "Dispatch Mileage",
-                                "Total Mileage", "Total Miles"]).fillna(0)
-    if total_mi.sum() == 0:
-        loaded_mi = _col_any(loads, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).fillna(0)
-        total_mi = loaded_mi + empty_mi
-    _em_col = next((c for c in ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]
+    # Use the billed Loads-sheet columns (same as _alvys_metrics) because the
+    # workbook's "Loaded Dispatch Mileage" is one-row-per-trip and double-counts
+    # for in-progress loads. Billed columns are one-row-per-load and match
+    # what PBI's monthly table shows (which joins Trips de-duped to Loads).
+    loaded_mi = _col_any(loads, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).fillna(0)
+    empty_mi  = _col_any(loads, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).fillna(0)
+    total_mi  = loaded_mi + empty_mi
+    _em_col = next((c for c in ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]
                     if c in loads.columns), None)
-    _tm_col = next((c for c in ["Total Dispatch Mileage", "Dispatch Mileage",
-                                "Total Mileage", "Total Miles"] if c in loads.columns), None)
-    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r total_col=%r "
-             "rows_after_filter=%d", _em_col, _tm_col, len(loads))
+    _lo_col = next((c for c in ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]
+                    if c in loads.columns), None)
+    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r loaded_col=%r "
+             "rows_after_filter=%d", _em_col, _lo_col, len(loads))
     labels, values = [], []
     for i, (yy, mm) in enumerate(_last_6_months()):
         mask = (dates.dt.year == yy) & (dates.dt.month == mm)
