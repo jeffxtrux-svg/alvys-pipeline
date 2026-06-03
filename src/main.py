@@ -371,7 +371,7 @@ def main() -> int:
                      len(cat_names), ", ".join(cat_names))
 
     import pandas as pd
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime
 
     # Build last-DOT-inspection lookup per asset from maintenance records.
     # We use ModifiedAt as the event date (CreatedAt is often epoch/null).
