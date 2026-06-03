@@ -475,6 +475,16 @@ def main() -> int:
         driver_ids, start_safety, now
     )
 
+    # Second pull for the current month-to-date so the scorecard can show a
+    # current-month speeding % alongside the 6-month figure.
+    mtd_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    log.info("=" * 60)
+    log.info("Step 11b/12: Driver safety scores — MTD (%s → now)", mtd_start.date())
+    log.info("=" * 60)
+    raw_driver_scores_mtd = client.fetch_driver_safety_scores(
+        driver_ids, mtd_start, now
+    )
+
     log.info("=" * 60)
     log.info("Step 12/13: Coaching sessions (past-due tracking)")
     log.info("=" * 60)
@@ -545,12 +555,15 @@ def main() -> int:
              len(df_idle), len(raw_engine_history), len(driver_by_vehicle))
 
     df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
+    df_driver_scores_mtd = flatten(raw_driver_scores_mtd, "DriverSafetyScoresMtd")
     # Stamp the driver name onto each row by joining with the drivers sheet.
-    if not df_driver_scores.empty and "driverId" in df_driver_scores.columns:
-        drivers_df = flatten(raw_drivers, "Drivers")
-        if not drivers_df.empty and "id" in drivers_df.columns and "name" in drivers_df.columns:
-            name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
-            df_driver_scores["Driver Name"] = df_driver_scores["driverId"].astype(str).map(name_by_id)
+    drivers_df = flatten(raw_drivers, "Drivers")
+    name_by_id: dict = {}
+    if not drivers_df.empty and "id" in drivers_df.columns and "name" in drivers_df.columns:
+        name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
+    for _df in (df_driver_scores, df_driver_scores_mtd):
+        if not _df.empty and "driverId" in _df.columns and name_by_id:
+            _df["Driver Name"] = _df["driverId"].astype(str).map(name_by_id)
 
     # Coaching sessions: extract flat columns the scorecard can use directly.
     def _build_coaching_df(records: list[dict]) -> pd.DataFrame:
@@ -613,6 +626,7 @@ def main() -> int:
         "DVIR_Defects":   df_dvir_defects,
         "EngineIdle":     df_idle,
         "DriverSafetyScores":    df_driver_scores,
+        "DriverSafetyScoresMtd": df_driver_scores_mtd,
         "CoachingSessions":      df_coaching,
         "TrainingAssignments":   df_training,
         **ifta_sheets,
