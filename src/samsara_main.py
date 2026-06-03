@@ -460,7 +460,17 @@ def main() -> int:
     )
 
     log.info("=" * 60)
-    log.info("Step 12/12: IFTA (last 3 months, fallback MPG source)")
+    log.info("Step 12/13: Coaching sessions (past-due tracking)")
+    log.info("=" * 60)
+    raw_coaching = client.fetch_coaching_sessions()
+
+    log.info("=" * 60)
+    log.info("Step 13/13: Training assignments (past-due tracking)")
+    log.info("=" * 60)
+    raw_training = client.fetch_training_assignments()
+
+    log.info("=" * 60)
+    log.info("Step 12/13: IFTA (last 3 months, fallback MPG source)")
     log.info("=" * 60)
     # Note: /fleet/reports/fuel-energy/usage doesn't exist in Samsara's API
     # (404). MPG is now computed from Trips data in compute_samsara; IFTA
@@ -526,6 +536,54 @@ def main() -> int:
             name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
             df_driver_scores["Driver Name"] = df_driver_scores["driverId"].astype(str).map(name_by_id)
 
+    # Coaching sessions: extract flat columns the scorecard can use directly.
+    def _build_coaching_df(records: list[dict]) -> pd.DataFrame:
+        rows = []
+        for r in records:
+            drv = r.get("driver") or {}
+            behaviors = r.get("behaviors") or []
+            beh_str = ", ".join(
+                b.get("behaviorId") or b.get("type") or str(b)
+                for b in behaviors if isinstance(b, dict)
+            )
+            rows.append({
+                "Driver Name":  drv.get("name") or drv.get("id") or "",
+                "Driver ID":    drv.get("id") or "",
+                "Type":         r.get("type") or "",          # selfCoaching / managerLed
+                "Status":       r.get("status") or "",        # pending / completed / dismissed
+                "Behaviors":    beh_str,
+                "Assigned At":  r.get("assignedAt") or r.get("createdAt") or "",
+                "Due At":       r.get("dueAt") or "",
+                "Completed At": r.get("completedAt") or "",
+            })
+        return pd.DataFrame(rows) if rows else pd.DataFrame(
+            columns=["Driver Name", "Driver ID", "Type", "Status",
+                     "Behaviors", "Assigned At", "Due At", "Completed At"])
+
+    # Training assignments: extract flat columns.
+    def _build_training_df(records: list[dict]) -> pd.DataFrame:
+        rows = []
+        for r in records:
+            drv = r.get("driver") or {}
+            course = r.get("course") or {}
+            rows.append({
+                "Driver Name":    drv.get("name") or drv.get("id") or "",
+                "Driver ID":      drv.get("id") or "",
+                "Course":         course.get("name") or course.get("id") or "",
+                "Status":         r.get("status") or "",
+                "Assigned At":    r.get("assignedAt") or r.get("createdAt") or "",
+                "Due At":         r.get("dueAt") or "",
+                "Completed At":   r.get("completedAt") or "",
+            })
+        return pd.DataFrame(rows) if rows else pd.DataFrame(
+            columns=["Driver Name", "Driver ID", "Course", "Status",
+                     "Assigned At", "Due At", "Completed At"])
+
+    df_coaching  = _build_coaching_df(raw_coaching)
+    df_training  = _build_training_df(raw_training)
+    log.info("  CoachingSessions: %d rows", len(df_coaching))
+    log.info("  TrainingAssignments: %d rows", len(df_training))
+
     sheets: dict[str, pd.DataFrame] = {
         "Vehicles":       flatten(raw_vehicles,  "Vehicles"),
         "Drivers":        flatten(raw_drivers,   "Drivers"),
@@ -538,7 +596,9 @@ def main() -> int:
         "DVIRs":          flatten(raw_dvirs,     "DVIRs"),
         "DVIR_Defects":   df_dvir_defects,
         "EngineIdle":     df_idle,
-        "DriverSafetyScores": df_driver_scores,
+        "DriverSafetyScores":    df_driver_scores,
+        "CoachingSessions":      df_coaching,
+        "TrainingAssignments":   df_training,
         **ifta_sheets,
     }
 

@@ -449,3 +449,27 @@ class SamsaraClient:
             time.sleep(0.05)  # stay under the rate limit
         log.info("Total driver safety score records: %d", len(out))
         return out
+
+    def fetch_coaching_sessions(self) -> list[dict]:
+        """All coaching sessions (pending + completed).
+
+        Includes self-coaching and manager-led sessions with driver name,
+        behaviors, status, assignedAt, and dueAt. Returns empty list if the
+        coaching module is not enabled on this Samsara account.
+        """
+        log.info("Fetching coaching sessions…")
+        items = self._safe_get("/coaching/sessions")
+        log.info("Total coaching sessions: %d", len(items))
+        return items
+
+    def fetch_training_assignments(self) -> list[dict]:
+        """All driver training assignments (any status).
+
+        Returns driver name, course name, assignedAt, dueAt, completedAt,
+        and status (notStarted/inProgress/completed). Returns empty list if
+        the training module is not enabled on this Samsara account.
+        """
+        log.info("Fetching training assignments…")
+        items = self._safe_get("/training/assignments")
+        log.info("Total training assignments: %d", len(items))
+        return items

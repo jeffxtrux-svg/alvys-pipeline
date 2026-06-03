@@ -39,6 +39,7 @@ import numbers
 import os
 import re
 import sys
+import datetime as _dt
 from datetime import datetime
 
 import pandas as pd
@@ -2104,6 +2105,69 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 out["fleet"]["scores_top"] = list(reversed(out["fleet"]["scores_all"][-5:]))
                 out["fleet"]["scores_bottom"] = out["fleet"]["scores_all"][:5]
 
+    # --- Coaching sessions ---------------------------------------------------
+    coaching_sheet = sheets.get("CoachingSessions")
+    out["coaching_sessions"] = {"self_past_due": [], "manager_past_due": [], "available": False}
+    if coaching_sheet is not None and not coaching_sheet.empty:
+        out["coaching_sessions"]["available"] = True
+        today_d = _dt.date.today()
+        for _, row in coaching_sheet.iterrows():
+            status = str(row.get("Status") or "").strip().lower()
+            if status not in ("pending", "not started", "notstarted", "assigned"):
+                continue
+            due_raw = str(row.get("Due At") or "").strip()
+            if not due_raw:
+                continue
+            try:
+                due_d = pd.to_datetime(due_raw, utc=True).date()
+            except Exception:
+                continue
+            if due_d >= today_d:
+                continue  # not yet past due
+            days_overdue = (today_d - due_d).days
+            rec = {
+                "driver":       str(row.get("Driver Name") or ""),
+                "assigned_at":  str(row.get("Assigned At") or ""),
+                "due_at":       due_d.strftime("%b %d"),
+                "days_overdue": days_overdue,
+                "behaviors":    str(row.get("Behaviors") or ""),
+            }
+            kind = str(row.get("Type") or "").strip().lower()
+            if "manager" in kind:
+                out["coaching_sessions"]["manager_past_due"].append(rec)
+            else:
+                out["coaching_sessions"]["self_past_due"].append(rec)
+
+    # --- Training assignments ------------------------------------------------
+    training_sheet = sheets.get("TrainingAssignments")
+    out["training"] = {"past_due": [], "available": False}
+    if training_sheet is not None and not training_sheet.empty:
+        out["training"]["available"] = True
+        today_d = _dt.date.today()
+        incomplete = {"notstarted", "not started", "inprogress", "in progress",
+                      "not_started", "in_progress", "assigned", "pending"}
+        for _, row in training_sheet.iterrows():
+            status = str(row.get("Status") or "").strip().lower().replace(" ", "")
+            if status not in incomplete:
+                continue
+            due_raw = str(row.get("Due At") or "").strip()
+            if not due_raw:
+                continue
+            try:
+                due_d = pd.to_datetime(due_raw, utc=True).date()
+            except Exception:
+                continue
+            if due_d >= today_d:
+                continue
+            days_overdue = (today_d - due_d).days
+            out["training"]["past_due"].append({
+                "driver":       str(row.get("Driver Name") or ""),
+                "course":       str(row.get("Course") or ""),
+                "assigned_at":  str(row.get("Assigned At") or ""),
+                "due_at":       due_d.strftime("%b %d"),
+                "days_overdue": days_overdue,
+            })
+
     return out
 
 
@@ -3895,6 +3959,82 @@ def build_page2(samsara, date_str) -> str:
         f"</tr>"
     )
 
+    # --- Coaching & Training tiles -------------------------------------------
+    coaching_info  = (samsara or {}).get("coaching_sessions", {})
+    training_info  = (samsara or {}).get("training", {})
+    self_pd        = coaching_info.get("self_past_due", [])
+    mgr_pd         = coaching_info.get("manager_past_due", [])
+    train_pd       = training_info.get("past_due", [])
+    coaching_avail = coaching_info.get("available", False)
+    training_avail = training_info.get("available", False)
+
+    def _ct_tile(label, count, sub):
+        col = BAD if count > 0 else GOOD
+        return (f"<td class='tile' width='33%' style='padding:6px;' valign='top'>"
+                f"<div style='background:{TILEBG};border:1px solid {LINE};border-radius:10px;"
+                f"padding:14px 14px 12px;'>"
+                f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;"
+                f"color:{MUTE};font-weight:700;'>{label}</div>"
+                f"<div style='font-size:32px;font-weight:800;color:{col};"
+                f"margin:8px 0 6px;line-height:1;'>{count}</div>"
+                f"<div style='font-size:12px;color:{MUTE};'>{sub}</div>"
+                f"</div></td>")
+
+    def _coaching_table_rows():
+        all_rec = [(r, "Self-coaching") for r in self_pd] + [(r, "Manager-led") for r in mgr_pd]
+        rows = ""
+        for r, kind in sorted(all_rec, key=lambda x: -x[0]["days_overdue"]):
+            beh = (r.get("behaviors") or "")[:55]
+            try:
+                assigned = pd.to_datetime(r.get("assigned_at", ""), utc=True).strftime("%b %d")
+            except Exception:
+                assigned = r.get("assigned_at", "") or "&ndash;"
+            rows += _tr(
+                [r["driver"], kind, assigned, r["due_at"], f"{r['days_overdue']}d", beh or "&ndash;"],
+                ["left", "left", "left", "left", "right", "left"],
+                [None, None, None, "warn", "bad", None])
+        return rows
+
+    def _training_table_rows():
+        rows = ""
+        for r in sorted(train_pd, key=lambda x: -x["days_overdue"]):
+            course = (r.get("course") or "")[:50]
+            try:
+                assigned = pd.to_datetime(r.get("assigned_at", ""), utc=True).strftime("%b %d")
+            except Exception:
+                assigned = r.get("assigned_at", "") or "&ndash;"
+            rows += _tr(
+                [r["driver"], course or "&ndash;", assigned, r["due_at"], f"{r['days_overdue']}d"],
+                ["left", "left", "left", "left", "right"],
+                [None, None, None, "warn", "bad"])
+        return rows
+
+    coaching_section = ""
+    if coaching_avail or training_avail:
+        coaching_section = (
+            f"<tr>"
+            f"{_ct_tile('Self-Coaching Past Due', len(self_pd), 'sessions overdue')}"
+            f"{_ct_tile('Manager Coaching Past Due', len(mgr_pd), 'sessions overdue')}"
+            f"{_ct_tile('Training Assignments Past Due', len(train_pd), 'assignments overdue')}"
+            f"</tr>"
+        )
+        if coaching_avail:
+            _c_hdr = ['Driver', 'Type', 'Assigned', 'Due Date', 'Days Past Due', 'Behaviors']
+            _c_al  = ['left', 'left', 'left', 'left', 'right', 'left']
+            _c_tbl = _table(_c_hdr, _c_al, _coaching_table_rows(), span=4)
+            coaching_section += (
+                f"{_section('Coaching sessions past due &mdash; self &amp; manager-led', span=4)}"
+                f"{_c_tbl}"
+            )
+        if training_avail:
+            _t_hdr = ['Driver', 'Course', 'Assigned', 'Due Date', 'Days Past Due']
+            _t_al  = ['left', 'left', 'left', 'left', 'right']
+            _t_tbl = _table(_t_hdr, _t_al, _training_table_rows(), span=4)
+            coaching_section += (
+                f"{_section('Training assignments past due', span=4)}"
+                f"{_t_tbl}"
+            )
+
     return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{gauge_row}"
@@ -3912,11 +4052,13 @@ def build_page2(samsara, date_str) -> str:
             f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
             f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
             f"{score_all_tbl}"
+            f"{coaching_section}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
             f"Driver safety scores: Samsara Driver Safety Scores (per-driver composite, "
             f"last 6 months). Open defects older than 24h are tracked by the fleet "
-            f"alert job.</div>")
+            f"alert job. Coaching &amp; training: Samsara Coaching Sessions / Training "
+            f"Assignments (past-due only; tiles hidden when module not enabled).</div>")
 
 
 def build_page_fleet(samsara, date_str) -> str:
