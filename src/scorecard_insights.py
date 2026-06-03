@@ -84,7 +84,8 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 qb_ar: dict | None, ar_hist: tuple | None = None,
                 samba: dict | None = None,
                 alvys_entities: dict | None = None,
-                alvys_drivers: dict | None = None) -> str:
+                alvys_drivers: dict | None = None,
+                prior_snapshot: dict | None = None) -> str:
     """Generate the bottom-line paragraph. Joins 3-4 sentences picked
     from threshold-triggered templates."""
     parts: list[str] = []
@@ -166,26 +167,18 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"X-Trux and X-Linx together are showing a {verdict} "
                 f"of {_money(abs(combined))} {mtd_label}.")
 
-    # Idle cost — biggest unmonetized expense for most fleets.
-    if samsara and samsara.get("fleet"):
-        idle_h = samsara["fleet"].get("fleet_idle_hours")
-        if _isnum(idle_h) and idle_h > 1000:
-            weekly_fuel = (idle_h * IDLE_GPH * DIESEL_PRICE) / WEEKS_PER_MONTH
+    # AR 31-60 bucket week-over-week change.
+    prior = prior_snapshot or {}
+    if qb_ar:
+        totals = qb_ar.get("totals") or {}
+        v_31_60 = totals.get("31&ndash;60") or totals.get("31–60") or totals.get("31-60") or 0
+        prior_31_60 = prior.get("qb_ar_31_60")
+        if _isnum(v_31_60) and _isnum(prior_31_60):
+            delta = float(v_31_60) - float(prior_31_60)
+            direction = "up" if delta >= 0 else "down"
             parts.append(
-                f"Biggest lever is idle: {_num(idle_h)} hrs in the window "
-                f"(~{_money(weekly_fuel)}/wk of fuel at "
-                f"{IDLE_GPH} gph × ${DIESEL_PRICE}/gal).")
-
-    # AR trend — only mention if the trajectory is up.
-    if ar_hist and len(ar_hist) == 2:
-        labels, values = ar_hist
-        if values and len(values) >= 2:
-            first, last = values[0], values[-1]
-            if _isnum(first) and _isnum(last) and last > first * 1.15:
-                parts.append(
-                    f"AR climbed {_money(last - first)} over "
-                    f"{len(values)} months ({_money(first)} → {_money(last)}). "
-                    f"Watch the 31-60 bucket — that's the leading edge.")
+                f"AR in the 31 to 60 bucket has went {direction} by "
+                f"{_money(abs(delta))} week over week.")
 
     # SambaSafety — surface MVR high-risk count + per-driver license
     # expirations. Per Jeff: drop the aggregate "X licenses expiring
@@ -535,62 +528,63 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
               f"{'s' if int(e24 or 0) != 1 else ''} in last 24h. "
               f"Per-event detail and coaching status below.")
 
+    # === SAFETY (continued) ===
+    # Pages 4+5 — Equipment Compliance (tractors / trailers)
+    out[4] = "Tractor annual inspections and registration deadlines. Red = overdue or ≤30 days."
+    out[5] = "Trailer annual inspections and registration deadlines. Red = overdue or ≤30 days."
+
     # === OPERATIONAL ===
-    # Page 4 — Driver Mileage
+    # Page 6 — Driver Mileage
     mtd = (alvys or {}).get("mtd") or {}
     miles = mtd.get("miles")
     if _isnum(miles):
-        out[4] = (f"Page 1's mileage tile shows {_num(miles)} miles "
+        out[6] = (f"Page 1's mileage tile shows {_num(miles)} miles "
                   f"period-to-date. Per-driver breakdown below.")
 
-    # Page 5 — Fleet Operations (MPG / speeding)
+    # Page 7 — Fleet Operations (MPG / speeding)
     fleet = (samsara or {}).get("fleet") or {}
     fleet_mpg = fleet.get("fleet_mpg")
     if _isnum(fleet_mpg):
-        out[5] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
+        out[7] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
                   f"Best/worst trucks and speeders below; full idle ranking "
-                  f"is on page 6.")
+                  f"is on page 8.")
 
-    # Page 6 — Fleet Idle (its own page)
+    # Page 8 — Fleet Idle (its own page)
     idle = fleet.get("idle") or []
     if idle:
         top = idle[0]
-        out[6] = (f"Page 1's coaching cards came from this data. Worst idler: "
+        out[8] = (f"Page 1's coaching cards came from this data. Worst idler: "
                   f"{(top.get('driver') or 'Unassigned').upper()} "
                   f"({top.get('unit', '—')}) at {_pct(top.get('idle_pct'))}. "
                   f"All trucks ranked worst-to-best by avg idle / week below.")
 
     # === ACCOUNTING ===
-    # Page 7 — AR Overdue 31+
+    # Page 9 — QB AR Overdue 31+ combined with Alvys un-invoiced + 90+ AR
+    pg9_parts = []
     if qb_ar:
         total31 = qb_ar.get("total31") or 0
-        out[7] = (f"Page 1 flagged {_money(total31)} in 31+ AR. "
-                  f"This is the collections call list. JW Logistics omitted "
-                  f"per standing policy.")
-
-    # Page 8 — Alvys un-invoiced + 90+ AR (combined)
-    pg8_parts = []
+        pg9_parts.append(f"Page 1 flagged {_money(total31)} in 31+ AR (top). "
+                         f"JW Logistics omitted per standing policy.")
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
-        pg8_parts.append(
+        pg9_parts.append(
             f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
             f"delivered-but-not-yet-invoiced loads ({_money(amt)}).")
     if alvys_ar:
         d91 = alvys_ar.get("d91plus") or 0
         if d91:
-            pg8_parts.append(
-                f"Below that, {_money(d91)} of 90+ AR — escalate to "
-                f"collections.")
-    if pg8_parts:
-        out[8] = " ".join(pg8_parts)
+            pg9_parts.append(
+                f"Below that, {_money(d91)} of 90+ AR — escalate to collections.")
+    if pg9_parts:
+        out[9] = " ".join(pg9_parts)
 
-    # Page 9 — QB↔Alvys recon
-    out[9] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
-              "biggest contributors to the variance.")
+    # Page 10 — QB↔Alvys recon by customer
+    out[10] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
+               "biggest contributors to the variance.")
 
-    # Page 10 — Bill-by-bill match
-    out[10] = ("Page 9 showed customer-level variances. This page drills to "
+    # Page 11 — Bill-by-bill match
+    out[11] = ("Page 10 showed customer-level variances. This page drills to "
                "individual unmatched invoices.")
 
     return out

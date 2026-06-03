@@ -344,11 +344,92 @@ def main() -> int:
     trucks_df   = _build_equipment_df(lookups.raw_trucks,   "Truck")
     trailers_df = _build_equipment_df(lookups.raw_trailers, "Trailer")
 
+    # --- Fetch Maintenance records (inspection events) ---
+    # Schema (confirmed from first run):
+    #   Category   = {"Id": ..., "Name": "DOT"}  ← nested dict
+    #   RelatedAsset = {"AssetId": "TL...", "AssetNumber": "...", "AssetType": "Trailer"}
+    #   CreatedAt  = often 1970-01-01 (null); use ModifiedAt as the real event date
+    #   ModifiedAt = actual inspection date (e.g. "2026-05-22T20:13:00+00:00")
+    log.info("=" * 60)
+    log.info("Step X: Maintenance records (POST /maintenance/search)")
+    log.info("=" * 60)
+    raw_maintenance = client.fetch_maintenance(lookback_days=365)
+    if raw_maintenance:
+        sample_path = debug_dir / "sample_maintenance.json"
+        with open(sample_path, "w") as f:
+            json.dump(raw_maintenance[0], f, indent=2, default=str)
+        log.info("Wrote sample maintenance record → %s", sample_path)
+        if isinstance(raw_maintenance[0], dict):
+            keys = sorted(raw_maintenance[0].keys())
+            log.info("Maintenance sample keys (%d): %s", len(keys), ", ".join(keys))
+            # Category.Name is the maintenance type string (nested dict)
+            cat_names = sorted({
+                (r.get("Category") or {}).get("Name") or ""
+                for r in raw_maintenance if isinstance(r, dict)
+            } - {""})
+            log.info("Maintenance unique category names (%d): %s",
+                     len(cat_names), ", ".join(cat_names))
+
+    import pandas as pd
+    from datetime import datetime
+
+    # Build last-DOT-inspection lookup per asset from maintenance records.
+    # We use ModifiedAt as the event date (CreatedAt is often epoch/null).
+    # "DOT" is the Alvys category for annual DOT inspection.
+    _DOT_NAMES = {"dot", "annual", "annual inspection", "dot inspection",
+                  "annual dot", "dot annual"}
+    _last_dot: dict[str, datetime] = {}  # asset_id → most-recent ModifiedAt
+    for r in raw_maintenance:
+        if not isinstance(r, dict):
+            continue
+        cat_name = ((r.get("Category") or {}).get("Name") or "").lower().strip()
+        if not any(d in cat_name for d in ("dot", "annual")):
+            continue
+        asset = r.get("RelatedAsset") or {}
+        asset_id = asset.get("AssetId") or ""
+        if not asset_id:
+            continue
+        mod_at_str = r.get("ModifiedAt") or ""
+        if not mod_at_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(mod_at_str.replace("Z", "+00:00"))
+            if dt.year < 2000:
+                continue  # skip epoch/null dates
+            if asset_id not in _last_dot or dt > _last_dot[asset_id]:
+                _last_dot[asset_id] = dt
+        except Exception:
+            continue
+
+    log.info("Maintenance: %d assets have DOT inspection records", len(_last_dot))
+
+    # Overlay DOT inspection dates onto trailers_df.
+    # AnnualInspectionDue = last_dot_date + 365 days (DOT rule: annual).
+    if _last_dot and trailers_df is not None and not trailers_df.empty:
+        def _dot_due(row):
+            aid = row.get("Id") if isinstance(row, dict) else None
+            if aid is None and hasattr(row, "get"):
+                aid = row["Id"]
+            last = _last_dot.get(aid)
+            if last:
+                return (last + timedelta(days=365)).strftime("%Y-%m-%d")
+            return None
+        trailers_df["AnnualInspectionDue"] = trailers_df["Id"].map(
+            lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
+            if aid in _last_dot else None
+        )
+        n_filled = trailers_df["AnnualInspectionDue"].notna().sum()
+        log.info("Trailers: %d of %d have AnnualInspectionDue from maintenance records",
+                 n_filled, len(trailers_df))
+
+    maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
+
     # --- Write ---
     output_path = output_dir / "Alvys_Master.xlsx"
     write_master_xlsx(loads_df, trips_df, fuel_df, output_path,
                       drivers_df=drivers_df,
-                      trucks_df=trucks_df, trailers_df=trailers_df)
+                      trucks_df=trucks_df, trailers_df=trailers_df,
+                      maintenance_df=maintenance_df)
 
     log.info("=" * 60)
     log.info("SUCCESS — output written to %s", output_path.resolve())
