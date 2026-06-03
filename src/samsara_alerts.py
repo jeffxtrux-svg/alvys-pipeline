@@ -133,42 +133,78 @@ def _dvir_vehicle_name(dvir: dict) -> str:
 
 
 def _dvir_driver_name(dvir: dict) -> str:
-    for path in (("driver", "name"),):
+    # Most thorough: walk every possible nesting.
+    for path in (
+        ("driver", "name"),
+        ("submittedBy", "name"),
+        ("createdBy", "name"),
+        ("inspector", "name"),
+        ("user", "name"),
+    ):
         node = dvir
         for k in path:
             node = (node or {}).get(k) if isinstance(node, dict) else None
         if node:
             return str(node)
-    for flat in ("driverName",):
+    for flat in ("driverName", "submittedByName", "createdByName"):
         v = dvir.get(flat)
         if v:
             return str(v)
     drv_id = (dvir.get("driver") or {}).get("id") if isinstance(dvir.get("driver"), dict) else None
     if drv_id:
         return f"driver {drv_id}"
-    return "unknown driver"
+    # Trailer DVIRs sometimes carry no driver — em-dash is cleaner than "unknown".
+    return "&mdash;"
 
 
 def _dvir_time(dvir: dict) -> str:
-    for k in ("createdAtTime", "inspectionTime", "completedAtTime", "submittedAtTime", "time"):
+    # Try every ISO-string time field Samsara has shipped under any DVIR shape.
+    for k in (
+        "createdAtTime", "inspectionTime", "completedAtTime", "submittedAtTime",
+        "lastInspectedAtTime", "endTime", "startTime", "time",
+        "createdAt", "submittedAt", "completedAt", "inspectedAt",
+    ):
         v = dvir.get(k)
         if v:
             return str(v)
-    created_ms = dvir.get("createdAtMs") or dvir.get("inspectionTimeMs") or 0
-    if created_ms:
-        return datetime.datetime.utcfromtimestamp(created_ms / 1000).strftime(
-            "%Y-%m-%d %H:%M UTC"
-        )
-    return "unknown time"
+    # Millisecond fallbacks.
+    for ms_key in ("createdAtMs", "inspectionTimeMs", "completedAtMs",
+                   "submittedAtMs", "lastInspectedAtMs"):
+        ms = dvir.get(ms_key)
+        if ms:
+            try:
+                return datetime.datetime.utcfromtimestamp(int(ms) / 1000).strftime(
+                    "%Y-%m-%d %H:%M UTC"
+                )
+            except (TypeError, ValueError):
+                continue
+    return "&mdash;"
 
 
 def _extract_dvir_defects(dvirs: list[dict]) -> list[dict]:
     """Find DVIRs with unresolved defects."""
     defects = []
-    # One-shot debug: dump the first DVIR's top-level keys so we can see the
-    # actual response shape when a field comes back unexpectedly blank.
+    # One-shot debug: dump the first DVIR's top-level keys + full record so we
+    # can see the actual response shape when a field comes back unexpectedly blank.
     if dvirs and isinstance(dvirs[0], dict):
+        import json as _json
         log.info("DVIR sample keys: %s", sorted(dvirs[0].keys()))
+        log.info("DVIR sample record: %s", _json.dumps(dvirs[0], default=str)[:1500])
+        # Also dump the first DVIR that has an unresolved defect, since it may
+        # be a different shape than dvirs[0].
+        for d in dvirs:
+            if not isinstance(d, dict):
+                continue
+            has_unresolved = any(
+                not x.get("isResolved", x.get("resolved", True))
+                for k in ("vehicleDefects", "trailerDefects", "defects")
+                for x in (d.get(k) or [])
+                if isinstance(x, dict)
+            )
+            if has_unresolved:
+                log.info("DVIR sample (with unresolved defects): %s",
+                         _json.dumps(d, default=str)[:1500])
+                break
     for dvir in dvirs:
         # /fleet/dvirs/history nests defects under vehicleDefects/trailerDefects
         # with an isResolved flag (older shape used a flat "defects" list + resolved).
