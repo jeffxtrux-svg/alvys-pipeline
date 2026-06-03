@@ -279,36 +279,29 @@ def _rollover_state(mtd_revenue_loads: int) -> tuple[bool, pd.Timestamp | None,
 # Alvys operational KPIs (from the manual Alvys Master 2026 file)
 # ----------------------------------------------------------------------
 def _alvys_metrics(sub: pd.DataFrame) -> dict:
-    # Power BI's XFreight Report sums the workbook's "Total Dispatch Mileage"
-    # column (= Loaded + Empty) as its "Dispatch Mileage" measure. Both
-    # Dead Head % and Rev per Mile use that as the denominator. Mirror that
-    # here so the scorecard tiles tie to the Power BI table row-for-row.
-    #
-    # History: we briefly switched to dividing by Loaded only after a May 28
-    # diagnostic suggested Power BI was using Loaded (165,717 was close to
-    # the workbook's Loaded sum 165,508 at that time). A May 30 diagnostic
-    # showed Power BI's denominator was 175,182 — exactly the workbook's
-    # Total Dispatch Mileage sum. So the right basis is Total. The May 28
-    # numbers were a coincidental near-match on a transitional day.
+    # Power BI's Dead Head %, Rev per Mile, and Dispatch Mileage measures all
+    # use the workbook's Dispatch-Mileage columns:
+    #   Dead Head %      = SUM(Empty Dispatch Mileage) / SUM(Total Dispatch Mileage)
+    #   Dispatch Mileage = SUM(Total Dispatch Mileage)  (Loaded + Empty Dispatch)
+    # (confirmed in powerbi/queries/DAX_Measures.dax). The workbook also has
+    # billed columns ("Loaded Miles" / "Empty Miles") but PBI does NOT use them
+    # — billed miles drift from dispatch for in-progress loads. Pick Dispatch
+    # first so the tile ties to PBI's June row exactly.
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    # Power BI uses "Loaded Miles" / "Empty Miles" (actual billed/driven), not the
-    # "Dispatch Mileage" variants (planned route). List actual columns first so we
-    # match PBI when both are present in the workbook.
-    loaded = _col_any(sub, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).sum()
-    empty = _col_any(sub, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).sum()
+    loaded = _col_any(sub, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).sum()
+    empty = _col_any(sub, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).sum()
     total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage",
                                "Total Miles", "Total Mileage"])
     total_col_sum = total_col.sum() if total_col.notna().any() else None
-    # Derive total from Loaded + Empty (matches Power BI's "Dispatch Mileage"
-    # DAX measure). If the workbook's `Total Dispatch Mileage` aggregate
-    # column is present and disagrees, log a one-line diagnostic so we can
-    # tell whether scorecard or PBI is off — but trust loaded+empty as the
-    # canonical denominator since it's what the DAX measure computes.
-    total = loaded + empty
-    if total_col_sum is not None and abs(total_col_sum - total) > 1.0 and total > 0:
-        log.info("Alvys mileage diag: loaded=%.0f + empty=%.0f = %.0f, "
-                 "but Total-column sum=%.0f (ratio %.3f). Using loaded+empty.",
-                 loaded, empty, total, total_col_sum, total_col_sum / total)
+    # Prefer the workbook's Total Dispatch Mileage column directly (single
+    # source of truth in PBI's measure); fall back to loaded+empty if absent.
+    if total_col_sum is not None and total_col_sum > 0:
+        total = total_col_sum
+    else:
+        total = loaded + empty
+    if total_col_sum is not None and abs(total_col_sum - (loaded + empty)) > 1.0 and total > 0:
+        log.info("Alvys mileage diag: loaded+empty=%.0f vs Total-column=%.0f. Using Total.",
+                 loaded + empty, total_col_sum)
     # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
     # NOT added: the Driver Rate column is the full payout per load already.
     cost = float(_col(sub, "Driver Rate").fillna(0).sum())
@@ -362,16 +355,18 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     log.info("DIAG: Mileage columns in use → loaded=%r  empty=%r  total=%r",
              _used_loaded, _used_empty, _used_total)
     w = _windows()
-    # Bound each window to [start, now] — open-ended `dates >= start` was
-    # silently including loads with future-dated Scheduled Pickup, which
-    # Power BI's month-bucketed view excludes. For MTD this matters most:
-    # pre-booked loads later in the month inflated the denominator and
-    # halved the deadhead %.
+    # 24h/7d/30d remain bounded at `now` (rolling time windows). MTD matches
+    # Power BI's calendar-month bucket: include EVERY load scheduled in this
+    # month, even ones with future Scheduled Pickup dates. PBI's monthly
+    # table does this — the previous `dates <= now` cap hid ~8 future-booked
+    # June loads, making June dead-head read 3.7% vs PBI's 5.5%.
     now = w["now"]
+    mtd_end = (w["mtd"] + pd.offsets.MonthEnd(1)).replace(hour=23, minute=59, second=59)
     prior_7d_start = w["7d"] - pd.Timedelta(days=7)
-    win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
+    capped_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]))
     out = {key: _alvys_metrics(loads[(dates >= start) & (dates <= now)])
-           for key, start in win_specs}
+           for key, start in capped_specs}
+    out["mtd"] = _alvys_metrics(loads[(dates >= w["mtd"]) & (dates <= mtd_end)])
     # Prior 7-day window (14d-7d) for week-over-week change arrows.
     out["prior_7d"] = _alvys_metrics(loads[(dates >= prior_7d_start) & (dates < w["7d"])])
 
@@ -397,7 +392,10 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         is_asset = loads[office_col].map(_entity_group) == "X-Trux"
         a_loads, a_dates = loads[is_asset], dates[is_asset]
         out["asset"] = {key: _alvys_metrics(a_loads[(a_dates >= start) & (a_dates <= now)])
-                        for key, start in win_specs}
+                        for key, start in capped_specs}
+        # MTD: full calendar month including future-scheduled (matches PBI).
+        out["asset"]["mtd"] = _alvys_metrics(
+            a_loads[(a_dates >= w["mtd"]) & (a_dates <= mtd_end)])
         out["asset"]["prior_7d"] = _alvys_metrics(
             a_loads[(a_dates >= prior_7d_start) & (a_dates < w["7d"])])
         # Fleet metrics (X-Trux/XFreight, MTD): active trucks + miles per truck.
@@ -406,7 +404,7 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             out["asset"]["mtd"] = _alvys_metrics(a_loads[a_mtd_mask])
             a_mtd = a_loads[a_mtd_mask]
         else:
-            a_mtd = a_loads[(a_dates >= w["mtd"]) & (a_dates <= now)]
+            a_mtd = a_loads[(a_dates >= w["mtd"]) & (a_dates <= mtd_end)]
         truck_col = _find_col(a_loads, ["truck"])
         active = None
         if truck_col:
@@ -831,14 +829,11 @@ def compute_avg_fuel_price(alvys_pipeline_sheets: dict | None) -> float | None:
 def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     """Monthly dead-head % for last 6 months from Alvys Master 2026 Loads.
 
-    Matches the page-1 X-Trux dead-head tile (_alvys_metrics) exactly so the
-    trend's current-month bar ties to the tile:
-      * X-Trux asset side only (XFreight folded into X-Trux; X-Linx excluded)
-      * Excludes Cancelled loads
-      * Column preference: "Loaded Miles" + "Empty Miles" (billed/driven),
-        falling back to the Mileage / Dispatch Mileage variants if absent
-      * Current month (i == 5) is capped at `now` — future-scheduled loads
-        are excluded so the bar matches the MTD tile
+    Matches Power BI's DAX measure exactly (and the page-1 dead-head tile):
+      Dead Head % = SUM(Empty Dispatch Mileage) / SUM(Total Dispatch Mileage)
+    Scope: X-Trux asset side (X-Trux + XFreight; X-Linx excluded), Cancelled
+    loads excluded, every load with Scheduled Pickup in the month is included
+    (no MTD-cap on the current month — PBI's monthly table does the same).
     """
     empty = {"labels": [], "values": []}
     if not alvys_sheets:
@@ -846,44 +841,42 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     loads = alvys_sheets.get("Loads")
     if loads is None or loads.empty:
         return empty
-    # Exclude Cancelled — same as _alvys_metrics
     _status_col = _find_col(loads, ["load status", "status"])
     if _status_col:
         loads = loads[loads[_status_col].astype(str).str.strip().str.lower() != "cancelled"]
-    # X-Trux only (asset side, includes XFreight). Mirrors compute_alvys's `is_asset`.
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
-    # Use SAME column preference as _alvys_metrics (billed miles first).
-    loaded_mi = _col_any(loads, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).fillna(0)
-    empty_mi  = _col_any(loads, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).fillna(0)
-    total_mi  = loaded_mi + empty_mi
-    _em_col = next((c for c in ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]
+    # PBI DAX: Empty Dispatch Mileage / Total Dispatch Mileage. Prefer the
+    # workbook's Total Dispatch Mileage column directly; fall back to
+    # loaded+empty dispatch if absent.
+    empty_mi = _col_any(loads, ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]).fillna(0)
+    total_mi = _col_any(loads, ["Total Dispatch Mileage", "Dispatch Mileage",
+                                "Total Mileage", "Total Miles"]).fillna(0)
+    if total_mi.sum() == 0:
+        loaded_mi = _col_any(loads, ["Loaded Dispatch Mileage", "Loaded Mileage", "Loaded Miles"]).fillna(0)
+        total_mi = loaded_mi + empty_mi
+    _em_col = next((c for c in ["Empty Dispatch Mileage", "Empty Mileage", "Empty Miles"]
                     if c in loads.columns), None)
-    _lo_col = next((c for c in ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]
-                    if c in loads.columns), None)
-    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r loaded_col=%r "
-             "rows_after_filter=%d", _em_col, _lo_col, len(loads))
-    now = pd.Timestamp.utcnow().tz_localize(None)
+    _tm_col = next((c for c in ["Total Dispatch Mileage", "Dispatch Mileage",
+                                "Total Mileage", "Total Miles"] if c in loads.columns), None)
+    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r total_col=%r "
+             "rows_after_filter=%d", _em_col, _tm_col, len(loads))
     labels, values = [], []
     for i, (yy, mm) in enumerate(_last_6_months()):
-        month_start = pd.Timestamp(year=yy, month=mm, day=1)
-        # Cap current month (last in list) at now to match the MTD tile.
-        if i == 5:
-            mask = (dates >= month_start) & (dates <= now)
-        else:
-            mask = (dates.dt.year == yy) & (dates.dt.month == mm)
+        mask = (dates.dt.year == yy) & (dates.dt.month == mm)
         em = float(empty_mi[mask].sum())
         tot = float(total_mi[mask].sum())
-        lab = month_start.strftime("%b")
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
         if i == 5:
             lab += "*"
         labels.append(lab)
         values.append(round(em / tot * 100, 1) if tot > 0 else 0.0)
         if i == 5:
-            log.info("dh_trend current month: %s empty=%.0f total=%.0f → %.2f%%",
-                     lab, em, tot, (em / tot * 100) if tot > 0 else 0)
+            log.info("dh_trend current month: %s empty=%.0f total=%.0f → %.2f%% "
+                     "(loads in month=%d)",
+                     lab, em, tot, (em / tot * 100) if tot > 0 else 0, int(mask.sum()))
     return {"labels": labels, "values": values}
 
 
