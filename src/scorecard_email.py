@@ -74,6 +74,7 @@ TARGET_RPM = 2.92
 TARGET_DEADHEAD = 0.06
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
+DRIVER_TARGET_MILES = 2000  # weekly miles target for the mileage page below-target tile
 
 # --- X-Trux rate-per-mile goal -----------------------------------------
 # The goal re-costs the operation every run instead of trusting a stale number.
@@ -367,9 +368,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # pre-booked loads later in the month inflated the denominator and
     # halved the deadhead %.
     now = w["now"]
+    prior_7d_start = w["7d"] - pd.Timedelta(days=7)
     win_specs = (("24h", w["24h"]), ("7d", w["7d"]), ("30d", w["30d"]), ("mtd", w["mtd"]))
     out = {key: _alvys_metrics(loads[(dates >= start) & (dates <= now)])
            for key, start in win_specs}
+    # Prior 7-day window (14d-7d) for week-over-week change arrows.
+    out["prior_7d"] = _alvys_metrics(loads[(dates >= prior_7d_start) & (dates < w["7d"])])
 
     # Month-rollover resilience: on day 1-3 of a month with NO revenue-bearing
     # loads yet, the tiles would all read 'n/a'. Swap MTD for the previous
@@ -394,6 +398,8 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         a_loads, a_dates = loads[is_asset], dates[is_asset]
         out["asset"] = {key: _alvys_metrics(a_loads[(a_dates >= start) & (a_dates <= now)])
                         for key, start in win_specs}
+        out["asset"]["prior_7d"] = _alvys_metrics(
+            a_loads[(a_dates >= prior_7d_start) & (a_dates < w["7d"])])
         # Fleet metrics (X-Trux/XFreight, MTD): active trucks + miles per truck.
         if rollover:
             a_mtd_mask = (a_dates >= lm_start) & (a_dates <= lm_end)
@@ -797,6 +803,143 @@ def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int 
         "rows": rows[:limit],
         "shown": min(len(rows), limit),
     }
+
+
+def compute_avg_fuel_price(alvys_pipeline_sheets: dict | None) -> float | None:
+    """Average discounted price-per-gallon from the Alvys Fuel sheet (last 60 days)."""
+    if not alvys_pipeline_sheets:
+        return None
+    fuel = alvys_pipeline_sheets.get("Fuel")
+    if fuel is None or fuel.empty:
+        return None
+    date_col = _find_col(fuel, ["transaction date", "date"])
+    ppu_col  = _find_col(fuel, ["discount ppu", "discountppu", "ppu", "price per unit"])
+    if not ppu_col:
+        return None
+    prices = pd.to_numeric(fuel[ppu_col], errors="coerce")
+    if date_col:
+        try:
+            cutoff = pd.Timestamp.now() - pd.Timedelta(days=60)
+            dates = _to_naive_dt(fuel[date_col])
+            prices = prices[dates >= cutoff]
+        except Exception:
+            pass
+    prices = prices[(prices > 0.5) & (prices < 10.0)]  # sanity: $0.50–$10/gal
+    return float(prices.mean()) if len(prices) else None
+
+
+def compute_dh_trend(alvys_sheets: dict | None) -> dict:
+    """Monthly dead-head % for last 6 months from the Alvys master Loads sheet."""
+    empty = {"labels": [], "values": []}
+    if not alvys_sheets:
+        return empty
+    loads = alvys_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return empty
+    if "Load Status" in loads.columns:
+        loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    loaded = _col_any(loads, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).fillna(0)
+    empty_mi = _col_any(loads, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).fillna(0)
+    labels, values = [], []
+    for i, (yy, mm) in enumerate(_last_6_months()):
+        mask = (dates.dt.year == yy) & (dates.dt.month == mm)
+        lo = float(loaded[mask].sum())
+        em = float(empty_mi[mask].sum())
+        tot = lo + em
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        if i == 5:
+            lab += "*"
+        labels.append(lab)
+        values.append(round(em / tot * 100, 1) if tot > 0 else 0.0)
+    return {"labels": labels, "values": values}
+
+
+def compute_ontime(alvys_pipeline_sheets: dict | None) -> dict:
+    """On-time delivery rate from Alvys pipeline Loads (Scheduled vs Actual delivery)."""
+    empty = {"rate": None, "on_time": 0, "total": 0, "available": False}
+    if not alvys_pipeline_sheets:
+        return empty
+    loads = alvys_pipeline_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return empty
+    sched_col = _find_col(loads, ["scheduled delivery"])
+    actual_col = _find_col(loads, ["actual delivery"])
+    if not sched_col or not actual_col:
+        return empty
+    if "Load Status" in loads.columns:
+        loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
+    # Scope to X-Trux + X-Linx to match the rest of the report
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if office_col:
+        loads = loads[loads[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+    sched = _to_naive_dt(loads[sched_col])
+    actual = _to_naive_dt(loads[actual_col])
+    has_both = sched.notna() & actual.notna()
+    if not has_both.any():
+        return empty
+    sub_sched = sched[has_both]
+    sub_actual = actual[has_both]
+    on_time = int((sub_actual <= sub_sched).sum())
+    total = int(has_both.sum())
+    # MTD window
+    mtd_start = pd.Timestamp.now().normalize().replace(day=1)
+    mtd_mask = has_both & (actual >= mtd_start)
+    on_time_mtd = int((actual[mtd_mask] <= sched[mtd_mask]).sum())
+    total_mtd = int(mtd_mask.sum())
+    return {
+        "rate": round(on_time / total * 100, 1) if total else None,
+        "rate_mtd": round(on_time_mtd / total_mtd * 100, 1) if total_mtd else None,
+        "on_time": on_time,
+        "total": total,
+        "on_time_mtd": on_time_mtd,
+        "total_mtd": total_mtd,
+        "available": True,
+    }
+
+
+def compute_customer_rpm(alvys_pipeline_sheets: dict | None, top_n: int = 15) -> list[dict]:
+    """Revenue per mile by customer (MTD, X-Trux + X-Linx, sorted by RPM desc)."""
+    if not alvys_pipeline_sheets:
+        return []
+    loads = alvys_pipeline_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return []
+    if "Load Status" in loads.columns:
+        loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if office_col:
+        loads = loads[loads[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+    # MTD filter
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    mtd_start = pd.Timestamp.now().normalize().replace(day=1)
+    loads = loads[dates >= mtd_start]
+    if loads.empty:
+        return []
+    cust_col = "Customer" if "Customer" in loads.columns else _find_col(loads, ["customer name", "customer"])
+    if not cust_col:
+        return []
+    rev = _col_any(loads, ["Customer Revenue", "Revenue"]).fillna(0)
+    miles = _col_any(loads, ["Total Dispatch Mileage", "Dispatch Mileage",
+                              "Total Miles", "Total Mileage"]).fillna(0)
+    customers = loads[cust_col].fillna("(unknown)").astype(str)
+    rows: dict[str, dict] = {}
+    for i, cust in enumerate(customers):
+        if _is_ar_excluded(cust):
+            continue
+        d = rows.setdefault(cust, {"customer": cust, "revenue": 0.0, "miles": 0.0, "loads": 0})
+        d["revenue"] += float(rev.iloc[i])
+        d["miles"]   += float(miles.iloc[i])
+        d["loads"]   += 1
+    result = []
+    for d in rows.values():
+        if d["miles"] > 0 and d["revenue"] > 0:
+            d["rpm"] = round(d["revenue"] / d["miles"], 3)
+        else:
+            d["rpm"] = None
+        result.append(d)
+    result.sort(key=lambda r: -(r["rpm"] or 0))
+    return result[:top_n]
 
 
 def compute_qb_pnl(df: pd.DataFrame) -> dict:
@@ -2875,6 +3018,20 @@ def _pill(t, k):
             f"font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap'>{t}</span>")
 
 
+def _wow(current, prior, lower_is_better: bool = False, fmt=None) -> str:
+    """Week-over-week change badge: ▲ / ▼ with % change, colored good/bad."""
+    if not _isnum(current) or not _isnum(prior) or prior == 0:
+        return ""
+    chg = (current - prior) / abs(prior)
+    up = chg >= 0
+    good = (not up) if lower_is_better else up
+    color = GOOD if good else BAD
+    arrow = "&#9650;" if up else "&#9660;"
+    label = fmt(abs(chg)) if fmt else f"{abs(chg)*100:.0f}%"
+    return (f"<span style='font-size:11px;font-weight:700;color:{color};"
+            f"margin-left:4px;white-space:nowrap;'>{arrow} {label} WoW</span>")
+
+
 def _tile(label, value, sub, width="25%"):
     return (f"<td class='tile' width='{width}' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
             f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;'>"
@@ -3290,11 +3447,13 @@ def compute_drag_attribution(
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
-                samba=None, alvys_drivers=None, dso_hist=None) -> str:
+                samba=None, alvys_drivers=None, dso_hist=None,
+                ontime=None, dh_trend=None, customer_rpm=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
     w7a = ((alvys or {}).get("asset") or {}).get("7d", w7)  # X-Trux/XFreight 7d
+    p7a = ((alvys or {}).get("asset") or {}).get("prior_7d", {})  # prior 7d (14d-7d)
     # X-Trux/XFreight MTD — same Power BI-aligned basis (revenue / Loaded
     # miles) that feeds the Revenue/Mile and Dead head % tiles. The bottom-
     # line blurb uses this so its RPM/DH numbers tie to the Power BI report
@@ -3385,9 +3544,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                      else _pill("X-Trux", "mute"))
     # Tile order pairs mileage with rev/mile (slots 1 & 2) and loads with
     # rev/load (slots 3 & 4) so each $/X ratio sits next to its denominator.
+    _rpm_wow = _wow(w7a.get("rpm"), p7a.get("rpm"))
+    _loads_wow = _wow(w7a.get("loads"), p7a.get("loads"))
     xtrux_r1 = (_tile("X-Trux Mileage &middot; MTD", num(_xt_miles), _mi_sub)
-                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm), _rpm_sub_tile)
-                + _tile("X-Trux Loads &middot; MTD", num(_xt_loads), _pill("X-Trux + XFreight", "mute"))
+                + _tile("Revenue / mile &middot; MTD", rpm(_xt_rpm),
+                        _rpm_sub_tile + ("&nbsp;" + _rpm_wow if _rpm_wow else ""))
+                + _tile("X-Trux Loads &middot; MTD", num(_xt_loads),
+                        _pill("X-Trux + XFreight", "mute") + ("&nbsp;" + _loads_wow if _loads_wow else ""))
                 + _tile("Revenue / load &middot; MTD", money(_xt_rpl), _pill("X-Trux", "mute")))
     # Empty miles first (the raw number), Dead head % next (the ratio).
     _dh_sub = (f"{num(_xt_empty)} &divide; {num(_xt_miles)} mi &nbsp;"
@@ -3396,10 +3559,19 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                if _isnum(_xt_empty) and _isnum(_xt_miles)
                else f"goal &le;{pct(TARGET_DEADHEAD)} "
                     + _pill("DH", _flag_kind(_xt_asset.get("deadhead"), TARGET_DEADHEAD, True)))
+    _dh_wow = _wow(w7a.get("deadhead"), p7a.get("deadhead"), lower_is_better=True, fmt=lambda v: f"{v*100:.1f}pp")
+    _ontime = ontime or {}
+    _ot_rate = _ontime.get("rate_mtd")
+    _ot_tile = _tile(
+        "On-time delivery &middot; MTD",
+        (f"{_ot_rate:.0f}%" if _isnum(_ot_rate) else "n/a"),
+        (f"{_ontime.get('on_time_mtd',0)} of {_ontime.get('total_mtd',0)} loads"
+         if _ontime.get("available") else _pill("data pending", "mute")))
     xtrux_r2 = (_tile("Empty miles &middot; MTD", num(_xt_empty), _pill("X-Trux + XFreight", "mute"))
-                + _tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")), _dh_sub)
+                + _tile("Dead head % &middot; MTD", pct(_xt_asset.get("deadhead")),
+                        _dh_sub + ("&nbsp;" + _dh_wow if _dh_wow else ""))
                 + _tile("Active trucks &middot; MTD", num(fleet.get("active_trucks")), _pill("X-Trux + XFreight", "mute"))
-                + _tile("Avg miles / truck &middot; MTD", num(fleet.get("miles_per_truck")), _pill("X-Trux + XFreight", "mute")))
+                + _ot_tile)
     margin_tile = _tile("XFreight Margin &middot; MTD", money(_co_margin or None), _pill("revenue &minus; cost", "mute"))
     t1 = (_tile("XFreight Revenue &middot; MTD", money(_co_rev or None), _pill("X-Trux + X-Linx", "mute"))
           + pay_tile
@@ -3598,6 +3770,40 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ar_insight = _dir(ar_vals, "AR") + " " + _dir(ap_vals, "AP")
     if ar_rising:
         ar_insight += " Receivables growing &mdash; watch the 91+ bucket."
+
+    # Top-5 overdue AR customers (31+ days, by total balance) from QB.
+    _top5_ar_html = ""
+    if qb_ar and qb_ar.get("rows"):
+        _cust_31 = {}
+        for row in qb_ar["rows"]:
+            nm = row.get("customer", "") or ""
+            _cust_31.setdefault(nm, 0.0)
+            _cust_31[nm] += float(row.get("amount", 0))
+        _top5 = sorted(_cust_31.items(), key=lambda x: -x[1])[:5]
+        if _top5:
+            _t5rows = "".join(
+                _tr([nm, money(amt), row.get("bucket", "31+")],
+                    ["left", "right", "right"],
+                    [None, "bad", "warn"])
+                for nm, amt in _top5
+                for row in [next((r for r in qb_ar["rows"] if r.get("customer") == nm), {"bucket": "31+"})]
+            )
+            _top5_ar_html = (
+                _section("Top 5 overdue customers (31+ days) &mdash; QuickBooks AR", span=4)
+                + _table(["Customer", "Balance", "Bucket"], ["left", "right", "right"],
+                         "".join(_tr([nm, money(amt)], ["left", "right"], [None, "bad"])
+                                 for nm, amt in _top5), span=4)
+            )
+
+    # Dead-head % trend chart (if provided)
+    _dh_trend_chart = ""
+    if dh_trend and dh_trend.get("labels"):
+        _dh_trend_chart = _bar_chart(
+            "Dead head % by month &middot; 6 months",
+            dh_trend["labels"], dh_trend["values"],
+            "X-Trux + X-Linx &middot; *MTD",
+            fmt=lambda v: f"{v:.1f}%",
+        )
 
     # Safety tiles + trend charts
     sf = (samsara or {})
@@ -3860,6 +4066,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                f"{_brief(recon_note, recon['kind'])}"
                if recon_row else "")
             + recon_detail
+            + _top5_ar_html
+            + (f"{_section('Dead head % by month &middot; 6-month trend')}<tr>{_dh_trend_chart}</tr>"
+               if _dh_trend_chart else "")
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
@@ -4077,9 +4286,23 @@ def build_page2(samsara, date_str) -> str:
         _spd_rows(), span=4,
     )
 
+    # Safety event trend charts (6-month bar charts)
+    _s_tr = (samsara or {}).get("trend", {})
+    def _s_chart(metric, title, sub):
+        ml = _s_tr.get(metric)
+        return _bar_chart(title, ml[0] if ml else [], ml[1] if ml else [], sub)
+    _safety_trend_row = (
+        f"<tr>"
+        f"{_s_chart('events', 'Safety events / month', '*MTD')}"
+        f"{_s_chart('hos',    'HOS violations / month', '*MTD')}"
+        f"{_s_chart('dvir',   'DVIR defects / month',   '*MTD')}"
+        f"</tr>"
+    )
+
     return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{gauge_row}"
+            f"{_safety_trend_row}"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
             f"{_tile('Open DVIR defects &middot; 7d', num(w('dvir', '7d')), '')}"
@@ -4106,7 +4329,7 @@ def build_page2(samsara, date_str) -> str:
             f"Assignments (past-due only; tiles hidden when module not enabled).</div>")
 
 
-def build_page_fleet(samsara, date_str) -> str:
+def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
     """Page 3: Fleet Operations — MPG and speeding. Idle detail is its own
     page (build_page_idle, pg 6); driver safety scores live on the Safety
     page (build_page2, pg 3)."""
@@ -4161,6 +4384,22 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
+    # Revenue per mile by customer — MTD, top 15, sorted by RPM desc.
+    _crpm = customer_rpm or []
+    if _crpm:
+        crpm_rows = "".join(
+            _tr([r["customer"], money(r["revenue"]), num(r["miles"]),
+                 str(r["loads"]), rpm(r["rpm"])],
+                ["left", "right", "right", "right", "right"],
+                [None, None, None, None,
+                 "good" if (r["rpm"] or 0) >= TARGET_RPM else "bad"])
+            for r in _crpm)
+        crpm_tbl = _table(["Customer", "Revenue MTD", "Miles MTD", "Loads", "Rev / Mile"],
+                          ["left", "right", "right", "right", "right"], crpm_rows)
+    else:
+        crpm_tbl = (f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>"
+                    f"(no data)</td></tr>")
+
     return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 7, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
@@ -4170,13 +4409,16 @@ def build_page_fleet(samsara, date_str) -> str:
             f"{mpg_bot_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
+            f"{_section('Revenue per mile by customer &middot; MTD &middot; X-Trux + X-Linx &middot; top 15')}"
+            f"{crpm_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
-            f"(speeding, 7 days). Idle detail is on the Fleet Idle page (pg 6); "
+            f"(speeding, 7 days). Revenue / mile by customer from Alvys pipeline (MTD loads). "
+            f"Idle detail is on the Fleet Idle page (pg 6); "
             f"driver safety scores are on the Safety page (pg 3).</div>")
 
 
-def build_page_idle(samsara, date_str) -> str:
+def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> str:
     """Page 4: Fleet Idle — every truck ranked worst-to-best by average idle
     hours per week, with a 5-settlement-week breakdown (Wed 3pm CT → Wed
     2:59pm CT, current week tinted), idle %, estimated idle gallons, and MPG.
@@ -4197,14 +4439,19 @@ def build_page_idle(samsara, date_str) -> str:
     total_idle = sum((r.get("idle_hours") or 0) for r in idle_rows)
     total_gal = sum((r.get("idle_gallons") or 0) for r in idle_rows)
     worst = idle_rows[0] if idle_rows else None
+    # Idle cost: prefer real Alvys Discount PPU; fall back to $4.00/gal estimate
+    _fuel_price = avg_fuel_price if _isnum(avg_fuel_price) and avg_fuel_price > 0 else 4.00
+    _fuel_src = f"${_fuel_price:.3f}/gal Alvys avg" if (_isnum(avg_fuel_price) and avg_fuel_price > 0) else "$4.00/gal est."
+    total_cost = total_gal * _fuel_price
+    worst_cost = (worst.get("idle_gallons") or 0) * _fuel_price if worst else 0
     tiles = (
         _tile("Trucks ranked", num(n_trucks), _pill("worst-to-best by avg / wk", "mute"))
         + _tile("Fleet idle hours", num(fleet_idle if _isnum(fleet_idle) else total_idle),
                 _pill("last 5 settlement weeks", "mute"))
-        + _tile("Idle gallons &middot; est.", (f"{total_gal:.0f}" if total_gal else "n/a"),
-                _pill("0.8 gph heuristic", "mute"))
+        + _tile("Idle cost &middot; est.", (f"${total_cost:,.0f}" if total_gal else "n/a"),
+                _pill(f"0.8 gph &times; {_fuel_src}", "mute"))
         + _tile("Worst idler", (worst["unit"] if worst else "n/a"),
-                _pill((f"{worst['idle_hours']:.0f} hrs total" if worst else "&mdash;"),
+                _pill((f"{worst['idle_hours']:.0f} hrs &middot; ${worst_cost:,.0f} est." if worst else "&mdash;"),
                       "bad" if worst else "mute"))
     )
 
@@ -4268,6 +4515,9 @@ def build_page_idle(samsara, date_str) -> str:
     else:
         idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
 
+    _cost_note = (f"Idle cost = idle gallons &times; {_fuel_src} (Alvys Discount PPU 60-day avg). "
+                  if (_isnum(avg_fuel_price) and avg_fuel_price > 0)
+                  else "Idle cost = idle gallons &times; $4.00/gal placeholder (set Alvys Fuel data for live price). ")
     return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
@@ -4276,6 +4526,7 @@ def build_page_idle(samsara, date_str) -> str:
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Source: Samsara engine-state history (idle, last 5 settlement weeks; "
             f"idle gallons = idle_hours &times; 0.8 gph fleet-average heuristic). "
+            f"{_cost_note}"
             f"Avg / wk averages the 4 complete weeks (excludes the partial current week).</div>")
 
 
@@ -4311,13 +4562,17 @@ def build_page4(mileage, date_str) -> str:
     week_totals = m.get("week_totals") or [0] * SETTLEMENT_WEEKS
     cur = SETTLEMENT_WEEKS - 1
 
-    tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")), _pill("settled legs", "mute"))
+    # Drivers below target (current settlement week only)
+    _below_tgt = sum(1 for r in rows if 0 < r["weeks"][cur] < DRIVER_TARGET_MILES)
+    _below_kind = "bad" if _below_tgt >= 3 else ("warn" if _below_tgt >= 1 else "good")
+    tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")),
+                   _pill("settled legs", "mute")
+                   + " &middot; "
+                   + _pill(f"avg {num(m.get('avg_per_driver'))} mi / driver", "mute"))
              + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
              + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
-             + _tile("Avg miles / driver", num(m.get("avg_per_driver")),
-                     _pill("this week", "mute")
-                     + " &middot; "
-                     + _pill(f"avg {num(m.get('avg_drivers_per_week'))} drivers/wk", "mute")))
+             + _tile("Drivers below target &middot; this week", num(_below_tgt),
+                     _pill(f"&lt; {num(DRIVER_TARGET_MILES)} mi this week", _below_kind)))
 
     def mcell(text, al="right", cur=False, bold=False, small=False):
         bg = f"background:{ACCENTBG};" if cur else ""
@@ -4747,7 +5002,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
-               dso_hist=None) -> str:
+               dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
+               customer_rpm=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -4802,7 +5058,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
             # follows the entity-level summary. Safety and AR pages then come
@@ -4828,8 +5084,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='trailers', pg=5))}{pb}"
             # -- OPERATIONAL --
             f"{wrap(_strip(6) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(7) + build_page_fleet(samsara, date_str))}{pb}"
-            f"{wrap(_strip(8) + build_page_idle(samsara, date_str))}{pb}"
+            f"{wrap(_strip(7) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
+            f"{wrap(_strip(8) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
             # -- ACCOUNTING --
             f"{wrap(_strip(9) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
             f"{wrap(_strip(10) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
@@ -4872,12 +5128,18 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     # DSO history: filter to X-Trux only (asset fleet — same scope the user sees in QB).
     _dso_companies = frozenset({"x-trux inc"})
     dso_hist = compute_dso_history(dso_hist_sheets, companies=_dso_companies)
+    avg_fuel_price = compute_avg_fuel_price(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    dh_trend = compute_dh_trend(alvys_sheets) if alvys_sheets else None
+    ontime = compute_ontime(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    customer_rpm = compute_customer_rpm(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     html = build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
-                      equipment=equipment, dso_hist=dso_hist)
+                      equipment=equipment, dso_hist=dso_hist,
+                      avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
+                      customer_rpm=customer_rpm)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
