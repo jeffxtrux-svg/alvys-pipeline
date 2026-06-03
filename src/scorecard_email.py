@@ -2517,9 +2517,12 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
     }
 
 
-def build_page_equipment(equipment, date_str) -> str:
-    """Page 4 — Equipment Compliance (tractors + trailers inspection/registration)."""
-    header = _header("Equipment Compliance &mdash; Tractor &amp; Trailer Inspections", 4, date_str, section="SAFETY")
+def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
+    """Equipment Compliance page — renders one fleet type per call.
+    kind='tractors' → page 4; kind='trailers' → page 5."""
+    title = ("Equipment Compliance &mdash; Tractor Inspections" if kind == "tractors"
+             else "Equipment Compliance &mdash; Trailer Inspections")
+    header = _header(title, pg, date_str, section="SAFETY")
 
     if not equipment:
         return (header
@@ -2644,21 +2647,21 @@ def build_page_equipment(equipment, date_str) -> str:
                 + summary
                 + _equipment_table(rows, kind))
 
-    body = (
-        _section_block(
+    if kind == "tractors":
+        body = _section_block(
             equipment["tractors"], "Tractors",
             equipment["tractors_overdue_annual"], equipment["tractors_warn30_annual"], equipment["tractors_warn60_annual"],
             equipment["tractors_overdue_reg"],    equipment["tractors_warn30_reg"],    equipment["tractors_warn60_reg"],
         )
-        + _section_block(
+    else:
+        body = _section_block(
             equipment["trailers"], "Trailers",
             equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
             equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
         )
-        + f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-        f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets. "
-        f"Red = overdue or &le;30d. Orange = 31&ndash;60d. Sort: soonest annual inspection first.</div>"
-    )
+    body += (f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets. "
+             f"Red = overdue or &le;30d. Orange = 31&ndash;60d. Sort: soonest annual inspection first.</div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
@@ -3768,7 +3771,7 @@ def build_page_fleet(samsara, date_str) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 6, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 7, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
@@ -3875,7 +3878,7 @@ def build_page_idle(samsara, date_str) -> str:
     else:
         idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
 
-    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 7, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
@@ -3982,7 +3985,7 @@ def build_page4(mileage, date_str) -> str:
              f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
              f"{head}{body}</table></td></tr>")
 
-    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 5, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 6, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
@@ -4044,6 +4047,79 @@ def build_page5(uninv, alvys_ar, date_str) -> str:
             f"Bottom: open invoiced balances aged &gt;90 days past the Customer Due Date (Invoiced Date + 30d if none); "
             f"many may already be paid in QuickBooks &mdash; see the page-1 AR reconciliation note. "
             f"X-Trux Inc + X-Linx Inc, JW Logistics excluded. Source: Alvys API (Loads, via the pipeline file).</div>")
+
+
+def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
+    """Page 9 — QB AR Overdue (31+) combined with Alvys Un-invoiced & Aged AR."""
+    # -- QB AR Overdue section --
+    rows = ""
+    for r in (qb_ar or {}).get("rows", []):
+        k = "bad" if r["bucket"] == "91+" else "warn"
+        rows += _tr([r["customer"], r["invoice"], r["date"], r["due"], money(r["amount"]), r["bucket"]],
+                    ["left", "left", "left", "left", "right", "left"],
+                    [None, None, None, None, (k if r["bucket"] == "91+" else None), k])
+    totals = (qb_ar or {}).get("totals", {})
+    total31 = (qb_ar or {}).get("total31")
+    total_row = (f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>"
+                 f"Total 31+ days overdue</td><td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
+                 f"border-top:2px solid {LINE};'>{money(total31)}</td><td style='border-top:2px solid {LINE};'></td></tr>")
+    qb_tiles = (f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
+                f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
+                f"{_tile('91+ days', money(totals.get('91+')), _pill('collections', 'bad'))}"
+                f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>")
+
+    # -- Alvys Accounting section --
+    u = uninv or {}
+    rows_data = u.get("rows", [])
+    od = u.get("oldest_days")
+    a = alvys_ar or {}
+    custs = a.get("d91plus_customers") or []
+    n_loads = sum(c["loads"] for c in custs)
+
+    uninv_tiles = (_tile("Loads delivered, not invoiced", num(u.get("count")), _pill("X-Trux + X-Linx", "mute"))
+                   + _tile("Un-invoiced revenue", money(u.get("total_revenue")), _pill("to bill", "warn"))
+                   + _tile("Oldest delivered", (num(od) + " days" if _isnum(od) else "n/a"), _pill("since delivery", "bad"))
+                   + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
+    uninv_body = ""
+    for r in rows_data:
+        dd = r["days"] or 0
+        k = "bad" if dd >= 14 else ("warn" if dd >= 7 else None)
+        days_txt = str(r["days"]) if r["days"] is not None else "&ndash;"
+        cust = r["customer"] or "&mdash; (no customer name)"
+        uninv_body += _tr([r["load"], cust, r["entity"], r["delivered"], days_txt, money(r["revenue"])],
+                          ["left", "left", "left", "left", "right", "right"],
+                          [None, None, None, None, k, None])
+    shown, count = u.get("shown", len(rows_data)), u.get("count", 0)
+    uninv_more = (f"<tr><td colspan='6' style='padding:8px;color:{MUTE};font-size:11px;'>"
+                  f"Showing the {shown} oldest of {count} loads.</td></tr>") if count > shown else ""
+
+    ar_tiles = (_tile("90+ days AR", money(a.get("d91plus")), _pill("X-Trux + X-Linx", "bad"))
+                + _tile("Customers 90+", num(len(custs)), _pill("over 90 days", "bad"))
+                + _tile("Loads 90+", num(n_loads), _pill("open invoices", "mute"))
+                + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
+    ar_body = ""
+    for c in custs:
+        ar_body += _tr([c["customer"] or "&mdash; (no customer name)", str(c["loads"]),
+                        str(c["oldest_days"]), money(c["amount"])],
+                       ["left", "right", "right", "right"], [None, None, "bad", "bad"])
+
+    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 9, date_str, section='ACCOUNTING')}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"{qb_tiles}"
+            f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
+            f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], rows + total_row)}"
+            f"<tr><td colspan='4' style='padding:6px 0;border-top:2px solid {LINE};'></td></tr>"
+            f"<tr>{uninv_tiles}</tr>"
+            f"{_section('Delivered loads awaiting invoice &middot; oldest first &middot; as of ' + date_str)}"
+            f"{_table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'], ['left', 'left', 'left', 'left', 'right', 'right'], uninv_body + uninv_more)}"
+            f"<tr>{ar_tiles}</tr>"
+            f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
+            f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], ar_body)}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Top: QuickBooks A/R Aging Detail, X-Trux + X-Linx, current and 1&ndash;30 day balances omitted. "
+            f"Middle: delivered Alvys loads with no Invoiced Date &mdash; the un-billed revenue behind most of the QB-vs-Alvys AR gap. "
+            f"Bottom: open invoiced balances aged &gt;90 days past the Customer Due Date. "
+            f"JW Logistics excluded throughout. Source: QuickBooks + Alvys API.</div>")
 
 
 def build_page7(qb_ar, alvys_ar, date_str) -> str:
@@ -4343,27 +4419,28 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # but the page-number arguments in _header reflect the actual
             # render order.
             # Pages 2-11 grouped into three sections (SAFETY leads):
-            #   SAFETY       (pages 2-4): SambaSafety driver/MVR scan,
+            #   SAFETY       (pages 2-5): SambaSafety driver/MVR scan,
             #                              Samsara events/HOS/DVIR detail,
-            #                              Equipment compliance (tractor/trailer inspections)
-            #   OPERATIONAL  (pages 5-7): driver mileage, fleet MPG/speeding,
+            #                              Equipment compliance tractors (pg 4),
+            #                              Equipment compliance trailers (pg 5)
+            #   OPERATIONAL  (pages 6-8): driver mileage, fleet MPG/speeding,
             #                              fleet idle
-            #   ACCOUNTING   (pages 8-11): AR overdue; combined Alvys
-            #                              un-invoiced + 90+ AR;
-            #                              QB-vs-Alvys reconciliation; bill match
+            #   ACCOUNTING   (pages 9-11): QB AR overdue + Alvys un-invoiced/90+ AR
+            #                              combined (pg 9); QB-vs-Alvys recon (pg 10);
+            #                              bill match (pg 11)
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
             f"{wrap(_strip(2) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
             f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
-            f"{wrap(_strip(4) + build_page_equipment(equipment, date_str))}{pb}"
+            f"{wrap(_strip(4) + build_page_equipment(equipment, date_str, kind='tractors', pg=4))}{pb}"
+            f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='trailers', pg=5))}{pb}"
             # -- OPERATIONAL --
-            f"{wrap(_strip(5) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(6) + build_page_fleet(samsara, date_str))}{pb}"
-            f"{wrap(_strip(7) + build_page_idle(samsara, date_str))}{pb}"
+            f"{wrap(_strip(6) + build_page4(mileage, date_str))}{pb}"
+            f"{wrap(_strip(7) + build_page_fleet(samsara, date_str))}{pb}"
+            f"{wrap(_strip(8) + build_page_idle(samsara, date_str))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(8) + build_page3(qb_ar, date_str))}{pb}"
-            f"{wrap(_strip(9) + build_page5(uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(9) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
             f"{wrap(_strip(10) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
             f"{wrap(_strip(11) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
