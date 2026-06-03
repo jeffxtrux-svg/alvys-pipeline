@@ -4630,8 +4630,10 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
                      + "".join(_ihcell(idle_labels[k], "right", cur=(k == cur_idx)) for k in range(n_weeks))
                      + _ihcell("Total", "right")
                      + _ihcell("Avg / wk", "right")
+                     + _ihcell("Avg / wk $", "right")
                      + _ihcell("Idle %", "right")
                      + _ihcell("Idle Gal", "right")
+                     + _ihcell("Idle $", "right")
                      + _ihcell("MPG", "right")
                      + "</tr>")
         idle_body = ""
@@ -4655,14 +4657,27 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
             ig_style = f"color:{BAD};font-weight:700;" if _isnum(ig_val) and ig_val > 0 else ""
             ig_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{ig_style}"
                        f"border-bottom:1px solid {LINE};'>{ig_txt}</td>")
+            # Approx $ cost = idle gallons × fuel price (total across 5 wks, and per week avg)
+            total_cost_val = (ig_val * _fuel_price) if (_isnum(ig_val) and ig_val > 0) else None
+            wk_gal_val = avg_wk * 0.8 if _isnum(avg_wk) else None
+            wk_cost_val = (wk_gal_val * _fuel_price) if (_isnum(wk_gal_val) and wk_gal_val > 0) else None
+            tc_txt = f"${total_cost_val:,.0f}" if _isnum(total_cost_val) else "&ndash;"
+            wc_txt = f"${wk_cost_val:,.0f}" if _isnum(wk_cost_val) else "&ndash;"
+            cost_style = f"color:{BAD};font-weight:700;"
+            tc_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;"
+                       f"{cost_style if _isnum(total_cost_val) else ''}border-bottom:1px solid {LINE};'>{tc_txt}</td>")
+            wc_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;"
+                       f"{cost_style if _isnum(wk_cost_val) else ''}border-bottom:1px solid {LINE};'>{wc_txt}</td>")
             idle_body += ("<tr>"
                           + _icell(r["unit"], "left")
                           + _icell(r.get("driver") or "&mdash;", "left")
                           + wk_cells
                           + total_cell
                           + _icell(f"{avg_wk:.1f}", "right")
+                          + wc_cell
                           + pct_cell
                           + ig_cell
+                          + tc_cell
                           + _icell(mpg_txt, "right")
                           + "</tr>")
         idle_tbl = (f"<tr><td colspan='4' class='scroll-wide' style='padding:0 6px;'>"
