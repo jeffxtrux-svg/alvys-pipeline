@@ -338,25 +338,43 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
         return None
 
     # Step 2 — map linked Invoice IDs → list of payment dates.
+    # QB Online Payment structure: invoice links are in Line[].LinkedTxn, not top-level LinkedTxn.
+    # (Top-level LinkedTxn on a Payment refers to bank deposit groupings, not invoices.)
     inv_id_to_pay_dates: dict[str, list[datetime.date]] = {}
+    txn_type_counts: dict[str, int] = {}
     skipped_no_linked = 0
     for p in payments:
         try:
             pay_date = datetime.date.fromisoformat(str(p.get("TxnDate", ""))[:10])
         except ValueError:
             continue
-        linked = p.get("LinkedTxn", [])
-        if not linked:
-            skipped_no_linked += 1
-            continue
-        for lt in linked:
-            if str(lt.get("TxnType", "")).strip() == "Invoice":
+        found_any = False
+        # Primary: Line[].LinkedTxn (where invoice references live in QBO)
+        for line in p.get("Line", []):
+            for lt in line.get("LinkedTxn", []):
+                txn_type = str(lt.get("TxnType", "")).strip()
+                txn_type_counts[txn_type] = txn_type_counts.get(txn_type, 0) + 1
+                if txn_type == "Invoice":
+                    inv_id = str(lt.get("TxnId", "")).strip()
+                    if inv_id:
+                        inv_id_to_pay_dates.setdefault(inv_id, []).append(pay_date)
+                        found_any = True
+        # Fallback: top-level LinkedTxn (some QB versions surface it both places)
+        for lt in p.get("LinkedTxn", []):
+            txn_type = str(lt.get("TxnType", "")).strip()
+            txn_type_counts[txn_type] = txn_type_counts.get(txn_type, 0) + 1
+            if txn_type == "Invoice":
                 inv_id = str(lt.get("TxnId", "")).strip()
-                if inv_id:
+                if inv_id and inv_id not in inv_id_to_pay_dates:
                     inv_id_to_pay_dates.setdefault(inv_id, []).append(pay_date)
+                    found_any = True
+        if not found_any:
+            skipped_no_linked += 1
 
-    log.info("    DSO: %d unique invoice IDs linked  (%d payments had no LinkedTxn)",
+    log.info("    DSO: %d unique invoice IDs linked  (%d payments had no Invoice link)",
              len(inv_id_to_pay_dates), skipped_no_linked)
+    log.info("    DSO: TxnType breakdown across all LinkedTxn entries: %s",
+             ", ".join(f"{k}={v}" for k, v in sorted(txn_type_counts.items())))
     if not inv_id_to_pay_dates:
         return None
 
