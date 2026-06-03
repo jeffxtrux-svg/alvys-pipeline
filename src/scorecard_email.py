@@ -1884,8 +1884,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         out["trend"]["events"] = _monthly_counts(ed)
         dcol = _find_col(events, ["driver name", "driver"])
         out["coaching"] = _coaching_by_window(events, dcol, ed)
+        # Widened from 24h to 7d so the "Safety events — last 7d" table on
+        # page 1 reads useful data instead of "None in this window."
         out["detail"]["events"] = _detail_rows(
-            events[ed >= w["24h"]], ed[ed >= w["24h"]],
+            events[ed >= w["7d"]], ed[ed >= w["7d"]],
             [("driver name", "driver"), ("unit", "vehicle"), ("event type",),
              ("severity",), ("status", "reviewed", "coaching")],
         )
@@ -1941,8 +1943,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         hd = _dates(hosv, HOSV_DATE)
         out["windows"]["hos"] = _count_windows(hd)
         out["trend"]["hos"] = _monthly_counts(hd)
+        # Widened from 24h to 7d so the "HOS violations — last 7d" table on
+        # page 1 reads useful data instead of "None in this window."
         out["detail"]["hos"] = _detail_rows(
-            hosv[hd >= w["24h"]], hd[hd >= w["24h"]],
+            hosv[hd >= w["7d"]], hd[hd >= w["7d"]],
             [("driver name", "driver"), ("violation type", "type"), ("status",)],
         )
 
@@ -4142,25 +4146,28 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + _qb_overdue_html
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
-            + _safety_24h_tables(samsara)
+            + _safety_detail_tables(samsara)
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             + f"{asof}Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
 
 
-def _safety_24h_tables(samsara) -> str:
-    """HOS violations / Safety events / Open DVIR defects / Coaching flagged
-    table block. Shared between page 1 (appended under the safety summary)
-    and page 2 (its original home).
-    """
+def _safety_detail_tables(samsara) -> str:
+    """HOS violations / Safety events (last 7d) / Open DVIR defects /
+    Coaching needs assigned tables. Rendered at the bottom of page 1."""
     detail = (samsara or {}).get("detail", {})
 
+    def _when(r) -> str:
+        # Combine date + time for the 7-day windows so the reader knows what
+        # day each violation/event landed on.
+        return (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;"
+
     hos_rows = "".join(
-        _tr([r.get("driver name", ""), r.get("time", ""), r.get("violation type", ""), r.get("status", "")],
+        _tr([r.get("driver name", ""), _when(r), r.get("violation type", ""), r.get("status", "")],
             ["left", "left", "left", "left"], [None, None, "bad", None])
         for r in detail.get("hos", []))
 
     event_rows = "".join(
-        _tr([r.get("driver name", ""), r.get("unit", ""), r.get("time", ""),
+        _tr([r.get("driver name", ""), r.get("unit", ""), _when(r),
              r.get("event type", ""), r.get("severity", ""), r.get("status", "")],
             ["left", "left", "left", "left", "left", "left"],
             [None, None, None, None,
@@ -4194,10 +4201,10 @@ def _safety_24h_tables(samsara) -> str:
         )
 
     return (
-        f"{_section('HOS violations &mdash; last 24h')}"
-        f"{_table(['Driver', 'Time', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
-        f"{_section('Safety events &mdash; last 24h')}"
-        f"{_table(['Driver', 'Unit', 'Time', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
+        f"{_section('HOS violations &mdash; last 7 days')}"
+        f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
+        f"{_section('Safety events &mdash; last 7 days')}"
+        f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
