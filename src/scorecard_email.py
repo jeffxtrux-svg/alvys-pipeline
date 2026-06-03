@@ -3432,10 +3432,21 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     def _days_str(x):
         return f"{x:,.0f} days" if _isnum(x) else "n/a"
 
-    dso_labels, dso_vals, dso_overall = dso_hist if dso_hist else ([], [], None)
+    dso_labels, dso_vals, _dso_6mo_avg = dso_hist if dso_hist else ([], [], None)
 
-    # If actual DSO is unavailable, fall back to balance÷revenue approximation.
-    if not _isnum(dso_overall):
+    # Tile shows the LAST 30 DAYS value = most recent month in the history
+    # (June* = MTD, which is the closest approximation to a rolling 30-day window).
+    # Falls back to the 6-month average if only one data point exists,
+    # then falls back to the balance÷revenue approximation when no QB history.
+    if dso_vals:
+        dso_tile_val = dso_vals[-1]   # most recent month ≈ last 30 days
+        log.info("DSO tile: using last-30d value %.1f days (month %s); 6mo avg %.1f",
+                 dso_tile_val, dso_labels[-1] if dso_labels else "?", _dso_6mo_avg or 0)
+    else:
+        dso_tile_val = None
+        log.info("DSO tile: no QB payment history — falling back to balance/revenue estimate")
+
+    if not _isnum(dso_tile_val):
         _now = pd.Timestamp.now()
         _ytd_days = _now.dayofyear
         _ytd_income = sum(
@@ -3444,16 +3455,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         )
         _cur_ar = (qb_ar or {}).get("total_ar") if qb_ar else None
         _avg_daily_rev = (_ytd_income / _ytd_days) if (_ytd_income and _ytd_days) else None
-        dso_overall = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
+        dso_tile_val = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
 
-    dso_kind = "good" if (_isnum(dso_overall) and dso_overall < 40) else ("warn" if (_isnum(dso_overall) and dso_overall < 55) else "bad")
+    dso_kind = ("good" if (_isnum(dso_tile_val) and dso_tile_val < 40)
+                else ("warn" if (_isnum(dso_tile_val) and dso_tile_val < 55) else "bad"))
 
-    dso_tile_td = _tile("AR Days to Receive", _days_str(dso_overall),
-                        f"goal &lt; 40 " + _pill("DSO", dso_kind))
+    dso_tile_td = _tile("AR Days to Receive", _days_str(dso_tile_val),
+                        f"last 30 days &middot; goal &lt; 40 " + _pill("DSO", dso_kind))
     dso_trend_td = _bar_chart(
         "Avg days invoice &rarr; payment &middot; 6 months",
         dso_labels, dso_vals,
-        "X-Trux paid invoices &middot; *MTD",
+        "X-Trux paid invoices &middot; QB formula &middot; *MTD",
         fmt=lambda v: f"{v:.0f}d",
     ) if dso_labels else ""
 

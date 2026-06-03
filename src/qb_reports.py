@@ -295,31 +295,36 @@ def fetch_ar_history(client: QBClient, company_name: str, months: int = 6) -> pd
 def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
     """Average days invoice-to-payment per calendar month, for the last ``months`` months.
 
-    Queries Payment entities for the window, links each payment to its source
-    Invoice via LinkedTxn, fetches the invoice TxnDate in batches, then
-    computes avg(payment.TxnDate - invoice.TxnDate) grouped by the payment month.
+    Strategy:
+      1. Fetch all Payments whose TxnDate falls in the window.
+      2. From each Payment's LinkedTxn list collect linked Invoice IDs.
+      3. Pre-load invoice TxnDates by querying ALL invoices in a broader window
+         (avoids the QBO SQL IN-clause, which can be unreliable for large batches).
+      4. Compute avg(payment.TxnDate - invoice.TxnDate) grouped by payment month.
 
-    Returns a DataFrame with columns:
-        Company, AsOf (YYYY-MM), Month (label), AvgDays, InvoiceCount
-    Returns None if no payment data is available.
+    Returns a DataFrame: Company, AsOf (YYYY-MM), Month (label), AvgDays, InvoiceCount.
+    Returns None when data is unavailable or queries fail.
     """
     log.info("  %-25s %s", "DSO history", company_name)
 
-    # Date window: first of (months) ago through today.
     today = datetime.date.today()
+    # Payment window: first of `months` months ago → today.
     first_day = today.replace(day=1)
     for _ in range(months - 1):
         first_day = (first_day - datetime.timedelta(days=1)).replace(day=1)
-    start_str = first_day.isoformat()
-    end_str = today.isoformat()
+    pay_start = first_day.isoformat()
+    pay_end   = today.isoformat()
+    # Invoice window: look back an extra year to capture slow-pay invoices.
+    inv_start = (first_day - datetime.timedelta(days=365)).isoformat()
 
-    # Step 1 — fetch all Payments in the window (MAXRESULTS 1000 covers most
-    # small fleets; the QB tool counted 1,041 over 6 months so a single page
-    # is sufficient; add pagination if needed).
+    log.info("    DSO: payment window %s→%s  invoice window %s→%s",
+             pay_start, pay_end, inv_start, pay_end)
+
+    # Step 1 — fetch Payments in the window.
     try:
-        result = client.get("query", {
+        r = client.get("query", {
             "query": (f"SELECT * FROM Payment "
-                      f"WHERE TxnDate >= '{start_str}' AND TxnDate <= '{end_str}' "
+                      f"WHERE TxnDate >= '{pay_start}' AND TxnDate <= '{pay_end}' "
                       f"MAXRESULTS 1000"),
             "minorversion": 75,
         })
@@ -327,53 +332,61 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
         log.warning("    DSO: Payment query failed for %s: %s", company_name, exc)
         return None
 
-    payments = result.get("QueryResponse", {}).get("Payment", [])
+    payments = r.get("QueryResponse", {}).get("Payment", [])
+    log.info("    DSO: %d payments returned for %s", len(payments), company_name)
     if not payments:
-        log.info("    DSO: no payments for %s in window", company_name)
         return None
 
-    # Step 2 — map each linked Invoice ID → payment date(s).
+    # Step 2 — map linked Invoice IDs → list of payment dates.
     inv_id_to_pay_dates: dict[str, list[datetime.date]] = {}
+    skipped_no_linked = 0
     for p in payments:
         try:
             pay_date = datetime.date.fromisoformat(str(p.get("TxnDate", ""))[:10])
         except ValueError:
             continue
-        for lt in p.get("LinkedTxn", []):
-            if lt.get("TxnType") == "Invoice":
-                inv_id = lt.get("TxnId")
+        linked = p.get("LinkedTxn", [])
+        if not linked:
+            skipped_no_linked += 1
+            continue
+        for lt in linked:
+            if str(lt.get("TxnType", "")).strip() == "Invoice":
+                inv_id = str(lt.get("TxnId", "")).strip()
                 if inv_id:
                     inv_id_to_pay_dates.setdefault(inv_id, []).append(pay_date)
 
+    log.info("    DSO: %d unique invoice IDs linked  (%d payments had no LinkedTxn)",
+             len(inv_id_to_pay_dates), skipped_no_linked)
     if not inv_id_to_pay_dates:
         return None
 
-    # Step 3 — fetch invoice TxnDates in batches of 50.
-    BATCH = 50
-    inv_ids = list(inv_id_to_pay_dates.keys())
+    # Step 3 — pre-load invoice dates using a date-range query (avoids IN clause).
     inv_dates: dict[str, datetime.date] = {}
-    for i in range(0, len(inv_ids), BATCH):
-        batch = inv_ids[i : i + BATCH]
-        id_list = ", ".join(f"'{x}'" for x in batch)
-        try:
-            r2 = client.get("query", {
-                "query": f"SELECT Id, TxnDate FROM Invoice WHERE Id IN ({id_list})",
-                "minorversion": 75,
-            })
-            for inv in r2.get("QueryResponse", {}).get("Invoice", []):
-                try:
-                    inv_dates[inv["Id"]] = datetime.date.fromisoformat(str(inv["TxnDate"])[:10])
-                except (KeyError, ValueError):
-                    pass
-        except Exception as exc:
-            log.warning("    DSO: Invoice batch query failed: %s", exc)
+    try:
+        ri = client.get("query", {
+            "query": (f"SELECT Id, TxnDate FROM Invoice "
+                      f"WHERE TxnDate >= '{inv_start}' AND TxnDate <= '{pay_end}' "
+                      f"MAXRESULTS 1000"),
+            "minorversion": 75,
+        })
+        for inv in ri.get("QueryResponse", {}).get("Invoice", []):
+            try:
+                inv_dates[str(inv["Id"])] = datetime.date.fromisoformat(str(inv["TxnDate"])[:10])
+            except (KeyError, ValueError):
+                pass
+        log.info("    DSO: %d invoice dates loaded from QB", len(inv_dates))
+    except Exception as exc:
+        log.warning("    DSO: Invoice date query failed for %s: %s", company_name, exc)
+        return None
 
     # Step 4 — compute avg days per payment month.
     from collections import defaultdict
     month_days: dict[str, list[int]] = defaultdict(list)
+    unmatched = 0
     for inv_id, pay_dates in inv_id_to_pay_dates.items():
         inv_date = inv_dates.get(inv_id)
         if inv_date is None:
+            unmatched += 1
             continue
         for pay_date in pay_dates:
             days = (pay_date - inv_date).days
@@ -381,7 +394,13 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
                 ym = pay_date.strftime("%Y-%m")
                 month_days[ym].append(days)
 
+    total_pairs = sum(len(v) for v in month_days.values())
+    log.info("    DSO: %d invoice IDs unmatched  %d valid pairs across %d months",
+             unmatched, total_pairs, len(month_days))
+
     if not month_days:
+        log.warning("    DSO: no valid invoice-payment pairs for %s — "
+                    "check that Invoice MAXRESULTS 1000 covers the full date window", company_name)
         return None
 
     rows = []
@@ -394,9 +413,9 @@ def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> p
             "AvgDays":      round(sum(days_list) / len(days_list), 1),
             "InvoiceCount": len(days_list),
         })
+        log.info("    DSO: %s %s  avg=%.1f days  n=%d",
+                 company_name, ym, rows[-1]["AvgDays"], len(days_list))
 
-    log.info("    DSO: %s — %d month(s), %d invoice-payment pairs",
-             company_name, len(rows), sum(r["InvoiceCount"] for r in rows))
     return pd.DataFrame(rows)
 
 
