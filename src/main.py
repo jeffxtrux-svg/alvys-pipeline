@@ -345,6 +345,11 @@ def main() -> int:
     trailers_df = _build_equipment_df(lookups.raw_trailers, "Trailer")
 
     # --- Fetch Maintenance records (inspection events) ---
+    # Schema (confirmed from first run):
+    #   Category   = {"Id": ..., "Name": "DOT"}  ← nested dict
+    #   RelatedAsset = {"AssetId": "TL...", "AssetNumber": "...", "AssetType": "Trailer"}
+    #   CreatedAt  = often 1970-01-01 (null); use ModifiedAt as the real event date
+    #   ModifiedAt = actual inspection date (e.g. "2026-05-22T20:13:00+00:00")
     log.info("=" * 60)
     log.info("Step X: Maintenance records (POST /maintenance/search)")
     log.info("=" * 60)
@@ -354,21 +359,69 @@ def main() -> int:
         with open(sample_path, "w") as f:
             json.dump(raw_maintenance[0], f, indent=2, default=str)
         log.info("Wrote sample maintenance record → %s", sample_path)
-        # Log all top-level keys so we know the schema.
         if isinstance(raw_maintenance[0], dict):
             keys = sorted(raw_maintenance[0].keys())
             log.info("Maintenance sample keys (%d): %s", len(keys), ", ".join(keys))
-            # Log first full record for schema discovery
-            log.info("Maintenance first record: %s", json.dumps(raw_maintenance[0], default=str)[:2000])
-            # Log unique Category values across all records
-            categories = sorted({r.get("Category") for r in raw_maintenance if isinstance(r, dict) and r.get("Category")})
-            log.info("Maintenance unique categories (%d): %s", len(categories), ", ".join(str(c) for c in categories))
-            # Log RelatedAsset structure from first record that has one
-            for r in raw_maintenance:
-                if isinstance(r, dict) and r.get("RelatedAsset"):
-                    log.info("Maintenance RelatedAsset sample: %s", json.dumps(r["RelatedAsset"], default=str)[:500])
-                    break
+            # Category.Name is the maintenance type string (nested dict)
+            cat_names = sorted({
+                (r.get("Category") or {}).get("Name") or ""
+                for r in raw_maintenance if isinstance(r, dict)
+            } - {""})
+            log.info("Maintenance unique category names (%d): %s",
+                     len(cat_names), ", ".join(cat_names))
+
     import pandas as pd
+    from datetime import datetime, timezone, timedelta
+
+    # Build last-DOT-inspection lookup per asset from maintenance records.
+    # We use ModifiedAt as the event date (CreatedAt is often epoch/null).
+    # "DOT" is the Alvys category for annual DOT inspection.
+    _DOT_NAMES = {"dot", "annual", "annual inspection", "dot inspection",
+                  "annual dot", "dot annual"}
+    _last_dot: dict[str, datetime] = {}  # asset_id → most-recent ModifiedAt
+    for r in raw_maintenance:
+        if not isinstance(r, dict):
+            continue
+        cat_name = ((r.get("Category") or {}).get("Name") or "").lower().strip()
+        if not any(d in cat_name for d in ("dot", "annual")):
+            continue
+        asset = r.get("RelatedAsset") or {}
+        asset_id = asset.get("AssetId") or ""
+        if not asset_id:
+            continue
+        mod_at_str = r.get("ModifiedAt") or ""
+        if not mod_at_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(mod_at_str.replace("Z", "+00:00"))
+            if dt.year < 2000:
+                continue  # skip epoch/null dates
+            if asset_id not in _last_dot or dt > _last_dot[asset_id]:
+                _last_dot[asset_id] = dt
+        except Exception:
+            continue
+
+    log.info("Maintenance: %d assets have DOT inspection records", len(_last_dot))
+
+    # Overlay DOT inspection dates onto trailers_df.
+    # AnnualInspectionDue = last_dot_date + 365 days (DOT rule: annual).
+    if _last_dot and trailers_df is not None and not trailers_df.empty:
+        def _dot_due(row):
+            aid = row.get("Id") if isinstance(row, dict) else None
+            if aid is None and hasattr(row, "get"):
+                aid = row["Id"]
+            last = _last_dot.get(aid)
+            if last:
+                return (last + timedelta(days=365)).strftime("%Y-%m-%d")
+            return None
+        trailers_df["AnnualInspectionDue"] = trailers_df["Id"].map(
+            lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
+            if aid in _last_dot else None
+        )
+        n_filled = trailers_df["AnnualInspectionDue"].notna().sum()
+        log.info("Trailers: %d of %d have AnnualInspectionDue from maintenance records",
+                 n_filled, len(trailers_df))
+
     maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
 
     # --- Write ---
