@@ -289,8 +289,11 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     # Total Dispatch Mileage sum. So the right basis is Total. The May 28
     # numbers were a coincidental near-match on a transitional day.
     revenue = _col_any(sub, ["Customer Revenue", "Revenue"]).sum()
-    loaded = _col_any(sub, ["Loaded Mileage", "Loaded Dispatch Mileage", "Loaded Miles"]).sum()
-    empty = _col_any(sub, ["Empty Mileage", "Empty Dispatch Mileage", "Empty Miles"]).sum()
+    # Power BI uses "Loaded Miles" / "Empty Miles" (actual billed/driven), not the
+    # "Dispatch Mileage" variants (planned route). List actual columns first so we
+    # match PBI when both are present in the workbook.
+    loaded = _col_any(sub, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).sum()
+    empty = _col_any(sub, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).sum()
     total_col = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage",
                                "Total Miles", "Total Mileage"])
     total_col_sum = total_col.sum() if total_col.notna().any() else None
@@ -433,8 +436,8 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 log.info("  %5d  %r", _sn, _sv)
         else:
             log.info("DIAG: No status column found; %d MTD loads", len(a_mtd))
-        _lc = _find_col(a_mtd, ["loaded mileage", "loaded dispatch"])
-        _ec = _find_col(a_mtd, ["empty mileage", "empty dispatch"])
+        _lc = _find_col(a_mtd, ["loaded miles", "loaded mileage", "loaded dispatch"])
+        _ec = _find_col(a_mtd, ["empty miles", "empty mileage", "empty dispatch"])
         _nc = _find_col(a_mtd, ["load number", "load #", "load num", "load id"])
         if _date_col_used and _date_col_used in a_mtd.columns:
             log.info("DIAG: X-Trux MTD sample rows (load, %s, status, loaded, empty):",
