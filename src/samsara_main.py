@@ -485,6 +485,16 @@ def main() -> int:
         driver_ids, mtd_start, now
     )
 
+    # Third pull for the trailing 90 days (3-month) so the scorecard can show
+    # the medium-window trend alongside the 6-month and MTD figures.
+    start_3mo = now - datetime.timedelta(days=90)
+    log.info("=" * 60)
+    log.info("Step 11c/12: Driver safety scores — 3-month (%s → now)", start_3mo.date())
+    log.info("=" * 60)
+    raw_driver_scores_3mo = client.fetch_driver_safety_scores(
+        driver_ids, start_3mo, now
+    )
+
     log.info("=" * 60)
     log.info("Step 12/13: Coaching sessions (past-due tracking)")
     log.info("=" * 60)
@@ -556,12 +566,13 @@ def main() -> int:
 
     df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
     df_driver_scores_mtd = flatten(raw_driver_scores_mtd, "DriverSafetyScoresMtd")
+    df_driver_scores_3mo = flatten(raw_driver_scores_3mo, "DriverSafetyScores3mo")
     # Stamp the driver name onto each row by joining with the drivers sheet.
     drivers_df = flatten(raw_drivers, "Drivers")
     name_by_id: dict = {}
     if not drivers_df.empty and "id" in drivers_df.columns and "name" in drivers_df.columns:
         name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
-    for _df in (df_driver_scores, df_driver_scores_mtd):
+    for _df in (df_driver_scores, df_driver_scores_mtd, df_driver_scores_3mo):
         if not _df.empty and "driverId" in _df.columns and name_by_id:
             _df["Driver Name"] = _df["driverId"].astype(str).map(name_by_id)
 
@@ -627,6 +638,7 @@ def main() -> int:
         "EngineIdle":     df_idle,
         "DriverSafetyScores":    df_driver_scores,
         "DriverSafetyScoresMtd": df_driver_scores_mtd,
+        "DriverSafetyScores3mo": df_driver_scores_3mo,
         "CoachingSessions":      df_coaching,
         "TrainingAssignments":   df_training,
         **ifta_sheets,

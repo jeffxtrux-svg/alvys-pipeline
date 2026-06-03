@@ -2382,61 +2382,63 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 out["fleet"]["scores_top"] = list(reversed(out["fleet"]["scores_all"][-5:]))
                 out["fleet"]["scores_bottom"] = out["fleet"]["scores_all"][:5]
 
-                # MTD speeding % — same per-driver calc, against the
-                # current-month Samsara safety-score sheet. Stamped onto each
-                # scores_all row as speed_pct_mtd so the brief can show both
-                # the 6-month and MTD percentages side by side.
-                mtd_scores = sheets.get("DriverSafetyScoresMtd")
-                if mtd_scores is not None and not mtd_scores.empty:
-                    mtd_df = mtd_scores.copy()
-                    sp_ms_m = _find_col(mtd_df, [
+                # Additional windows of the Samsara safety-score sheet so the
+                # brief can show 6-month / 3-month / MTD speeding % side by side.
+                # Same per-driver formula; just a different source sheet.
+                def _pct_by_name(sheet_df: pd.DataFrame, label: str) -> dict:
+                    if sheet_df is None or sheet_df.empty:
+                        return {}
+                    _sp_ms = _find_col(sheet_df, [
                         "speedingmilliseconds", "speeding_milliseconds",
                         "speedingms", "speedingmillis", "speedingmsec",
                         "speedingtimems", "speedingtimemilliseconds",
                         "speedingdurationms", "speedingduration",
                         "timeoverspeedlimit", "overspeedlimitms",
                     ])
-                    dr_ms_m = _find_col(mtd_df, [
+                    _dr_ms = _find_col(sheet_df, [
                         "totaltimems", "totaltimemilliseconds",
                         "totaldrivetimems", "totaldrivetimemilliseconds",
                         "drivingtimems", "drivetimems",
                         "totalengineonms", "totalonms",
                     ])
-                    dr_s_m = _find_col(mtd_df, [
+                    _dr_s = _find_col(sheet_df, [
                         "totaltimeseconds", "totaldrivetimeseconds",
                         "drivingtimeseconds", "drivetimeseconds",
                     ])
-                    log.info("DriverSafetyScoresMtd cols: speed_ms=%s drive_ms=%s drive_s=%s",
-                             sp_ms_m, dr_ms_m, dr_s_m)
-                    pct_by_id: dict = {}
-                    if "driverId" in mtd_df.columns and sp_ms_m:
-                        for _, mr in mtd_df.iterrows():
+                    log.info("%s cols: speed_ms=%s drive_ms=%s drive_s=%s",
+                             label, _sp_ms, _dr_ms, _dr_s)
+                    pid: dict = {}
+                    if "driverId" in sheet_df.columns and _sp_ms:
+                        for _, mr in sheet_df.iterrows():
                             did = str(mr.get("driverId") or "")
                             if not did:
                                 continue
-                            sp = pd.to_numeric(pd.Series([mr.get(sp_ms_m)]), errors="coerce").iloc[0]
+                            sp = pd.to_numeric(pd.Series([mr.get(_sp_ms)]), errors="coerce").iloc[0]
                             dt = None
-                            if dr_ms_m:
-                                dt = pd.to_numeric(pd.Series([mr.get(dr_ms_m)]), errors="coerce").iloc[0]
-                            elif dr_s_m:
-                                dt_s = pd.to_numeric(pd.Series([mr.get(dr_s_m)]), errors="coerce").iloc[0]
+                            if _dr_ms:
+                                dt = pd.to_numeric(pd.Series([mr.get(_dr_ms)]), errors="coerce").iloc[0]
+                            elif _dr_s:
+                                dt_s = pd.to_numeric(pd.Series([mr.get(_dr_s)]), errors="coerce").iloc[0]
                                 dt = dt_s * 1000 if _isnum(dt_s) else None
                             if _isnum(sp) and _isnum(dt) and dt > 0:
-                                pct_by_id[did] = round(sp / dt * 100, 1)
-                    pct_by_name: dict = {}
-                    if "Driver Name" in mtd_df.columns:
-                        for _, mr in mtd_df.iterrows():
+                                pid[did] = round(sp / dt * 100, 1)
+                    by_nm: dict = {}
+                    if "Driver Name" in sheet_df.columns:
+                        for _, mr in sheet_df.iterrows():
                             did = str(mr.get("driverId") or "")
                             nm = str(mr.get("Driver Name") or "")
-                            if nm and did in pct_by_id:
-                                pct_by_name[nm.strip().lower()] = pct_by_id[did]
-                    # Join MTD pct onto scores_all by driver name (the row dict
-                    # doesn't carry driverId, but the name match is sufficient).
-                    for r in out["fleet"]["scores_all"]:
-                        nm = (r.get("driver") or "").strip().lower()
-                        v = pct_by_name.get(nm)
-                        if v is not None:
-                            r["speed_pct_mtd"] = v
+                            if nm and did in pid:
+                                by_nm[nm.strip().lower()] = pid[did]
+                    return by_nm
+
+                pct_mtd = _pct_by_name(sheets.get("DriverSafetyScoresMtd"), "DriverSafetyScoresMtd")
+                pct_3mo = _pct_by_name(sheets.get("DriverSafetyScores3mo"), "DriverSafetyScores3mo")
+                for r in out["fleet"]["scores_all"]:
+                    nm = (r.get("driver") or "").strip().lower()
+                    if nm in pct_mtd:
+                        r["speed_pct_mtd"] = pct_mtd[nm]
+                    if nm in pct_3mo:
+                        r["speed_pct_3mo"] = pct_3mo[nm]
 
     # --- Coaching sessions ---------------------------------------------------
     coaching_sheet = sheets.get("CoachingSessions")
@@ -4443,8 +4445,9 @@ def build_page2(samsara, date_str) -> str:
             if sm == 0:
                 continue
             pct_6mo = r.get("speed_pct")
+            pct_3mo = r.get("speed_pct_3mo")
             pct_mtd = r.get("speed_pct_mtd")
-            # Action driven by the 6-mo figure (more stable than a short MTD window).
+            # Action driven by the 6-mo figure (more stable than the shorter windows).
             if _isnum(pct_6mo):
                 action = "flag for coaching" if pct_6mo >= 5 else "monitor"
                 action_kind = "bad" if pct_6mo >= 5 else "warn"
@@ -4453,16 +4456,19 @@ def build_page2(samsara, date_str) -> str:
                 action_kind = "bad" if sm >= 60 else "warn"
             rows += _tr(
                 [r["driver"], str(r["score"]),
-                 _spd_cell(pct_6mo, sm), _spd_cell(pct_mtd, None), action],
-                ["left", "right", "right", "right", "left"],
+                 _spd_cell(pct_6mo, sm), _spd_cell(pct_3mo, None),
+                 _spd_cell(pct_mtd, None), action],
+                ["left", "right", "right", "right", "right", "left"],
                 [None, _score_kind(r["score"]),
-                 _spd_kind(pct_6mo, sm), _spd_kind(pct_mtd, None), action_kind])
+                 _spd_kind(pct_6mo, sm), _spd_kind(pct_3mo, None),
+                 _spd_kind(pct_mtd, None), action_kind])
         return rows
 
     _spd_tbl = _table(
         ["Driver", "Safety Score",
-         "Speed Over Limit (6 mo)", "Speed Over Limit (MTD)", "Action"],
-        ["left", "right", "right", "right", "left"],
+         "Speed Over Limit (6 mo)", "Speed Over Limit (3 mo)",
+         "Speed Over Limit (MTD)", "Action"],
+        ["left", "right", "right", "right", "right", "left"],
         _spd_rows(), span=4,
     )
 
