@@ -2080,14 +2080,23 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 accel_col = _find_col(df, ["harshacceleration", "harsh_acceleration", "harshaccel"])
                 brake_col = _find_col(df, ["harshbraking", "harsh_braking", "harshbrake"])
                 turn_col = _find_col(df, ["harshturning", "harsh_turning", "harshturn"])
-                speed_col = _find_col(df, ["speedingcount", "speeding_count", "speeding"])
+                # Speeding: Samsara returns time-over-limit in ms (speedingMilliseconds),
+                # not a count. Search ms first; fall back to a count field if it exists.
+                speed_ms_col  = _find_col(df, ["speedingmilliseconds", "speeding_milliseconds", "speedingms"])
+                speed_cnt_col = _find_col(df, ["speedingcount", "speeding_count"])
                 crash_col = _find_col(df, ["crashcount", "crash_count", "crash"])
-                miles_col = _find_col(df, ["totaldistancedrivenmiles", "distancedrivenmiles", "totalmiles"])
+                miles_col = _find_col(df, ["totaldistancedrivenmiles", "distancedrivenmiles",
+                                           "totaldistancedrivenmeters", "totalmiles"])
                 def _i(r, col):
                     if not col:
                         return None
                     v = pd.to_numeric(pd.Series([r.get(col)]), errors="coerce").iloc[0]
                     return int(v) if _isnum(v) else None
+                def _speed_min(r):
+                    if speed_ms_col:
+                        v = pd.to_numeric(pd.Series([r.get(speed_ms_col)]), errors="coerce").iloc[0]
+                        return max(0, int(round(v / 60_000))) if _isnum(v) else None
+                    return _i(r, speed_cnt_col)
 
                 ranked = df.sort_values("_score", ascending=True)
                 def _row(r):
@@ -2097,7 +2106,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         "harsh_accel": _i(r, accel_col),
                         "harsh_brake": _i(r, brake_col),
                         "harsh_turn": _i(r, turn_col),
-                        "speeding": _i(r, speed_col),
+                        "speed_min": _speed_min(r),
                         "crashes": _i(r, crash_col),
                         "miles": _i(r, miles_col),
                     }
@@ -3918,20 +3927,26 @@ def build_page2(samsara, date_str) -> str:
         if v is None or v == 0:
             return None
         return "bad"
+    def _spd(v):
+        return "&ndash;" if v is None else f"{v} min"
+    def _spd_kind(v):
+        if v is None or v == 0:
+            return None
+        return "bad" if v >= 60 else "warn"
     if scores_all:
         s_headers = ["Driver", "Score", "Harsh accel", "Harsh brake",
-                     "Harsh turn", "Speeding", "Crashes"]
+                     "Harsh turn", "Speed Over Limit", "Crashes"]
         body = ""
         for r in scores_all:
             body += _tr(
                 [r["driver"], str(r["score"]),
                  _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
-                 _evt(r.get("harsh_turn")), _evt(r.get("speeding")),
+                 _evt(r.get("harsh_turn")), _spd(r.get("speed_min")),
                  _evt(r.get("crashes"))],
                 ["left", "right", "right", "right", "right", "right", "right"],
                 [None, _score_kind(r["score"]),
                  _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
-                 _evt_kind(r.get("harsh_turn")), _evt_kind(r.get("speeding")),
+                 _evt_kind(r.get("harsh_turn")), _spd_kind(r.get("speed_min")),
                  _evt_kind(r.get("crashes"))])
         score_all_tbl = _table(s_headers,
                                ["left", "right", "right", "right", "right",
@@ -4035,6 +4050,33 @@ def build_page2(samsara, date_str) -> str:
                 f"{_t_tbl}"
             )
 
+    # --- Speeding section — drivers with any time over posted speed limit ------
+    speeders_ranked = [r for r in reversed(scores_all)  # reversed = highest speed_min first
+                       if r.get("speed_min") is not None]
+    speeders_ranked.sort(key=lambda r: -(r["speed_min"] or 0))
+    spd_count = sum(1 for r in speeders_ranked if (r.get("speed_min") or 0) > 0)
+
+    def _spd_rows():
+        rows = ""
+        for r in speeders_ranked:
+            sm = r.get("speed_min") or 0
+            if sm == 0:
+                continue
+            rows += _tr(
+                [r["driver"], str(r["score"]), f"{sm} min",
+                 "flag for coaching" if sm >= 60 else "monitor"],
+                ["left", "right", "right", "left"],
+                [None, _score_kind(r["score"]),
+                 "bad" if sm >= 60 else "warn",
+                 "bad" if sm >= 60 else "warn"])
+        return rows
+
+    _spd_tbl = _table(
+        ["Driver", "Safety Score", "Speed Over Limit (6 mo)", "Action"],
+        ["left", "right", "right", "left"],
+        _spd_rows(), span=4,
+    )
+
     return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{gauge_row}"
@@ -4050,14 +4092,17 @@ def build_page2(samsara, date_str) -> str:
             f"{_table(['Unit', 'Driver', 'Time', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_dvir())}"
             f"{_section('Coaching flagged &mdash; last 24h')}"
             f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
+            f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
+            f"{_spd_tbl}"
             f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
             f"{score_all_tbl}"
             f"{coaching_section}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
             f"Driver safety scores: Samsara Driver Safety Scores (per-driver composite, "
-            f"last 6 months). Open defects older than 24h are tracked by the fleet "
-            f"alert job. Coaching &amp; training: Samsara Coaching Sessions / Training "
+            f"last 6 months); Speed Over Limit = speedingMilliseconds &divide; 60 (minutes); "
+            f"&ge;60 min flagged for coaching, 1&ndash;59 min monitored. "
+            f"Coaching &amp; training: Samsara Coaching Sessions / Training "
             f"Assignments (past-due only; tiles hidden when module not enabled).</div>")
 
 
