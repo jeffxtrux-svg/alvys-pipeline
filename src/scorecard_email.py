@@ -3871,7 +3871,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             oh_txt += ")"
             parts.append(oh_txt)
         if _isnum(_ins) and _ins > 0:
-            parts.append(f"liability insurance {rpm(_ins)}/mi")
+            parts.append(f"liability insurance {rpm(_ins)}/mi (temporary until costing catches up)")
         breakdown = " + ".join(parts) if parts else "awaiting data"
         if _isnum(_cpm):
             msg = f"Fully-loaded cost to run an X-Trux mile is <b>{rpm(_cpm)}</b> = {breakdown}. "
