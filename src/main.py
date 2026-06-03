@@ -355,12 +355,19 @@ def main() -> int:
             json.dump(raw_maintenance[0], f, indent=2, default=str)
         log.info("Wrote sample maintenance record → %s", sample_path)
         # Log all top-level keys so we know the schema.
-        keys = sorted(raw_maintenance[0].keys()) if isinstance(raw_maintenance[0], dict) else []
-        log.info("Maintenance sample keys (%d): %s", len(keys), ", ".join(keys))
-        date_like = [k for k in keys
-                     if any(t in k.lower() for t in ("date", "expir", "inspect", "due", "schedul", "complet"))]
-        if date_like:
-            log.info("Maintenance date/inspection-ish keys: %s", ", ".join(date_like))
+        if isinstance(raw_maintenance[0], dict):
+            keys = sorted(raw_maintenance[0].keys())
+            log.info("Maintenance sample keys (%d): %s", len(keys), ", ".join(keys))
+            # Log first full record for schema discovery
+            log.info("Maintenance first record: %s", json.dumps(raw_maintenance[0], default=str)[:2000])
+            # Log unique Category values across all records
+            categories = sorted({r.get("Category") for r in raw_maintenance if isinstance(r, dict) and r.get("Category")})
+            log.info("Maintenance unique categories (%d): %s", len(categories), ", ".join(str(c) for c in categories))
+            # Log RelatedAsset structure from first record that has one
+            for r in raw_maintenance:
+                if isinstance(r, dict) and r.get("RelatedAsset"):
+                    log.info("Maintenance RelatedAsset sample: %s", json.dumps(r["RelatedAsset"], default=str)[:500])
+                    break
     import pandas as pd
     maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
 
