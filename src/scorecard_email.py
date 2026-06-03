@@ -2858,6 +2858,45 @@ def _bar_chart(title, months, values, sub="", fmt=str):
             f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{lbl}</tr></table></div></td>")
 
 
+def _donut_gauge(label: str, pct: float, sub_line: str, detail: str, width: str = "33%") -> str:
+    """SVG circular donut gauge for compliance tiles (HOS, DVIR, safety score)."""
+    import math
+    r = 46
+    cx = cy = 60
+    circ = 2 * math.pi * r
+    arc = circ * max(0.0, min(pct, 100.0)) / 100.0
+    gap = circ - arc
+    if pct >= 95:
+        color = GOOD
+    elif pct >= 80:
+        color = WARN
+    else:
+        color = BAD
+    pct_str = f"{pct:.0f}%"
+    svg = (
+        f'<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">'
+        f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#e2e8f0" stroke-width="11"/>'
+        f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="11"'
+        f' stroke-dasharray="{arc:.2f} {gap:.2f}" stroke-linecap="round"'
+        f' transform="rotate(-90 {cx} {cy})"/>'
+        f'<text x="{cx}" y="{cy - 5}" text-anchor="middle" font-size="21" font-weight="800"'
+        f' font-family="Arial,Helvetica,sans-serif" fill="{INK}">{pct_str}</text>'
+        f'<text x="{cx}" y="{cy + 12}" text-anchor="middle" font-size="8.5" font-weight="700"'
+        f' font-family="Arial,Helvetica,sans-serif" fill="{color}" letter-spacing="0.6">{sub_line}</text>'
+        f'</svg>'
+    )
+    return (
+        f"<td class='tile' width='{width}' style='padding:6px;' valign='top'>"
+        f"<div style='background:{TILEBG};border:1px solid {LINE};border-radius:10px;"
+        f"padding:14px 10px 12px;text-align:center;'>"
+        f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;"
+        f"color:{MUTE};font-weight:700;margin-bottom:8px;'>{label}</div>"
+        f"{svg}"
+        f"<div style='font-size:11px;color:{MUTE};margin-top:6px;'>{detail}</div>"
+        f"</div></td>"
+    )
+
+
 def _section(t, span=4):
     return (f"<tr><td colspan='{span}' style='padding:18px 6px 6px;'><div style='font-size:13px;font-weight:800;"
             f"letter-spacing:.5px;text-transform:uppercase;color:{NAVY};border-bottom:2px solid {LINE};"
@@ -3838,8 +3877,27 @@ def build_page2(samsara, date_str) -> str:
                          f"color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
     fleet_score = fleet.get("fleet_score")
 
+    # --- Compliance donut gauges (top of page) ---
+    total_d = max(1, len(scores_all))
+    hos_7d   = int(w("hos", "7d"))
+    hos_viol = min(hos_7d, total_d)           # treat each violation as one driver
+    hos_pct  = round((total_d - hos_viol) / total_d * 100, 1)
+    dvir_7d  = int(w("dvir", "7d"))
+    dvir_pct = round(max(0.0, (total_d - dvir_7d) / total_d * 100), 1)
+    above90  = sum(1 for r in scores_all if r["score"] >= 90)
+    score_pct = round(above90 / total_d * 100, 1) if scores_all else 0.0
+    dvir_s   = "s" if dvir_7d != 1 else ""
+    gauge_row = (
+        f"<tr>"
+        f"{_donut_gauge('HOS Compliance', hos_pct, 'COMPLIANT', f'{total_d - hos_viol} of {total_d} drivers &middot; 7d')}"
+        f"{_donut_gauge('DVIR Status', dvir_pct, 'DEFECT&#8209;FREE', f'{dvir_7d} open defect{dvir_s} &middot; 7d')}"
+        f"{_donut_gauge('Safety Score', score_pct, 'ABOVE 90', f'{above90} of {total_d} drivers &middot; 6&#8209;mo')}"
+        f"</tr>"
+    )
+
     return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"{gauge_row}"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
             f"{_tile('Open DVIR defects &middot; 24h', num(w('dvir')), '')}"
