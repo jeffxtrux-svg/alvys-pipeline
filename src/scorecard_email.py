@@ -3312,15 +3312,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     dpo_days = (_cur_ap / _avg_daily_exp) if (_isnum(_cur_ap) and _avg_daily_exp) else None
     def _days_str(x):
         return f"{x:,.0f} days" if _isnum(x) else "n/a"
-    # Goal context: DSO ≤ 45 days is healthy for trucking. DPO ≥ 30 is fine.
-    dso_kind = "good" if (_isnum(dso_days) and dso_days <= 45) else ("warn" if (_isnum(dso_days) and dso_days <= 60) else "bad")
-    dpo_kind = "good" if (_isnum(dpo_days) and dpo_days >= 30) else "mute"
-    ar_ap_days_row = (
-        _tile("AR Days to Receive", _days_str(dso_days),
-              f"goal &le; 45 " + _pill("DSO", dso_kind))
-        + _tile("AP Days to Pay", _days_str(dpo_days),
-                f"vendor terms " + _pill("DPO", dpo_kind))
-        + empty_td + empty_td)
+    dso_kind = "good" if (_isnum(dso_days) and dso_days < 40) else ("warn" if (_isnum(dso_days) and dso_days < 55) else "bad")
+    dpo_kind = "good" if (_isnum(dpo_days) and dpo_days < 35) else "warn"
+    dso_tile_td = _tile("AR Days to Receive", _days_str(dso_days),
+                        f"goal &lt; 40 " + _pill("DSO", dso_kind))
+    dpo_tile_td = _tile("AP Days to Pay", _days_str(dpo_days),
+                        f"goal &lt; 35 " + _pill("DPO", dpo_kind))
+    ar_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
+                 f"<tr>{ar_chart}</tr><tr>{dso_tile_td}</tr></table></td>")
+    ap_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
+                 f"<tr>{ap_chart}</tr><tr>{dpo_tile_td}</tr></table></td>")
 
     def _dir(vals, noun):
         if not vals:
@@ -3591,8 +3592,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
                if goal_tiles else "")
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
-            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_chart}{ap_chart}</tr>"
-            f"<tr>{ar_ap_days_row}</tr>"
+            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
             f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr><tr>{alvys_ar_row_b}</tr>"
                if alvys_ar_row else "")
