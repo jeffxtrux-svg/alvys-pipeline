@@ -88,13 +88,25 @@ def build_dvir_defects(raw_dvirs: list[dict]) -> pd.DataFrame:
                 defects.extend(v)
         if not defects:
             continue
-        vehicle = dvir.get("vehicle") or {}
-        driver = dvir.get("driver") or {}
-        unit = vehicle.get("name") or vehicle.get("id")
-        driver_name = driver.get("name") or driver.get("id")
+        # Trailer DVIRs nest the asset under "asset", tractor DVIRs under "vehicle".
+        # Trailer DVIRs may have no driver. Try every documented path so neither
+        # surfaces as a "nan" string in the scorecard.
+        def _pick_named(*candidates):
+            for c in candidates:
+                node = dvir.get(c)
+                if isinstance(node, dict):
+                    nm = node.get("name") or node.get("id")
+                    if nm:
+                        return nm
+            return None
+        unit = (_pick_named("asset", "vehicle", "trailer")
+                or dvir.get("assetName") or dvir.get("vehicleName") or dvir.get("trailerName"))
+        driver_name = (_pick_named("driver", "submittedBy", "createdBy", "inspector", "user")
+                       or dvir.get("driverName") or dvir.get("submittedByName") or dvir.get("createdByName"))
         # DVIR records from /fleet/dvirs/history use startTime (no createdAt*); defects
         # carry their own createdAtTime. Prefer the defect's, fall back to the DVIR's.
         dvir_time = (dvir.get("startTime") or dvir.get("createdAtTime")
+                     or dvir.get("submittedAtTime") or dvir.get("completedAtTime")
                      or dvir.get("createdAtMs") or dvir.get("createdAt"))
         dvir_type = dvir.get("inspectionType") or dvir.get("dvirType") or dvir.get("type")
         for d in defects:

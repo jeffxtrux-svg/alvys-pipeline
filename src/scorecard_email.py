@@ -2408,9 +2408,18 @@ def _detail_rows(df: pd.DataFrame, dates: pd.Series, fields: list[tuple]) -> lis
     order = df.index
     for idx in order:
         r = df.loc[idx]
-        rec = {"time": d.loc[idx].strftime("%H:%M") if pd.notna(d.loc[idx]) else ""}
+        ts = d.loc[idx]
+        rec = {
+            "time": ts.strftime("%H:%M") if pd.notna(ts) else "",
+            "date": ts.strftime("%Y-%m-%d") if pd.notna(ts) else "",
+        }
         for key, col in cols.items():
-            rec[key] = str(r.get(col, "")) if col else ""
+            v = r.get(col, "") if col else ""
+            # NaN/None/empty surfaces as em-dash so missing data is obvious.
+            if pd.isna(v) or str(v).strip().lower() in ("", "nan", "none"):
+                rec[key] = "&mdash;"
+            else:
+                rec[key] = str(v)
         rows.append(rec)
     return rows[:25]
 
@@ -4110,8 +4119,9 @@ def build_page2(samsara, date_str) -> str:
                        for r in detail.get("events", []))
 
     def rows_dvir():
-        return "".join(_tr([r.get("unit", ""), r.get("driver", ""), r.get("time", ""), r.get("defect", ""),
-                            r.get("defect type", ""), "Open"],
+        return "".join(_tr([r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
+                            (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
+                            r.get("defect", ""), r.get("defect type", ""), "Open"],
                            ["left", "left", "left", "left", "left", "left"],
                            [None, None, None, None, "warn", "bad"])
                        for r in detail.get("dvir", []))
@@ -4346,7 +4356,7 @@ def build_page2(samsara, date_str) -> str:
             f"{_section('Safety events &mdash; last 24h')}"
             f"{_table(['Driver', 'Unit', 'Time', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_events())}"
             f"{_section('DVIR defects (open) &mdash; all unresolved')}"
-            f"{_table(['Unit', 'Driver', 'Time', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_dvir())}"
+            f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_dvir())}"
             f"{_section('Coaching flagged &mdash; last 24h')}"
             f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
