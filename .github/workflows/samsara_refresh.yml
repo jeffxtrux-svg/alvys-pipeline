@@ -60,7 +60,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ALERT_FROM_UPN: jeff@xfreight.net
-          ALERT_TO_EMAILS: ${{ secrets.ALERT_TO_EMAILS }}
+          ALERT_TO_EMAILS: jeff@xfreight.net,jackson@xfreight.net,dan@xfreight.net
         run: python -m src.samsara_alerts
 
       - name: Upload output as artifact
