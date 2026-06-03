@@ -1739,7 +1739,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         out["windows"]["dvir"] = _count_windows(opdd)
         out["trend"]["dvir"] = _monthly_counts(dd)
         out["detail"]["dvir"] = _detail_rows(
-            opd[opdd >= w["24h"]], opdd[opdd >= w["24h"]],
+            opd, opdd,
             [("unit",), ("driver",), ("defect",), ("defect type",), ("resolved",)],
         )
 
@@ -4040,13 +4040,13 @@ def build_page2(samsara, date_str) -> str:
             f"{gauge_row}"
             f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
             f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
-            f"{_tile('Open DVIR defects &middot; 24h', num(w('dvir')), '')}"
+            f"{_tile('Open DVIR defects &middot; 7d', num(w('dvir', '7d')), '')}"
             f"{_tile('Fleet avg safety score', (f'{fleet_score:.0f}' if _isnum(fleet_score) else 'n/a'), _pill('0&ndash;100 &middot; higher better', 'mute'))}</tr>"
             f"{_section('HOS violations &mdash; last 24h')}"
             f"{_table(['Driver', 'Time', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], rows_hos())}"
             f"{_section('Safety events &mdash; last 24h')}"
             f"{_table(['Driver', 'Unit', 'Time', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_events())}"
-            f"{_section('DVIR defects (open) &mdash; reported last 24h')}"
+            f"{_section('DVIR defects (open) &mdash; all unresolved')}"
             f"{_table(['Unit', 'Driver', 'Time', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_dvir())}"
             f"{_section('Coaching flagged &mdash; last 24h')}"
             f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
