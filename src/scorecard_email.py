@@ -2199,9 +2199,11 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
     # Driver safety scores — top 5 and bottom 5 from DriverSafetyScores sheet.
     scores = sheets.get("DriverSafetyScores")
-    log.info("DriverSafetyScores: %s, cols=%s",
-             "empty" if scores is None or scores.empty else f"{len(scores)} rows",
-             list(scores.columns[:10]) if scores is not None and not scores.empty else [])
+    if scores is None or scores.empty:
+        log.info("DriverSafetyScores: empty")
+    else:
+        log.info("DriverSafetyScores: %d rows, ALL cols=%s",
+                 len(scores), list(scores.columns))
     if scores is not None and not scores.empty:
         sc_col = _find_col(scores, ["safetyscore", "score", "totalnumberofpoints"])
         nm_col = _find_col(scores, ["driver name", "name"]) or "driverId"
@@ -2223,23 +2225,67 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 accel_col = _find_col(df, ["harshacceleration", "harsh_acceleration", "harshaccel"])
                 brake_col = _find_col(df, ["harshbraking", "harsh_braking", "harshbrake"])
                 turn_col = _find_col(df, ["harshturning", "harsh_turning", "harshturn"])
-                # Speeding: Samsara returns time-over-limit in ms (speedingMilliseconds),
-                # not a count. Search ms first; fall back to a count field if it exists.
-                speed_ms_col  = _find_col(df, ["speedingmilliseconds", "speeding_milliseconds", "speedingms"])
-                speed_cnt_col = _find_col(df, ["speedingcount", "speeding_count"])
+                # Speeding: Samsara returns time-over-limit in ms. Names have
+                # drifted across API versions (speedingMilliseconds,
+                # timeOverSpeedLimitMs, speedingTimeMs, speedingDurationMs),
+                # so try a broad set of needles. Count field is the last
+                # fallback if only an event count is exposed.
+                speed_ms_col = _find_col(df, [
+                    "speedingmilliseconds", "speeding_milliseconds",
+                    "speedingms", "speedingmillis", "speedingmsec",
+                    "speedingtimems", "speedingtimemilliseconds",
+                    "speedingdurationms", "speedingduration",
+                    "timeoverspeedlimit", "overspeedlimitms",
+                ])
+                speed_cnt_col = _find_col(df, ["speedingcount", "speeding_count", "speedingevents"])
+                # Total drive time so we can express speeding as a % of time
+                # behind the wheel (the chart Samsara itself shows). Try ms
+                # first, fall back to seconds.
+                drive_ms_col = _find_col(df, [
+                    "totaltimems", "totaltimemilliseconds",
+                    "totaldrivetimems", "totaldrivetimemilliseconds",
+                    "drivingtimems", "drivetimems",
+                    "totalengineonms", "totalonms",
+                ])
+                drive_s_col = _find_col(df, [
+                    "totaltimeseconds", "totaldrivetimeseconds",
+                    "drivingtimeseconds", "drivetimeseconds",
+                ])
                 crash_col = _find_col(df, ["crashcount", "crash_count", "crash"])
                 miles_col = _find_col(df, ["totaldistancedrivenmiles", "distancedrivenmiles",
                                            "totaldistancedrivenmeters", "totalmiles"])
+                log.info("DriverSafetyScores cols detected: accel=%s brake=%s turn=%s "
+                         "speed_ms=%s speed_cnt=%s drive_ms=%s drive_s=%s crash=%s miles=%s",
+                         accel_col, brake_col, turn_col, speed_ms_col, speed_cnt_col,
+                         drive_ms_col, drive_s_col, crash_col, miles_col)
                 def _i(r, col):
                     if not col:
                         return None
                     v = pd.to_numeric(pd.Series([r.get(col)]), errors="coerce").iloc[0]
                     return int(v) if _isnum(v) else None
+                def _f(r, col):
+                    if not col:
+                        return None
+                    v = pd.to_numeric(pd.Series([r.get(col)]), errors="coerce").iloc[0]
+                    return float(v) if _isnum(v) else None
                 def _speed_min(r):
                     if speed_ms_col:
-                        v = pd.to_numeric(pd.Series([r.get(speed_ms_col)]), errors="coerce").iloc[0]
+                        v = _f(r, speed_ms_col)
                         return max(0, int(round(v / 60_000))) if _isnum(v) else None
                     return _i(r, speed_cnt_col)
+                def _drive_ms(r):
+                    if drive_ms_col:
+                        return _f(r, drive_ms_col)
+                    if drive_s_col:
+                        v = _f(r, drive_s_col)
+                        return v * 1000 if _isnum(v) else None
+                    return None
+                def _speed_pct(r):
+                    sp_ms = _f(r, speed_ms_col) if speed_ms_col else None
+                    dt_ms = _drive_ms(r)
+                    if _isnum(sp_ms) and _isnum(dt_ms) and dt_ms > 0:
+                        return round(sp_ms / dt_ms * 100, 1)
+                    return None
 
                 ranked = df.sort_values("_score", ascending=True)
                 def _row(r):
@@ -2250,6 +2296,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         "harsh_brake": _i(r, brake_col),
                         "harsh_turn": _i(r, turn_col),
                         "speed_min": _speed_min(r),
+                        "speed_pct": _speed_pct(r),
                         "crashes": _i(r, crash_col),
                         "miles": _i(r, miles_col),
                     }
@@ -4085,26 +4132,43 @@ def build_page2(samsara, date_str) -> str:
         if v is None or v == 0:
             return None
         return "bad"
-    def _spd(v):
-        return "&ndash;" if v is None else f"{v} min"
-    def _spd_kind(v):
-        if v is None or v == 0:
+    def _spd_cell(r):
+        """Render speeding as % of drive time when available, else minutes."""
+        pct_v = r.get("speed_pct")
+        mins  = r.get("speed_min")
+        if _isnum(pct_v):
+            return f"{pct_v:.1f}%"
+        if _isnum(mins):
+            return f"{mins} min"
+        return "&ndash;"
+    def _spd_kind(r):
+        pct_v = r.get("speed_pct")
+        if _isnum(pct_v):
+            if pct_v == 0:
+                return None
+            return "bad" if pct_v >= 5 else ("warn" if pct_v >= 1 else None)
+        mins = r.get("speed_min")
+        if mins is None or mins == 0:
             return None
-        return "bad" if v >= 60 else "warn"
+        return "bad" if mins >= 60 else "warn"
     if scores_all:
+        # Header reflects what we're showing: when % of drive time is available
+        # for ANY driver, sub-label as "% drive time"; otherwise it's minutes.
+        _any_pct = any(_isnum(r.get("speed_pct")) for r in scores_all)
+        _spd_hdr = "Speed Over Limit (% drive time)" if _any_pct else "Speed Over Limit"
         s_headers = ["Driver", "Score", "Harsh accel", "Harsh brake",
-                     "Harsh turn", "Speed Over Limit", "Crashes"]
+                     "Harsh turn", _spd_hdr, "Crashes"]
         body = ""
         for r in scores_all:
             body += _tr(
                 [r["driver"], str(r["score"]),
                  _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
-                 _evt(r.get("harsh_turn")), _spd(r.get("speed_min")),
+                 _evt(r.get("harsh_turn")), _spd_cell(r),
                  _evt(r.get("crashes"))],
                 ["left", "right", "right", "right", "right", "right", "right"],
                 [None, _score_kind(r["score"]),
                  _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
-                 _evt_kind(r.get("harsh_turn")), _spd_kind(r.get("speed_min")),
+                 _evt_kind(r.get("harsh_turn")), _spd_kind(r),
                  _evt_kind(r.get("crashes"))])
         score_all_tbl = _table(s_headers,
                                ["left", "right", "right", "right", "right",
@@ -4272,10 +4336,11 @@ def build_page2(samsara, date_str) -> str:
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
             f"Driver safety scores: Samsara Driver Safety Scores (per-driver composite, "
-            f"last 6 months); Speed Over Limit = speedingMilliseconds &divide; 60 (minutes); "
-            f"&ge;60 min flagged for coaching, 1&ndash;59 min monitored. "
-            f"Coaching &amp; training: Samsara Coaching Sessions / Training "
-            f"Assignments (past-due only; tiles hidden when module not enabled).</div>")
+            f"last 6 months). Speed Over Limit = time-over-posted-limit &divide; total "
+            f"drive time, shown as % when both fields are available (&ge;5% flagged for "
+            f"coaching, 1&ndash;5% monitored); falls back to minutes over limit when drive "
+            f"time isn&rsquo;t exposed. Coaching &amp; training: Samsara Coaching Sessions / "
+            f"Training Assignments (past-due only; tiles hidden when module not enabled).</div>")
 
 
 def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
