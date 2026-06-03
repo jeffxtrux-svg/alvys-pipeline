@@ -344,11 +344,32 @@ def main() -> int:
     trucks_df   = _build_equipment_df(lookups.raw_trucks,   "Truck")
     trailers_df = _build_equipment_df(lookups.raw_trailers, "Trailer")
 
+    # --- Fetch Maintenance records (inspection events) ---
+    log.info("=" * 60)
+    log.info("Step X: Maintenance records (POST /maintenance/search)")
+    log.info("=" * 60)
+    raw_maintenance = client.fetch_maintenance(lookback_days=365)
+    if raw_maintenance:
+        sample_path = debug_dir / "sample_maintenance.json"
+        with open(sample_path, "w") as f:
+            json.dump(raw_maintenance[0], f, indent=2, default=str)
+        log.info("Wrote sample maintenance record → %s", sample_path)
+        # Log all top-level keys so we know the schema.
+        keys = sorted(raw_maintenance[0].keys()) if isinstance(raw_maintenance[0], dict) else []
+        log.info("Maintenance sample keys (%d): %s", len(keys), ", ".join(keys))
+        date_like = [k for k in keys
+                     if any(t in k.lower() for t in ("date", "expir", "inspect", "due", "schedul", "complet"))]
+        if date_like:
+            log.info("Maintenance date/inspection-ish keys: %s", ", ".join(date_like))
+    import pandas as pd
+    maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
+
     # --- Write ---
     output_path = output_dir / "Alvys_Master.xlsx"
     write_master_xlsx(loads_df, trips_df, fuel_df, output_path,
                       drivers_df=drivers_df,
-                      trucks_df=trucks_df, trailers_df=trailers_df)
+                      trucks_df=trucks_df, trailers_df=trailers_df,
+                      maintenance_df=maintenance_df)
 
     log.info("=" * 60)
     log.info("SUCCESS — output written to %s", output_path.resolve())

@@ -273,6 +273,27 @@ class AlvysClient:
         log.info("Total trailers fetched: %d", len(items))
         return items
 
+    def fetch_maintenance(self, lookback_days: int = 365) -> list[dict]:
+        """Fetch maintenance/inspection records from POST /maintenance/search.
+        Returns raw list; field names are logged on first run for schema discovery."""
+        from datetime import datetime, timedelta
+        log.info("Fetching maintenance records (lookback_days=%d)", lookback_days)
+        now = datetime.utcnow()
+        start = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%dT00:00:00Z")
+        end = now.strftime("%Y-%m-%dT23:59:59Z")
+        body = {"dateRange": {"start": start, "end": end}}
+        try:
+            items = list(self._paginate_search("/maintenance/search", body))
+            log.info("Total maintenance records fetched: %d", len(items))
+            return items
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            log.warning("maintenance/search → HTTP %s — skipping maintenance data", code)
+            return []
+        except Exception as e:
+            log.warning("maintenance/search failed: %s — skipping maintenance data", e)
+            return []
+
     def fetch_users(self) -> list[dict]:
         log.info("Fetching all users")
         items = self._fetch_with_fallback(
