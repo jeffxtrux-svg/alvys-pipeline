@@ -4084,13 +4084,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
                if goal_tiles else "")
             + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
-            f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
-            f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
                if alvys_ar_row else "")
             + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
                f"{_brief(recon_note, recon['kind'])}"
                if recon_row else "")
+            + f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
+            + f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
             + recon_detail
             + _top5_ar_html
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
