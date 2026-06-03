@@ -4343,7 +4343,7 @@ def build_page2(samsara, date_str) -> str:
         f"</tr>"
     )
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 2, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{gauge_row}"
             f"{_safety_trend_row}"
@@ -4908,7 +4908,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 
 def build_page9(samba, date_str, alvys_drivers=None) -> str:
-    header = _header('Driver Compliance &mdash; SambaSafety + Alvys', 2, date_str, section='SAFETY')
+    header = _header('Driver Compliance &mdash; SambaSafety + Alvys', 3, date_str, section='SAFETY')
     footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
               f"License + MVR: SambaSafety. DOT medical card: Alvys Drivers feed.</div>")
@@ -5105,8 +5105,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
-            f"{wrap(_strip(2) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
-            f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
+            # build_page2 (Samsara safety detail) runs first so it sits directly
+            # below page 1's safety summary; SambaSafety driver scan follows it.
+            f"{wrap(_strip(2) + build_page2(samsara, date_str))}{pb}"
+            f"{wrap(_strip(3) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
             f"{wrap(_strip(4) + build_page_equipment(equipment, date_str, kind='tractors', pg=4))}{pb}"
             f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='trailers', pg=5))}{pb}"
             # -- OPERATIONAL --
