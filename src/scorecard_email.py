@@ -3820,16 +3820,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     # with the same 4-tile + overdue-invoice detail visual as page 8.
     _qb_overdue_html = ""
     if qb_ar:
-        _totals = qb_ar.get("totals", {}) or {}
         _total31 = qb_ar.get("total31")
         _ovr_rows = qb_ar.get("rows", []) or []
         if _total31 or _ovr_rows:
-            _tile_row = (
-                _tile("31&ndash;60 days", money(_totals.get("31&ndash;60")), _pill("watch", "warn"))
-                + _tile("61&ndash;90 days", money(_totals.get("61&ndash;90")), _pill("escalate", "warn"))
-                + _tile("91+ days", money(_totals.get("91+")), _pill("collections", "bad"))
-                + _tile("Total 31+", money(_total31), _pill("overdue", "bad"))
-            )
             _ovr_body = ""
             for r in _ovr_rows:
                 k = "bad" if r["bucket"] == "91+" else "warn"
@@ -3846,7 +3839,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<td style='border-top:2px solid {LINE};'></td></tr>"
             )
             _qb_overdue_html = (
-                f"<tr>{_tile_row}</tr>"
                 f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
                 f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], _ovr_body + _ovr_total)}"
             )
