@@ -345,6 +345,17 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         None
     )
     log.info("DIAG: Loads date column selected = %r", _date_col_used)
+    _mi_cols = [c for c in loads.columns
+                if any(t in c.lower() for t in ("mile", "mileage", "dispatch", "distance", "dh", "dead"))]
+    log.info("DIAG: Loads mileage-related columns: %s", ", ".join(_mi_cols) or "(none)")
+    _used_loaded = next((n for n in ["Loaded Mileage", "Loaded Dispatch Mileage", "Loaded Miles"]
+                         if n in loads.columns), None)
+    _used_empty  = next((n for n in ["Empty Mileage", "Empty Dispatch Mileage", "Empty Miles"]
+                         if n in loads.columns), None)
+    _used_total  = next((n for n in ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]
+                         if n in loads.columns), None)
+    log.info("DIAG: Mileage columns in use → loaded=%r  empty=%r  total=%r",
+             _used_loaded, _used_empty, _used_total)
     w = _windows()
     # Bound each window to [start, now] — open-ended `dates >= start` was
     # silently including loads with future-dated Scheduled Pickup, which
