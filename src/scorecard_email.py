@@ -104,6 +104,7 @@ RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
 RPM_GOAL_OVERHEAD_ALLOC = 1.0
+RPM_GOAL_INSURANCE_SURCHARGE = 0.07   # liability insurance increase added Jun 2026
 # Fail-soft guards: if the short pay window is too thin to trust, widen it; if the
 # resulting cost lands outside a sane band, flag it on the email's data-check banner.
 RPM_GOAL_MIN_SETTLED_LOADS = 5      # need at least this many settled X-Trux loads…
@@ -1391,7 +1392,8 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     overhead_per_mile = (overhead_total / ytd_miles) if (overhead_total and ytd_miles) else None
     overhead_per_mile_xtrux = (overhead_xtrux / ytd_miles) if (overhead_xtrux and ytd_miles) else None
 
-    cost_per_mile = ((pay_per_mile + overhead_per_mile)
+    insurance_surcharge = _env_float("RPM_GOAL_INSURANCE_SURCHARGE", RPM_GOAL_INSURANCE_SURCHARGE)
+    cost_per_mile = ((pay_per_mile + overhead_per_mile + insurance_surcharge)
                      if (pay_per_mile is not None and overhead_per_mile is not None) else None)
     goal_rpm = (cost_per_mile / target_or) if (cost_per_mile is not None and target_or) else None
     profit_per_mile = (goal_rpm - cost_per_mile) if (goal_rpm is not None and cost_per_mile is not None) else None
@@ -1425,6 +1427,7 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         "pay_window_fallback": pay_window_fallback,
         "pay_loads": pay_loads,
         "pay_miles": pay_miles or None,
+        "insurance_surcharge": insurance_surcharge,
         "worksheet_overhead": worksheet_overhead,
         "worksheet_cost_per_mile": ws_cost_per_mile,
         "cost_plausible": cost_plausible,
@@ -3851,6 +3854,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
+        _ins = g.get("insurance_surcharge")
         _win = g.get("pay_window_used") or g.get("pay_window_days")
         parts = []
         if _isnum(_pp):
@@ -3866,6 +3870,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 oh_txt += f"; X-Trux-only {rpm(_xt_oh)}/mi"
             oh_txt += ")"
             parts.append(oh_txt)
+        if _isnum(_ins) and _ins > 0:
+            parts.append(f"liability insurance {rpm(_ins)}/mi")
         breakdown = " + ".join(parts) if parts else "awaiting data"
         if _isnum(_cpm):
             msg = f"Fully-loaded cost to run an X-Trux mile is <b>{rpm(_cpm)}</b> = {breakdown}. "
