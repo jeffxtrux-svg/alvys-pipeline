@@ -325,17 +325,18 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         _n_excl = _n_before - len(loads)
         if _n_excl:
             log.info("Excluded %d Cancelled loads to match Power BI view", _n_excl)
-    # Dedupe by Load # — Master 2026's Loads sheet has trip-level duplicate rows
-    # where Loaded Miles is repeated per trip but Empty Miles is on the canonical
-    # row only. Without dedup the trend's June row shows 55 loads / 43,475 loaded
-    # vs PBI's 36 loads / 22,596 loaded. PBI dedupes via Trips→Loads SUMMARIZE.
-    _ln_col = "Load #" if "Load #" in loads.columns else _find_col(loads, ["load #", "load number", "load num"])
-    if _ln_col:
+    # Power BI's monthly table only sums loads with Driver Rate > 0 (settled).
+    # Pre-booked / unsettled loads carry Loaded Miles but no Empty Miles and no
+    # Driver Rate, which is why our June trend showed 55 loads / 43,475 loaded
+    # while PBI shows 36 / 22,596. Filter to settled here so all asset metrics
+    # (tile + trend + entity P&L) operate on the same set as PBI.
+    if "Driver Rate" in loads.columns:
         _n_before = len(loads)
-        loads = loads.drop_duplicates(subset=[_ln_col], keep="first")
-        _n_dup = _n_before - len(loads)
-        if _n_dup:
-            log.info("Deduped %d duplicate-Load# rows (%s) — kept first per Load #", _n_dup, _ln_col)
+        loads = loads[_col(loads, "Driver Rate").fillna(0) > 0]
+        _n_excl = _n_before - len(loads)
+        if _n_excl:
+            log.info("Excluded %d unsettled loads (Driver Rate = 0) — matches Power BI view",
+                     _n_excl)
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     _date_col_used = next(
         (c for c in ALVYS_DATE_CANDIDATES
@@ -488,10 +489,6 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     loads = sheets.get("Loads")
     if loads is None or loads.empty:
         return {}
-    # Dedupe by Load # — Master 2026 has trip-level duplicate rows. See compute_alvys.
-    _ln_col = "Load #" if "Load #" in loads.columns else _find_col(loads, ["load #", "load number", "load num"])
-    if _ln_col:
-        loads = loads.drop_duplicates(subset=[_ln_col], keep="first")
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if not office_col:
         return {}
@@ -848,11 +845,10 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     _status_col = _find_col(loads, ["load status", "status"])
     if _status_col:
         loads = loads[loads[_status_col].astype(str).str.strip().str.lower() != "cancelled"]
-    # Dedupe by Load # — Master 2026 has trip-level duplicates that inflate
-    # Loaded Miles (Empty Miles is on the canonical row only). See compute_alvys.
-    _ln_col = "Load #" if "Load #" in loads.columns else _find_col(loads, ["load #", "load number", "load num"])
-    if _ln_col:
-        loads = loads.drop_duplicates(subset=[_ln_col], keep="first")
+    # Match PBI's monthly view: settled loads only (Driver Rate > 0). Same
+    # filter as compute_alvys / compute_alvys_entities. See compute_alvys.
+    if "Driver Rate" in loads.columns:
+        loads = loads[_col(loads, "Driver Rate").fillna(0) > 0]
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
