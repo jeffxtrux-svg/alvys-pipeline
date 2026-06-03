@@ -4452,6 +4452,52 @@ def build_page2(samsara, date_str) -> str:
         if sm: return "warn"
         return None
 
+    def _spd_comment(pct_6mo, pct_3mo, pct_mtd):
+        """Plain-language comment per the speeding-threshold rubric.
+
+        Base message uses the PEAK of the three windows so a chronic 6mo problem
+        and an acute MTD spike both surface. Trend marker compares MTD to 6mo
+        baseline: a big drop is called out as improvement; a big jump as worsening.
+        """
+        pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
+        peak = max(pcts) if pcts else None
+        base = ""
+        if _isnum(peak):
+            if peak >= 3.0:
+                base = "STOP &mdash; driver needs to be shut down"
+            elif peak >= 2.5:
+                base = "Driver is a speeder and has a problem"
+            elif peak >= 2.0:
+                base = "Driver needs a conversation"
+            elif peak >= 1.75:
+                base = "Where is the fire?"
+            elif peak >= 1.5:
+                base = "Why are we going so fast?"
+            elif peak >= 1.25:
+                base = "Watch out Speedy"
+        trend = ""
+        if _isnum(pct_6mo) and _isnum(pct_mtd) and pct_6mo > 0:
+            if pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.5:
+                trend = "significant improvement"
+            elif pct_mtd - pct_6mo >= 1.0:
+                trend = "trending worse &mdash; speeding more often"
+        if base and trend:
+            return f"{base} &mdash; {trend}"
+        return base or trend
+
+    def _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd):
+        if not comment:
+            return None
+        if "improvement" in comment:
+            return "good" if "STOP" not in comment and "speeder" not in comment else "warn"
+        pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
+        peak = max(pcts) if pcts else None
+        if _isnum(peak) and peak >= 2.5:
+            return "bad"
+        if "trending worse" in comment:
+            return "bad"
+        return "warn"
+
     def _spd_rows():
         rows = ""
         for r in speeders_ranked:
@@ -4461,27 +4507,22 @@ def build_page2(samsara, date_str) -> str:
             pct_6mo = r.get("speed_pct")
             pct_3mo = r.get("speed_pct_3mo")
             pct_mtd = r.get("speed_pct_mtd")
-            # Action driven by the 6-mo figure (more stable than the shorter windows).
-            if _isnum(pct_6mo):
-                action = "flag for coaching" if pct_6mo >= 5 else "monitor"
-                action_kind = "bad" if pct_6mo >= 5 else "warn"
-            else:
-                action = "flag for coaching" if sm >= 60 else "monitor"
-                action_kind = "bad" if sm >= 60 else "warn"
+            comment = _spd_comment(pct_6mo, pct_3mo, pct_mtd)
+            comment_kind = _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd)
             rows += _tr(
                 [r["driver"], str(r["score"]),
                  _spd_cell(pct_6mo, sm), _spd_cell(pct_3mo, None),
-                 _spd_cell(pct_mtd, None), action],
+                 _spd_cell(pct_mtd, None), comment or "&mdash;"],
                 ["left", "right", "right", "right", "right", "left"],
                 [None, _score_kind(r["score"]),
                  _spd_kind(pct_6mo, sm), _spd_kind(pct_3mo, None),
-                 _spd_kind(pct_mtd, None), action_kind])
+                 _spd_kind(pct_mtd, None), comment_kind])
         return rows
 
     _spd_tbl = _table(
         ["Driver", "Safety Score",
          "Speed Over Limit (6 mo)", "Speed Over Limit (3 mo)",
-         "Speed Over Limit (MTD)", "Action"],
+         "Speed Over Limit (MTD)", "Comments"],
         ["left", "right", "right", "right", "right", "left"],
         _spd_rows(), span=4,
     )
