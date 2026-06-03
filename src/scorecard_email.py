@@ -152,7 +152,7 @@ def pct(x) -> str:
 
 
 def rpm(x) -> str:
-    return f"${x:.2f}" if _isnum(x) else "n/a"
+    return f"${x:.3f}" if _isnum(x) else "n/a"
 
 
 def num(x) -> str:
