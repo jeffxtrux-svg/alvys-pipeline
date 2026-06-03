@@ -1889,6 +1889,52 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             [("driver name", "driver"), ("unit", "vehicle"), ("event type",),
              ("severity",), ("status", "reviewed", "coaching")],
         )
+        # "Coaching needs assigned" list — per-driver aggregation over the
+        # 7-day window so the table never empties out the way the 24h slice
+        # often does, and so every driver with even one event is surfaced.
+        _7d = events[ed >= w["7d"]]
+        _7d_dates = ed[ed >= w["7d"]]
+        if not _7d.empty and dcol:
+            et_col = _find_col(_7d, ["event type"])
+            sev_col = _find_col(_7d, ["severity"])
+            unit_col = _find_col(_7d, ["unit", "vehicle"])
+            agg: dict = {}
+            for idx in _7d.index:
+                r = _7d.loc[idx]
+                driver = str(r.get(dcol, "") or "").strip() or "(unknown)"
+                if _is_excluded_driver(driver):
+                    continue
+                slot = agg.setdefault(driver, {
+                    "driver": driver, "events": 0,
+                    "types": set(), "severities": set(),
+                    "units": set(), "last_ts": None,
+                })
+                slot["events"] += 1
+                if et_col:
+                    et = str(r.get(et_col, "") or "").strip()
+                    if et:
+                        slot["types"].add(et)
+                if sev_col:
+                    sv = str(r.get(sev_col, "") or "").strip()
+                    if sv:
+                        slot["severities"].add(sv)
+                if unit_col:
+                    u = str(r.get(unit_col, "") or "").strip()
+                    if u:
+                        slot["units"].add(u)
+                ts = _7d_dates.loc[idx]
+                if pd.notna(ts) and (slot["last_ts"] is None or ts > slot["last_ts"]):
+                    slot["last_ts"] = ts
+            out["coaching_list"] = [
+                {
+                    "driver": s["driver"], "events": s["events"],
+                    "types": sorted(s["types"]),
+                    "severities": sorted(s["severities"]),
+                    "units": sorted(s["units"]),
+                    "last": s["last_ts"].strftime("%Y-%m-%d %H:%M") if s["last_ts"] is not None else "",
+                }
+                for s in sorted(agg.values(), key=lambda x: -x["events"])
+            ]
 
     # HOS violations
     if hosv is not None and not hosv.empty:
@@ -4129,18 +4175,23 @@ def _safety_24h_tables(samsara) -> str:
             [None, None, None, None, "warn", "bad"])
         for r in detail.get("dvir", []))
 
-    # Coaching flagged: drivers with >= COACH_EVENT_THRESHOLD safety events in 24h.
-    by: dict = {}
-    for r in detail.get("events", []):
-        d = r.get("driver name", "") or "(unknown)"
-        by.setdefault(d, []).append(r.get("event type", ""))
+    # Coaching needs assigned — per-driver list over the last 7 days. Every
+    # driver with any safety event in the window stays on the list; the
+    # action column tells the safety manager whether to assign coaching now
+    # (>= threshold) or just monitor (one-off).
+    coaching_list = (samsara or {}).get("coaching_list") or []
     coach_rows = ""
-    for d, types in by.items():
-        if len(types) >= COACH_EVENT_THRESHOLD:
-            coach_rows += _tr(
-                [d, ", ".join(t for t in types if t)[:60], str(len(types)), "Today", "New"],
-                ["left", "left", "right", "left", "left"],
-                [None, None, "bad", None, "warn"])
+    for c in coaching_list:
+        n = c.get("events", 0)
+        action = "Assign coaching" if n >= COACH_EVENT_THRESHOLD else "Monitor"
+        action_kind = "bad" if n >= COACH_EVENT_THRESHOLD else "warn"
+        events_kind = "bad" if n >= COACH_EVENT_THRESHOLD else ("warn" if n > 0 else None)
+        types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
+        coach_rows += _tr(
+            [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;", action],
+            ["left", "left", "right", "left", "left"],
+            [None, None, events_kind, None, action_kind],
+        )
 
     return (
         f"{_section('HOS violations &mdash; last 24h')}"
@@ -4149,8 +4200,8 @@ def _safety_24h_tables(samsara) -> str:
         f"{_table(['Driver', 'Unit', 'Time', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
-        f"{_section('Coaching flagged &mdash; last 24h')}"
-        f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
+        f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
+        f"{_table(['Driver', 'Event Types', 'Events (7d)', 'Last Event', 'Action'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
     )
 
 
