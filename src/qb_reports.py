@@ -292,6 +292,114 @@ def fetch_ar_history(client: QBClient, company_name: str, months: int = 6) -> pd
     return pd.DataFrame(rows) if rows else None
 
 
+def fetch_dso_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
+    """Average days invoice-to-payment per calendar month, for the last ``months`` months.
+
+    Queries Payment entities for the window, links each payment to its source
+    Invoice via LinkedTxn, fetches the invoice TxnDate in batches, then
+    computes avg(payment.TxnDate - invoice.TxnDate) grouped by the payment month.
+
+    Returns a DataFrame with columns:
+        Company, AsOf (YYYY-MM), Month (label), AvgDays, InvoiceCount
+    Returns None if no payment data is available.
+    """
+    log.info("  %-25s %s", "DSO history", company_name)
+
+    # Date window: first of (months) ago through today.
+    today = datetime.date.today()
+    first_day = today.replace(day=1)
+    for _ in range(months - 1):
+        first_day = (first_day - datetime.timedelta(days=1)).replace(day=1)
+    start_str = first_day.isoformat()
+    end_str = today.isoformat()
+
+    # Step 1 — fetch all Payments in the window (MAXRESULTS 1000 covers most
+    # small fleets; the QB tool counted 1,041 over 6 months so a single page
+    # is sufficient; add pagination if needed).
+    try:
+        result = client.get("query", {
+            "query": (f"SELECT * FROM Payment "
+                      f"WHERE TxnDate >= '{start_str}' AND TxnDate <= '{end_str}' "
+                      f"MAXRESULTS 1000"),
+            "minorversion": 75,
+        })
+    except Exception as exc:
+        log.warning("    DSO: Payment query failed for %s: %s", company_name, exc)
+        return None
+
+    payments = result.get("QueryResponse", {}).get("Payment", [])
+    if not payments:
+        log.info("    DSO: no payments for %s in window", company_name)
+        return None
+
+    # Step 2 — map each linked Invoice ID → payment date(s).
+    inv_id_to_pay_dates: dict[str, list[datetime.date]] = {}
+    for p in payments:
+        try:
+            pay_date = datetime.date.fromisoformat(str(p.get("TxnDate", ""))[:10])
+        except ValueError:
+            continue
+        for lt in p.get("LinkedTxn", []):
+            if lt.get("TxnType") == "Invoice":
+                inv_id = lt.get("TxnId")
+                if inv_id:
+                    inv_id_to_pay_dates.setdefault(inv_id, []).append(pay_date)
+
+    if not inv_id_to_pay_dates:
+        return None
+
+    # Step 3 — fetch invoice TxnDates in batches of 50.
+    BATCH = 50
+    inv_ids = list(inv_id_to_pay_dates.keys())
+    inv_dates: dict[str, datetime.date] = {}
+    for i in range(0, len(inv_ids), BATCH):
+        batch = inv_ids[i : i + BATCH]
+        id_list = ", ".join(f"'{x}'" for x in batch)
+        try:
+            r2 = client.get("query", {
+                "query": f"SELECT Id, TxnDate FROM Invoice WHERE Id IN ({id_list})",
+                "minorversion": 75,
+            })
+            for inv in r2.get("QueryResponse", {}).get("Invoice", []):
+                try:
+                    inv_dates[inv["Id"]] = datetime.date.fromisoformat(str(inv["TxnDate"])[:10])
+                except (KeyError, ValueError):
+                    pass
+        except Exception as exc:
+            log.warning("    DSO: Invoice batch query failed: %s", exc)
+
+    # Step 4 — compute avg days per payment month.
+    from collections import defaultdict
+    month_days: dict[str, list[int]] = defaultdict(list)
+    for inv_id, pay_dates in inv_id_to_pay_dates.items():
+        inv_date = inv_dates.get(inv_id)
+        if inv_date is None:
+            continue
+        for pay_date in pay_dates:
+            days = (pay_date - inv_date).days
+            if 0 <= days <= 365:
+                ym = pay_date.strftime("%Y-%m")
+                month_days[ym].append(days)
+
+    if not month_days:
+        return None
+
+    rows = []
+    for ym, days_list in sorted(month_days.items()):
+        dt = datetime.date.fromisoformat(ym + "-01")
+        rows.append({
+            "Company":      company_name,
+            "AsOf":         ym,
+            "Month":        dt.strftime("%b"),
+            "AvgDays":      round(sum(days_list) / len(days_list), 1),
+            "InvoiceCount": len(days_list),
+        })
+
+    log.info("    DSO: %s — %d month(s), %d invoice-payment pairs",
+             company_name, len(rows), sum(r["InvoiceCount"] for r in rows))
+    return pd.DataFrame(rows)
+
+
 def fetch_ap_history(client: QBClient, company_name: str, months: int = 6) -> pd.DataFrame | None:
     """Total open AP as of each of the last ``months`` month-ends, one row each.
 

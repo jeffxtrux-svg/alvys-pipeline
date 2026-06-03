@@ -1580,6 +1580,56 @@ def compute_balance_history(df: pd.DataFrame | None, value_col: str = "Total_AR"
     return labels, values
 
 
+def compute_dso_history(dso_hist_sheets: dict | None,
+                        companies: frozenset[str] | None = None,
+                        ) -> tuple[list[str], list[float], float | None]:
+    """Parse QB_DSO_History.xlsx into (labels, avg_days_per_month, overall_avg).
+
+    Filters to `companies` when provided (same frozenset used for AR history).
+    Returns ([], [], None) if data is unavailable.
+    """
+    if not dso_hist_sheets:
+        return [], [], None
+    df = next(iter(dso_hist_sheets.values()), None)
+    if df is None or df.empty:
+        return [], [], None
+    if "AsOf" not in df.columns or "AvgDays" not in df.columns:
+        return [], [], None
+    if companies is not None and "Company" in df.columns:
+        df = df[df["Company"].astype(str).str.strip().str.lower().isin(companies)]
+    if df.empty:
+        return [], [], None
+
+    # Weighted avg per month (weighted by InvoiceCount when available).
+    if "InvoiceCount" in df.columns:
+        df = df.copy()
+        df["_w"] = pd.to_numeric(df["InvoiceCount"], errors="coerce").fillna(1)
+        df["_wd"] = pd.to_numeric(df["AvgDays"], errors="coerce").fillna(0) * df["_w"]
+        g = df.groupby("AsOf").apply(lambda s: s["_wd"].sum() / s["_w"].sum() if s["_w"].sum() else None)
+    else:
+        g = df.groupby("AsOf")["AvgDays"].apply(
+            lambda s: pd.to_numeric(s, errors="coerce").mean()
+        )
+    g = g.sort_index().dropna().tail(6)
+    if g.empty:
+        return [], [], None
+
+    labels, values = [], []
+    items = list(g.items())
+    for i, (ym, v) in enumerate(items):
+        try:
+            lab = pd.Timestamp(ym + "-01").strftime("%b")
+        except Exception:
+            lab = str(ym)
+        if i == len(items) - 1:
+            lab += "*"
+        labels.append(lab)
+        values.append(round(float(v), 1))
+
+    overall = round(sum(values) / len(values), 1) if values else None
+    return labels, values, overall
+
+
 # ----------------------------------------------------------------------
 # Samsara safety & compliance
 # ----------------------------------------------------------------------
@@ -3128,7 +3178,7 @@ def compute_drag_attribution(
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
-                samba=None, alvys_drivers=None) -> str:
+                samba=None, alvys_drivers=None, dso_hist=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -3375,36 +3425,55 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
-    # AR Days to Receive (DSO) and AP Days to Pay (DPO). QB P&L is YTD
-    # ("This Fiscal Year"); we use day-of-year as the denominator-period.
-    # Scope to X-Trux + X-Linx so it matches the AR/AP balances shown above.
+    # AR Days to Receive (DSO) — uses actual invoice-to-payment days from QB
+    # Payment records (same formula QB shows: avg days from invoice date to
+    # payment date across all paid invoices in the last 6 months, X-Trux only).
+    # Falls back to the balance÷revenue approximation when DSO history is absent.
+    def _days_str(x):
+        return f"{x:,.0f} days" if _isnum(x) else "n/a"
+
+    dso_labels, dso_vals, dso_overall = dso_hist if dso_hist else ([], [], None)
+
+    # AP Days to Pay (DPO) — balance ÷ avg daily expenses (YTD).
     _now = pd.Timestamp.now()
     _ytd_days = _now.dayofyear
-    _ytd_income = sum(
-        v["income"] for k, v in (qb_pnl or {}).items()
-        if str(k).strip().lower() in _AR_COMPANIES and _isnum(v.get("income"))
-    )
     _ytd_expenses = sum(
         (v.get("cogs") or 0) + (v.get("opex") or 0)
         for k, v in (qb_pnl or {}).items()
         if str(k).strip().lower() in _AR_COMPANIES
     )
-    _cur_ar = (qb_ar or {}).get("total_ar") if qb_ar else None
     _cur_ap = ap_vals[-1] if ap_vals else None
-    _avg_daily_rev = (_ytd_income / _ytd_days) if (_ytd_income and _ytd_days) else None
     _avg_daily_exp = (_ytd_expenses / _ytd_days) if (_ytd_expenses and _ytd_days) else None
-    dso_days = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
     dpo_days = (_cur_ap / _avg_daily_exp) if (_isnum(_cur_ap) and _avg_daily_exp) else None
-    def _days_str(x):
-        return f"{x:,.0f} days" if _isnum(x) else "n/a"
-    dso_kind = "good" if (_isnum(dso_days) and dso_days < 40) else ("warn" if (_isnum(dso_days) and dso_days < 55) else "bad")
+
+    # If actual DSO is unavailable, fall back to balance÷revenue approximation.
+    if not _isnum(dso_overall):
+        _ytd_income = sum(
+            v["income"] for k, v in (qb_pnl or {}).items()
+            if str(k).strip().lower() in _AR_COMPANIES and _isnum(v.get("income"))
+        )
+        _cur_ar = (qb_ar or {}).get("total_ar") if qb_ar else None
+        _avg_daily_rev = (_ytd_income / _ytd_days) if (_ytd_income and _ytd_days) else None
+        dso_overall = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
+
+    dso_kind = "good" if (_isnum(dso_overall) and dso_overall < 40) else ("warn" if (_isnum(dso_overall) and dso_overall < 55) else "bad")
     dpo_kind = "good" if (_isnum(dpo_days) and dpo_days < 35) else "warn"
-    dso_tile_td = _tile("AR Days to Receive", _days_str(dso_days),
+
+    dso_tile_td = _tile("AR Days to Receive", _days_str(dso_overall),
                         f"goal &lt; 40 " + _pill("DSO", dso_kind))
+    dso_trend_td = _bar_chart(
+        "Avg days invoice &rarr; payment &middot; 6 months",
+        dso_labels, dso_vals,
+        "X-Trux paid invoices &middot; *MTD",
+        fmt=lambda v: f"{v:.0f}d",
+    ) if dso_labels else ""
+
     dpo_tile_td = _tile("AP Days to Pay", _days_str(dpo_days),
                         f"goal &lt; 35 " + _pill("DPO", dpo_kind))
     ar_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ar_chart}</tr><tr>{dso_tile_td}</tr></table></td>")
+                 f"<tr>{ar_chart}</tr><tr>{dso_tile_td}</tr>"
+                 + (f"<tr>{dso_trend_td}</tr>" if dso_trend_td else "")
+                 + f"</table></td>")
     ap_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
                  f"<tr>{ap_chart}</tr><tr>{dpo_tile_td}</tr></table></td>")
 
@@ -4433,7 +4502,8 @@ def _alvys_medical_block(alvys_drivers) -> str:
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
-               margin_projection=None, alvys_drivers=None, equipment=None) -> str:
+               margin_projection=None, alvys_drivers=None, equipment=None,
+               dso_hist=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div style='height:18px;background:#eef2f7;'></div>"
     note = ""
@@ -4488,7 +4558,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
             # follows the entity-level summary. Safety and AR pages then come
@@ -4527,7 +4597,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # Orchestration (testable without network)
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
-                 alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None) -> str:
+                 alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None,
+                 dso_hist_sheets=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
@@ -4554,12 +4625,15 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     equipment = compute_alvys_equipment(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
+    # DSO history: filter to X-Trux only (asset fleet — same scope the user sees in QB).
+    _dso_companies = frozenset({"x-trux inc"})
+    dso_hist = compute_dso_history(dso_hist_sheets, companies=_dso_companies)
     html = build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
                       uninvoiced=uninvoiced, rpm_trend=rpm_trend, rpm_goal=rpm_goal,
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
-                      equipment=equipment)
+                      equipment=equipment, dso_hist=dso_hist)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
@@ -4744,6 +4818,7 @@ def main() -> int:
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
     ar_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AR_History.xlsx", missing, "QB AR history")
     ap_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AP_History.xlsx", missing, "QB AP history")
+    dso_hist_sheets = _safe_read(token, upn, f"{qb_dir}/QB_DSO_History.xlsx", [], "QB DSO history")
     samsara_sheets = _safe_read(token, upn, samsara_path, missing, "Samsara Master")
     # SambaSafety is optional — don't flag it as "missing" if the export isn't set up yet.
     samba_sheets = _safe_read(token, upn, samba_path, [], "SambaSafety Master")
@@ -4775,7 +4850,7 @@ def main() -> int:
 
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
-                        sambasafety_sheets=samba_sheets)
+                        sambasafety_sheets=samba_sheets, dso_hist_sheets=dso_hist_sheets)
     # Pre-send review — two layers:
     #   1. scorecard_lint  — rule-based, always on, catches known regressions
     #   2. scorecard_review — LLM-based (Claude), opt-in via ANTHROPIC_API_KEY,
