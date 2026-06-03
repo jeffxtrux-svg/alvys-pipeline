@@ -3866,9 +3866,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     def chart(metric, title, sub):
         ml = tr.get(metric)
         return _bar_chart(title, ml[0] if ml else [], ml[1] if ml else [], sub)
+    _fleet_score = (sf.get("fleet") or {}).get("fleet_score")
+    _fleet_score_tile = _tile(
+        "Fleet avg safety score",
+        (f"{_fleet_score:.0f}" if _isnum(_fleet_score) else "n/a"),
+        _pill("0&ndash;100 &middot; higher better", "mute"),
+    )
     safety_charts = (chart("events", "Safety events", "per month &middot; *MTD")
                      + chart("hos", "HOS violations", "per month &middot; *MTD")
-                     + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD"))
+                     + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
+                     + _fleet_score_tile)
 
     # Revenue / cost / margin by entity (Alvys 2026, MTD). XFreight folded into X-Trux.
     entity_rows = ""
@@ -4097,55 +4104,65 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + _qb_overdue_html
             + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
             + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
+            + _safety_24h_tables(samsara)
             + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             + f"{asof}Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
 
 
-def build_page2(samsara, date_str) -> str:
+def _safety_24h_tables(samsara) -> str:
+    """HOS violations / Safety events / Open DVIR defects / Coaching flagged
+    table block. Shared between page 1 (appended under the safety summary)
+    and page 2 (its original home).
+    """
     detail = (samsara or {}).get("detail", {})
-    win = (samsara or {}).get("windows", {})
 
-    def rows_hos():
-        return "".join(_tr([r.get("driver name", ""), r.get("time", ""), r.get("violation type", ""), r.get("status", "")],
-                           ["left", "left", "left", "left"], [None, None, "bad", None])
-                       for r in detail.get("hos", []))
+    hos_rows = "".join(
+        _tr([r.get("driver name", ""), r.get("time", ""), r.get("violation type", ""), r.get("status", "")],
+            ["left", "left", "left", "left"], [None, None, "bad", None])
+        for r in detail.get("hos", []))
 
-    def rows_events():
-        return "".join(_tr([r.get("driver name", ""), r.get("unit", ""), r.get("time", ""), r.get("event type", ""),
-                            r.get("severity", ""), r.get("status", "")],
-                           ["left", "left", "left", "left", "left", "left"],
-                           [None, None, None, None,
-                            ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"), None])
-                       for r in detail.get("events", []))
+    event_rows = "".join(
+        _tr([r.get("driver name", ""), r.get("unit", ""), r.get("time", ""),
+             r.get("event type", ""), r.get("severity", ""), r.get("status", "")],
+            ["left", "left", "left", "left", "left", "left"],
+            [None, None, None, None,
+             ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"), None])
+        for r in detail.get("events", []))
 
-    def rows_dvir():
-        return "".join(_tr([r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
-                            (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
-                            r.get("defect", ""), r.get("defect type", ""), "Open"],
-                           ["left", "left", "left", "left", "left", "left"],
-                           [None, None, None, None, "warn", "bad"])
-                       for r in detail.get("dvir", []))
+    dvir_rows = "".join(
+        _tr([r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
+             (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
+             r.get("defect", ""), r.get("defect type", ""), "Open"],
+            ["left", "left", "left", "left", "left", "left"],
+            [None, None, None, None, "warn", "bad"])
+        for r in detail.get("dvir", []))
 
-    def rows_coach():
-        # derived: drivers appearing >= threshold in 24h safety events
-        ev = detail.get("events", [])
-        by = {}
-        for r in ev:
-            d = r.get("driver name", "") or "(unknown)"
-            by.setdefault(d, []).append(r.get("event type", ""))
-        out = ""
-        for d, types in by.items():
-            if len(types) >= COACH_EVENT_THRESHOLD:
-                out += _tr([d, ", ".join(t for t in types if t)[:60], str(len(types)), "Today", "New"],
-                           ["left", "left", "right", "left", "left"], [None, None, "bad", None, "warn"])
-        return out
+    # Coaching flagged: drivers with >= COACH_EVENT_THRESHOLD safety events in 24h.
+    by: dict = {}
+    for r in detail.get("events", []):
+        d = r.get("driver name", "") or "(unknown)"
+        by.setdefault(d, []).append(r.get("event type", ""))
+    coach_rows = ""
+    for d, types in by.items():
+        if len(types) >= COACH_EVENT_THRESHOLD:
+            coach_rows += _tr(
+                [d, ", ".join(t for t in types if t)[:60], str(len(types)), "Today", "New"],
+                ["left", "left", "right", "left", "left"],
+                [None, None, "bad", None, "warn"])
 
-    def w(metric, k="24h"):
-        return win.get(metric, {}).get(k, 0)
+    return (
+        f"{_section('HOS violations &mdash; last 24h')}"
+        f"{_table(['Driver', 'Time', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
+        f"{_section('Safety events &mdash; last 24h')}"
+        f"{_table(['Driver', 'Unit', 'Time', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
+        f"{_section('DVIR defects (open) &mdash; all unresolved')}"
+        f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
+        f"{_section('Coaching flagged &mdash; last 24h')}"
+        f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
+    )
 
-    coach_rows = rows_coach()
-    coach_count = coach_rows.count("<tr>")
 
+def build_page2(samsara, date_str) -> str:
     # Driver safety scores table (moved here from the Fleet Operations page
     # so all safety content lives on one page). All drivers ranked
     # worst-to-best; lowest scores get the red treatment so they pop.
@@ -4207,25 +4224,7 @@ def build_page2(samsara, date_str) -> str:
     else:
         score_all_tbl = (f"<tr><td colspan='7' style='padding:12px 8px;"
                          f"color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
-    fleet_score = fleet.get("fleet_score")
-
-    # --- Compliance donut gauges (top of page) ---
     total_d = max(1, len(scores_all))
-    hos_7d   = int(w("hos", "7d"))
-    hos_viol = min(hos_7d, total_d)           # treat each violation as one driver
-    hos_pct  = round((total_d - hos_viol) / total_d * 100, 1)
-    dvir_7d  = int(w("dvir", "7d"))
-    dvir_pct = round(max(0.0, (total_d - dvir_7d) / total_d * 100), 1)
-    above90  = sum(1 for r in scores_all if r["score"] >= 90)
-    score_pct = round(above90 / total_d * 100, 1) if scores_all else 0.0
-    dvir_s   = "s" if dvir_7d != 1 else ""
-    gauge_row = (
-        f"<tr>"
-        f"{_donut_gauge('HOS Compliance', hos_pct, 'COMPLIANT', f'{total_d - hos_viol} of {total_d} drivers &middot; 7d')}"
-        f"{_donut_gauge('DVIR Status', dvir_pct, 'DEFECT&#8209;FREE', f'{dvir_7d} open defect{dvir_s} &middot; 7d')}"
-        f"{_donut_gauge('Safety Score', score_pct, 'ABOVE 90', f'{above90} of {total_d} drivers &middot; 6&#8209;mo')}"
-        f"</tr>"
-    )
 
     # --- Coaching & Training tiles -------------------------------------------
     coaching_info  = (samsara or {}).get("coaching_sessions", {})
@@ -4330,35 +4329,9 @@ def build_page2(samsara, date_str) -> str:
         _spd_rows(), span=4,
     )
 
-    # Safety event trend charts (6-month bar charts)
-    _s_tr = (samsara or {}).get("trend", {})
-    def _s_chart(metric, title, sub):
-        ml = _s_tr.get(metric)
-        return _bar_chart(title, ml[0] if ml else [], ml[1] if ml else [], sub)
-    _safety_trend_row = (
-        f"<tr>"
-        f"{_s_chart('events', 'Safety events / month', '*MTD')}"
-        f"{_s_chart('hos',    'HOS violations / month', '*MTD')}"
-        f"{_s_chart('dvir',   'DVIR defects / month',   '*MTD')}"
-        f"</tr>"
-    )
 
     return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 2, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"{gauge_row}"
-            f"{_safety_trend_row}"
-            f"<tr>{_tile('Safety events &middot; 24h', num(w('events')), '')}"
-            f"{_tile('HOS violations &middot; 24h', num(w('hos')), '')}"
-            f"{_tile('Open DVIR defects &middot; 7d', num(w('dvir', '7d')), '')}"
-            f"{_tile('Fleet avg safety score', (f'{fleet_score:.0f}' if _isnum(fleet_score) else 'n/a'), _pill('0&ndash;100 &middot; higher better', 'mute'))}</tr>"
-            f"{_section('HOS violations &mdash; last 24h')}"
-            f"{_table(['Driver', 'Time', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], rows_hos())}"
-            f"{_section('Safety events &mdash; last 24h')}"
-            f"{_table(['Driver', 'Unit', 'Time', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_events())}"
-            f"{_section('DVIR defects (open) &mdash; all unresolved')}"
-            f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], rows_dvir())}"
-            f"{_section('Coaching flagged &mdash; last 24h')}"
-            f"{_table(['Driver', 'Reason', 'Events', 'Flagged', 'Status'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
             f"{_spd_tbl}"
             f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
