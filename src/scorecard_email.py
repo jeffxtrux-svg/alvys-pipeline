@@ -829,12 +829,16 @@ def compute_avg_fuel_price(alvys_pipeline_sheets: dict | None) -> float | None:
 
 
 def compute_dh_trend(alvys_sheets: dict | None) -> dict:
-    """Monthly dead-head % for last 6 months from the Alvys master Loads sheet.
+    """Monthly dead-head % for last 6 months from Alvys Master 2026 Loads.
 
-    Formula matches Power BI: Empty Dispatch Mileage / Total Dispatch Mileage.
-    Scoped to X-Trux (asset side, includes XFreight). X-Linx is excluded — Power BI
-    measures dead-head only on the asset side, because brokered loads don't have
-    a tracked empty-mileage leg and would dilute the denominator.
+    Matches the page-1 X-Trux dead-head tile (_alvys_metrics) exactly so the
+    trend's current-month bar ties to the tile:
+      * X-Trux asset side only (XFreight folded into X-Trux; X-Linx excluded)
+      * Excludes Cancelled loads
+      * Column preference: "Loaded Miles" + "Empty Miles" (billed/driven),
+        falling back to the Mileage / Dispatch Mileage variants if absent
+      * Current month (i == 5) is capped at `now` — future-scheduled loads
+        are excluded so the bar matches the MTD tile
     """
     empty = {"labels": [], "values": []}
     if not alvys_sheets:
@@ -842,38 +846,44 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     loads = alvys_sheets.get("Loads")
     if loads is None or loads.empty:
         return empty
-    if "Load Status" in loads.columns:
-        loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
-    # X-Trux only (matches Power BI Office slicer: XFreight + X-Trux checked, X-Linx unchecked)
+    # Exclude Cancelled — same as _alvys_metrics
+    _status_col = _find_col(loads, ["load status", "status"])
+    if _status_col:
+        loads = loads[loads[_status_col].astype(str).str.strip().str.lower() != "cancelled"]
+    # X-Trux only (asset side, includes XFreight). Mirrors compute_alvys's `is_asset`.
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
-    # Power BI: DIVIDE(SUM(Empty Dispatch Mileage), SUM(Total Dispatch Mileage))
-    empty_mi = _col_any(loads, ["Empty Dispatch Mileage", "Empty Miles", "Empty Mileage"]).fillna(0)
-    total_mi = _col_any(loads, ["Total Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
-    # Fallback: if Total Dispatch Mileage column not present, compute from loaded + empty
-    if total_mi.sum() == 0:
-        loaded_mi = _col_any(loads, ["Loaded Dispatch Mileage", "Loaded Miles", "Loaded Mileage"]).fillna(0)
-        total_mi = loaded_mi + empty_mi
-    # Diagnostic: log which mileage columns we actually matched in Master 2026.
-    _em_col = next((c for c in ["Empty Dispatch Mileage", "Empty Miles", "Empty Mileage"]
+    # Use SAME column preference as _alvys_metrics (billed miles first).
+    loaded_mi = _col_any(loads, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).fillna(0)
+    empty_mi  = _col_any(loads, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).fillna(0)
+    total_mi  = loaded_mi + empty_mi
+    _em_col = next((c for c in ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]
                     if c in loads.columns), None)
-    _tm_col = next((c for c in ["Total Dispatch Mileage", "Total Miles", "Total Mileage"]
+    _lo_col = next((c for c in ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]
                     if c in loads.columns), None)
-    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r total_col=%r "
-             "rows_after_filter=%d total_empty=%.0f total_miles=%.0f",
-             _em_col, _tm_col, len(loads), float(empty_mi.sum()), float(total_mi.sum()))
+    log.info("dh_trend (Alvys Master 2026, X-Trux only): empty_col=%r loaded_col=%r "
+             "rows_after_filter=%d", _em_col, _lo_col, len(loads))
+    now = pd.Timestamp.utcnow().tz_localize(None)
     labels, values = [], []
     for i, (yy, mm) in enumerate(_last_6_months()):
-        mask = (dates.dt.year == yy) & (dates.dt.month == mm)
+        month_start = pd.Timestamp(year=yy, month=mm, day=1)
+        # Cap current month (last in list) at now to match the MTD tile.
+        if i == 5:
+            mask = (dates >= month_start) & (dates <= now)
+        else:
+            mask = (dates.dt.year == yy) & (dates.dt.month == mm)
         em = float(empty_mi[mask].sum())
         tot = float(total_mi[mask].sum())
-        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        lab = month_start.strftime("%b")
         if i == 5:
             lab += "*"
         labels.append(lab)
         values.append(round(em / tot * 100, 1) if tot > 0 else 0.0)
+        if i == 5:
+            log.info("dh_trend current month: %s empty=%.0f total=%.0f → %.2f%%",
+                     lab, em, tot, (em / tot * 100) if tot > 0 else 0)
     return {"labels": labels, "values": values}
 
 
