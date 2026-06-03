@@ -3434,20 +3434,10 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     dso_labels, dso_vals, dso_overall = dso_hist if dso_hist else ([], [], None)
 
-    # AP Days to Pay (DPO) — balance ÷ avg daily expenses (YTD).
-    _now = pd.Timestamp.now()
-    _ytd_days = _now.dayofyear
-    _ytd_expenses = sum(
-        (v.get("cogs") or 0) + (v.get("opex") or 0)
-        for k, v in (qb_pnl or {}).items()
-        if str(k).strip().lower() in _AR_COMPANIES
-    )
-    _cur_ap = ap_vals[-1] if ap_vals else None
-    _avg_daily_exp = (_ytd_expenses / _ytd_days) if (_ytd_expenses and _ytd_days) else None
-    dpo_days = (_cur_ap / _avg_daily_exp) if (_isnum(_cur_ap) and _avg_daily_exp) else None
-
     # If actual DSO is unavailable, fall back to balance÷revenue approximation.
     if not _isnum(dso_overall):
+        _now = pd.Timestamp.now()
+        _ytd_days = _now.dayofyear
         _ytd_income = sum(
             v["income"] for k, v in (qb_pnl or {}).items()
             if str(k).strip().lower() in _AR_COMPANIES and _isnum(v.get("income"))
@@ -3457,7 +3447,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         dso_overall = (_cur_ar / _avg_daily_rev) if (_isnum(_cur_ar) and _avg_daily_rev) else None
 
     dso_kind = "good" if (_isnum(dso_overall) and dso_overall < 40) else ("warn" if (_isnum(dso_overall) and dso_overall < 55) else "bad")
-    dpo_kind = "good" if (_isnum(dpo_days) and dpo_days < 35) else "warn"
 
     dso_tile_td = _tile("AR Days to Receive", _days_str(dso_overall),
                         f"goal &lt; 40 " + _pill("DSO", dso_kind))
@@ -3468,14 +3457,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         fmt=lambda v: f"{v:.0f}d",
     ) if dso_labels else ""
 
-    dpo_tile_td = _tile("AP Days to Pay", _days_str(dpo_days),
-                        f"goal &lt; 35 " + _pill("DPO", dpo_kind))
     ar_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
                  f"<tr>{ar_chart}</tr><tr>{dso_tile_td}</tr>"
                  + (f"<tr>{dso_trend_td}</tr>" if dso_trend_td else "")
                  + f"</table></td>")
     ap_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ap_chart}</tr><tr>{dpo_tile_td}</tr></table></td>")
+                 f"<tr>{ap_chart}</tr></table></td>")
 
     def _dir(vals, noun):
         if not vals:
