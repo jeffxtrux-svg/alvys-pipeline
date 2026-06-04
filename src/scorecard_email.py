@@ -5544,9 +5544,13 @@ def render_pdf(html: str) -> bytes | None:
         log.warning("WeasyPrint not available — skipping PDF attachment: %s", e)
         return None
     # WeasyPrint logs every unsupported CSS property (we use plenty of
-    # email-only quirks) — quiet it to ERROR so the run log stays readable.
-    for _lg in ("weasyprint", "fontTools", "fontTools.subset"):
-        logging.getLogger(_lg).setLevel(logging.ERROR)
+    # email-only quirks) and fontTools emits per-table DEBUG noise during
+    # font subsetting — quiet both to ERROR so the run log stays readable.
+    for _lg in ("weasyprint", "fontTools", "fontTools.subset",
+                "fontTools.ttLib", "fontTools.ttLib.ttFont"):
+        _logger = logging.getLogger(_lg)
+        _logger.setLevel(logging.ERROR)
+        _logger.propagate = False
     try:
         pdf_bytes = HTML(string=html).write_pdf()
         log.info("Generated PDF (%.1f KB)", len(pdf_bytes) / 1024)
