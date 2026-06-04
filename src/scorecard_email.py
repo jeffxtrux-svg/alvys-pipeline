@@ -5723,6 +5723,8 @@ def render_pdf(html: str) -> bytes | None:
         # on a fresh page after the AR overdue customer table.  Match the
         # HTML-entity form ("&amp;" etc.) as it appears in the rendered string.
         _inject_pb_before("Safety &amp; compliance &mdash; 24h")
+        # DVIR defects table — push to a fresh page after safety events.
+        _inject_pb_before("DVIR defects (open) &mdash; all unresolved")
 
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
