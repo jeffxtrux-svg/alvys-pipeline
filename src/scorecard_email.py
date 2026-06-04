@@ -4294,7 +4294,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
             margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist,
             samba=samba, alvys_entities=alvys_entities,
-            alvys_drivers=alvys_drivers, prior_snapshot=_prior_snapshot)
+            alvys_drivers=alvys_drivers, equipment=equipment,
+            prior_snapshot=_prior_snapshot)
         _insights_actions = _insights.action_items(
             alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
             rpm_goal=rpm_goal, uninvoiced=uninvoiced,
