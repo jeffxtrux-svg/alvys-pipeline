@@ -3695,7 +3695,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"{_pill('see pg 7', 'bad')} &middot; gap = un-invoiced loads (see pg 8)</div></div>")
+                f"{_pill('see pg 10', 'bad')} &middot; gap = un-invoiced loads (see pg 10)</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
@@ -4097,7 +4097,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 7). "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 11). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         legacy_bottom += f" {drag['text']}"
@@ -4542,23 +4542,95 @@ def build_page2(samsara, date_str) -> str:
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
             f"{_spd_tbl}"
-            f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
-            f"{score_all_tbl}"
             f"{coaching_section}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
-            f"Driver safety scores: Samsara Driver Safety Scores (per-driver composite, "
-            f"last 6 months). Speed Over Limit = time-over-posted-limit &divide; total "
-            f"drive time, shown as % when both fields are available (&ge;5% flagged for "
-            f"coaching, 1&ndash;5% monitored); falls back to minutes over limit when drive "
-            f"time isn&rsquo;t exposed. Coaching &amp; training: Samsara Coaching Sessions / "
+            f"Speed Over Limit = time-over-posted-limit &divide; total drive time, shown as % "
+            f"when both fields are available (&ge;5% flagged for coaching, 1&ndash;5% monitored); "
+            f"falls back to minutes over limit when drive time isn&rsquo;t exposed. "
+            f"Coaching &amp; training: Samsara Coaching Sessions / "
             f"Training Assignments (past-due only; tiles hidden when module not enabled).</div>")
 
 
+def build_page2b(samsara, date_str, pg: int = 4) -> str:
+    """Driver safety scores — own page (split from build_page2 so the Speed
+    Over Limit table and the per-driver score table don't share a single page)."""
+    fleet = (samsara or {}).get("fleet", {}) or {}
+    scores_all = fleet.get("scores_all") or []
+
+    def _score_kind(s: int) -> str:
+        if s < 90:
+            return "bad"
+        if s < 100:
+            return "warn"
+        return "good"
+
+    def _evt(v):
+        return "&ndash;" if v is None else str(v)
+
+    def _evt_kind(v):
+        if v is None or v == 0:
+            return None
+        return "bad"
+
+    def _spd_cell(r):
+        pct_v = r.get("speed_pct")
+        mins = r.get("speed_min")
+        if _isnum(pct_v):
+            return f"{pct_v:.1f}%"
+        if _isnum(mins):
+            return f"{mins} min"
+        return "&ndash;"
+
+    def _spd_kind(r):
+        pct_v = r.get("speed_pct")
+        if _isnum(pct_v):
+            if pct_v == 0:
+                return None
+            return "bad" if pct_v >= 5 else ("warn" if pct_v >= 1 else None)
+        mins = r.get("speed_min")
+        if mins is None or mins == 0:
+            return None
+        return "bad" if mins >= 60 else "warn"
+
+    if scores_all:
+        _any_pct = any(_isnum(r.get("speed_pct")) for r in scores_all)
+        _spd_hdr = "Speed Over Limit (% drive time)" if _any_pct else "Speed Over Limit"
+        s_headers = ["Driver", "Score", "Harsh accel", "Harsh brake",
+                     "Harsh turn", _spd_hdr, "Crashes"]
+        body = ""
+        for r in scores_all:
+            body += _tr(
+                [r["driver"], str(r["score"]),
+                 _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
+                 _evt(r.get("harsh_turn")), _spd_cell(r),
+                 _evt(r.get("crashes"))],
+                ["left", "right", "right", "right", "right", "right", "right"],
+                [None, _score_kind(r["score"]),
+                 _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
+                 _evt_kind(r.get("harsh_turn")), _spd_kind(r),
+                 _evt_kind(r.get("crashes"))])
+        score_all_tbl = _table(s_headers,
+                               ["left", "right", "right", "right", "right",
+                                "right", "right"], body)
+    else:
+        score_all_tbl = (f"<tr><td colspan='7' style='padding:12px 8px;"
+                         f"color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
+
+    return (f"{_header('Driver Safety Scores &mdash; all drivers, worst to best', pg, date_str, section='SAFETY')}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
+            f"{score_all_tbl}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"Source: Samsara Driver Safety Scores (per-driver composite, last 6 months). "
+            f"Lower score = worse; component event counts (harsh accel/brake/turn, "
+            f"crashes) are the inputs that drove it.</div>")
+
+
 def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
-    """Page 3: Fleet Operations — MPG and speeding. Idle detail is its own
-    page (build_page_idle, pg 6); driver safety scores live on the Safety
-    page (build_page2, pg 3)."""
+    """Page 8: Fleet Operations — MPG and speeding. Idle detail is its own
+    page (build_page_idle, pg 9); driver safety scores live on the Safety
+    Scores page (build_page2b, pg 4)."""
     fleet = (samsara or {}).get("fleet", {}) or {}
     mpg_rows = fleet.get("mpg") or []
     speeders = fleet.get("speeders") or []
@@ -4573,7 +4645,7 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
               _pill("MTD (Based on Samsara)", "mute"))
         + _tile("Fleet miles &middot; MTD", num(fleet_miles),
                 _pill("MTD (Based on Samsara)", "mute"))
-        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 6", "mute"))
+        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 9", "mute"))
         + _tile("Fleet avg safety score",
                 (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
                 _pill("0&ndash;100, higher better", "mute"))
@@ -4610,7 +4682,7 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 7, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
@@ -4622,8 +4694,8 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
             f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
             f"(speeding, 7 days). "
-            f"Idle detail is on the Fleet Idle page (pg 6); "
-            f"driver safety scores are on the Safety page (pg 3).</div>")
+            f"Idle detail is on the Fleet Idle page (pg 9); "
+            f"driver safety scores are on the Driver Safety Scores page (pg 4).</div>")
 
 
 def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> str:
@@ -4741,7 +4813,7 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
     _cost_note = (f"Idle cost = idle gallons &times; {_fuel_src} (Alvys Discount PPU 60-day avg). "
                   if (_isnum(avg_fuel_price) and avg_fuel_price > 0)
                   else "Idle cost = idle gallons &times; $4.00/gal placeholder (set Alvys Fuel data for live price). ")
-    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 8, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 9, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
@@ -4853,7 +4925,7 @@ def build_page4(mileage, date_str) -> str:
              f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
              f"{head}{body}</table></td></tr>")
 
-    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 6, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 7, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
@@ -4971,7 +5043,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
                         str(c["oldest_days"]), money(c["amount"])],
                        ["left", "right", "right", "right"], [None, None, "bad", "bad"])
 
-    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 9, date_str, section='ACCOUNTING')}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 10, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{qb_tiles}"
             f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
@@ -5022,7 +5094,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 10, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 11, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -5037,7 +5109,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 11, date_str, section='ACCOUNTING')
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 12, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
@@ -5289,15 +5361,16 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # but the page-number arguments in _header reflect the actual
             # render order.
             # Pages 2-11 grouped into three sections (SAFETY leads):
-            #   SAFETY       (pages 2-5): SambaSafety driver/MVR scan,
-            #                              Samsara events/HOS/DVIR detail,
-            #                              Equipment compliance tractors (pg 4),
-            #                              Equipment compliance trailers (pg 5)
-            #   OPERATIONAL  (pages 6-8): driver mileage, fleet MPG/speeding,
+            #   SAFETY       (pages 2-6): SambaSafety driver/MVR scan,
+            #                              Samsara speed-over-limit detail (pg 3),
+            #                              Driver safety scores (pg 4),
+            #                              Equipment compliance tractors (pg 5),
+            #                              Equipment compliance trailers (pg 6)
+            #   OPERATIONAL  (pages 7-9): driver mileage, fleet MPG/speeding,
             #                              fleet idle
-            #   ACCOUNTING   (pages 9-11): QB AR overdue + Alvys un-invoiced/90+ AR
-            #                              combined (pg 9); QB-vs-Alvys recon (pg 10);
-            #                              bill match (pg 11)
+            #   ACCOUNTING   (pages 10-12): QB AR overdue + Alvys un-invoiced/90+ AR
+            #                              combined (pg 10); QB-vs-Alvys recon (pg 11);
+            #                              bill match (pg 12)
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
@@ -5305,16 +5378,17 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # Samsara safety detail (build_page2) follows.
             f"{wrap(_strip(2) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
             f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
-            f"{wrap(_strip(4) + build_page_equipment(equipment, date_str, kind='tractors', pg=4))}{pb}"
-            f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='trailers', pg=5))}{pb}"
+            f"{wrap(_strip(4) + build_page2b(samsara, date_str, pg=4))}{pb}"
+            f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='tractors', pg=5))}{pb}"
+            f"{wrap(_strip(6) + build_page_equipment(equipment, date_str, kind='trailers', pg=6))}{pb}"
             # -- OPERATIONAL --
-            f"{wrap(_strip(6) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(7) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
-            f"{wrap(_strip(8) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
+            f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
+            f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
+            f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(9) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(10) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(11) + build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(10) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(11) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(12) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 

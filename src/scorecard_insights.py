@@ -521,70 +521,75 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
         out[2] = ("SambaSafety MVR data not loaded this run &mdash; check "
                   "OneDrive/SambaSafety/ for the daily CSV drops.")
 
-    # Page 3 — Safety Detail (Samsara events / HOS / DVIR / coaching)
+    # Page 3 — Speed Over Posted Limit (per-driver detail)
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
     e24 = win24.get("24h") if isinstance(win24, dict) else 0
     out[3] = (f"Page 1's safety summary captured {int(e24 or 0)} event"
               f"{'s' if int(e24 or 0) != 1 else ''} in last 24h. "
-              f"Per-event detail and coaching status below.")
+              f"Per-driver speed-over-limit detail below; full safety-score "
+              f"ranking is on page 4.")
+
+    # Page 4 — Driver Safety Scores (split out from page 3)
+    out[4] = ("Per-driver Samsara safety score with the harsh-event counts "
+              "(accel/brake/turn) that drove it. Lowest scores first.")
 
     # === SAFETY (continued) ===
-    # Pages 4+5 — Equipment Compliance (tractors / trailers)
-    out[4] = "Tractor annual inspections and registration deadlines. Red = overdue or ≤30 days."
-    out[5] = "Trailer annual inspections and registration deadlines. Red = overdue or ≤30 days."
+    # Pages 5+6 — Equipment Compliance (tractors / trailers)
+    out[5] = "Tractor annual inspections and registration deadlines. Red = overdue or ≤30 days."
+    out[6] = "Trailer annual inspections and registration deadlines. Red = overdue or ≤30 days."
 
     # === OPERATIONAL ===
-    # Page 6 — Driver Mileage
+    # Page 7 — Driver Mileage
     mtd = (alvys or {}).get("mtd") or {}
     miles = mtd.get("miles")
     if _isnum(miles):
-        out[6] = (f"Page 1's mileage tile shows {_num(miles)} miles "
+        out[7] = (f"Page 1's mileage tile shows {_num(miles)} miles "
                   f"period-to-date. Per-driver breakdown below.")
 
-    # Page 7 — Fleet Operations (MPG / speeding)
+    # Page 8 — Fleet Operations (MPG / speeding)
     fleet = (samsara or {}).get("fleet") or {}
     fleet_mpg = fleet.get("fleet_mpg")
     if _isnum(fleet_mpg):
-        out[7] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
+        out[8] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
                   f"Best/worst trucks and speeders below; full idle ranking "
-                  f"is on page 8.")
+                  f"is on page 9.")
 
-    # Page 8 — Fleet Idle (its own page)
+    # Page 9 — Fleet Idle (its own page)
     idle = fleet.get("idle") or []
     if idle:
         top = idle[0]
-        out[8] = (f"Page 1's coaching cards came from this data. Worst idler: "
+        out[9] = (f"Page 1's coaching cards came from this data. Worst idler: "
                   f"{(top.get('driver') or 'Unassigned').upper()} "
                   f"({top.get('unit', '—')}) at {_pct(top.get('idle_pct'))}. "
                   f"All trucks ranked worst-to-best by avg idle / week below.")
 
     # === ACCOUNTING ===
-    # Page 9 — QB AR Overdue 31+ combined with Alvys un-invoiced + 90+ AR
-    pg9_parts = []
+    # Page 10 — QB AR Overdue 31+ combined with Alvys un-invoiced + 90+ AR
+    pg10_parts = []
     if qb_ar:
         total31 = qb_ar.get("total31") or 0
-        pg9_parts.append(f"Page 1 flagged {_money(total31)} in 31+ AR (top). "
-                         f"JW Logistics omitted per standing policy.")
+        pg10_parts.append(f"Page 1 flagged {_money(total31)} in 31+ AR (top). "
+                          f"JW Logistics omitted per standing policy.")
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
-        pg9_parts.append(
+        pg10_parts.append(
             f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
             f"delivered-but-not-yet-invoiced loads ({_money(amt)}).")
     if alvys_ar:
         d91 = alvys_ar.get("d91plus") or 0
         if d91:
-            pg9_parts.append(
+            pg10_parts.append(
                 f"Below that, {_money(d91)} of 90+ AR — escalate to collections.")
-    if pg9_parts:
-        out[9] = " ".join(pg9_parts)
+    if pg10_parts:
+        out[10] = " ".join(pg10_parts)
 
-    # Page 10 — QB↔Alvys recon by customer
-    out[10] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
+    # Page 11 — QB↔Alvys recon by customer
+    out[11] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
                "biggest contributors to the variance.")
 
-    # Page 11 — Bill-by-bill match
-    out[11] = ("Page 10 showed customer-level variances. This page drills to "
+    # Page 12 — Bill-by-bill match
+    out[12] = ("Page 11 showed customer-level variances. This page drills to "
                "individual unmatched invoices.")
 
     return out
