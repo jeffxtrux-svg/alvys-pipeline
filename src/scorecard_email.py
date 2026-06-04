@@ -3368,22 +3368,36 @@ def _bar_chart(title, months, values, sub="", fmt=str):
                 f"padding:14px;color:{MUTE};font-size:12px;'>{title}: data pending</div></td>")
     maxv = max(values) if max(values) else 1
     H = 84
+    # Equal-width column for every month so the bars distribute evenly even
+    # when label content varies (e.g. "$0.000" vs "$2.687", or "0" vs "146")
+    # — without this the auto table layout shrinks short-label columns and
+    # bunches the bars toward the wider-label columns.
+    col_w = f"{100 / len(months):.4f}%"
     bar = lbl = ""
     for i, (m, v) in enumerate(zip(months, values)):
         h = max(int(round(H * v / maxv)), (3 if v > 0 else 0))
         last = (i == len(months) - 1)
         bc = ACCENT if last else BLUE
-        bar += (f"<td valign='bottom' align='center' style='padding:0 5px;'>"
-                f"<div style='font-size:10.5px;font-weight:700;color:{INK};margin-bottom:3px;white-space:nowrap;'>{fmt(v)}</div>"
+        # Months with no underlying data (v == 0) get a muted em-dash label
+        # instead of "$0.000" / "0" so empty-month columns read as "no data"
+        # rather than as a real zero. fmt(v) is used for true non-zero values.
+        if v > 0:
+            label_html = fmt(v)
+            label_color = INK
+        else:
+            label_html = "&mdash;"
+            label_color = MUTE
+        bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 5px;'>"
+                f"<div style='font-size:10.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;'>{label_html}</div>"
                 f"<div style='width:22px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
         lcol = INK if last else MUTE
-        lbl += (f"<td align='center' style='font-size:10px;color:{lcol};font-weight:{'700' if last else '400'};"
+        lbl += (f"<td align='center' width='{col_w}' style='font-size:10px;color:{lcol};font-weight:{'700' if last else '400'};"
                 f"padding-top:4px;'>{m}</td>")
     return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
-            f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;'><tr>{bar}</tr></table>"
-            f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{lbl}</tr></table></div></td>")
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;table-layout:fixed;'><tr>{bar}</tr></table>"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='table-layout:fixed;'><tr>{lbl}</tr></table></div></td>")
 
 
 def _donut_gauge(label: str, pct: float, sub_line: str, detail: str, width: str = "33%") -> str:
@@ -4087,10 +4101,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
-    ar_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ar_chart}</tr></table></td>")
-    ap_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ap_chart}</tr></table></td>")
+    # Explicit widths so the AR + AP chart cells don't overlap in landscape
+    # PDF.  recv_left is 25%; the two chart cells split the remaining 75% with
+    # a slight extra to the right so the rounded edges stay aligned.
+    ar_col_td = (f"<td valign='top' width='37%'><table width='100%' cellpadding='0' cellspacing='0' "
+                 f"style='table-layout:fixed;'><tr>{ar_chart}</tr></table></td>")
+    ap_col_td = (f"<td valign='top' width='38%'><table width='100%' cellpadding='0' cellspacing='0' "
+                 f"style='table-layout:fixed;'><tr>{ap_chart}</tr></table></td>")
 
     def _dir(vals, noun):
         if not vals:
