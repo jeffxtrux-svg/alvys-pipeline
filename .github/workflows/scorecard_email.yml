@@ -5,6 +5,7 @@
 # trigger: PDF-only email body.
 # trigger: data-table rows can split across pages.
 # trigger: shift crons 1hr earlier for 5:30am CDT delivery.
+# trigger: pin office overhead/mi to $0.92 while costing algorithm catches up.
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.

@@ -105,6 +105,12 @@ RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
 RPM_GOAL_OVERHEAD_ALLOC = 1.0
 RPM_GOAL_INSURANCE_SURCHARGE = 0.07   # liability insurance increase added Jun 2026
+# Office overhead per mile is pinned to a hand-set value while the costing
+# algorithm is being validated against the books. Set to None (or empty the
+# RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
+# through unmodified. The live value is still computed and stashed for the
+# data-check banner so we can watch the two converge.
+RPM_GOAL_OVERHEAD_PIN = 0.92
 # Fail-soft guards: if the short pay window is too thin to trust, widen it; if the
 # resulting cost lands outside a sane band, flag it on the email's data-check banner.
 RPM_GOAL_MIN_SETTLED_LOADS = 5      # need at least this many settled X-Trux loads…
@@ -1389,8 +1395,13 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
                     overhead_xtrux = val
         overhead_combined = total if overhead_used else None
     overhead_total = (overhead_combined * alloc) if overhead_combined is not None else None
-    overhead_per_mile = (overhead_total / ytd_miles) if (overhead_total and ytd_miles) else None
+    overhead_per_mile_live = (overhead_total / ytd_miles) if (overhead_total and ytd_miles) else None
     overhead_per_mile_xtrux = (overhead_xtrux / ytd_miles) if (overhead_xtrux and ytd_miles) else None
+    # Pin the office overhead/mi to a hand-set value while the costing algorithm
+    # is being validated. RPM_GOAL_OVERHEAD_PIN=0 (empty env var) unpins it and
+    # lets the live computed value flow through.
+    overhead_pin = _env_float("RPM_GOAL_OVERHEAD_PIN", RPM_GOAL_OVERHEAD_PIN)
+    overhead_per_mile = overhead_pin if overhead_pin else overhead_per_mile_live
 
     insurance_surcharge = _env_float("RPM_GOAL_INSURANCE_SURCHARGE", RPM_GOAL_INSURANCE_SURCHARGE)
     cost_per_mile = ((pay_per_mile + overhead_per_mile + insurance_surcharge)
@@ -1409,6 +1420,8 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     return {
         "pay_per_mile": pay_per_mile,
         "overhead_per_mile": overhead_per_mile,
+        "overhead_per_mile_live": overhead_per_mile_live,
+        "overhead_pin": overhead_pin or None,
         "overhead_per_mile_xtrux_only": overhead_per_mile_xtrux,
         "cost_per_mile": cost_per_mile,
         "goal_rpm": goal_rpm,
@@ -4002,15 +4015,26 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         if _isnum(_pp):
             parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
         if _isnum(_oh):
-            cos = g.get("overhead_companies") or []
-            _alloc = g.get("overhead_alloc")
-            _xt_oh = g.get("overhead_per_mile_xtrux_only")
-            oh_txt = f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles"
-            if _isnum(_alloc) and abs(_alloc - 1.0) > 1e-9:
-                oh_txt += f" &times; {_alloc:.0%} allocation"
-            if _isnum(_xt_oh):
-                oh_txt += f"; X-Trux-only {rpm(_xt_oh)}/mi"
-            oh_txt += ")"
+            _pin = g.get("overhead_pin")
+            _live = g.get("overhead_per_mile_live")
+            if _isnum(_pin):
+                # Office overhead is hand-set while the costing algorithm is being
+                # proven out — surface the pin AND the live computed value so the
+                # two can be watched until they converge.
+                oh_txt = f"office overhead {rpm(_oh)}/mi (pinned while costing algorithm catches up"
+                if _isnum(_live):
+                    oh_txt += f"; live calc {rpm(_live)}/mi"
+                oh_txt += ")"
+            else:
+                cos = g.get("overhead_companies") or []
+                _alloc = g.get("overhead_alloc")
+                _xt_oh = g.get("overhead_per_mile_xtrux_only")
+                oh_txt = f"office overhead {rpm(_oh)}/mi ({' + '.join(cos) or 'QB'} Total Expenses &divide; YTD miles"
+                if _isnum(_alloc) and abs(_alloc - 1.0) > 1e-9:
+                    oh_txt += f" &times; {_alloc:.0%} allocation"
+                if _isnum(_xt_oh):
+                    oh_txt += f"; X-Trux-only {rpm(_xt_oh)}/mi"
+                oh_txt += ")"
             parts.append(oh_txt)
         if _isnum(_ins) and _ins > 0:
             parts.append(f"liability insurance {rpm(_ins)}/mi (temporary until costing catches up)")
