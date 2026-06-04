@@ -6005,7 +6005,28 @@ def main() -> int:
             "content_bytes": pdf_bytes,
             "mime": "application/pdf",
         })
-    send_email(token, from_upn, to_emails, subject, str(html), attachments=attachments)
+    # When the PDF rendered successfully, the email body is a short cover
+    # note pointing at the attachment. The full inline HTML body is only
+    # used as a fallback when PDF rendering failed, so the brief still
+    # reaches the recipient one way or another.
+    if pdf_bytes:
+        body_html = (
+            "<div style=\"font-family:-apple-system,'Helvetica Neue',Helvetica,"
+            "Arial,sans-serif;font-size:14px;color:#1a1a1a;line-height:1.5;"
+            "padding:24px;max-width:560px;\">"
+            "<div style=\"font-weight:700;letter-spacing:1.5px;font-size:11px;"
+            "color:#c41e2a;text-transform:uppercase;margin-bottom:14px;\">"
+            "XFreight &middot; Executive Brief</div>"
+            f"<p style=\"margin:0 0 12px;\">Your daily XFreight Executive Brief "
+            f"for <b>{datetime.now():%A, %B %d, %Y}</b> is attached as a PDF.</p>"
+            "<p style=\"margin:0;color:#6b6b6b;font-size:12.5px;\">"
+            "If the attachment doesn&rsquo;t open, reply to this email and "
+            "we&rsquo;ll resend.</p>"
+            "</div>"
+        )
+    else:
+        body_html = str(html)
+    send_email(token, from_upn, to_emails, subject, body_html, attachments=attachments)
 
     # Write today's 'sent' marker so the staggered backup crons short-circuit.
     # Failure to write the marker is non-fatal — at worst we re-send today.
