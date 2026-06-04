@@ -5442,7 +5442,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     if missing:
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
-    wrap = lambda inner: f"<div class='brief-wrap' style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
+    wrap = lambda inner: f"<div class='brief-wrap' style='margin:0 auto;background:#fff;'>{inner}</div>"
 
     # Per-page insight strips — bridge from the page 1 narrative to detail.
     # Falls back to empty dict if scorecard_insights raises.
@@ -5503,6 +5503,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
         "body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
         ".page-break{page-break-after:always;break-after:page;height:0 !important;background:transparent !important;}"
+        # Screen constraint: cap the email-view width. The max-width lives here
+        # in CSS (not as an inline style) so @media print can override it.
+        ".brief-wrap{max-width:760px;}"
         # Each content 'page' is designed for email scroll, not letter-fit; the
         # PDF footer's 'Page N of M' uses the real letter-page count, so the
         # in-content header's PG number was confusing. Hide it in print.
