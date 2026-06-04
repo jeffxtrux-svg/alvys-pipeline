@@ -5719,6 +5719,10 @@ def render_pdf(html: str) -> bytes | None:
         # AR detail to a fresh page after the AR aging tiles / Receivables
         # & payables chart row.
         _inject_pb_before("Overdue invoices (31+ days) by customer")
+        # Safety & compliance — starts the safety tile + 6-month trend block
+        # on a fresh page after the AR overdue customer table.  Match the
+        # HTML-entity form ("&amp;" etc.) as it appears in the rendered string.
+        _inject_pb_before("Safety &amp; compliance &mdash; 24h")
 
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
