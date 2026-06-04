@@ -169,6 +169,13 @@ def rpm(x) -> str:
     return f"${x:.3f}" if _isnum(x) else "n/a"
 
 
+def rpm2(x) -> str:
+    """Two-decimal $/mi for tight trend-chart labels where the 3-decimal
+    rpm format ("$2.687") is wider than the column. Tiles + narratives keep
+    using rpm()."""
+    return f"${x:.2f}" if _isnum(x) else "n/a"
+
+
 def num(x) -> str:
     return f"{x:,.0f}" if _isnum(x) else "n/a"
 
@@ -3303,11 +3310,17 @@ FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
 FONT_SERIF = "font-family:Georgia,'Times New Roman',serif;"
 
 
-def _pill(t, k):
+def _pill(t, k, nowrap=True):
     bg = {"good": GOODBG, "warn": WARNBG, "bad": BADBG, "mute": "#eef2f7"}[k]
     fg = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": MUTE}[k]
+    # Most pills are inline badges that shouldn't break across lines, but
+    # the descriptive pills under tiles (e.g. "Costing Based on Last 10 Days",
+    # "10d pay + YTD overhead") are narrower than their text and need to
+    # wrap to 2 lines rather than overflow + clip — those callers pass
+    # nowrap=False.
+    ws = "white-space:nowrap" if nowrap else "white-space:normal"
     return (f"<span style='display:inline-block;background:{bg};color:{fg};font-size:11px;"
-            f"font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap'>{t}</span>")
+            f"font-weight:700;padding:2px 8px;border-radius:10px;line-height:1.4;{ws}'>{t}</span>")
 
 
 def _wow(current, prior, lower_is_better: bool = False, fmt=None) -> str:
@@ -3997,9 +4010,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                                "X-Trux + XFreight &middot; *MTD",
                                fmt=lambda v: f"{v:.1f}%")
                     if _dh_t.get("labels") else empty_td)
-    xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm)
-                + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm)
-                + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm)
+    xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm2)
+                + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm2)
+                + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm2)
                 + _dh_trend_td)
 
     # X-Trux rate-per-mile goal: fully-loaded cost per mile (driver pay + shared
@@ -4015,25 +4028,37 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             goal_pill = _pill("break-even &middot; set profit %", "warn")
         else:
             goal_pill = _pill(f"{pct(_margin)} net &middot; OR {_or:.2f}", "good")
-        gap = g.get("gap")
-        if _isnum(gap):
-            gap_kind = "good" if gap <= 0 else "bad"  # actual >= goal is good
-            gap_sub = _pill(("at/above goal" if gap <= 0 else "below goal"), gap_kind)
+        # Gap to goal compares the Goal Rate against the MTD revenue / mile
+        # (the $2.886 figure on the X-Trux Overview tile), NOT the 10-day
+        # "actual recent" rate.  That way the gap reads against month-to-date
+        # performance rather than the short trailing window.
+        _goal_rpm = g.get("goal_rpm")
+        _mtd_rpm = _xt_rpm  # MTD revenue / mile, computed earlier in this fn
+        if _isnum(_goal_rpm) and _isnum(_mtd_rpm):
+            gap = _goal_rpm - _mtd_rpm
+            gap_kind = "good" if gap <= 0 else "bad"  # MTD >= goal is good
+            gap_sub = _pill(("at/above goal" if gap <= 0 else "below goal"),
+                            gap_kind, nowrap=False)
             gap_val = rpm(abs(gap))
         else:
-            gap_kind, gap_sub, gap_val = "mute", _pill("need QB P&amp;L", "mute"), "n/a"
+            gap_kind, gap_sub, gap_val = "mute", _pill("need MTD rev/mi", "mute", nowrap=False), "n/a"
         # Cost-per-mile sub-pill spells out the time windows behind each
         # component so readers can audit the basis at a glance:
         #   driver pay = trailing N-day window (10d default, widens to
         #               30/60/90 on light weeks via RPM_GOAL_FALLBACK_WINDOWS)
         #   overhead   = fiscal-YTD (QB P&L is "This Fiscal Year")
         _pay_win = g.get("pay_window_used") or g.get("pay_window_days") or "?"
+        # Tile sub-line pills under the rate-per-mile tiles get nowrap=False
+        # so longer descriptive text ("10d pay + YTD overhead",
+        # "Costing Based on Last 10 Days") wraps to a second line inside the
+        # tile rather than overflowing and getting clipped.
         goal_tiles = (
             _tile("Cost / mile &middot; X-Trux", rpm(g.get("cost_per_mile")),
-                  _pill(f"{_pay_win}d pay + YTD overhead", "mute"))
+                  _pill(f"{_pay_win}d pay + YTD overhead", "mute", nowrap=False))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
-                    _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days", "mute"))
+                    _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days",
+                          "mute", nowrap=False))
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
@@ -4094,9 +4119,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _gt_sub = "monthly &middot; X-Trux + XFreight &middot; *MTD"
         goal_trend_row = (
             _bar_chart("Cost / mile", gt["labels"], gt.get("cost") or [],
-                       "overhead held at YTD rate &middot; *MTD", fmt=rpm)
-            + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm)
-            + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm)
+                       "overhead held at YTD rate &middot; *MTD", fmt=rpm2)
+            + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm2)
+            + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm2)
             + empty_td)
 
     # AR & AP 6-month balance trend
@@ -5807,6 +5832,20 @@ def render_pdf(html: str) -> bytes | None:
             "<tr class='pdf-data-wrap'><td colspan='4' class='scroll-wide' style='padding:0 6px;'>",
         )
 
+        # 5. Page source-note footers (the "Source: ... " divs that close each
+        #    page builder) were getting orphaned onto an extra page when the
+        #    content above ended near the bottom of the prior page — leaving
+        #    pages like "page 19" almost entirely empty under just the source
+        #    line.  Tag every source-footer div so we can apply
+        #    page-break-before:avoid and shrink the top margin in PDF, pulling
+        #    the source line back onto the same page as the data.
+        pdf_html = pdf_html.replace(
+            "<div style='padding:14px 24px 22px;color:#6b6b6b;font-size:11px;"
+            "border-top:1px solid #ececec;margin-top:14px;'>",
+            "<div class='pdf-source-note' style='padding:6px 24px 14px;color:#6b6b6b;"
+            "font-size:11px;border-top:1px solid #ececec;margin-top:2px;'>",
+        )
+
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
         # 760px wide, which exceeds portrait letter's ~7.8in printable area
@@ -5833,6 +5872,10 @@ def render_pdf(html: str) -> bytes | None:
             # tr{page-break-inside:avoid} so they stay intact.
             "tr.pdf-data-wrap{page-break-inside:auto!important;"
             "break-inside:auto!important;}"
+            # Per-page source-note footer: stays with the prior data table
+            # rather than getting orphaned onto an otherwise-empty page.
+            ".pdf-source-note{page-break-before:avoid!important;"
+            "break-before:avoid!important;}"
         ))
 
         pdf_bytes = (
