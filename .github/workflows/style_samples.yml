@@ -9,6 +9,12 @@ name: Style samples — pick a direction
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - claude/karpathy-knowledge-base-zKvzh
+    paths:
+      - .github/workflows/style_samples.yml
+      - src/style_samples.py
 
 jobs:
   samples:
