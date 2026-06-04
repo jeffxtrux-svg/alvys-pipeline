@@ -185,6 +185,26 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"AR in the 31 to 60 bucket has went {direction} by "
                 f"{_money(abs(delta))} week over week.")
 
+    # Total open receivables from QuickBooks + 6-month trend direction.
+    # Sits between the financial reads and the compliance section so the
+    # executive sees the receivables read with the other money numbers,
+    # before the driver-compliance + equipment-compliance items begin.
+    if qb_ar:
+        total_ar = qb_ar.get("total_ar")
+        if _isnum(total_ar):
+            trend_tail = ""
+            if ar_hist:
+                _labels, _vals = ar_hist
+                if isinstance(_vals, (list, tuple)) and len(_vals) >= 2:
+                    first, last = _vals[0], _vals[-1]
+                    if _isnum(first) and _isnum(last) and first != 0:
+                        delta = last - first
+                        direction = "up" if delta > 0 else ("down" if delta < 0 else "flat")
+                        trend_tail = (f" — trending {direction} "
+                                      f"{_money(abs(delta))} over 6 months")
+            parts.append(
+                f"Total open A/R per QuickBooks: {_money(total_ar)}{trend_tail}.")
+
     # SambaSafety — surface MVR high-risk count + per-driver license
     # expirations. Per Jeff: drop the aggregate "X licenses expiring
     # within 30d" sentence — the per-driver names below carry the same
@@ -212,7 +232,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 date_str = "(unknown date)"
             parts.append(
                 f"{name} license will expire on {date_str}, and that is "
-                f"{int(d['days_to_exp'])} days from expiration.")
+                f"{int(d['days_to_exp'])} days from expiration (pg 2).")
 
     # Alvys-side driver compliance — DOT medical card + CDL. Per Jeff:
     # only name drivers inside the 14-day window in the BOTTOM LINE
@@ -228,7 +248,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 date_str = "(unknown date)"
             parts.append(
                 f"{name}'s med card will expire on {date_str} which is "
-                f"{int(d['medical_days'])} days away.")
+                f"{int(d['medical_days'])} days away (pg 2).")
         # Alvys can also flag CDL expirations — surface only when SambaSafety
         # didn't already cover the same driver (avoid double-naming).
         samba_named = {(_str_name(d) or "").lower()
@@ -246,7 +266,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 date_str = "(unknown date)"
             parts.append(
                 f"{name} CDL will expire on {date_str}, and that is "
-                f"{int(d['license_days'])} days from expiration.")
+                f"{int(d['license_days'])} days from expiration (pg 2).")
 
     # Equipment compliance — surface overdue inspections at the executive
     # level so they don't get buried on the Equipment Compliance pages.
@@ -261,7 +281,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
             parts.append(
                 f"Tractors overdue on 120-day company DOT policy: "
-                f"{units}{more} — see Equipment Compliance page.")
+                f"{units}{more} (pg 5).")
         od_trailers = [t for t in (equipment.get("trailers") or [])
                        if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
         if od_trailers:
@@ -269,24 +289,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""
             parts.append(
                 f"Trailers overdue on 120-day company DOT policy: "
-                f"{units}{more} — see Equipment Compliance page.")
-
-    # Total open receivables from QuickBooks + 6-month trend direction.
-    if qb_ar:
-        total_ar = qb_ar.get("total_ar")
-        if _isnum(total_ar):
-            trend_tail = ""
-            if ar_hist:
-                _labels, _vals = ar_hist
-                if isinstance(_vals, (list, tuple)) and len(_vals) >= 2:
-                    first, last = _vals[0], _vals[-1]
-                    if _isnum(first) and _isnum(last) and first != 0:
-                        delta = last - first
-                        direction = "up" if delta > 0 else ("down" if delta < 0 else "flat")
-                        trend_tail = (f" — trending {direction} "
-                                      f"{_money(abs(delta))} over 6 months")
-            parts.append(
-                f"Total open A/R per QuickBooks: {_money(total_ar)}{trend_tail}.")
+                f"{units}{more} (pg 6).")
 
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
