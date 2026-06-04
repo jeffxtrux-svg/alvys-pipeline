@@ -3387,13 +3387,19 @@ def _bar_chart(title, months, values, sub="", fmt=str):
         else:
             label_html = "&mdash;"
             label_color = MUTE
-        bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 5px;'>"
-                f"<div style='font-size:10.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;'>{label_html}</div>"
-                f"<div style='width:22px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
+        # 8.5px label / 1px cell padding: at landscape page width a 4-up chart
+        # tile is ~2.3in wide ÷ 6 columns ≈ 0.38in per column, which is too
+        # tight for a 10.5px "$2.687" label to fit without overflowing into
+        # the next column. Shrinking the label font and dropping the per-cell
+        # padding to 1px each side gives each label room to sit inside its
+        # own column without collisions or 2-line "Jun*" wrapping.
+        bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 1px;'>"
+                f"<div style='font-size:8.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;'>{label_html}</div>"
+                f"<div style='width:18px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
         lcol = INK if last else MUTE
-        lbl += (f"<td align='center' width='{col_w}' style='font-size:10px;color:{lcol};font-weight:{'700' if last else '400'};"
-                f"padding-top:4px;'>{m}</td>")
-    return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;'>"
+        lbl += (f"<td align='center' width='{col_w}' style='font-size:9px;color:{lcol};font-weight:{'700' if last else '400'};"
+                f"padding-top:4px;white-space:nowrap;'>{m}</td>")
+    return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;overflow:hidden;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;table-layout:fixed;'><tr>{bar}</tr></table>"
