@@ -1,0 +1,42 @@
+# One-shot workflow — generates 3 single-page style-sample PDFs of the
+# executive brief and emails them as attachments so the design direction
+# can be picked from real renders.
+#
+# After picking, the chosen style gets applied to scorecard_email.py and
+# this workflow can be deleted.
+
+name: Style samples — pick a direction
+
+on:
+  workflow_dispatch:
+
+jobs:
+  samples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies for WeasyPrint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libcairo2 fonts-liberation
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Render samples and email
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net
+        run: python -m src.style_samples
