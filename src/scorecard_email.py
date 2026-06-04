@@ -5349,7 +5349,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
                customer_rpm=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
-    pb = f"<div style='height:18px;background:#eef2f7;'></div>"
+    pb = f"<div class='page-break' style='height:18px;background:#eef2f7;'></div>"
     note = ""
     if missing:
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
@@ -5398,9 +5398,25 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "}"
         "</style>"
     )
+    # Print CSS — drives WeasyPrint's pagination. Force background colors to
+    # render in print (default behavior strips them), set Letter size with
+    # narrow margins, and break to a new page wherever we render the page-break
+    # divider in the HTML stream.
+    print_css = (
+        "<style>"
+        "@page{size:letter;margin:0.4in;}"
+        "body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
+        ".page-break{page-break-after:always;break-after:page;height:0 !important;background:transparent !important;}"
+        # In print, horizontal scroll wrappers become irrelevant — let wide
+        # tables wrap to a new page rather than clip.
+        "@media print{.scroll-wide{overflow:visible !important;}"
+        # Avoid splitting an individual row of a tile/table across pages.
+        "tr,td,th{page-break-inside:avoid;break-inside:avoid;}}"
+        "</style>"
+    )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"{mobile_css}</head>"
+            f"{mobile_css}{print_css}</head>"
             f"<body style='margin:0;background:#eef2f7;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
@@ -5516,21 +5532,61 @@ class _ReportResult(str):
 # ----------------------------------------------------------------------
 # Email send (Microsoft Graph)
 # ----------------------------------------------------------------------
-def send_email(token: str, from_upn: str, to_emails: list[str], subject: str, html: str) -> None:
+def render_pdf(html: str) -> bytes | None:
+    """Render the brief HTML to PDF bytes via WeasyPrint.
+
+    Returns None if WeasyPrint isn't available so the email path keeps working
+    even if the system libs (pango/cairo) are missing in CI.
+    """
+    try:
+        from weasyprint import HTML  # type: ignore
+    except Exception as e:
+        log.warning("WeasyPrint not available — skipping PDF attachment: %s", e)
+        return None
+    # WeasyPrint logs every unsupported CSS property (we use plenty of
+    # email-only quirks) — quiet it to ERROR so the run log stays readable.
+    for _lg in ("weasyprint", "fontTools", "fontTools.subset"):
+        logging.getLogger(_lg).setLevel(logging.ERROR)
+    try:
+        pdf_bytes = HTML(string=html).write_pdf()
+        log.info("Generated PDF (%.1f KB)", len(pdf_bytes) / 1024)
+        return pdf_bytes
+    except Exception as e:
+        log.warning("PDF rendering failed (%s: %s) — email will go without attachment",
+                    type(e).__name__, e)
+        return None
+
+
+def send_email(token: str, from_upn: str, to_emails: list[str], subject: str,
+               html: str, attachments: list[dict] | None = None) -> None:
+    """Send the brief. attachments=[{name, content_bytes, mime}, ...] are
+    delivered as Microsoft Graph fileAttachments (base64-encoded)."""
+    import base64
     url = f"{GRAPH}/users/{from_upn}/sendMail"
-    message = {
+    message: dict = {
         "subject": subject,
         "body": {"contentType": "HTML", "content": html},
         "toRecipients": [{"emailAddress": {"address": a}} for a in to_emails],
     }
+    if attachments:
+        message["attachments"] = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": a["name"],
+                "contentType": a.get("mime", "application/octet-stream"),
+                "contentBytes": base64.b64encode(a["content_bytes"]).decode("ascii"),
+            }
+            for a in attachments
+        ]
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json={"message": message},
-        timeout=30,
+        timeout=60,
     )
     if resp.status_code == 202:
-        log.info("Scorecard email sent to: %s", ", ".join(to_emails))
+        attach_note = f" with {len(attachments)} attachment(s)" if attachments else ""
+        log.info("Scorecard email sent to %s%s", ", ".join(to_emails), attach_note)
     else:
         log.error("sendMail failed [%s]: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
@@ -5729,7 +5785,16 @@ def main() -> int:
         log.warning("Scorecard review skipped (%s: %s)", type(e).__name__, e)
         prefix = ""
     subject = f"{prefix}XFreight Executive Brief — {datetime.now():%b %d, %Y}"
-    send_email(token, from_upn, to_emails, subject, str(html))
+    pdf_bytes = render_pdf(str(html))
+    attachments = []
+    if pdf_bytes:
+        pdf_name = f"XFreight_Executive_Brief_{datetime.now():%Y-%m-%d}.pdf"
+        attachments.append({
+            "name": pdf_name,
+            "content_bytes": pdf_bytes,
+            "mime": "application/pdf",
+        })
+    send_email(token, from_upn, to_emails, subject, str(html), attachments=attachments)
 
     # Write today's 'sent' marker so the staggered backup crons short-circuit.
     # Failure to write the marker is non-fatal — at worst we re-send today.
