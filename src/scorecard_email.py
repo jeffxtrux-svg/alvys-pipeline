@@ -5666,17 +5666,15 @@ def render_pdf(html: str) -> bytes | None:
         # --- Pre-process HTML before handing to WeasyPrint ---
 
         # 1. Strip the screen-only 760px email cap so WeasyPrint uses the
-        #    full letter page content area (7.8 in = ~748 CSS px).
+        #    full letter page content area.
         pdf_html = html.replace(
             "@media screen{.brief-wrap{max-width:760px;}}",
             ".brief-wrap{max-width:none;width:100%;}"
         )
 
-        # 2. Force outer content tables to table-layout:fixed so tile columns
-        #    respect their width='25%' attribute exactly.  With the default
+        # 2. Force outer content tables to table-layout:fixed.  With the default
         #    'auto' layout, long label text ("XFREIGHT REVENUE · MTD" etc.)
-        #    can push a tile wider than 25%, overflowing the page.  All outer
-        #    page tables share this exact style string so the replace is safe.
+        #    can push a tile wider than 25%, overflowing the page.
         pdf_html = pdf_html.replace(
             "cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>",
             "cellpadding='0' cellspacing='0' style='padding:8px 18px 0;"
@@ -5684,7 +5682,19 @@ def render_pdf(html: str) -> bytes | None:
         )
 
         # --- CSS override appended after document stylesheets ---
+        # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
+        # 760px wide, which exceeds portrait letter's ~7.8in printable area
+        # and clips the right-side tiles.  Landscape gives ~10.1in of usable
+        # width — plenty for the 4-up tile layout to render edge-to-edge.
+        # The running footers are re-declared because @page rules don't
+        # cascade between stylesheets.
         _pdf_override = CSS(string=(
+            "@page{size:letter landscape;margin:0.45in 0.5in 0.55in;"
+            "@bottom-left{content:'XFREIGHT · Executive Brief';"
+            "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;"
+            "font-weight:700;letter-spacing:1.5px;}"
+            "@bottom-right{content:'Page ' counter(page) ' of ' counter(pages);"
+            "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
             ".brief-wrap{max-width:none!important;width:100%!important;}"
             # Tile cells: clip overflow and wrap so nothing bleeds outside the
             # fixed-width column.
