@@ -5762,9 +5762,11 @@ def render_pdf(html: str) -> bytes | None:
         # Risk leaderboard — push to fresh page after violations/MVR alerts.
         _inject_pb_before("Risk leaderboard &middot; highest-scoring drivers")
 
-        # 4. Tag the wrapper <tr> emitted by _table() so its inner data table
-        #    can split across page boundaries.  Each _table() output is wrapped
-        #    in a single outer row (style='padding:0 6px;'); the global
+        # 4. Tag the wrapper <tr> emitted by _table() and other data-table
+        #    builders so the inner data table can split across page boundaries.
+        #    The wrappers all share `<td colspan='4' style='padding:0 6px;'>`
+        #    (some also carry class='scroll-wide' for the wide mobile-scroll
+        #    tables — idle, driver mileage, etc.). The global
         #    `tr { page-break-inside: avoid }` rule below would otherwise
         #    force the entire wrapper row — and the multi-row data table
         #    nested inside it — onto a single page, bumping whole tables to
@@ -5773,6 +5775,10 @@ def render_pdf(html: str) -> bytes | None:
         pdf_html = pdf_html.replace(
             "<tr><td colspan='4' style='padding:0 6px;'>",
             "<tr class='pdf-data-wrap'><td colspan='4' style='padding:0 6px;'>",
+        )
+        pdf_html = pdf_html.replace(
+            "<tr><td colspan='4' class='scroll-wide' style='padding:0 6px;'>",
+            "<tr class='pdf-data-wrap'><td colspan='4' class='scroll-wide' style='padding:0 6px;'>",
         )
 
         # --- CSS override appended after document stylesheets ---
