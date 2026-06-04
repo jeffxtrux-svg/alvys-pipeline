@@ -4456,46 +4456,56 @@ def build_page2(samsara, date_str) -> str:
         """Plain-language comment per the speeding-threshold rubric.
 
         Base message uses the PEAK of the three windows so a chronic 6mo problem
-        and an acute MTD spike both surface. Trend marker compares MTD to 6mo
-        baseline: a big drop is called out as improvement; a big jump as worsening.
+        and an acute MTD spike both surface. A trend suggestion is layered on:
+        falling fast / improving / spiking / trending worse / no improvement.
         """
         pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
         peak = max(pcts) if pcts else None
         base = ""
         if _isnum(peak):
             if peak >= 3.0:
-                base = "STOP &mdash; driver needs to be shut down"
+                base = "STOP this driver now"
             elif peak >= 2.5:
-                base = "Driver is a speeder and has a problem"
+                base = "Need to sit down with this driver &mdash; they have a problem"
+            elif peak >= 2.25:
+                base = "This is too fast"
             elif peak >= 2.0:
                 base = "Driver needs a conversation"
             elif peak >= 1.75:
                 base = "Where is the fire?"
             elif peak >= 1.5:
-                base = "Why are we going so fast?"
+                base = "We have a problem with speed"
             elif peak >= 1.25:
-                base = "Watch out Speedy"
+                base = "Watch this driver"
         trend = ""
-        if _isnum(pct_6mo) and _isnum(pct_mtd) and pct_6mo > 0:
-            if pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.5:
-                trend = "significant improvement"
+        if _isnum(pct_6mo) and _isnum(pct_mtd) and pct_6mo >= 0:
+            # MTD spike vs the longer windows — recent jump, address immediately.
+            longer = max(pct_6mo, pct_3mo) if _isnum(pct_3mo) else pct_6mo
+            if _isnum(longer) and pct_mtd - longer >= 2.0:
+                trend = "spiking &mdash; recent jump, address now"
+            elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.3:
+                trend = "falling fast &mdash; keep it up"
+            elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.6:
+                trend = "improving &mdash; keep it up"
             elif pct_mtd - pct_6mo >= 1.0:
-                trend = "trending worse &mdash; speeding more often"
+                trend = "trending worse"
+            elif base and pct_mtd >= pct_6mo - 0.1:
+                trend = "no improvement &mdash; requires action"
         if base and trend:
-            return f"{base} &mdash; {trend}"
+            return f"{base}. {trend}."
         return base or trend
 
     def _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd):
         if not comment:
             return None
-        if "improvement" in comment:
-            return "good" if "STOP" not in comment and "speeder" not in comment else "warn"
         pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
         peak = max(pcts) if pcts else None
-        if _isnum(peak) and peak >= 2.5:
+        if _isnum(peak) and peak >= 2.25:
             return "bad"
-        if "trending worse" in comment:
+        if "spiking" in comment or "trending worse" in comment:
             return "bad"
+        if ("falling fast" in comment or "improving" in comment) and _isnum(peak) and peak < 1.5:
+            return "good"
         return "warn"
 
     def _spd_rows():
