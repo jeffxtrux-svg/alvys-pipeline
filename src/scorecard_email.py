@@ -3479,7 +3479,7 @@ def _header(sub, pg, date_str, section=None):
         f"<div style='{FONT_SERIF}font-style:italic;font-size:11px;color:{INK};"
         f"font-weight:600;margin-bottom:2px;'>{day_part}</div>"
         f"<div>{date_part}</div>"
-        f"<div style='font-size:9px;color:{MUTE};margin-top:4px;letter-spacing:0.5px;'>"
+        f"<div class='pg-of' style='font-size:9px;color:{MUTE};margin-top:4px;letter-spacing:0.5px;'>"
         f"Page {pg} of {PAGE_COUNT}</div>"
         f"</td>"
         f"</tr></table>")
@@ -5442,7 +5442,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     if missing:
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
-    wrap = lambda inner: f"<div style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
+    wrap = lambda inner: f"<div class='brief-wrap' style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
 
     # Per-page insight strips — bridge from the page 1 narrative to detail.
     # Falls back to empty dict if scorecard_insights raises.
@@ -5493,7 +5493,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     print_css = (
         "<style>"
         # Letter size with a running XFreight footer (brand left, page n/m right).
-        "@page{size:letter;margin:0.5in 0.4in 0.6in;"
+        # 0.35in side margins give ~7.8in usable; .brief-wrap below is forced to
+        # 100% width in print so the 760px email wrap doesn't clip the right edge.
+        "@page{size:letter;margin:0.45in 0.35in 0.55in;"
         "@bottom-left{content:'XFREIGHT · Executive Brief';"
         "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;"
         "font-weight:700;letter-spacing:1.5px;}"
@@ -5501,11 +5503,22 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
         "body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
         ".page-break{page-break-after:always;break-after:page;height:0 !important;background:transparent !important;}"
-        # In print, horizontal scroll wrappers become irrelevant — let wide
-        # tables wrap to a new page rather than clip.
-        "@media print{.scroll-wide{overflow:visible !important;}"
+        # Each content 'page' is designed for email scroll, not letter-fit; the
+        # PDF footer's 'Page N of M' uses the real letter-page count, so the
+        # in-content header's PG number was confusing. Hide it in print.
+        ".pg-of{display:inline;}"
+        "@media print{"
+        # Print-friendly width: drop the 760px email constraint so content
+        # fills the letter-printable area edge-to-edge (no right-side clip).
+        ".brief-wrap{max-width:none !important;width:100% !important;}"
+        # Let wide tables wrap to a new page rather than clip in print.
+        ".scroll-wide{overflow:visible !important;}"
         # Avoid splitting an individual row of a tile/table across pages.
-        "tr,td,th{page-break-inside:avoid;break-inside:avoid;}}"
+        "tr,td,th{page-break-inside:avoid;break-inside:avoid;}"
+        # Hide the in-content 'Page N of M' badge in print to avoid the
+        # mismatch with the real-letter-page counter in the running footer.
+        ".pg-of{display:none !important;}"
+        "}"
         "</style>"
     )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
