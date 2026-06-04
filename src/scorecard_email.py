@@ -5725,6 +5725,8 @@ def render_pdf(html: str) -> bytes | None:
         _inject_pb_before("Safety &amp; compliance &mdash; 24h")
         # DVIR defects table — push to a fresh page after safety events.
         _inject_pb_before("DVIR defects (open) &mdash; all unresolved")
+        # Risk leaderboard — push to fresh page after violations/MVR alerts.
+        _inject_pb_before("Risk leaderboard &middot; highest-scoring drivers")
 
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
