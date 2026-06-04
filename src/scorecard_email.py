@@ -3245,7 +3245,7 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     sort_note = ("Sort: soonest 120-day company policy first (trailers); soonest annual inspection first (tractors)."
                  if kind == "trailers"
                  else "Sort: soonest annual inspection first.")
-    body += (f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+    body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
              f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
              f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note}</div>")
 
@@ -4592,7 +4592,7 @@ def build_page2(samsara, date_str) -> str:
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
             f"{_spd_tbl}"
             f"{coaching_section}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
             f"Speed Over Limit = time-over-posted-limit &divide; total drive time, shown as % "
             f"when both fields are available (&ge;5% flagged for coaching, 1&ndash;5% monitored); "
@@ -4670,7 +4670,7 @@ def build_page2b(samsara, date_str, pg: int = 4) -> str:
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
             f"{score_all_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara Driver Safety Scores (per-driver composite, last 6 months). "
             f"Lower score = worse; component event counts (harsh accel/brake/turn, "
             f"crashes) are the inputs that drove it.</div>")
@@ -4740,7 +4740,7 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"{mpg_bot_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
             f"(speeding, 7 days). "
             f"Idle detail is on the Fleet Idle page (pg 9); "
@@ -4867,7 +4867,7 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
             f"{idle_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara engine-state history (idle, last 5 settlement weeks; "
             f"idle gallons = idle_hours &times; 0.8 gph fleet-average heuristic). "
             f"{_cost_note}"
@@ -4894,7 +4894,7 @@ def build_page3(qb_ar, date_str) -> str:
             f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>"
             f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], rows + total_row)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Current and 1&ndash;30 day balances omitted by request. X-Trux Inc + X-Linx Inc only. "
             f"Source: QuickBooks A/R Aging Detail.</div>")
 
@@ -4979,7 +4979,7 @@ def build_page4(mileage, date_str) -> str:
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
             f"{table}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Settlement weeks run Wed 3:00 PM &rarr; the following Wed 2:59 PM (America/Chicago); the current "
             f"week is tinted. Avg / wk excludes the current (partial) week. Each trip leg is credited to its Driver 1 / Truck / miles and bucketed by its own "
             f"actual delivery (last stop arrival). Cancelled and not-yet-delivered legs are excluded; asset fleet "
@@ -5029,7 +5029,7 @@ def build_page5(uninv, alvys_ar, date_str) -> str:
             f"<tr>{ar_tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], ar_body)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Top: delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
             f"QuickBooks-vs-Alvys AR gap. &lsquo;Delivered&rsquo; is the actual last-stop arrival "
             f"(Scheduled Delivery if arrival is missing). "
@@ -5104,7 +5104,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
             f"<tr>{ar_tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], ar_body)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Top: QuickBooks A/R Aging Detail, X-Trux + X-Linx, current and 1&ndash;30 day balances omitted. "
             f"Middle: delivered Alvys loads with no Invoiced Date &mdash; the un-billed revenue behind most of the QB-vs-Alvys AR gap. "
             f"Bottom: open invoiced balances aged &gt;90 days past the Customer Due Date. "
@@ -5148,7 +5148,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'QuickBooks', 'Alvys', 'Variance'], ['left', 'right', 'right', 'right'], body)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Open AR per customer, QuickBooks vs Alvys (X-Trux + X-Linx, JW excluded). Variance = QB &minus; Alvys; "
             f"a negative (red) value means Alvys shows more open AR &mdash; most often invoices already paid in QB but "
             f"not synced back. Rows sum to the page-1 variance. Customers joined by name; a one-sided row can be the "
@@ -5164,7 +5164,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
                "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
         return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_brief(msg, 'warn')}</table>"
-                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
                 f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
     if b.get("no_match"):
@@ -5181,7 +5181,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
                 f"{_brief(msg, 'warn')}"
                 f"{_section('Sample identifiers &middot; Alvys vs QuickBooks')}"
                 f"{_table(['Alvys invoice # / Load #', 'QuickBooks Num'], ['left', 'left'], srows)}</table>"
-                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
                 f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
     ao, qo, mm = b["alvys_only"], b["qb_only"], b["mismatch"]
@@ -5217,7 +5217,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
     return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>{ao_tbl}{mm_tbl}{qo_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
             f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
             f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
@@ -5226,7 +5226,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page9(samba, date_str, alvys_drivers=None) -> str:
     header = _header('Driver Compliance &mdash; SambaSafety + Alvys', 2, date_str, section='SAFETY')
-    footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+    footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
               f"License + MVR: SambaSafety. DOT medical card: Alvys Drivers feed.</div>")
     if not samba or not samba.get("monitored"):
