@@ -5681,25 +5681,44 @@ def render_pdf(html: str) -> bytes | None:
             "table-layout:fixed;width:100%;'>"
         )
 
-        # 3. PDF-only page break before the 'XFreight Overview' section so the
-        #    page-1 narrative (Bottom line / Action items / Coaching) ends
-        #    cleanly and the tile-heavy entity sections start fresh on page 2.
-        #    The marker text only appears once in the document, so the replace
-        #    is unambiguous.  The injected <tr> closes the prior table and
-        #    opens a new one so the page break lands between table boxes,
-        #    where WeasyPrint honors break-before reliably.
-        _xfreight_section_marker = _section("XFreight Overview")
-        if _xfreight_section_marker in pdf_html:
-            pdf_html = pdf_html.replace(
-                _xfreight_section_marker,
-                "</table>"
-                "<div style='page-break-before:always;break-before:page;"
-                "height:0;'></div>"
-                "<table width='100%' cellpadding='0' cellspacing='0' "
-                "style='padding:8px 18px 0;table-layout:fixed;width:100%;'>"
-                + _xfreight_section_marker,
-                1,  # replace only the first occurrence
-            )
+        # 3. PDF-only page breaks before specific section headers so dense
+        #    content (tile grids, customer tables) lands on a fresh page
+        #    instead of getting orphaned at the bottom of the prior one.
+        #    Each break closes the current table, drops a page-break div,
+        #    then re-opens a new table — WeasyPrint honors break-before
+        #    reliably between table boxes, not inside them.
+        _section_tr_open = "<tr><td colspan='4' style='padding:22px 6px 4px;'>"
+        _reopen_table = (
+            "<table width='100%' cellpadding='0' cellspacing='0' "
+            "style='padding:8px 18px 0;table-layout:fixed;width:100%;'>"
+        )
+        _pb_block = (
+            "</table>"
+            "<div style='page-break-before:always;break-before:page;height:0;'></div>"
+            + _reopen_table
+        )
+
+        def _inject_pb_before(marker_text: str) -> None:
+            """Find the first <tr> wrapping `marker_text` and inject a page
+            break before it.  Only affects the first occurrence so other
+            instances of the same section title (on dedicated pages) are
+            untouched."""
+            nonlocal pdf_html
+            idx = pdf_html.find(marker_text)
+            if idx <= 0:
+                return
+            tr_start = pdf_html.rfind(_section_tr_open, 0, idx)
+            if tr_start <= 0:
+                return
+            pdf_html = pdf_html[:tr_start] + _pb_block + pdf_html[tr_start:]
+
+        # XFreight Overview — pushes the entity tiles + reconciliation to
+        # page 2, letting page 1 carry only the narrative.
+        _inject_pb_before("XFreight Overview")
+        # Overdue invoices (31+ days) table — pushes the customer-by-customer
+        # AR detail to a fresh page after the AR aging tiles / Receivables
+        # & payables chart row.
+        _inject_pb_before("Overdue invoices (31+ days) by customer")
 
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
