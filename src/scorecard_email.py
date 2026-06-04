@@ -5661,7 +5661,15 @@ def render_pdf(html: str) -> bytes | None:
         _logger.setLevel(logging.ERROR)
         _logger.propagate = False
     try:
-        pdf_bytes = HTML(string=html).write_pdf()
+        from weasyprint import CSS  # type: ignore
+        # WeasyPrint's render(stylesheets=[...]) appends CSS after the
+        # document stylesheets, so it wins the cascade without fighting
+        # @media queries. Force brief-wrap to fill the full printable area
+        # so the 760px email cap doesn't clip the right side of the PDF.
+        _pdf_override = CSS(string=(
+            ".brief-wrap{max-width:none!important;width:100%!important;}"
+        ))
+        pdf_bytes = HTML(string=html).render(stylesheets=[_pdf_override]).write_pdf()
         log.info("Generated PDF (%.1f KB)", len(pdf_bytes) / 1024)
         return pdf_bytes
     except Exception as e:
