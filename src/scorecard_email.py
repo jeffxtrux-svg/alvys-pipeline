@@ -3983,7 +3983,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"{_pill('see pg 10', 'bad')} &middot; gap = un-invoiced loads (see pg 10)</div></div>")
+                f"{_pill('see pg 11', 'bad')} &middot; gap = un-invoiced loads (see pg 11)</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
@@ -4412,7 +4412,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 11). "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 12). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         legacy_bottom += f" {drag['text']}"

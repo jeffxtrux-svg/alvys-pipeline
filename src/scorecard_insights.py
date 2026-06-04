@@ -329,7 +329,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 f"TOP IDLER · {driver.upper()}",
                 f"Truck {top.get('unit', '—')} · {_pct(idle_pct)} idle. "
                 f"~{_money(fuel_cost)}/mo of fuel burned parked. "
-                f"See pg 6 for the full idle ranking and talk track."))
+                f"See pg 9 for the full idle ranking and talk track."))
 
     # 2. RPM goal gap.
     if rpm_goal:
@@ -362,13 +362,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 "AR 31-60 CLIMBING",
                 f"{_money(v_31_60)} in 31-60 (+{_money(delta)}{since}). "
-                f"Collections call list on pg 7."))
+                f"Collections call list on pg 12."))
         elif v_31_60 > 20000 or (v_31_60 > 10000 and share > 0.20):
             items.append((
                 "warn",
                 "AR 31-60 BUCKET",
                 f"{_money(v_31_60)} in 31-60 ({_pct(share)} of 31+ total). "
-                f"Collections call list on pg 7."))
+                f"Collections call list on pg 12."))
 
     # 4. Un-invoiced loads (gap between Alvys revenue and QB invoicing).
     # Fire 'GROWING' label when count is up materially vs prior snapshot.
@@ -386,13 +386,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 "UN-INVOICED LOADS GROWING",
                 f"{n} delivered Alvys loads not yet invoiced (+{delta_n}{since}). "
-                f"{_money(amt)} total. See pg 8."))
+                f"{_money(amt)} total. See pg 11."))
         elif n >= 10 or amt > 50000:
             items.append((
                 "warn",
                 "UN-INVOICED LOADS",
                 f"{n} delivered Alvys loads not yet invoiced in QB "
-                f"({_money(amt)}). See pg 8."))
+                f"({_money(amt)}). See pg 11."))
 
     # 5. SambaSafety — expiring license is hard-deadline operational risk;
     # an expired CDL grounds the truck immediately. Surface as 'bad' if
@@ -611,33 +611,36 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
                   f"({top.get('unit', '—')}) at {_pct(top.get('idle_pct'))}. "
                   f"All trucks ranked worst-to-best by avg idle / week below.")
 
+    # Page 10 — CSA Scorecard (FMCSA carrier safety percentiles, BASIC categories).
+    # Strip is left empty here; the page header carries enough context on its own.
+
     # === ACCOUNTING ===
-    # Page 10 — QB AR Overdue 31+ combined with Alvys un-invoiced + 90+ AR
-    pg10_parts = []
+    # Page 11 — Alvys Accounting (QB AR Overdue 31+ + Alvys un-invoiced + 90+ AR)
+    pg11_parts = []
     if qb_ar:
         total31 = qb_ar.get("total31") or 0
-        pg10_parts.append(f"Page 1 flagged {_money(total31)} in 31+ AR (top). "
+        pg11_parts.append(f"Page 1 flagged {_money(total31)} in 31+ AR (top). "
                           f"JW Logistics omitted per standing policy.")
     if uninvoiced:
         n = uninvoiced.get("count") or 0
         amt = uninvoiced.get("total_revenue") or 0
-        pg10_parts.append(
+        pg11_parts.append(
             f"Page 1's QB-vs-Alvys gap mostly comes from these {n} "
             f"delivered-but-not-yet-invoiced loads ({_money(amt)}).")
     if alvys_ar:
         d91 = alvys_ar.get("d91plus") or 0
         if d91:
-            pg10_parts.append(
+            pg11_parts.append(
                 f"Below that, {_money(d91)} of 90+ AR — escalate to collections.")
-    if pg10_parts:
-        out[10] = " ".join(pg10_parts)
+    if pg11_parts:
+        out[11] = " ".join(pg11_parts)
 
-    # Page 11 — QB↔Alvys recon by customer
-    out[11] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
+    # Page 12 — QB↔Alvys recon by customer
+    out[12] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
                "biggest contributors to the variance.")
 
-    # Page 12 — Bill-by-bill match
-    out[12] = ("Page 11 showed customer-level variances. This page drills to "
+    # Page 13 — Bill-by-bill match
+    out[13] = ("Page 12 showed customer-level variances. This page drills to "
                "individual unmatched invoices.")
 
     return out
