@@ -5733,6 +5733,19 @@ def render_pdf(html: str) -> bytes | None:
         # Risk leaderboard — push to fresh page after violations/MVR alerts.
         _inject_pb_before("Risk leaderboard &middot; highest-scoring drivers")
 
+        # 4. Tag the wrapper <tr> emitted by _table() so its inner data table
+        #    can split across page boundaries.  Each _table() output is wrapped
+        #    in a single outer row (style='padding:0 6px;'); the global
+        #    `tr { page-break-inside: avoid }` rule below would otherwise
+        #    force the entire wrapper row — and the multi-row data table
+        #    nested inside it — onto a single page, bumping whole tables to
+        #    the next page when they don't fit and leaving the prior page
+        #    empty under just a section header.
+        pdf_html = pdf_html.replace(
+            "<tr><td colspan='4' style='padding:0 6px;'>",
+            "<tr class='pdf-data-wrap'><td colspan='4' style='padding:0 6px;'>",
+        )
+
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
         # 760px wide, which exceeds portrait letter's ~7.8in printable area
@@ -5753,6 +5766,12 @@ def render_pdf(html: str) -> bytes | None:
             "td.tile{overflow:hidden!important;word-break:break-word!important;"
             "overflow-wrap:anywhere!important;}"
             "td.tile>div{overflow:hidden!important;}"
+            # _table()'s outer wrapper row: allow it to break across pages
+            # so the multi-row inner data table can span page boundaries.
+            # Individual data rows inside still inherit the global
+            # tr{page-break-inside:avoid} so they stay intact.
+            "tr.pdf-data-wrap{page-break-inside:auto!important;"
+            "break-inside:auto!important;}"
         ))
 
         pdf_bytes = (
