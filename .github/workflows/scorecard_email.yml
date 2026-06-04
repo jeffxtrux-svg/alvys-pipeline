@@ -17,6 +17,14 @@ on:
   # whenever GITHUB_EVENT_NAME is workflow_dispatch, including when called
   # via workflow_call from a manual Refresh All run.
   workflow_call:
+  # Editing this file fires the workflow on push — handy for triggering a
+  # run from mobile when the Actions UI's "Run workflow" button isn't
+  # reachable. The job step below sets SCORECARD_SKIP_IDEMPOTENCY=1 for
+  # push events so the same-day marker is bypassed and the run actually
+  # emails.
+  push:
+    paths:
+      - .github/workflows/scorecard_email.yml
   schedule:
     # Defense in depth against GitHub Actions schedule drops — GitHub's cron
     # is documented as best-effort, and during high load runs are silently
@@ -66,6 +74,10 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
           SCORECARD_TO_EMAILS: jeff@xfreight.net
+          # Push-triggered runs (mobile escape hatch) bypass the same-day
+          # idempotency marker so the on-demand resend actually sends.
+          # Empty string for cron/dispatch leaves the marker check in force.
+          SCORECARD_SKIP_IDEMPOTENCY: ${{ github.event_name == 'push' && '1' || '' }}
           # Read the exact workbook the Power BI report uses, by its OneDrive sharing
           # URL — there is a second file of the same name, so reading by name picked
           # the wrong (un-settled) one. The sharing URL resolves to the right item.
