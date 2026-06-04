@@ -104,7 +104,12 @@ RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
 RPM_GOAL_OVERHEAD_ALLOC = 1.0
-RPM_GOAL_INSURANCE_SURCHARGE = 0.07   # liability insurance increase added Jun 2026
+# Liability insurance was tracked as a separate $0.07/mi line while the office-
+# overhead calc lagged behind the rate hike. With overhead now pinned at $0.92/mi
+# (RPM_GOAL_OVERHEAD_PIN) which already absorbs the insurance increase, this
+# surcharge is zeroed so it doesn't double-count.  Re-enable if you ever
+# decouple insurance from overhead again.
+RPM_GOAL_INSURANCE_SURCHARGE = 0.0
 # Office overhead per mile is pinned to a hand-set value while the costing
 # algorithm is being validated against the books. Set to None (or empty the
 # RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
