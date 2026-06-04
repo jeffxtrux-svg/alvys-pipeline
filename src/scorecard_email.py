@@ -5515,8 +5515,13 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         ".brief-wrap{max-width:none;width:100%;}"
         # Let wide tables wrap to a new page rather than clip in print.
         ".scroll-wide{overflow:visible !important;}"
-        # Avoid splitting an individual row of a tile/table across pages.
-        "tr,td,th{page-break-inside:avoid;break-inside:avoid;}"
+        # Avoid splitting an individual row mid-cell (the row stays intact),
+        # but let multi-row tables (driver mileage, idle, AR detail, speed
+        # table, etc.) split across page boundaries — otherwise a multi-row
+        # data table that doesn't fit the remaining space gets bumped whole
+        # to the next page and leaves the prior page mostly empty.
+        "tr{page-break-inside:avoid;break-inside:avoid;}"
+        "table{page-break-inside:auto;break-inside:auto;}"
         # Hide the in-content 'Page N of M' badge in print to avoid the
         # mismatch with the real-letter-page counter in the running footer.
         ".pg-of{display:none !important;}"
