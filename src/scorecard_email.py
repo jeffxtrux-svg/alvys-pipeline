@@ -5307,9 +5307,9 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
     return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('License status &middot; action needed')}{license_block}"
-            f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
-            f"{_section('Risk leaderboard &middot; highest-scoring drivers')}{risk_block}"
             + _alvys_medical_block(alvys_drivers)
+            + f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
+            + f"{_section('Risk leaderboard &middot; highest-scoring drivers')}{risk_block}"
             + footer)
 
 
