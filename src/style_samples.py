@@ -526,6 +526,278 @@ def render_dashboard(d: dict) -> str:
 
 
 # ----------------------------------------------------------------------
+# Style 4 — XFreight branded (hybrid of #1 executive + #2 financial, with spunk)
+# Serif headlines + hero numbers (from #1), single-column flow + variance-only
+# color (from #2), XFreight red accent throughout, branded logo header bar.
+# ----------------------------------------------------------------------
+XFREIGHT_RED = "#c41e2a"
+XFREIGHT_RED_DARK = "#8f1620"
+
+
+def _xfreight_logo_svg(width: int = 220, height: int = 38) -> str:
+    """Inline SVG re-creation of the XFREIGHT logo (red bar + italic bold
+    white wordmark + horizontal speed-line streaks on the left). Embedded
+    inline so the PDF has no external dependencies."""
+    return f"""
+    <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 38'
+         width='{width}' height='{height}' role='img' aria-label='XFreight'>
+      <rect width='220' height='38' rx='2' fill='{XFREIGHT_RED}'/>
+      <!-- Speed-line streaks on the left side -->
+      <g fill='#fff'>
+        <rect x='8'  y='6'  width='38' height='2.4'/>
+        <rect x='10' y='10' width='34' height='2.4'/>
+        <rect x='6'  y='14' width='42' height='2.4'/>
+        <rect x='12' y='18' width='30' height='2.4'/>
+        <rect x='8'  y='22' width='38' height='2.4'/>
+        <rect x='10' y='26' width='34' height='2.4'/>
+        <rect x='6'  y='30' width='42' height='2.4'/>
+      </g>
+      <!-- Wordmark -->
+      <text x='56' y='27' font-family='Helvetica, Arial, sans-serif'
+            font-weight='900' font-style='italic' font-size='22'
+            letter-spacing='-0.5' fill='#fff'>XFREIGHT</text>
+    </svg>
+    """
+
+
+def render_xfreight(d: dict) -> str:
+    s = d["xtrux"]
+    x = d["xlinx"]
+    a = d["ar"]
+    r = d["rpm_goal"]
+    gap = r['goal'] - s['rpm']
+    css = f"""
+    <style>
+      @page {{
+        size: letter;
+        margin: 0.75in 0.7in 0.6in;
+        @bottom-left {{
+          content: 'XFREIGHT · Executive Brief';
+          font-family: 'Helvetica Neue', Arial, sans-serif;
+          font-size: 8.5pt;
+          color: #999;
+          font-weight: 700;
+          letter-spacing: 1.5px;
+        }}
+        @bottom-right {{
+          content: 'Page ' counter(page) ' of ' counter(pages);
+          font-family: 'Helvetica Neue', Arial, sans-serif;
+          font-size: 8.5pt;
+          color: #999;
+        }}
+      }}
+      body {{
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        color: #1a1a1a;
+        font-size: 10.5pt;
+        line-height: 1.55;
+        -webkit-print-color-adjust: exact;
+        margin: 0;
+      }}
+      .brand-bar {{
+        margin: -0.15in -0.2in 0;
+        padding: 0 0 16px;
+        border-bottom: 4px solid {XFREIGHT_RED};
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+      }}
+      .brand-bar .left {{ display: flex; align-items: center; gap: 16px; }}
+      .brand-bar .doc-label {{
+        font-family: Georgia, 'Times New Roman', serif;
+        font-style: italic;
+        font-size: 13pt;
+        color: #1a1a1a;
+        font-weight: 400;
+        margin-bottom: 2px;
+      }}
+      .brand-bar .date {{
+        font-size: 9.5pt;
+        color: #6b6b6b;
+        text-align: right;
+        font-weight: 500;
+        margin-bottom: 4px;
+      }}
+      .brand-bar .date .day {{
+        font-family: Georgia, serif;
+        font-style: italic;
+        font-size: 11pt;
+        color: #1a1a1a;
+        font-weight: 600;
+        display: block;
+        margin-bottom: 2px;
+      }}
+      .lede {{
+        margin: 26px 0 32px;
+        padding: 18px 22px;
+        background: #fafafa;
+        border-left: 4px solid {XFREIGHT_RED};
+        font-size: 11.5pt;
+        line-height: 1.65;
+      }}
+      .lede .key {{
+        color: {XFREIGHT_RED};
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        font-size: 9.5pt;
+        display: block;
+        margin-bottom: 6px;
+      }}
+      h2 {{
+        font-family: Georgia, 'Times New Roman', serif;
+        font-weight: 400;
+        font-size: 17pt;
+        margin: 32px 0 4px;
+        color: #1a1a1a;
+        letter-spacing: -0.3px;
+      }}
+      h2 .accent {{
+        color: {XFREIGHT_RED};
+        font-style: italic;
+        font-weight: 700;
+      }}
+      h2 + .h2-rule {{
+        height: 2px;
+        background: #1a1a1a;
+        width: 36px;
+        margin: 0 0 16px;
+      }}
+      .hero-row {{
+        display: flex;
+        gap: 32px;
+        margin: 14px 0 8px;
+        padding: 8px 0 14px;
+        border-bottom: 1px solid #e8e8e8;
+      }}
+      .hero {{
+        flex: 1;
+      }}
+      .hero .label {{
+        font-size: 8.5pt;
+        text-transform: uppercase;
+        letter-spacing: 1.8px;
+        color: #6b6b6b;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }}
+      .hero .value {{
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 30pt;
+        color: #1a1a1a;
+        font-weight: 400;
+        letter-spacing: -1.2px;
+        line-height: 1;
+      }}
+      .hero .value.negative {{ color: {XFREIGHT_RED}; }}
+      .hero .value.positive {{ color: #0f6b3d; }}
+      .hero .context {{
+        font-size: 9pt;
+        color: #6b6b6b;
+        margin-top: 6px;
+      }}
+      table.kpi {{
+        width: 100%;
+        border-collapse: collapse;
+        margin: 4px 0 0;
+      }}
+      table.kpi td {{
+        padding: 11px 0;
+        border-bottom: 1px solid #ececec;
+        font-size: 10.5pt;
+        vertical-align: baseline;
+      }}
+      table.kpi tr:last-child td {{ border-bottom: 0; }}
+      table.kpi td.metric {{
+        font-weight: 600;
+        color: #1a1a1a;
+        width: 42%;
+      }}
+      table.kpi td.context {{
+        text-align: right;
+        font-size: 9pt;
+        color: #6b6b6b;
+        width: 30%;
+        font-style: italic;
+      }}
+      table.kpi td.value {{
+        text-align: right;
+        font-weight: 700;
+        font-size: 13pt;
+        letter-spacing: -0.3px;
+        font-variant-numeric: tabular-nums;
+      }}
+      table.kpi td.value.negative {{ color: {XFREIGHT_RED}; }}
+      table.kpi td.value.positive {{ color: #0f6b3d; }}
+    </style>
+    """
+    logo = _xfreight_logo_svg(width=180, height=32)
+    # Split the date into day-of-week + date for the two-line header treatment
+    try:
+        dt = datetime.datetime.strptime(d['date'], "%A, %B %d, %Y")
+        day_part = dt.strftime("%A")
+        date_part = dt.strftime("%B %d, %Y")
+    except Exception:
+        day_part, date_part = d['date'], ""
+    body = f"""
+    <div class='brand-bar'>
+      <div class='left'>
+        {logo}
+        <div class='doc-label'>Executive Brief</div>
+      </div>
+      <div class='date'>
+        <span class='day'>{day_part}</span>
+        {date_part}
+      </div>
+    </div>
+
+    <div class='lede'>
+      <span class='key'>The bottom line</span>
+      X-Trux is running <b>${s['rpm']:.2f}/mi</b> against a <b>${r['goal']:.2f}/mi</b> goal — a
+      <b style='color:{XFREIGHT_RED}'>${gap:.2f}/mi gap</b> on {s['miles']:,} dispatch miles
+      month-to-date. Dead-head sits at <b>{s['dh_pct']:.1f}%</b>. AR over 31 days stands at
+      <b>${a['past_due_31']:,}</b> &mdash; {(a['past_due_31']/a['total']*100):.0f}% of the book.
+    </div>
+
+    <h2>X-Trux <span class='accent'>// Asset trucking</span></h2>
+    <div class='h2-rule'></div>
+    <div class='hero-row'>
+      <div class='hero'>
+        <div class='label'>Revenue · MTD</div>
+        <div class='value'>${s['revenue']/1000:.0f}<span style='font-size:18pt'>K</span></div>
+        <div class='context'>{s['loads']} loads · ${s['rpm']:.2f}/mi</div>
+      </div>
+      <div class='hero'>
+        <div class='label'>Gap to RPM goal</div>
+        <div class='value negative'>−${gap:.2f}</div>
+        <div class='context'>target ${r['goal']:.2f} · cost ${r['cost']:.2f}</div>
+      </div>
+      <div class='hero'>
+        <div class='label'>Dead-head</div>
+        <div class='value negative'>{s['dh_pct']:.1f}%</div>
+        <div class='context'>{s['miles']:,} dispatch mi · target ≤ 5%</div>
+      </div>
+    </div>
+
+    <h2>X-Linx <span class='accent'>// Brokerage</span></h2>
+    <div class='h2-rule'></div>
+    <table class='kpi'>
+      <tr><td class='metric'>Revenue (MTD)</td><td class='context'>{x['loads']} loads brokered</td><td class='value'>${x['revenue']:,}</td></tr>
+      <tr><td class='metric'>Gross margin</td><td class='context'>brokerage spread</td><td class='value positive'>{x['margin_pct']:.1f}%</td></tr>
+    </table>
+
+    <h2>Accounts Receivable <span class='accent'>// Snapshot</span></h2>
+    <div class='h2-rule'></div>
+    <table class='kpi'>
+      <tr><td class='metric'>Total open AR</td><td class='context'>QuickBooks</td><td class='value'>${a['total']:,}</td></tr>
+      <tr><td class='metric'>Past due 31+ days</td><td class='context'>{(a['past_due_31']/a['total']*100):.0f}% of book</td><td class='value negative'>${a['past_due_31']:,}</td></tr>
+      <tr><td class='metric'>Past due 91+ days</td><td class='context'>escalate to collections</td><td class='value negative'>${a['past_due_91']:,}</td></tr>
+    </table>
+    """
+    return f"<!doctype html><html><head>{css}</head><body>{body}</body></html>"
+
+
+# ----------------------------------------------------------------------
 # PDF render + email
 # ----------------------------------------------------------------------
 def _render_pdf(html: str) -> bytes:
@@ -587,9 +859,10 @@ def main() -> int:
     token = get_token(tenant, client, secret)
 
     samples = [
-        ("Executive consulting brief", render_executive, "01_executive_consulting.pdf"),
-        ("Modern financial report",    render_financial, "02_modern_financial.pdf"),
-        ("Polished dashboard",         render_dashboard, "03_polished_dashboard.pdf"),
+        ("XFreight branded hybrid (NEW)", render_xfreight,  "04_xfreight_branded.pdf"),
+        ("Executive consulting brief",    render_executive, "01_executive_consulting.pdf"),
+        ("Modern financial report",       render_financial, "02_modern_financial.pdf"),
+        ("Polished dashboard",            render_dashboard, "03_polished_dashboard.pdf"),
     ]
     attachments = []
     descriptions = []
