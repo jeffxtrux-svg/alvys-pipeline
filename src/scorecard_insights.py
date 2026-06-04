@@ -85,6 +85,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 samba: dict | None = None,
                 alvys_entities: dict | None = None,
                 alvys_drivers: dict | None = None,
+                equipment: dict | None = None,
                 prior_snapshot: dict | None = None) -> str:
     """Generate the bottom-line paragraph. Joins 3-4 sentences picked
     from threshold-triggered templates."""
@@ -132,19 +133,22 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
 
     # X-Trux RPM gap → annualized uplift potential. Brokerage is per-load
     # not per-mile so the goal does not apply to X-Linx.
+    # Compare against MTD revenue/mile (matches the X-Trux Overview tile)
+    # rather than the trailing 10-day "actual_recent" rate so the gap reads
+    # against month-to-date performance — same basis as the on-page Gap tile.
     if rpm_goal:
-        actual = rpm_goal.get("actual_rpm")
+        mtd_rpm = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("rpm")
         goal = rpm_goal.get("goal_rpm")
         # Prefer X-Trux miles; fall back to combined if asset split missing.
         miles_mtd = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("miles") \
             or ((alvys or {}).get("mtd") or {}).get("miles") or 0
-        if _isnum(actual) and _isnum(goal) and actual < goal and miles_mtd:
-            gap = goal - actual
+        if _isnum(mtd_rpm) and _isnum(goal) and mtd_rpm < goal and miles_mtd:
+            gap = goal - mtd_rpm
             annual_uplift = gap * miles_mtd * 12
             parts.append(
-                f"X-Trux RPM ${actual:.2f} vs ${goal:.2f} goal; closing that gap "
-                f"≈ {_money(annual_uplift)} of annual margin uplift "
-                f"(per rate-per-mile-goal methodology).")
+                f"X-Trux RPM ${mtd_rpm:.2f} vs ${goal:.2f} goal ({mtd_label}); "
+                f"closing that gap ≈ {_money(annual_uplift)} of annual margin "
+                f"uplift (per rate-per-mile-goal methodology).")
 
     # Combined MTD profit/loss vs cost-per-mile:
     #   X-Trux P/L  = miles × (actual_rpm − cost_per_mile)
@@ -154,13 +158,14 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     # paying for itself against its loaded cost basis, then layers X-Linx
     # margin on top.
     if rpm_goal:
-        actual = rpm_goal.get("actual_rpm")
+        # MTD revenue/mile vs fully-loaded cost/mile gives the MTD P/L.
+        mtd_rpm = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("rpm")
         cpm = rpm_goal.get("cost_per_mile")
         miles_mtd = (((alvys or {}).get("asset") or {}).get("mtd") or {}).get("miles") \
             or ((alvys or {}).get("mtd") or {}).get("miles") or 0
         xl_margin = (ents.get("X-Linx") or {}).get("margin")
-        if _isnum(actual) and _isnum(cpm) and miles_mtd:
-            xt_pl = miles_mtd * (actual - cpm)
+        if _isnum(mtd_rpm) and _isnum(cpm) and miles_mtd:
+            xt_pl = miles_mtd * (mtd_rpm - cpm)
             combined = xt_pl + (float(xl_margin) if _isnum(xl_margin) else 0.0)
             verdict = "profit" if combined >= 0 else "loss"
             parts.append(
@@ -242,6 +247,28 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             parts.append(
                 f"{name} CDL will expire on {date_str}, and that is "
                 f"{int(d['license_days'])} days from expiration.")
+
+    # Equipment compliance — surface overdue inspections at the executive
+    # level so they don't get buried on the Equipment Compliance pages.
+    # Tractors: 365-day federal annual DOT.
+    # Trailers: 120-day company-policy DOT (fires before the federal 365).
+    if equipment:
+        od_tractors = [t for t in (equipment.get("tractors") or [])
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < 0]
+        if od_tractors:
+            units = ", ".join(str(t.get("unit") or "?") for t in od_tractors[:8])
+            more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
+            parts.append(
+                f"Tractors overdue on annual DOT inspection (365d federal): "
+                f"{units}{more} — see Equipment Compliance page.")
+        od_trailers = [t for t in (equipment.get("trailers") or [])
+                       if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
+        if od_trailers:
+            units = ", ".join(str(t.get("unit") or "?") for t in od_trailers[:8])
+            more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""
+            parts.append(
+                f"Trailers overdue on 120-day company DOT policy: "
+                f"{units}{more} — see Equipment Compliance page.")
 
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
