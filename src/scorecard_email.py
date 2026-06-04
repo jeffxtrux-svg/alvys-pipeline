@@ -3866,18 +3866,30 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _ar_gap = float(_alvys_past_due) - float(_qb_past_due)
 
     def _dual_ar_tile() -> str:
+        # NOTE on the inline word-break/white-space overrides: the global PDF
+        # CSS rule `td.tile { word-break:break-word; overflow-wrap:anywhere }`
+        # — which keeps long tile *labels* from blowing past the column width —
+        # was also breaking the money values ($51,277 rendering as $51,27 / 7).
+        # Each money <td> explicitly opts out with white-space:nowrap and
+        # word-break:keep-all so the dollar amounts stay on one line.
+        _money_td_style = (
+            f"font-size:20px;font-weight:800;color:{INK};padding:2px 0;"
+            "white-space:nowrap;word-break:keep-all;overflow-wrap:normal;"
+        )
         rows = (f"<table width='100%' cellpadding='0' cellspacing='0' style='margin:6px 0 6px;'>"
                 f"<tr><td style='font-size:13px;color:{MUTE};padding:2px 0;width:46px;'>QB</td>"
-                f"<td align='right' style='font-size:20px;font-weight:800;color:{INK};padding:2px 0;'>"
+                f"<td align='right' style='{_money_td_style}'>"
                 f"{money(_qb_past_due)}</td></tr>"
                 f"<tr><td style='font-size:13px;color:{MUTE};padding:2px 0;'>Alvys</td>"
-                f"<td align='right' style='font-size:20px;font-weight:800;color:{INK};padding:2px 0;'>"
+                f"<td align='right' style='{_money_td_style}'>"
                 f"{money(_alvys_past_due)}</td></tr>")
         if _ar_gap is not None:
             gap_color = WARN if abs(_ar_gap) >= 1 else MUTE
             rows += (f"<tr><td style='font-size:12px;color:{MUTE};padding:4px 0 0;border-top:1px solid {LINE};'>Gap</td>"
                      f"<td align='right' style='font-size:14px;font-weight:700;color:{gap_color};"
-                     f"padding:4px 0 0;border-top:1px solid {LINE};'>{money(_ar_gap)}</td></tr>")
+                     f"padding:4px 0 0;border-top:1px solid {LINE};"
+                     f"white-space:nowrap;word-break:keep-all;overflow-wrap:normal;'>"
+                     f"{money(_ar_gap)}</td></tr>")
         rows += "</table>"
         return (f"<div style='background:{TILEBG};border:1px solid {LINE};border-radius:10px;"
                 f"padding:14px 14px 12px;margin-bottom:12px;'>"
