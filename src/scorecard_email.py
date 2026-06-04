@@ -3400,15 +3400,16 @@ def _bar_chart(title, months, values, sub="", fmt=str):
         else:
             label_html = "&mdash;"
             label_color = MUTE
-        # 8.5px label / 1px cell padding: at landscape page width a 4-up chart
-        # tile is ~2.3in wide ÷ 6 columns ≈ 0.38in per column, which is too
-        # tight for a 10.5px "$2.687" label to fit without overflowing into
-        # the next column. Shrinking the label font and dropping the per-cell
-        # padding to 1px each side gives each label room to sit inside its
-        # own column without collisions or 2-line "Jun*" wrapping.
+        # 7.5px label / 1px cell padding: 8.5px still left adjacent labels
+        # touching when bars were clustered with similar values (e.g. Apr/May
+        # rev/mile within $0.04 of each other). 7.5px gives ~0.22in label
+        # width vs ~0.38in column = visible gap, and ~0.27in "$504K" vs
+        # ~0.6in AR/AP column = no overflow at the right edge of the tile.
+        # Add tiny letter-spacing tweak so the label digits don't sit too
+        # close together.
         bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 1px;'>"
-                f"<div style='font-size:8.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;'>{label_html}</div>"
-                f"<div style='width:18px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
+                f"<div style='font-size:7.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;letter-spacing:-0.1px;'>{label_html}</div>"
+                f"<div style='width:16px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
         lcol = INK if last else MUTE
         lbl += (f"<td align='center' width='{col_w}' style='font-size:9px;color:{lcol};font-weight:{'700' if last else '400'};"
                 f"padding-top:4px;white-space:nowrap;'>{m}</td>")
