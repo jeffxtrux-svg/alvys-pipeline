@@ -300,7 +300,14 @@ def _build_from_csv(token: str, user_upn: str, folder: str) -> bytes:
         csa_bytes = download_file(token, user_upn, csa_path)
         log.info("  -> %d bytes", len(csa_bytes))
     except Exception as e:
-        log.warning("  CSA scorecard CSV not found (%s) — CSA Scorecard sheet will be omitted", e)
+        log.warning("  CSA scorecard CSV not found (%s) — trying .docx fallback", e)
+        docx_path = csa_path.rsplit(".", 1)[0] + ".docx"
+        log.info("Downloading %s ...", docx_path)
+        try:
+            csa_bytes = download_file(token, user_upn, docx_path)
+            log.info("  -> %d bytes (Word document — will extract text)", len(csa_bytes))
+        except Exception as e2:
+            log.warning("  CSA scorecard .docx also not found (%s) — CSA Scorecard sheet will be omitted", e2)
     return combine_to_workbook(risk_bytes, viol_bytes, csa_csv=csa_bytes)
 
 
