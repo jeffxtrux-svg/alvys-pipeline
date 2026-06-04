@@ -1,6 +1,7 @@
 # Daily KPI scorecard email — reads the latest pipeline outputs from OneDrive,
 # computes the key metrics + executive overview, and emails them.
 # trigger: relax page-break-inside so data tables can split, filling pages.
+# trigger: re-run scorecard on demand.
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.
