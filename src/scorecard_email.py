@@ -5663,28 +5663,34 @@ def render_pdf(html: str) -> bytes | None:
     try:
         from weasyprint import CSS  # type: ignore
 
-        # --- Strip email-only CSS before handing HTML to WeasyPrint ---
-        # The @media screen rule is in the document CSS to cap the email
-        # view at 760px. WeasyPrint may still apply @media screen rules
-        # even in print mode (version-dependent), so we remove it from the
-        # HTML string entirely and replace it with an unconditional full-width
-        # rule so the brief fills the letter page content area.
+        # --- Pre-process HTML before handing to WeasyPrint ---
+
+        # 1. Strip the screen-only 760px email cap so WeasyPrint uses the
+        #    full letter page content area (7.8 in = ~748 CSS px).
         pdf_html = html.replace(
             "@media screen{.brief-wrap{max-width:760px;}}",
             ".brief-wrap{max-width:none;width:100%;}"
         )
 
-        # --- Additional CSS override injected after the document CSS ---
-        # presentational_hints=True below enforces HTML width='25%' attrs on
-        # <td> cells with table-layout:fixed semantics, so tile columns
-        # stay at their declared percentages and can't be pushed wider by
-        # long label text.  word-break/overflow-wrap are a belt-and-suspenders
-        # safety net so any remaining long inline content wraps rather than
-        # forcing the tile wider.
+        # 2. Force outer content tables to table-layout:fixed so tile columns
+        #    respect their width='25%' attribute exactly.  With the default
+        #    'auto' layout, long label text ("XFREIGHT REVENUE · MTD" etc.)
+        #    can push a tile wider than 25%, overflowing the page.  All outer
+        #    page tables share this exact style string so the replace is safe.
+        pdf_html = pdf_html.replace(
+            "cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>",
+            "cellpadding='0' cellspacing='0' style='padding:8px 18px 0;"
+            "table-layout:fixed;width:100%;'>"
+        )
+
+        # --- CSS override appended after document stylesheets ---
         _pdf_override = CSS(string=(
             ".brief-wrap{max-width:none!important;width:100%!important;}"
-            "td.tile>div,td.tile p,td.tile span{"
-            "word-break:break-word!important;overflow-wrap:anywhere!important;}"
+            # Tile cells: clip overflow and wrap so nothing bleeds outside the
+            # fixed-width column.
+            "td.tile{overflow:hidden!important;word-break:break-word!important;"
+            "overflow-wrap:anywhere!important;}"
+            "td.tile>div{overflow:hidden!important;}"
         ))
 
         pdf_bytes = (
