@@ -404,22 +404,19 @@ def main() -> int:
     log.info("Maintenance: %d assets have DOT inspection records", len(_last_dot))
 
     # Overlay DOT inspection dates onto trailers_df.
-    # AnnualInspectionDue = last_dot_date + 365 days (DOT rule: annual).
+    # LastInspectionDate = actual last DOT/Annual inspection (from maintenance records).
+    # AnnualInspectionDue = last + 365 days (federal DOT rule). The scorecard layers
+    # the 120-day company policy on top of LastInspectionDate.
     if _last_dot and trailers_df is not None and not trailers_df.empty:
-        def _dot_due(row):
-            aid = row.get("Id") if isinstance(row, dict) else None
-            if aid is None and hasattr(row, "get"):
-                aid = row["Id"]
-            last = _last_dot.get(aid)
-            if last:
-                return (last + timedelta(days=365)).strftime("%Y-%m-%d")
-            return None
+        trailers_df["LastInspectionDate"] = trailers_df["Id"].map(
+            lambda aid: _last_dot[aid].strftime("%Y-%m-%d") if aid in _last_dot else None
+        )
         trailers_df["AnnualInspectionDue"] = trailers_df["Id"].map(
             lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
             if aid in _last_dot else None
         )
         n_filled = trailers_df["AnnualInspectionDue"].notna().sum()
-        log.info("Trailers: %d of %d have AnnualInspectionDue from maintenance records",
+        log.info("Trailers: %d of %d have LastInspectionDate from maintenance records",
                  n_filled, len(trailers_df))
 
     maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()

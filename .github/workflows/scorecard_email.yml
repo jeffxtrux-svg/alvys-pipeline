@@ -1,5 +1,10 @@
 # Daily KPI scorecard email — reads the latest pipeline outputs from OneDrive,
 # computes the key metrics + executive overview, and emails them.
+# trigger: relax page-break-inside so data tables can split, filling pages.
+# trigger: re-run scorecard on demand.
+# trigger: PDF-only email body.
+# trigger: data-table rows can split across pages.
+# trigger: shift crons 1hr earlier for 5:30am CDT delivery.
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.
@@ -17,6 +22,14 @@ on:
   # whenever GITHUB_EVENT_NAME is workflow_dispatch, including when called
   # via workflow_call from a manual Refresh All run.
   workflow_call:
+  # Editing this file fires the workflow on push — handy for triggering a
+  # run from mobile when the Actions UI's "Run workflow" button isn't
+  # reachable. The job step below sets SCORECARD_SKIP_IDEMPOTENCY=1 for
+  # push events so the same-day marker is bypassed and the run actually
+  # emails.
+  push:
+    paths:
+      - .github/workflows/scorecard_email.yml
   schedule:
     # Defense in depth against GitHub Actions schedule drops — GitHub's cron
     # is documented as best-effort, and during high load runs are silently
@@ -27,12 +40,15 @@ on:
     # emails — the rest exit in seconds. Manual workflow_dispatch bypasses
     # the marker check.
     #
-    # GitHub cron is fixed UTC and ignores DST. Times below show CST/CDT.
-    - cron: '30 11 * * *'   # primary    5:30am CST / 6:30am CDT
-    - cron: '45 11 * * *'   # backup 1   5:45am CST / 6:45am CDT
-    - cron: '0 12 * * *'    # backup 2   6:00am CST / 7:00am CDT
-    - cron: '30 12 * * *'   # backup 3   6:30am CST / 7:30am CDT
-    - cron: '0 13 * * *'    # backup 4   7:00am CST / 8:00am CDT (last resort)
+    # GitHub cron is fixed UTC and ignores DST. Times below show CDT/CST.
+    # Target: 5:30am Central year-round. Currently tuned for CDT (DST).
+    # When DST ends ~early Nov, shift each cron 1 hour later to keep
+    # firing at 5:30am CST (i.e. 30 11, 45 11, 0 12, 30 12, 0 13).
+    - cron: '30 10 * * *'   # primary    5:30am CDT / 4:30am CST
+    - cron: '45 10 * * *'   # backup 1   5:45am CDT / 4:45am CST
+    - cron: '0 11 * * *'    # backup 2   6:00am CDT / 5:00am CST
+    - cron: '30 11 * * *'   # backup 3   6:30am CDT / 5:30am CST
+    - cron: '0 12 * * *'    # backup 4   7:00am CDT / 6:00am CST (last resort)
 
 permissions:
   contents: write
@@ -51,6 +67,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Install system dependencies for WeasyPrint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libcairo2 fonts-liberation
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -61,6 +82,10 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
           SCORECARD_TO_EMAILS: jeff@xfreight.net
+          # Push-triggered runs (mobile escape hatch) bypass the same-day
+          # idempotency marker so the on-demand resend actually sends.
+          # Empty string for cron/dispatch leaves the marker check in force.
+          SCORECARD_SKIP_IDEMPOTENCY: ${{ github.event_name == 'push' && '1' || '' }}
           # Read the exact workbook the Power BI report uses, by its OneDrive sharing
           # URL — there is a second file of the same name, so reading by name picked
           # the wrong (un-settled) one. The sharing URL resolves to the right item.

@@ -2990,6 +2990,25 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 continue
             annual_ts, annual_days = _days_until(r.get(annual_col) if annual_col else None)
             reg_ts,    reg_days    = _days_until(r.get(reg_col) if reg_col else None)
+            # Last DOT inspection date — trailers-only, populated from Alvys
+            # /maintenance/search (DOT/Annual category) by src/main.py. The
+            # 120-day company-policy threshold counts FROM this date forward;
+            # AnnualInspectionDue (above) is the federal 365-day rule.
+            last_insp_raw = r.get("LastInspectionDate") if "LastInspectionDate" in df.columns else None
+            last_insp_ts = None
+            policy_days_left = None
+            if last_insp_raw not in (None, "") and pd.notna(last_insp_raw):
+                try:
+                    last_insp_ts = pd.to_datetime(last_insp_raw, errors="coerce")
+                    if pd.notna(last_insp_ts):
+                        if getattr(last_insp_ts, "tz", None) is not None:
+                            last_insp_ts = last_insp_ts.tz_localize(None)
+                        days_since = (now.normalize() - last_insp_ts.normalize()).days
+                        policy_days_left = 120 - days_since
+                    else:
+                        last_insp_ts = None
+                except Exception:
+                    last_insp_ts = None
             # Trucks-only extras — silently absent on the Trailers sheet.
             mileage = r.get("LastMileage") if "LastMileage" in df.columns else None
             try:
@@ -3011,6 +3030,8 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 "status":           status,
                 "annual_due":       annual_ts,
                 "annual_days":      annual_days,
+                "last_inspection":  last_insp_ts,
+                "policy_days":      policy_days_left,
                 "reg_due":          reg_ts,
                 "reg_days":         reg_days,
                 "last_mileage":     mileage_int,
@@ -3018,9 +3039,17 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 "oil_change_days":  oil_days,
                 "oil_change_miles": oil_mi_int,
             })
-        rows.sort(key=lambda r: (
-            r["annual_days"] if isinstance(r["annual_days"], int) else 9999,
-        ))
+        # Soonest urgency first. For trailers, the 120-day company policy fires
+        # before the 365-day federal rule, so sort by policy_days when present
+        # and fall back to annual_days.
+        def _urgency(r):
+            pd_v = r.get("policy_days")
+            ad_v = r.get("annual_days")
+            return (
+                pd_v if isinstance(pd_v, int) else 9999,
+                ad_v if isinstance(ad_v, int) else 9999,
+            )
+        rows.sort(key=_urgency)
         return rows
 
     tractors = _parse_sheet(trucks_df,   exclude=_TRUCK_EXCLUDE)
@@ -3036,9 +3065,12 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
     r_od_a, r_w30_a, r_w60_a = _counts(trailers, "annual_days")
     t_od_r, t_w30_r, t_w60_r = _counts(tractors, "reg_days")
     r_od_r, r_w30_r, r_w60_r = _counts(trailers, "reg_days")
+    # 120-day company policy: trailers only (where LastInspectionDate is populated).
+    r_od_p, r_w30_p, _ = _counts(trailers, "policy_days")
 
     annual_found = any(isinstance(r.get("annual_days"), int) for r in tractors + trailers)
     reg_found    = any(isinstance(r.get("reg_days"),    int) for r in tractors + trailers)
+    policy_found = any(isinstance(r.get("policy_days"), int) for r in trailers)
 
     return {
         "tractors": tractors,
@@ -3047,8 +3079,10 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
         "trailers_overdue_annual": r_od_a, "trailers_warn30_annual": r_w30_a, "trailers_warn60_annual": r_w60_a,
         "tractors_overdue_reg":    t_od_r, "tractors_warn30_reg":    t_w30_r, "tractors_warn60_reg":    t_w60_r,
         "trailers_overdue_reg":    r_od_r, "trailers_warn30_reg":    r_w30_r, "trailers_warn60_reg":    r_w60_r,
+        "trailers_overdue_policy": r_od_p, "trailers_warn30_policy": r_w30_p,
         "annual_found": annual_found,
         "reg_found":    reg_found,
+        "policy_found": policy_found,
         "total_tractors": len(tractors),
         "total_trailers": len(trailers),
     }
@@ -3106,6 +3140,7 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
                     f"No {kind} records found.</div>")
 
         show_annual  = any(isinstance(r.get("annual_days"), int) for r in rows)
+        show_policy  = any(isinstance(r.get("policy_days"), int) for r in rows)
         show_reg     = any(isinstance(r.get("reg_days"),    int) for r in rows)
         show_mileage = any(isinstance(r.get("last_mileage"), int) for r in rows)
         show_oil     = any(r.get("oil_change_date") is not None
@@ -3116,6 +3151,9 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         head_cols = [th.format(t="Unit")]
         if any(r.get("year") or r.get("make") for r in rows):
             head_cols.append(th.format(t="Year/Make"))
+        if show_policy:
+            head_cols.append(th.format(t="Last DOT Insp"))
+            head_cols.append(th.format(t="120d Policy"))
         if show_annual:
             head_cols.append(th.format(t="Annual Insp Due"))
             head_cols.append(th.format(t="Days"))
@@ -3138,6 +3176,9 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             if any(r.get("year") or r.get("make") for r in rows):
                 ym = " ".join(filter(None, [r.get("year"), r.get("make"), r.get("model")])) or "—"
                 cols_td.append(td.format(v=f"<span style='color:{MUTE};font-size:12px;'>{ym}</span>"))
+            if show_policy:
+                cols_td.append(td.format(v=_date_str(r.get("last_inspection"))))
+                cols_td.append(td.format(v=_badge(r.get("policy_days"))))
             if show_annual:
                 cols_td.append(td.format(v=_date_str(r.get("annual_due"))))
                 cols_td.append(td.format(v=_badge(r.get("annual_days"))))
@@ -3174,11 +3215,14 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
 
-    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
+    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r,
+                       overdue_p=None, w30_p=None):
+        parts = [_summary_pill(overdue_a, w30_a, w60_a, "Annual inspection (365d federal):")]
+        if overdue_p is not None:
+            parts.append(_summary_pill(overdue_p, w30_p, 0, "DOT inspection (120d policy):"))
+        parts.append(_summary_pill(overdue_r, w30_r, w60_r, "Registration:"))
         summary = (f"<div style='padding:10px 0 6px;'>"
-                   + _summary_pill(overdue_a, w30_a, w60_a, "Annual inspection:")
-                   + "&nbsp;&nbsp;"
-                   + _summary_pill(overdue_r, w30_r, w60_r, "Registration:")
+                   + "&nbsp;&nbsp;".join(parts)
                    + "</div>")
         return (f"{_section(kind + ' &mdash; ' + str(len(rows)) + ' units')}"
                 + summary
@@ -3195,10 +3239,15 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             equipment["trailers"], "Trailers",
             equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
             equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
+            overdue_p=equipment.get("trailers_overdue_policy", 0),
+            w30_p=equipment.get("trailers_warn30_policy", 0),
         )
-    body += (f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets. "
-             f"Red = overdue or &le;30d. Orange = 31&ndash;60d. Sort: soonest annual inspection first.</div>")
+    sort_note = ("Sort: soonest 120-day company policy first (trailers); soonest annual inspection first (tractors)."
+                 if kind == "trailers"
+                 else "Sort: soonest annual inspection first.")
+    body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
+             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note}</div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
@@ -3206,12 +3255,31 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
 # ----------------------------------------------------------------------
 # HTML design system
 # ----------------------------------------------------------------------
-NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
-GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 11
-ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
-BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
-FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
+# XFreight-branded palette (Style 04). Single accent = XFreight red.
+# Variance-only color: red for negative/over-threshold, green for positive,
+# everything else neutral grey. ACCENT replaces the older orange brand color
+# throughout the brief — that retires the dashboard-y orange/blue mix.
+XFREIGHT_RED = "#c41e2a"
+XFREIGHT_RED_DARK = "#8f1620"
+NAVY = "#1a1a1a"          # was deep navy — now near-black ink
+INK = "#1a1a1a"
+MUTE = "#6b6b6b"
+LINE = "#ececec"          # softer hairline
+TILEBG = "#fafafa"        # near-white card background
+GOOD = "#0f6b3d"
+GOODBG = "#e7f3ec"
+WARN = XFREIGHT_RED       # warnings collapse into the brand accent
+WARNBG = "#fde8ea"
+PAGE_COUNT = 12
+ACCENTBG = "#fde8ea"      # light red tint replaces the orange current-week column
+BAD = XFREIGHT_RED
+BADBG = "#fde8ea"
+ACCENT = XFREIGHT_RED     # was orange — now brand red
+BLUE = "#3a4a5a"          # neutral slate replaces the old chart blue
+FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
+        "font-feature-settings:'tnum';")  # tabular numerals for clean column alignment
+# Serif stack for page-section headlines + hero numbers.
+FONT_SERIF = "font-family:Georgia,'Times New Roman',serif;"
 
 
 def _pill(t, k):
@@ -3236,11 +3304,17 @@ def _wow(current, prior, lower_is_better: bool = False, fmt=None) -> str:
 
 
 def _tile(label, value, sub, width="25%"):
-    return (f"<td class='tile' width='{width}' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
-            f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;'>"
-            f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
-            f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
-            f"<div style='font-size:12px;color:{MUTE};'>{sub}</div></div></td>")
+    """XFreight-branded tile — hero number in Georgia serif, restrained chrome,
+    XFreight red rule under the label for visual rhythm across rows."""
+    return (f"<td class='tile' width='{width}' style='padding:6px;' valign='top'>"
+            f"<div style='background:#fff;border:1px solid {LINE};border-radius:8px;"
+            f"padding:16px 16px 14px;border-top:3px solid {XFREIGHT_RED};'>"
+            f"<div style='font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;"
+            f"color:{MUTE};font-weight:700;margin-bottom:10px;'>{label}</div>"
+            f"<div style='{FONT_SERIF}font-size:26px;font-weight:400;color:{INK};"
+            f"letter-spacing:-0.8px;line-height:1;margin-bottom:8px;'>{value}</div>"
+            f"<div style='font-size:11px;color:{MUTE};line-height:1.4;'>{sub}</div>"
+            f"</div></td>")
 
 
 def _tile_div(label, value, sub):
@@ -3331,28 +3405,84 @@ def _donut_gauge(label: str, pct: float, sub_line: str, detail: str, width: str 
 
 
 def _section(t, span=4):
-    return (f"<tr><td colspan='{span}' style='padding:18px 6px 6px;'><div style='font-size:13px;font-weight:800;"
-            f"letter-spacing:.5px;text-transform:uppercase;color:{NAVY};border-bottom:2px solid {LINE};"
-            f"padding-bottom:6px;'>{t}</div></td></tr>")
+    """XFreight section header: serif italic accent + black 36px underbar.
+    Inline-styled so it renders identically in email and PDF."""
+    # Split a 'main // accent' title into pieces so we can italicize the accent
+    # in XFreight red — mirrors the style-04 sample (e.g. 'X-Trux // Asset trucking').
+    if "//" in t:
+        main, _, accent_part = t.partition("//")
+        title_html = (f"<span>{main.strip()}</span> "
+                      f"<span style='color:{XFREIGHT_RED};font-style:italic;font-weight:700;'>// {accent_part.strip()}</span>")
+    else:
+        title_html = t
+    return (f"<tr><td colspan='{span}' style='padding:22px 6px 4px;'>"
+            f"<div style='{FONT_SERIF}font-size:17px;font-weight:400;color:{INK};"
+            f"letter-spacing:-0.3px;'>{title_html}</div>"
+            f"<div style='width:36px;height:2px;background:{INK};margin-top:6px;margin-bottom:10px;'></div>"
+            f"</td></tr>")
+
+
+def _xfreight_logo_svg(width: int = 180, height: int = 32) -> str:
+    """Inline SVG re-creation of the XFREIGHT logo (red bar + white speed-line
+    streaks on the left + italic bold white wordmark). Embedded inline so the
+    email and PDF both render it without an external image dependency."""
+    return (
+        f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 38' "
+        f"width='{width}' height='{height}' role='img' aria-label='XFreight'>"
+        f"<rect width='220' height='38' rx='2' fill='{XFREIGHT_RED}'/>"
+        f"<g fill='#fff'>"
+        f"<rect x='8' y='6' width='38' height='2.4'/>"
+        f"<rect x='10' y='10' width='34' height='2.4'/>"
+        f"<rect x='6' y='14' width='42' height='2.4'/>"
+        f"<rect x='12' y='18' width='30' height='2.4'/>"
+        f"<rect x='8' y='22' width='38' height='2.4'/>"
+        f"<rect x='10' y='26' width='34' height='2.4'/>"
+        f"<rect x='6' y='30' width='42' height='2.4'/>"
+        f"</g>"
+        f"<text x='56' y='27' font-family='Helvetica,Arial,sans-serif' "
+        f"font-weight='900' font-style='italic' font-size='22' "
+        f"letter-spacing='-0.5' fill='#fff'>XFREIGHT</text>"
+        f"</svg>"
+    )
 
 
 def _header(sub, pg, date_str, section=None):
-    """Page header with optional section chip ('OPERATIONAL', 'SAFETY',
-    'ACCOUNTING') above the title — used to group detail pages 2-10 into
-    visually distinct sections."""
-    section_html = ""
+    """Branded page header — XFreight logo bar + serif italic doc label + date,
+    with an optional section chip and a thick red rule below.
+    Used at the top of every detail page."""
+    logo = _xfreight_logo_svg(width=150, height=26)
+    section_chip = ""
     if section:
-        section_html = (
-            f"<div style='display:inline-block;padding:3px 10px;border-radius:4px;"
-            f"background:{ACCENT};color:#fff;font-size:10px;font-weight:800;"
-            f"letter-spacing:.8px;margin-bottom:6px;'>{section}</div><br>")
-    return (f"<table width='100%' cellpadding='0' cellspacing='0' style='background:{NAVY};'><tr>"
-            f"<td style='padding:18px 24px;'>"
-            f"{section_html}"
-            f"<div style='color:#fff;font-size:20px;font-weight:800;letter-spacing:1px;'>XFREIGHT</div>"
-            f"<div style='color:#9fb3c8;font-size:13px;margin-top:2px;'>{sub}</div></td>"
-            f"<td align='right' style='padding:18px 24px;color:#9fb3c8;font-size:13px;'>{date_str}<br>"
-            f"<span style='color:#637b94;font-size:11px;'>Page {pg} of {PAGE_COUNT}</span></td></tr></table>")
+        section_chip = (
+            f"<span style='display:inline-block;padding:2px 9px;border-radius:3px;"
+            f"background:{XFREIGHT_RED};color:#fff;font-size:9px;font-weight:800;"
+            f"letter-spacing:1.2px;margin-left:14px;vertical-align:middle;'>{section}</span>")
+    # Two-line date treatment matches the style-04 sample.
+    try:
+        from datetime import datetime as _dt
+        # date_str examples: 'Thursday, June 4, 2026' or '%A, %B %d, %Y'
+        dt = _dt.strptime(date_str, "%A, %B %d, %Y")
+        day_part = dt.strftime("%A")
+        date_part = dt.strftime("%B %d, %Y")
+    except Exception:
+        day_part, date_part = date_str, ""
+    return (
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 24px 14px;'>"
+        f"<tr>"
+        f"<td valign='middle' style='padding:0;'>"
+        f"{logo}{section_chip}"
+        f"<div style='{FONT_SERIF}font-style:italic;font-size:13px;color:{INK};"
+        f"font-weight:400;margin-top:8px;'>{sub}</div>"
+        f"</td>"
+        f"<td align='right' valign='middle' style='padding:0;font-size:9.5px;color:{MUTE};font-weight:500;'>"
+        f"<div style='{FONT_SERIF}font-style:italic;font-size:11px;color:{INK};"
+        f"font-weight:600;margin-bottom:2px;'>{day_part}</div>"
+        f"<div>{date_part}</div>"
+        f"<div class='pg-of' style='font-size:9px;color:{MUTE};margin-top:4px;letter-spacing:0.5px;'>"
+        f"Page {pg} of {PAGE_COUNT}</div>"
+        f"</td>"
+        f"</tr></table>")
 
 
 def _th(cells, al):
@@ -3383,9 +3513,13 @@ def _table(hc, al, rows, span=4):
 
 
 def _brief(text, k="mute"):
-    bar = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": ACCENT}[k]
-    return (f"<tr><td colspan='4' style='padding:3px 6px;'><div style='border-left:3px solid {bar};background:#fbfdff;"
-            f"padding:8px 12px;font-size:13px;color:{INK};line-height:1.45;'>{text}</div></td></tr>")
+    """Callout/lede block — left accent bar in brand red (or variance color),
+    near-white fill, sans-serif body. Used for the Bottom Line and per-page notes."""
+    bar = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": XFREIGHT_RED}[k]
+    return (f"<tr><td colspan='4' style='padding:6px;'>"
+            f"<div style='border-left:4px solid {bar};background:#fafafa;"
+            f"padding:12px 16px;font-size:12.5px;color:{INK};line-height:1.55;'>{text}</div>"
+            f"</td></tr>")
 
 
 def _flag_kind(value, target, lower_is_better) -> str:
@@ -3695,7 +3829,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"{_pill('see pg 7', 'bad')} &middot; gap = un-invoiced loads (see pg 8)</div></div>")
+                f"{_pill('see pg 10', 'bad')} &middot; gap = un-invoiced loads (see pg 10)</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
@@ -4097,7 +4231,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 7). "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 11). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         legacy_bottom += f" {drag['text']}"
@@ -4194,9 +4328,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<tr>{''.join(_cards)}</tr></table></div>")
 
     return (f"{_header('Morning Executive Brief', 1, date_str)}"
-            f"<div style='padding:18px 24px 4px;'><div style='background:#0f2742;border-radius:10px;padding:14px 18px;"
-            f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
-            f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
+            f"<div style='padding:18px 24px 4px;'>"
+            f"<div style='background:#fafafa;border-left:4px solid {XFREIGHT_RED};padding:16px 20px;"
+            f"color:{INK};font-size:13.5px;line-height:1.6;'>"
+            f"<span style='color:{XFREIGHT_RED};font-weight:800;text-transform:uppercase;"
+            f"font-size:10px;letter-spacing:1.5px;display:block;margin-bottom:6px;'>The bottom line</span>"
+            f"{bottom}</div></div>"
             f"{rollover_banner}"
             f"{action_items_html}"
             f"{coaching_html}"
@@ -4452,6 +4589,62 @@ def build_page2(samsara, date_str) -> str:
         if sm: return "warn"
         return None
 
+    def _spd_comment(pct_6mo, pct_3mo, pct_mtd):
+        """Plain-language comment per the speeding-threshold rubric.
+
+        Base message uses the PEAK of the three windows so a chronic 6mo problem
+        and an acute MTD spike both surface. A trend suggestion is layered on:
+        falling fast / improving / spiking / trending worse / no improvement.
+        """
+        pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
+        peak = max(pcts) if pcts else None
+        base = ""
+        if _isnum(peak):
+            if peak >= 3.0:
+                base = "STOP this driver now"
+            elif peak >= 2.5:
+                base = "Need to sit down with this driver &mdash; they have a problem"
+            elif peak >= 2.25:
+                base = "This is too fast"
+            elif peak >= 2.0:
+                base = "Driver needs a conversation"
+            elif peak >= 1.75:
+                base = "Where is the fire?"
+            elif peak >= 1.5:
+                base = "We have a problem with speed"
+            elif peak >= 1.25:
+                base = "Watch this driver"
+        trend = ""
+        if _isnum(pct_6mo) and _isnum(pct_mtd) and pct_6mo >= 0:
+            # MTD spike vs the longer windows — recent jump, address immediately.
+            longer = max(pct_6mo, pct_3mo) if _isnum(pct_3mo) else pct_6mo
+            if _isnum(longer) and pct_mtd - longer >= 2.0:
+                trend = "spiking &mdash; recent jump, address now"
+            elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.3:
+                trend = "falling fast &mdash; keep it up"
+            elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.6:
+                trend = "improving &mdash; keep it up"
+            elif pct_mtd - pct_6mo >= 1.0:
+                trend = "trending worse"
+            elif base and pct_mtd >= pct_6mo - 0.1:
+                trend = "no improvement &mdash; requires action"
+        if base and trend:
+            return f"{base}. {trend}."
+        return base or trend
+
+    def _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd):
+        if not comment:
+            return None
+        pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
+        peak = max(pcts) if pcts else None
+        if _isnum(peak) and peak >= 2.25:
+            return "bad"
+        if "spiking" in comment or "trending worse" in comment:
+            return "bad"
+        if ("falling fast" in comment or "improving" in comment) and _isnum(peak) and peak < 1.5:
+            return "good"
+        return "warn"
+
     def _spd_rows():
         rows = ""
         for r in speeders_ranked:
@@ -4461,27 +4654,22 @@ def build_page2(samsara, date_str) -> str:
             pct_6mo = r.get("speed_pct")
             pct_3mo = r.get("speed_pct_3mo")
             pct_mtd = r.get("speed_pct_mtd")
-            # Action driven by the 6-mo figure (more stable than the shorter windows).
-            if _isnum(pct_6mo):
-                action = "flag for coaching" if pct_6mo >= 5 else "monitor"
-                action_kind = "bad" if pct_6mo >= 5 else "warn"
-            else:
-                action = "flag for coaching" if sm >= 60 else "monitor"
-                action_kind = "bad" if sm >= 60 else "warn"
+            comment = _spd_comment(pct_6mo, pct_3mo, pct_mtd)
+            comment_kind = _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd)
             rows += _tr(
                 [r["driver"], str(r["score"]),
                  _spd_cell(pct_6mo, sm), _spd_cell(pct_3mo, None),
-                 _spd_cell(pct_mtd, None), action],
+                 _spd_cell(pct_mtd, None), comment or "&mdash;"],
                 ["left", "right", "right", "right", "right", "left"],
                 [None, _score_kind(r["score"]),
                  _spd_kind(pct_6mo, sm), _spd_kind(pct_3mo, None),
-                 _spd_kind(pct_mtd, None), action_kind])
+                 _spd_kind(pct_mtd, None), comment_kind])
         return rows
 
     _spd_tbl = _table(
         ["Driver", "Safety Score",
          "Speed Over Limit (6 mo)", "Speed Over Limit (3 mo)",
-         "Speed Over Limit (MTD)", "Action"],
+         "Speed Over Limit (MTD)", "Comments"],
         ["left", "right", "right", "right", "right", "left"],
         _spd_rows(), span=4,
     )
@@ -4491,23 +4679,95 @@ def build_page2(samsara, date_str) -> str:
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
             f"{_spd_tbl}"
-            f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
-            f"{score_all_tbl}"
             f"{coaching_section}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
-            f"Driver safety scores: Samsara Driver Safety Scores (per-driver composite, "
-            f"last 6 months). Speed Over Limit = time-over-posted-limit &divide; total "
-            f"drive time, shown as % when both fields are available (&ge;5% flagged for "
-            f"coaching, 1&ndash;5% monitored); falls back to minutes over limit when drive "
-            f"time isn&rsquo;t exposed. Coaching &amp; training: Samsara Coaching Sessions / "
+            f"Speed Over Limit = time-over-posted-limit &divide; total drive time, shown as % "
+            f"when both fields are available (&ge;5% flagged for coaching, 1&ndash;5% monitored); "
+            f"falls back to minutes over limit when drive time isn&rsquo;t exposed. "
+            f"Coaching &amp; training: Samsara Coaching Sessions / "
             f"Training Assignments (past-due only; tiles hidden when module not enabled).</div>")
 
 
+def build_page2b(samsara, date_str, pg: int = 4) -> str:
+    """Driver safety scores — own page (split from build_page2 so the Speed
+    Over Limit table and the per-driver score table don't share a single page)."""
+    fleet = (samsara or {}).get("fleet", {}) or {}
+    scores_all = fleet.get("scores_all") or []
+
+    def _score_kind(s: int) -> str:
+        if s < 90:
+            return "bad"
+        if s < 100:
+            return "warn"
+        return "good"
+
+    def _evt(v):
+        return "&ndash;" if v is None else str(v)
+
+    def _evt_kind(v):
+        if v is None or v == 0:
+            return None
+        return "bad"
+
+    def _spd_cell(r):
+        pct_v = r.get("speed_pct")
+        mins = r.get("speed_min")
+        if _isnum(pct_v):
+            return f"{pct_v:.1f}%"
+        if _isnum(mins):
+            return f"{mins} min"
+        return "&ndash;"
+
+    def _spd_kind(r):
+        pct_v = r.get("speed_pct")
+        if _isnum(pct_v):
+            if pct_v == 0:
+                return None
+            return "bad" if pct_v >= 5 else ("warn" if pct_v >= 1 else None)
+        mins = r.get("speed_min")
+        if mins is None or mins == 0:
+            return None
+        return "bad" if mins >= 60 else "warn"
+
+    if scores_all:
+        _any_pct = any(_isnum(r.get("speed_pct")) for r in scores_all)
+        _spd_hdr = "Speed Over Limit (% drive time)" if _any_pct else "Speed Over Limit"
+        s_headers = ["Driver", "Score", "Harsh accel", "Harsh brake",
+                     "Harsh turn", _spd_hdr, "Crashes"]
+        body = ""
+        for r in scores_all:
+            body += _tr(
+                [r["driver"], str(r["score"]),
+                 _evt(r.get("harsh_accel")), _evt(r.get("harsh_brake")),
+                 _evt(r.get("harsh_turn")), _spd_cell(r),
+                 _evt(r.get("crashes"))],
+                ["left", "right", "right", "right", "right", "right", "right"],
+                [None, _score_kind(r["score"]),
+                 _evt_kind(r.get("harsh_accel")), _evt_kind(r.get("harsh_brake")),
+                 _evt_kind(r.get("harsh_turn")), _spd_kind(r),
+                 _evt_kind(r.get("crashes"))])
+        score_all_tbl = _table(s_headers,
+                               ["left", "right", "right", "right", "right",
+                                "right", "right"], body)
+    else:
+        score_all_tbl = (f"<tr><td colspan='7' style='padding:12px 8px;"
+                         f"color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
+
+    return (f"{_header('Driver Safety Scores &mdash; all drivers, worst to best', pg, date_str, section='SAFETY')}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"{_section('Driver safety scores &middot; all drivers, worst to best &middot; last 6 months')}"
+            f"{score_all_tbl}"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+            f"Source: Samsara Driver Safety Scores (per-driver composite, last 6 months). "
+            f"Lower score = worse; component event counts (harsh accel/brake/turn, "
+            f"crashes) are the inputs that drove it.</div>")
+
+
 def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
-    """Page 3: Fleet Operations — MPG and speeding. Idle detail is its own
-    page (build_page_idle, pg 6); driver safety scores live on the Safety
-    page (build_page2, pg 3)."""
+    """Page 8: Fleet Operations — MPG and speeding. Idle detail is its own
+    page (build_page_idle, pg 9); driver safety scores live on the Safety
+    Scores page (build_page2b, pg 4)."""
     fleet = (samsara or {}).get("fleet", {}) or {}
     mpg_rows = fleet.get("mpg") or []
     speeders = fleet.get("speeders") or []
@@ -4522,7 +4782,7 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
               _pill("MTD (Based on Samsara)", "mute"))
         + _tile("Fleet miles &middot; MTD", num(fleet_miles),
                 _pill("MTD (Based on Samsara)", "mute"))
-        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 6", "mute"))
+        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 9", "mute"))
         + _tile("Fleet avg safety score",
                 (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
                 _pill("0&ndash;100, higher better", "mute"))
@@ -4559,7 +4819,7 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
         lambda r: _tr([r["driver"], str(r["count"]), "", ""],
                       ["left", "right", "right", "right"], [None, "bad", None, None]))
 
-    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 7, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
@@ -4568,11 +4828,11 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"{mpg_bot_tbl}"
             f"{_section('Top speeders &middot; last 7 days')}"
             f"{spd_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
             f"(speeding, 7 days). "
-            f"Idle detail is on the Fleet Idle page (pg 6); "
-            f"driver safety scores are on the Safety page (pg 3).</div>")
+            f"Idle detail is on the Fleet Idle page (pg 9); "
+            f"driver safety scores are on the Driver Safety Scores page (pg 4).</div>")
 
 
 def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> str:
@@ -4690,12 +4950,12 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
     _cost_note = (f"Idle cost = idle gallons &times; {_fuel_src} (Alvys Discount PPU 60-day avg). "
                   if (_isnum(avg_fuel_price) and avg_fuel_price > 0)
                   else "Idle cost = idle gallons &times; $4.00/gal placeholder (set Alvys Fuel data for live price). ")
-    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 8, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 9, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
             f"{idle_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara engine-state history (idle, last 5 settlement weeks; "
             f"idle gallons = idle_hours &times; 0.8 gph fleet-average heuristic). "
             f"{_cost_note}"
@@ -4722,7 +4982,7 @@ def build_page3(qb_ar, date_str) -> str:
             f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>"
             f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], rows + total_row)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Current and 1&ndash;30 day balances omitted by request. X-Trux Inc + X-Linx Inc only. "
             f"Source: QuickBooks A/R Aging Detail.</div>")
 
@@ -4802,12 +5062,12 @@ def build_page4(mileage, date_str) -> str:
              f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
              f"{head}{body}</table></td></tr>")
 
-    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 6, date_str, section='OPERATIONAL')}"
+    return (f"{_header('Driver Mileage by Settlement Week &mdash; X-Trux / XFreight fleet', 7, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Driver miles by settlement week &middot; last ' + str(SETTLEMENT_WEEKS) + ' weeks')}"
             f"{table}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Settlement weeks run Wed 3:00 PM &rarr; the following Wed 2:59 PM (America/Chicago); the current "
             f"week is tinted. Avg / wk excludes the current (partial) week. Each trip leg is credited to its Driver 1 / Truck / miles and bucketed by its own "
             f"actual delivery (last stop arrival). Cancelled and not-yet-delivered legs are excluded; asset fleet "
@@ -4857,7 +5117,7 @@ def build_page5(uninv, alvys_ar, date_str) -> str:
             f"<tr>{ar_tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], ar_body)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Top: delivered loads with no Invoiced Date &mdash; the un-billed revenue behind most of the "
             f"QuickBooks-vs-Alvys AR gap. &lsquo;Delivered&rsquo; is the actual last-stop arrival "
             f"(Scheduled Delivery if arrival is missing). "
@@ -4920,7 +5180,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
                         str(c["oldest_days"]), money(c["amount"])],
                        ["left", "right", "right", "right"], [None, None, "bad", "bad"])
 
-    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 9, date_str, section='ACCOUNTING')}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 10, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{qb_tiles}"
             f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
@@ -4932,7 +5192,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
             f"<tr>{ar_tiles}</tr>"
             f"{_section('Customers with open balances over 90 days &middot; by total &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'Loads', 'Oldest (days)', 'Amount'], ['left', 'right', 'right', 'right'], ar_body)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Top: QuickBooks A/R Aging Detail, X-Trux + X-Linx, current and 1&ndash;30 day balances omitted. "
             f"Middle: delivered Alvys loads with no Invoiced Date &mdash; the un-billed revenue behind most of the QB-vs-Alvys AR gap. "
             f"Bottom: open invoiced balances aged &gt;90 days past the Customer Due Date. "
@@ -4971,12 +5231,12 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 10, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 11, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
             f"{_table(['Customer', 'QuickBooks', 'Alvys', 'Variance'], ['left', 'right', 'right', 'right'], body)}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Open AR per customer, QuickBooks vs Alvys (X-Trux + X-Linx, JW excluded). Variance = QB &minus; Alvys; "
             f"a negative (red) value means Alvys shows more open AR &mdash; most often invoices already paid in QB but "
             f"not synced back. Rows sum to the page-1 variance. Customers joined by name; a one-sided row can be the "
@@ -4986,13 +5246,13 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 11, date_str, section='ACCOUNTING')
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 12, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
         return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_brief(msg, 'warn')}</table>"
-                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
                 f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
     if b.get("no_match"):
@@ -5009,7 +5269,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
                 f"{_brief(msg, 'warn')}"
                 f"{_section('Sample identifiers &middot; Alvys vs QuickBooks')}"
                 f"{_table(['Alvys invoice # / Load #', 'QuickBooks Num'], ['left', 'left'], srows)}</table>"
-                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+                f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
                 f"Source: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
     ao, qo, mm = b["alvys_only"], b["qb_only"], b["mismatch"]
@@ -5045,7 +5305,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
     return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>{ao_tbl}{mm_tbl}{qo_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
             f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
             f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
@@ -5054,7 +5314,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page9(samba, date_str, alvys_drivers=None) -> str:
     header = _header('Driver Compliance &mdash; SambaSafety + Alvys', 2, date_str, section='SAFETY')
-    footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;'>"
+    footer = (f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
               f"License numbers masked to last 4. Violations show the last {VIOLATION_WINDOW_DAYS} days. "
               f"License + MVR: SambaSafety. DOT medical card: Alvys Drivers feed.</div>")
     if not samba or not samba.get("monitored"):
@@ -5135,9 +5395,9 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
     return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('License status &middot; action needed')}{license_block}"
-            f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
-            f"{_section('Risk leaderboard &middot; highest-scoring drivers')}{risk_block}"
             + _alvys_medical_block(alvys_drivers)
+            + f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
+            + f"{_section('Risk leaderboard &middot; highest-scoring drivers')}{risk_block}"
             + footer)
 
 
@@ -5177,12 +5437,12 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
                customer_rpm=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
-    pb = f"<div style='height:18px;background:#eef2f7;'></div>"
+    pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
                 f"Note: could not read {', '.join(missing)} this run &mdash; those sections may be blank.</div>")
-    wrap = lambda inner: f"<div style='max-width:760px;margin:0 auto;background:#fff;'>{inner}</div>"
+    wrap = lambda inner: f"<div class='brief-wrap' style='margin:0 auto;background:#fff;'>{inner}</div>"
 
     # Per-page insight strips — bridge from the page 1 narrative to detail.
     # Falls back to empty dict if scorecard_insights raises.
@@ -5226,10 +5486,52 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "}"
         "</style>"
     )
+    # Print CSS — drives WeasyPrint's pagination. Force background colors to
+    # render in print (default behavior strips them), set Letter size with
+    # narrow margins, and break to a new page wherever we render the page-break
+    # divider in the HTML stream.
+    print_css = (
+        "<style>"
+        # Letter size with a running XFreight footer (brand left, page n/m right).
+        # 0.35in side margins give ~7.8in usable; .brief-wrap below is forced to
+        # 100% width in print so the 760px email wrap doesn't clip the right edge.
+        "@page{size:letter;margin:0.45in 0.35in 0.55in;"
+        "@bottom-left{content:'XFREIGHT · Executive Brief';"
+        "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;"
+        "font-weight:700;letter-spacing:1.5px;}"
+        "@bottom-right{content:'Page ' counter(page) ' of ' counter(pages);"
+        "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
+        "body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
+        ".page-break{page-break-after:always;break-after:page;height:0 !important;background:transparent !important;}"
+        # 760px email constraint is screen-only so WeasyPrint never sees it
+        # and the brief fills the full letter printable area in the PDF.
+        "@media screen{.brief-wrap{max-width:760px;}}"
+        # Each content 'page' is designed for email scroll, not letter-fit; the
+        # PDF footer's 'Page N of M' uses the real letter-page count, so the
+        # in-content header's PG number was confusing. Hide it in print.
+        ".pg-of{display:inline;}"
+        "@media print{"
+        # Ensure full-width in print (belt-and-suspenders alongside screen-only max-width).
+        ".brief-wrap{max-width:none;width:100%;}"
+        # Let wide tables wrap to a new page rather than clip in print.
+        ".scroll-wide{overflow:visible !important;}"
+        # Avoid splitting an individual row mid-cell (the row stays intact),
+        # but let multi-row tables (driver mileage, idle, AR detail, speed
+        # table, etc.) split across page boundaries — otherwise a multi-row
+        # data table that doesn't fit the remaining space gets bumped whole
+        # to the next page and leaves the prior page mostly empty.
+        "tr{page-break-inside:avoid;break-inside:avoid;}"
+        "table{page-break-inside:auto;break-inside:auto;}"
+        # Hide the in-content 'Page N of M' badge in print to avoid the
+        # mismatch with the real-letter-page counter in the running footer.
+        ".pg-of{display:none !important;}"
+        "}"
+        "</style>"
+    )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"{mobile_css}</head>"
-            f"<body style='margin:0;background:#eef2f7;{FONT}'>"
+            f"{mobile_css}{print_css}</head>"
+            f"<body style='margin:0;background:#f3f3f3;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
@@ -5238,15 +5540,16 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # but the page-number arguments in _header reflect the actual
             # render order.
             # Pages 2-11 grouped into three sections (SAFETY leads):
-            #   SAFETY       (pages 2-5): SambaSafety driver/MVR scan,
-            #                              Samsara events/HOS/DVIR detail,
-            #                              Equipment compliance tractors (pg 4),
-            #                              Equipment compliance trailers (pg 5)
-            #   OPERATIONAL  (pages 6-8): driver mileage, fleet MPG/speeding,
+            #   SAFETY       (pages 2-6): SambaSafety driver/MVR scan,
+            #                              Samsara speed-over-limit detail (pg 3),
+            #                              Driver safety scores (pg 4),
+            #                              Equipment compliance tractors (pg 5),
+            #                              Equipment compliance trailers (pg 6)
+            #   OPERATIONAL  (pages 7-9): driver mileage, fleet MPG/speeding,
             #                              fleet idle
-            #   ACCOUNTING   (pages 9-11): QB AR overdue + Alvys un-invoiced/90+ AR
-            #                              combined (pg 9); QB-vs-Alvys recon (pg 10);
-            #                              bill match (pg 11)
+            #   ACCOUNTING   (pages 10-12): QB AR overdue + Alvys un-invoiced/90+ AR
+            #                              combined (pg 10); QB-vs-Alvys recon (pg 11);
+            #                              bill match (pg 12)
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
@@ -5254,16 +5557,17 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # Samsara safety detail (build_page2) follows.
             f"{wrap(_strip(2) + build_page9(samba, date_str, alvys_drivers=alvys_drivers))}{pb}"
             f"{wrap(_strip(3) + build_page2(samsara, date_str))}{pb}"
-            f"{wrap(_strip(4) + build_page_equipment(equipment, date_str, kind='tractors', pg=4))}{pb}"
-            f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='trailers', pg=5))}{pb}"
+            f"{wrap(_strip(4) + build_page2b(samsara, date_str, pg=4))}{pb}"
+            f"{wrap(_strip(5) + build_page_equipment(equipment, date_str, kind='tractors', pg=5))}{pb}"
+            f"{wrap(_strip(6) + build_page_equipment(equipment, date_str, kind='trailers', pg=6))}{pb}"
             # -- OPERATIONAL --
-            f"{wrap(_strip(6) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(7) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
-            f"{wrap(_strip(8) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
+            f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
+            f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
+            f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(9) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(10) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(11) + build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(10) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(11) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(12) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
@@ -5342,21 +5646,177 @@ class _ReportResult(str):
 # ----------------------------------------------------------------------
 # Email send (Microsoft Graph)
 # ----------------------------------------------------------------------
-def send_email(token: str, from_upn: str, to_emails: list[str], subject: str, html: str) -> None:
+def render_pdf(html: str) -> bytes | None:
+    """Render the brief HTML to PDF bytes via WeasyPrint.
+
+    Returns None if WeasyPrint isn't available so the email path keeps working
+    even if the system libs (pango/cairo) are missing in CI.
+    """
+    try:
+        from weasyprint import HTML  # type: ignore
+    except Exception as e:
+        log.warning("WeasyPrint not available — skipping PDF attachment: %s", e)
+        return None
+    # WeasyPrint logs every unsupported CSS property (we use plenty of
+    # email-only quirks) and fontTools emits per-table DEBUG noise during
+    # font subsetting — quiet both to ERROR so the run log stays readable.
+    for _lg in ("weasyprint", "fontTools", "fontTools.subset",
+                "fontTools.ttLib", "fontTools.ttLib.ttFont"):
+        _logger = logging.getLogger(_lg)
+        _logger.setLevel(logging.ERROR)
+        _logger.propagate = False
+    try:
+        from weasyprint import CSS  # type: ignore
+
+        # --- Pre-process HTML before handing to WeasyPrint ---
+
+        # 1. Strip the screen-only 760px email cap so WeasyPrint uses the
+        #    full letter page content area.
+        pdf_html = html.replace(
+            "@media screen{.brief-wrap{max-width:760px;}}",
+            ".brief-wrap{max-width:none;width:100%;}"
+        )
+
+        # 2. Force outer content tables to table-layout:fixed.  With the default
+        #    'auto' layout, long label text ("XFREIGHT REVENUE · MTD" etc.)
+        #    can push a tile wider than 25%, overflowing the page.
+        pdf_html = pdf_html.replace(
+            "cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>",
+            "cellpadding='0' cellspacing='0' style='padding:8px 18px 0;"
+            "table-layout:fixed;width:100%;'>"
+        )
+
+        # 3. PDF-only page breaks before specific section headers so dense
+        #    content (tile grids, customer tables) lands on a fresh page
+        #    instead of getting orphaned at the bottom of the prior one.
+        #    Each break closes the current table, drops a page-break div,
+        #    then re-opens a new table — WeasyPrint honors break-before
+        #    reliably between table boxes, not inside them.
+        _section_tr_open = "<tr><td colspan='4' style='padding:22px 6px 4px;'>"
+        _reopen_table = (
+            "<table width='100%' cellpadding='0' cellspacing='0' "
+            "style='padding:8px 18px 0;table-layout:fixed;width:100%;'>"
+        )
+        _pb_block = (
+            "</table>"
+            "<div style='page-break-before:always;break-before:page;height:0;'></div>"
+            + _reopen_table
+        )
+
+        def _inject_pb_before(marker_text: str) -> None:
+            """Find the first <tr> wrapping `marker_text` and inject a page
+            break before it.  Only affects the first occurrence so other
+            instances of the same section title (on dedicated pages) are
+            untouched."""
+            nonlocal pdf_html
+            idx = pdf_html.find(marker_text)
+            if idx <= 0:
+                return
+            tr_start = pdf_html.rfind(_section_tr_open, 0, idx)
+            if tr_start <= 0:
+                return
+            pdf_html = pdf_html[:tr_start] + _pb_block + pdf_html[tr_start:]
+
+        # XFreight Overview — pushes the entity tiles + reconciliation to
+        # page 2, letting page 1 carry only the narrative.
+        _inject_pb_before("XFreight Overview")
+        # Overdue invoices (31+ days) table — pushes the customer-by-customer
+        # AR detail to a fresh page after the AR aging tiles / Receivables
+        # & payables chart row.
+        _inject_pb_before("Overdue invoices (31+ days) by customer")
+        # Safety & compliance — starts the safety tile + 6-month trend block
+        # on a fresh page after the AR overdue customer table.  Match the
+        # HTML-entity form ("&amp;" etc.) as it appears in the rendered string.
+        _inject_pb_before("Safety &amp; compliance &mdash; 24h")
+        # DVIR defects table — push to a fresh page after safety events.
+        _inject_pb_before("DVIR defects (open) &mdash; all unresolved")
+        # Risk leaderboard — push to fresh page after violations/MVR alerts.
+        _inject_pb_before("Risk leaderboard &middot; highest-scoring drivers")
+
+        # 4. Tag the wrapper <tr> emitted by _table() so its inner data table
+        #    can split across page boundaries.  Each _table() output is wrapped
+        #    in a single outer row (style='padding:0 6px;'); the global
+        #    `tr { page-break-inside: avoid }` rule below would otherwise
+        #    force the entire wrapper row — and the multi-row data table
+        #    nested inside it — onto a single page, bumping whole tables to
+        #    the next page when they don't fit and leaving the prior page
+        #    empty under just a section header.
+        pdf_html = pdf_html.replace(
+            "<tr><td colspan='4' style='padding:0 6px;'>",
+            "<tr class='pdf-data-wrap'><td colspan='4' style='padding:0 6px;'>",
+        )
+
+        # --- CSS override appended after document stylesheets ---
+        # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
+        # 760px wide, which exceeds portrait letter's ~7.8in printable area
+        # and clips the right-side tiles.  Landscape gives ~10.1in of usable
+        # width — plenty for the 4-up tile layout to render edge-to-edge.
+        # The running footers are re-declared because @page rules don't
+        # cascade between stylesheets.
+        _pdf_override = CSS(string=(
+            "@page{size:letter landscape;margin:0.45in 0.5in 0.55in;"
+            "@bottom-left{content:'XFREIGHT · Executive Brief';"
+            "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;"
+            "font-weight:700;letter-spacing:1.5px;}"
+            "@bottom-right{content:'Page ' counter(page) ' of ' counter(pages);"
+            "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
+            ".brief-wrap{max-width:none!important;width:100%!important;}"
+            # Tile cells: clip overflow and wrap so nothing bleeds outside the
+            # fixed-width column.
+            "td.tile{overflow:hidden!important;word-break:break-word!important;"
+            "overflow-wrap:anywhere!important;}"
+            "td.tile>div{overflow:hidden!important;}"
+            # _table()'s outer wrapper row: allow it to break across pages
+            # so the multi-row inner data table can span page boundaries.
+            # Individual data rows inside still inherit the global
+            # tr{page-break-inside:avoid} so they stay intact.
+            "tr.pdf-data-wrap{page-break-inside:auto!important;"
+            "break-inside:auto!important;}"
+        ))
+
+        pdf_bytes = (
+            HTML(string=pdf_html)
+            .render(stylesheets=[_pdf_override], presentational_hints=True)
+            .write_pdf()
+        )
+        log.info("Generated PDF (%.1f KB)", len(pdf_bytes) / 1024)
+        return pdf_bytes
+    except Exception as e:
+        log.warning("PDF rendering failed (%s: %s) — email will go without attachment",
+                    type(e).__name__, e)
+        return None
+
+
+def send_email(token: str, from_upn: str, to_emails: list[str], subject: str,
+               html: str, attachments: list[dict] | None = None) -> None:
+    """Send the brief. attachments=[{name, content_bytes, mime}, ...] are
+    delivered as Microsoft Graph fileAttachments (base64-encoded)."""
+    import base64
     url = f"{GRAPH}/users/{from_upn}/sendMail"
-    message = {
+    message: dict = {
         "subject": subject,
         "body": {"contentType": "HTML", "content": html},
         "toRecipients": [{"emailAddress": {"address": a}} for a in to_emails],
     }
+    if attachments:
+        message["attachments"] = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": a["name"],
+                "contentType": a.get("mime", "application/octet-stream"),
+                "contentBytes": base64.b64encode(a["content_bytes"]).decode("ascii"),
+            }
+            for a in attachments
+        ]
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json={"message": message},
-        timeout=30,
+        timeout=60,
     )
     if resp.status_code == 202:
-        log.info("Scorecard email sent to: %s", ", ".join(to_emails))
+        attach_note = f" with {len(attachments)} attachment(s)" if attachments else ""
+        log.info("Scorecard email sent to %s%s", ", ".join(to_emails), attach_note)
     else:
         log.error("sendMail failed [%s]: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
@@ -5555,7 +6015,37 @@ def main() -> int:
         log.warning("Scorecard review skipped (%s: %s)", type(e).__name__, e)
         prefix = ""
     subject = f"{prefix}XFreight Executive Brief — {datetime.now():%b %d, %Y}"
-    send_email(token, from_upn, to_emails, subject, str(html))
+    pdf_bytes = render_pdf(str(html))
+    attachments = []
+    if pdf_bytes:
+        pdf_name = f"XFreight_Executive_Brief_{datetime.now():%Y-%m-%d}.pdf"
+        attachments.append({
+            "name": pdf_name,
+            "content_bytes": pdf_bytes,
+            "mime": "application/pdf",
+        })
+    # When the PDF rendered successfully, the email body is a short cover
+    # note pointing at the attachment. The full inline HTML body is only
+    # used as a fallback when PDF rendering failed, so the brief still
+    # reaches the recipient one way or another.
+    if pdf_bytes:
+        body_html = (
+            "<div style=\"font-family:-apple-system,'Helvetica Neue',Helvetica,"
+            "Arial,sans-serif;font-size:14px;color:#1a1a1a;line-height:1.5;"
+            "padding:24px;max-width:560px;\">"
+            "<div style=\"font-weight:700;letter-spacing:1.5px;font-size:11px;"
+            "color:#c41e2a;text-transform:uppercase;margin-bottom:14px;\">"
+            "XFreight &middot; Executive Brief</div>"
+            f"<p style=\"margin:0 0 12px;\">Your daily XFreight Executive Brief "
+            f"for <b>{datetime.now():%A, %B %d, %Y}</b> is attached as a PDF.</p>"
+            "<p style=\"margin:0;color:#6b6b6b;font-size:12.5px;\">"
+            "If the attachment doesn&rsquo;t open, reply to this email and "
+            "we&rsquo;ll resend.</p>"
+            "</div>"
+        )
+    else:
+        body_html = str(html)
+    send_email(token, from_upn, to_emails, subject, body_html, attachments=attachments)
 
     # Write today's 'sent' marker so the staggered backup crons short-circuit.
     # Failure to write the marker is non-fatal — at worst we re-send today.

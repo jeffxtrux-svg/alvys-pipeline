@@ -4,3 +4,4 @@ openpyxl==3.1.5
 python-dotenv==1.0.1
 gspread==6.1.2
 google-auth==2.29.0
+weasyprint==65.1
