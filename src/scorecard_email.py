@@ -5662,14 +5662,36 @@ def render_pdf(html: str) -> bytes | None:
         _logger.propagate = False
     try:
         from weasyprint import CSS  # type: ignore
-        # WeasyPrint's render(stylesheets=[...]) appends CSS after the
-        # document stylesheets, so it wins the cascade without fighting
-        # @media queries. Force brief-wrap to fill the full printable area
-        # so the 760px email cap doesn't clip the right side of the PDF.
+
+        # --- Strip email-only CSS before handing HTML to WeasyPrint ---
+        # The @media screen rule is in the document CSS to cap the email
+        # view at 760px. WeasyPrint may still apply @media screen rules
+        # even in print mode (version-dependent), so we remove it from the
+        # HTML string entirely and replace it with an unconditional full-width
+        # rule so the brief fills the letter page content area.
+        pdf_html = html.replace(
+            "@media screen{.brief-wrap{max-width:760px;}}",
+            ".brief-wrap{max-width:none;width:100%;}"
+        )
+
+        # --- Additional CSS override injected after the document CSS ---
+        # presentational_hints=True below enforces HTML width='25%' attrs on
+        # <td> cells with table-layout:fixed semantics, so tile columns
+        # stay at their declared percentages and can't be pushed wider by
+        # long label text.  word-break/overflow-wrap are a belt-and-suspenders
+        # safety net so any remaining long inline content wraps rather than
+        # forcing the tile wider.
         _pdf_override = CSS(string=(
             ".brief-wrap{max-width:none!important;width:100%!important;}"
+            "td.tile>div,td.tile p,td.tile span{"
+            "word-break:break-word!important;overflow-wrap:anywhere!important;}"
         ))
-        pdf_bytes = HTML(string=html).render(stylesheets=[_pdf_override]).write_pdf()
+
+        pdf_bytes = (
+            HTML(string=pdf_html)
+            .render(stylesheets=[_pdf_override], presentational_hints=True)
+            .write_pdf()
+        )
         log.info("Generated PDF (%.1f KB)", len(pdf_bytes) / 1024)
         return pdf_bytes
     except Exception as e:
