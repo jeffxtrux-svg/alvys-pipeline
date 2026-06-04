@@ -250,16 +250,17 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
 
     # Equipment compliance — surface overdue inspections at the executive
     # level so they don't get buried on the Equipment Compliance pages.
-    # Tractors: 365-day federal annual DOT.
-    # Trailers: 120-day company-policy DOT (fires before the federal 365).
+    # Both tractors and trailers use the 120-day company DOT policy (fires
+    # before the federal 365-day annual rule). Requires LastInspectionDate
+    # to be populated by src/main.py.
     if equipment:
         od_tractors = [t for t in (equipment.get("tractors") or [])
-                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < 0]
+                       if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
         if od_tractors:
             units = ", ".join(str(t.get("unit") or "?") for t in od_tractors[:8])
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
             parts.append(
-                f"Tractors overdue on annual DOT inspection (365d federal): "
+                f"Tractors overdue on 120-day company DOT policy: "
                 f"{units}{more} — see Equipment Compliance page.")
         od_trailers = [t for t in (equipment.get("trailers") or [])
                        if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
@@ -269,6 +270,23 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             parts.append(
                 f"Trailers overdue on 120-day company DOT policy: "
                 f"{units}{more} — see Equipment Compliance page.")
+
+    # Total open receivables from QuickBooks + 6-month trend direction.
+    if qb_ar:
+        total_ar = qb_ar.get("total_ar")
+        if _isnum(total_ar):
+            trend_tail = ""
+            if ar_hist:
+                _labels, _vals = ar_hist
+                if isinstance(_vals, (list, tuple)) and len(_vals) >= 2:
+                    first, last = _vals[0], _vals[-1]
+                    if _isnum(first) and _isnum(last) and first != 0:
+                        delta = last - first
+                        direction = "up" if delta > 0 else ("down" if delta < 0 else "flat")
+                        trend_tail = (f" — trending {direction} "
+                                      f"{_money(abs(delta))} over 6 months")
+            parts.append(
+                f"Total open A/R per QuickBooks: {_money(total_ar)}{trend_tail}.")
 
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
