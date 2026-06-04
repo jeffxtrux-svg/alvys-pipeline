@@ -5681,6 +5681,26 @@ def render_pdf(html: str) -> bytes | None:
             "table-layout:fixed;width:100%;'>"
         )
 
+        # 3. PDF-only page break before the 'XFreight Overview' section so the
+        #    page-1 narrative (Bottom line / Action items / Coaching) ends
+        #    cleanly and the tile-heavy entity sections start fresh on page 2.
+        #    The marker text only appears once in the document, so the replace
+        #    is unambiguous.  The injected <tr> closes the prior table and
+        #    opens a new one so the page break lands between table boxes,
+        #    where WeasyPrint honors break-before reliably.
+        _xfreight_section_marker = _section("XFreight Overview")
+        if _xfreight_section_marker in pdf_html:
+            pdf_html = pdf_html.replace(
+                _xfreight_section_marker,
+                "</table>"
+                "<div style='page-break-before:always;break-before:page;"
+                "height:0;'></div>"
+                "<table width='100%' cellpadding='0' cellspacing='0' "
+                "style='padding:8px 18px 0;table-layout:fixed;width:100%;'>"
+                + _xfreight_section_marker,
+                1,  # replace only the first occurrence
+            )
+
         # --- CSS override appended after document stylesheets ---
         # Switch the PDF to LANDSCAPE letter (11in x 8.5in) — the email is
         # 760px wide, which exceeds portrait letter's ~7.8in printable area
