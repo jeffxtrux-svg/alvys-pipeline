@@ -3255,12 +3255,31 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
 # ----------------------------------------------------------------------
 # HTML design system
 # ----------------------------------------------------------------------
-NAVY = "#102a43"; INK = "#1a202c"; MUTE = "#64748b"; LINE = "#e2e8f0"; TILEBG = "#f8fafc"
-GOOD = "#15803d"; GOODBG = "#dcfce7"; WARN = "#b45309"; WARNBG = "#fef3c7"
-PAGE_COUNT = 11
-ACCENTBG = "#fff3e8"  # light orange tint for the current settlement week column
-BAD = "#b91c1c"; BADBG = "#fee2e2"; ACCENT = "#dd6b20"; BLUE = "#2b6cb0"
-FONT = "font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;"
+# XFreight-branded palette (Style 04). Single accent = XFreight red.
+# Variance-only color: red for negative/over-threshold, green for positive,
+# everything else neutral grey. ACCENT replaces the older orange brand color
+# throughout the brief — that retires the dashboard-y orange/blue mix.
+XFREIGHT_RED = "#c41e2a"
+XFREIGHT_RED_DARK = "#8f1620"
+NAVY = "#1a1a1a"          # was deep navy — now near-black ink
+INK = "#1a1a1a"
+MUTE = "#6b6b6b"
+LINE = "#ececec"          # softer hairline
+TILEBG = "#fafafa"        # near-white card background
+GOOD = "#0f6b3d"
+GOODBG = "#e7f3ec"
+WARN = XFREIGHT_RED       # warnings collapse into the brand accent
+WARNBG = "#fde8ea"
+PAGE_COUNT = 12
+ACCENTBG = "#fde8ea"      # light red tint replaces the orange current-week column
+BAD = XFREIGHT_RED
+BADBG = "#fde8ea"
+ACCENT = XFREIGHT_RED     # was orange — now brand red
+BLUE = "#3a4a5a"          # neutral slate replaces the old chart blue
+FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
+        "font-feature-settings:'tnum';")  # tabular numerals for clean column alignment
+# Serif stack for page-section headlines + hero numbers.
+FONT_SERIF = "font-family:Georgia,'Times New Roman',serif;"
 
 
 def _pill(t, k):
@@ -3285,11 +3304,17 @@ def _wow(current, prior, lower_is_better: bool = False, fmt=None) -> str:
 
 
 def _tile(label, value, sub, width="25%"):
-    return (f"<td class='tile' width='{width}' style='padding:6px;' valign='top'><div style='background:{TILEBG};"
-            f"border:1px solid {LINE};border-radius:10px;padding:14px 14px 12px;'>"
-            f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};font-weight:700;'>{label}</div>"
-            f"<div style='font-size:26px;font-weight:800;color:{INK};margin:6px 0 6px;line-height:1;'>{value}</div>"
-            f"<div style='font-size:12px;color:{MUTE};'>{sub}</div></div></td>")
+    """XFreight-branded tile — hero number in Georgia serif, restrained chrome,
+    XFreight red rule under the label for visual rhythm across rows."""
+    return (f"<td class='tile' width='{width}' style='padding:6px;' valign='top'>"
+            f"<div style='background:#fff;border:1px solid {LINE};border-radius:8px;"
+            f"padding:16px 16px 14px;border-top:3px solid {XFREIGHT_RED};'>"
+            f"<div style='font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;"
+            f"color:{MUTE};font-weight:700;margin-bottom:10px;'>{label}</div>"
+            f"<div style='{FONT_SERIF}font-size:26px;font-weight:400;color:{INK};"
+            f"letter-spacing:-0.8px;line-height:1;margin-bottom:8px;'>{value}</div>"
+            f"<div style='font-size:11px;color:{MUTE};line-height:1.4;'>{sub}</div>"
+            f"</div></td>")
 
 
 def _tile_div(label, value, sub):
@@ -3380,28 +3405,84 @@ def _donut_gauge(label: str, pct: float, sub_line: str, detail: str, width: str 
 
 
 def _section(t, span=4):
-    return (f"<tr><td colspan='{span}' style='padding:18px 6px 6px;'><div style='font-size:13px;font-weight:800;"
-            f"letter-spacing:.5px;text-transform:uppercase;color:{NAVY};border-bottom:2px solid {LINE};"
-            f"padding-bottom:6px;'>{t}</div></td></tr>")
+    """XFreight section header: serif italic accent + black 36px underbar.
+    Inline-styled so it renders identically in email and PDF."""
+    # Split a 'main // accent' title into pieces so we can italicize the accent
+    # in XFreight red — mirrors the style-04 sample (e.g. 'X-Trux // Asset trucking').
+    if "//" in t:
+        main, _, accent_part = t.partition("//")
+        title_html = (f"<span>{main.strip()}</span> "
+                      f"<span style='color:{XFREIGHT_RED};font-style:italic;font-weight:700;'>// {accent_part.strip()}</span>")
+    else:
+        title_html = t
+    return (f"<tr><td colspan='{span}' style='padding:22px 6px 4px;'>"
+            f"<div style='{FONT_SERIF}font-size:17px;font-weight:400;color:{INK};"
+            f"letter-spacing:-0.3px;'>{title_html}</div>"
+            f"<div style='width:36px;height:2px;background:{INK};margin-top:6px;margin-bottom:10px;'></div>"
+            f"</td></tr>")
+
+
+def _xfreight_logo_svg(width: int = 180, height: int = 32) -> str:
+    """Inline SVG re-creation of the XFREIGHT logo (red bar + white speed-line
+    streaks on the left + italic bold white wordmark). Embedded inline so the
+    email and PDF both render it without an external image dependency."""
+    return (
+        f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 38' "
+        f"width='{width}' height='{height}' role='img' aria-label='XFreight'>"
+        f"<rect width='220' height='38' rx='2' fill='{XFREIGHT_RED}'/>"
+        f"<g fill='#fff'>"
+        f"<rect x='8' y='6' width='38' height='2.4'/>"
+        f"<rect x='10' y='10' width='34' height='2.4'/>"
+        f"<rect x='6' y='14' width='42' height='2.4'/>"
+        f"<rect x='12' y='18' width='30' height='2.4'/>"
+        f"<rect x='8' y='22' width='38' height='2.4'/>"
+        f"<rect x='10' y='26' width='34' height='2.4'/>"
+        f"<rect x='6' y='30' width='42' height='2.4'/>"
+        f"</g>"
+        f"<text x='56' y='27' font-family='Helvetica,Arial,sans-serif' "
+        f"font-weight='900' font-style='italic' font-size='22' "
+        f"letter-spacing='-0.5' fill='#fff'>XFREIGHT</text>"
+        f"</svg>"
+    )
 
 
 def _header(sub, pg, date_str, section=None):
-    """Page header with optional section chip ('OPERATIONAL', 'SAFETY',
-    'ACCOUNTING') above the title — used to group detail pages 2-10 into
-    visually distinct sections."""
-    section_html = ""
+    """Branded page header — XFreight logo bar + serif italic doc label + date,
+    with an optional section chip and a thick red rule below.
+    Used at the top of every detail page."""
+    logo = _xfreight_logo_svg(width=150, height=26)
+    section_chip = ""
     if section:
-        section_html = (
-            f"<div style='display:inline-block;padding:3px 10px;border-radius:4px;"
-            f"background:{ACCENT};color:#fff;font-size:10px;font-weight:800;"
-            f"letter-spacing:.8px;margin-bottom:6px;'>{section}</div><br>")
-    return (f"<table width='100%' cellpadding='0' cellspacing='0' style='background:{NAVY};'><tr>"
-            f"<td style='padding:18px 24px;'>"
-            f"{section_html}"
-            f"<div style='color:#fff;font-size:20px;font-weight:800;letter-spacing:1px;'>XFREIGHT</div>"
-            f"<div style='color:#9fb3c8;font-size:13px;margin-top:2px;'>{sub}</div></td>"
-            f"<td align='right' style='padding:18px 24px;color:#9fb3c8;font-size:13px;'>{date_str}<br>"
-            f"<span style='color:#637b94;font-size:11px;'>Page {pg} of {PAGE_COUNT}</span></td></tr></table>")
+        section_chip = (
+            f"<span style='display:inline-block;padding:2px 9px;border-radius:3px;"
+            f"background:{XFREIGHT_RED};color:#fff;font-size:9px;font-weight:800;"
+            f"letter-spacing:1.2px;margin-left:14px;vertical-align:middle;'>{section}</span>")
+    # Two-line date treatment matches the style-04 sample.
+    try:
+        from datetime import datetime as _dt
+        # date_str examples: 'Thursday, June 4, 2026' or '%A, %B %d, %Y'
+        dt = _dt.strptime(date_str, "%A, %B %d, %Y")
+        day_part = dt.strftime("%A")
+        date_part = dt.strftime("%B %d, %Y")
+    except Exception:
+        day_part, date_part = date_str, ""
+    return (
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 24px 14px;'>"
+        f"<tr>"
+        f"<td valign='middle' style='padding:0;'>"
+        f"{logo}{section_chip}"
+        f"<div style='{FONT_SERIF}font-style:italic;font-size:13px;color:{INK};"
+        f"font-weight:400;margin-top:8px;'>{sub}</div>"
+        f"</td>"
+        f"<td align='right' valign='middle' style='padding:0;font-size:9.5px;color:{MUTE};font-weight:500;'>"
+        f"<div style='{FONT_SERIF}font-style:italic;font-size:11px;color:{INK};"
+        f"font-weight:600;margin-bottom:2px;'>{day_part}</div>"
+        f"<div>{date_part}</div>"
+        f"<div style='font-size:9px;color:{MUTE};margin-top:4px;letter-spacing:0.5px;'>"
+        f"Page {pg} of {PAGE_COUNT}</div>"
+        f"</td>"
+        f"</tr></table>")
 
 
 def _th(cells, al):
@@ -3432,9 +3513,13 @@ def _table(hc, al, rows, span=4):
 
 
 def _brief(text, k="mute"):
-    bar = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": ACCENT}[k]
-    return (f"<tr><td colspan='4' style='padding:3px 6px;'><div style='border-left:3px solid {bar};background:#fbfdff;"
-            f"padding:8px 12px;font-size:13px;color:{INK};line-height:1.45;'>{text}</div></td></tr>")
+    """Callout/lede block — left accent bar in brand red (or variance color),
+    near-white fill, sans-serif body. Used for the Bottom Line and per-page notes."""
+    bar = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": XFREIGHT_RED}[k]
+    return (f"<tr><td colspan='4' style='padding:6px;'>"
+            f"<div style='border-left:4px solid {bar};background:#fafafa;"
+            f"padding:12px 16px;font-size:12.5px;color:{INK};line-height:1.55;'>{text}</div>"
+            f"</td></tr>")
 
 
 def _flag_kind(value, target, lower_is_better) -> str:
@@ -4243,9 +4328,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<tr>{''.join(_cards)}</tr></table></div>")
 
     return (f"{_header('Morning Executive Brief', 1, date_str)}"
-            f"<div style='padding:18px 24px 4px;'><div style='background:#0f2742;border-radius:10px;padding:14px 18px;"
-            f"color:#e6eef7;font-size:14px;line-height:1.5;'><span style='color:{ACCENT};font-weight:800;"
-            f"text-transform:uppercase;font-size:11px;letter-spacing:.6px;'>Bottom line</span><br>{bottom}</div></div>"
+            f"<div style='padding:18px 24px 4px;'>"
+            f"<div style='background:#fafafa;border-left:4px solid {XFREIGHT_RED};padding:16px 20px;"
+            f"color:{INK};font-size:13.5px;line-height:1.6;'>"
+            f"<span style='color:{XFREIGHT_RED};font-weight:800;text-transform:uppercase;"
+            f"font-size:10px;letter-spacing:1.5px;display:block;margin-bottom:6px;'>The bottom line</span>"
+            f"{bottom}</div></div>"
             f"{rollover_banner}"
             f"{action_items_html}"
             f"{coaching_html}"
@@ -5349,7 +5437,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
                customer_rpm=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
-    pb = f"<div class='page-break' style='height:18px;background:#eef2f7;'></div>"
+    pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
         note = (f"<div style='background:{WARNBG};color:{WARN};font-size:12px;padding:8px 24px;'>"
@@ -5404,7 +5492,13 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     # divider in the HTML stream.
     print_css = (
         "<style>"
-        "@page{size:letter;margin:0.4in;}"
+        # Letter size with a running XFreight footer (brand left, page n/m right).
+        "@page{size:letter;margin:0.5in 0.4in 0.6in;"
+        "@bottom-left{content:'XFREIGHT · Executive Brief';"
+        "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;"
+        "font-weight:700;letter-spacing:1.5px;}"
+        "@bottom-right{content:'Page ' counter(page) ' of ' counter(pages);"
+        "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
         "body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
         ".page-break{page-break-after:always;break-after:page;height:0 !important;background:transparent !important;}"
         # In print, horizontal scroll wrappers become irrelevant — let wide
@@ -5417,7 +5511,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}{print_css}</head>"
-            f"<body style='margin:0;background:#eef2f7;{FONT}'>"
+            f"<body style='margin:0;background:#f3f3f3;{FONT}'>"
             f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
