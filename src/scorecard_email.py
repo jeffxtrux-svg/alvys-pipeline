@@ -115,7 +115,10 @@ RPM_GOAL_INSURANCE_SURCHARGE = 0.0
 # RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
 # through unmodified. The live value is still computed and stashed for the
 # data-check banner so we can watch the two converge.
-RPM_GOAL_OVERHEAD_PIN = 0.92
+# $0.98 = baseline office overhead + the liability-insurance increase folded
+# in (the separate $0.07/mi surcharge line was removed when this was bumped
+# from $0.92 to $0.98, so insurance is no longer double-counted).
+RPM_GOAL_OVERHEAD_PIN = 0.98
 # Fail-soft guards: if the short pay window is too thin to trust, widen it; if the
 # resulting cost lands outside a sane band, flag it on the email's data-check banner.
 RPM_GOAL_MIN_SETTLED_LOADS = 5      # need at least this many settled X-Trux loads…
