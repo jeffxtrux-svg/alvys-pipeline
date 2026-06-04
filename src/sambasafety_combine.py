@@ -42,6 +42,7 @@ import argparse
 import io
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -49,6 +50,104 @@ import pandas as pd
 
 
 log = logging.getLogger(__name__)
+
+
+# Canonical FMCSA BASIC category names (lower-case, used to identify data rows).
+_CSA_BASICS = frozenset({
+    "unsafe driving", "maintenance", "hos compliance",
+    "hours-of-service compliance", "crash indicator",
+    "hazardous materials", "haz mat", "driver fitness",
+    "controlled substances/alcohol", "controlled substances",
+    "drugs/alcohol", "drugs & alcohol",
+})
+
+
+def _build_csa_scorecard(csa_csv) -> pd.DataFrame:
+    """Parse a SambaSafety CSA2010 Preview Scorecard CSV into a clean DataFrame.
+
+    Columns: Category, Percentile, BASICMeasure, SegmentViolations,
+    RelevantInspections, SnapshotDate, DOTNumber, AvgPowerUnits.
+
+    Parsing strategy: scan all rows; extract metadata from header text, then
+    collect rows whose first cell matches a known BASIC category name. The
+    percentile is the last numeric value per row; BASIC measure is
+    second-to-last; first numeric is segment violations.
+    """
+    def _read_raw(src):
+        kw = dict(header=None, dtype=str)
+        if isinstance(src, (bytes, bytearray)):
+            return pd.read_csv(io.BytesIO(src), **kw)
+        if isinstance(src, str) and "\n" in src:
+            return pd.read_csv(io.StringIO(src), **kw)
+        return pd.read_csv(src, **kw)
+
+    try:
+        raw = _read_raw(csa_csv)
+    except Exception as e:
+        log.warning("CSA scorecard CSV parse error: %s", e)
+        return pd.DataFrame()
+
+    if raw.empty:
+        return pd.DataFrame()
+
+    # --- Extract metadata from any row that contains it -----------------
+    meta = {"SnapshotDate": "", "DOTNumber": "", "AvgPowerUnits": ""}
+    for _, row in raw.iterrows():
+        row_str = " ".join(str(v) for v in row.values if pd.notna(v) and str(v).strip())
+        if not row_str:
+            continue
+        m = re.search(r'[Ss]napshot\s+date[:\s]+(\d{1,2}/\d{1,2}/\d{4})', row_str)
+        if m:
+            meta["SnapshotDate"] = m.group(1)
+        m = re.search(r'DOT#?\s*(\d+)', row_str)
+        if m:
+            meta["DOTNumber"] = m.group(1)
+        m = re.search(r'Avg\s+Power\s+Units[:\s]+([\d.]+)', row_str)
+        if m:
+            meta["AvgPowerUnits"] = m.group(1)
+
+    # --- Collect BASIC category rows ------------------------------------
+    rows = []
+    for _, row in raw.iterrows():
+        vals = [str(v).strip() for v in row.values if pd.notna(v) and str(v).strip()]
+        if not vals:
+            continue
+        first = vals[0].lower().rstrip("*").strip()
+        if first not in _CSA_BASICS and not any(k in first for k in _CSA_BASICS):
+            continue
+        nums = []
+        for v in vals[1:]:
+            v_clean = v.rstrip("*").replace(",", "").strip()
+            try:
+                nums.append(float(v_clean))
+            except ValueError:
+                pass  # skip text cols (Based On, % Comparison)
+        pct = nums[-1] if nums else float("nan")
+        measure = nums[-2] if len(nums) >= 2 else float("nan")
+        seg_viol = nums[0] if nums else float("nan")
+        rel_insp = nums[1] if len(nums) >= 3 else seg_viol
+        rows.append({
+            "Category": vals[0].rstrip("*"),
+            "Percentile": pct,
+            "BASICMeasure": measure,
+            "SegmentViolations": seg_viol,
+            "RelevantInspections": rel_insp,
+            "SnapshotDate": meta["SnapshotDate"],
+            "DOTNumber": meta["DOTNumber"],
+            "AvgPowerUnits": meta["AvgPowerUnits"],
+        })
+
+    if not rows:
+        log.warning("CSA scorecard CSV: no BASIC category rows found")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=[
+        "Category", "Percentile", "BASICMeasure", "SegmentViolations",
+        "RelevantInspections", "SnapshotDate", "DOTNumber", "AvgPowerUnits",
+    ])
+    log.info("CSA scorecard: %d BASIC categories (snapshot: %s, DOT: %s)",
+             len(df), meta["SnapshotDate"], meta["DOTNumber"])
+    return df
 
 
 # SambaSafety risk-index buckets, mapped to text categories our reader
@@ -137,9 +236,11 @@ def _build_violations(viol_df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("Violation Date", ascending=False, na_position="last").reset_index(drop=True)
 
 
-def combine_to_workbook(risk_csv: bytes | str | Path, violations_csv: bytes | str | Path) -> bytes:
-    """Read the two raw SambaSafety CSVs and return the merged XLSX as bytes.
-    Inputs may be paths or raw CSV bytes."""
+def combine_to_workbook(risk_csv: bytes | str | Path, violations_csv: bytes | str | Path,
+                        csa_csv: bytes | str | Path | None = None) -> bytes:
+    """Read SambaSafety CSVs and return the merged XLSX as bytes.
+    Inputs may be paths or raw CSV bytes.
+    When csa_csv is provided, a third 'CSA Scorecard' sheet is added."""
     def _read(src):
         if isinstance(src, (bytes, bytearray)):
             return pd.read_csv(io.BytesIO(src))
@@ -151,12 +252,16 @@ def combine_to_workbook(risk_csv: bytes | str | Path, violations_csv: bytes | st
     viol_df = _read(violations_csv)
     drivers = _build_drivers(risk_df)
     violations = _build_violations(viol_df)
-    log.info("SambaSafety combine: %d drivers, %d violations", len(drivers), len(violations))
+    csa = _build_csa_scorecard(csa_csv) if csa_csv is not None else pd.DataFrame()
+    log.info("SambaSafety combine: %d drivers, %d violations, %d CSA BASIC rows",
+             len(drivers), len(violations), len(csa))
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         drivers.to_excel(writer, sheet_name="Drivers", index=False)
         violations.to_excel(writer, sheet_name="Violations", index=False)
+        if not csa.empty:
+            csa.to_excel(writer, sheet_name="CSA Scorecard", index=False)
     return buf.getvalue()
 
 

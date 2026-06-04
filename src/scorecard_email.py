@@ -2855,6 +2855,75 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     }
 
 
+def compute_csa_scorecard(sheets) -> dict | None:
+    """Extract FMCSA CSA carrier scorecard from the 'CSA Scorecard' tab of
+    SambaSafety_Master.xlsx. Returns None if the tab is absent."""
+    if not sheets:
+        return None
+    csa_df = None
+    for name, df in sheets.items():
+        if df is None or df.empty:
+            continue
+        if "csa" in str(name).lower():
+            csa_df = df
+            break
+    if csa_df is None or csa_df.empty:
+        return None
+
+    cat_c = _find_col(csa_df, ["category", "basic category", "basic"])
+    pct_c = _find_col(csa_df, ["percentile", "csa percentile", "rank", "percentile rank"])
+    measure_c = _find_col(csa_df, ["basicmeasure", "basic measure", "measure"])
+    seg_c = _find_col(csa_df, ["segmentviolations", "segment violations", "violations"])
+    insp_c = _find_col(csa_df, ["relevantinspections", "relevant inspections", "inspections"])
+    snap_c = _find_col(csa_df, ["snapshotdate", "snapshot date", "snapshot"])
+    dot_c = _find_col(csa_df, ["dotnumber", "dot number", "dot"])
+    apu_c = _find_col(csa_df, ["avgpowerunits", "avg power units", "power units"])
+
+    if not cat_c:
+        return None
+
+    basics = []
+    for _, r in csa_df.iterrows():
+        cat = str(r[cat_c]).strip() if cat_c else ""
+        if not cat or cat.lower() in ("nan", "category"):
+            continue
+        pct = pd.to_numeric(r[pct_c], errors="coerce") if pct_c else float("nan")
+        measure = pd.to_numeric(r[measure_c], errors="coerce") if measure_c else float("nan")
+        seg = pd.to_numeric(r[seg_c], errors="coerce") if seg_c else float("nan")
+        insp = pd.to_numeric(r[insp_c], errors="coerce") if insp_c else float("nan")
+        cat_lower = cat.lower().rstrip("*")
+        threshold = next((v for k, v in _CSA_INTERVENTION.items() if k in cat_lower), 80)
+        basics.append({
+            "category": cat,
+            "percentile": float(pct) if pd.notna(pct) else None,
+            "measure": float(measure) if pd.notna(measure) else None,
+            "seg_violations": int(seg) if pd.notna(seg) else None,
+            "rel_inspections": int(insp) if pd.notna(insp) else None,
+            "threshold": threshold,
+            "intervention": pd.notna(pct) and float(pct) >= threshold,
+        })
+
+    if not basics:
+        return None
+
+    # Metadata from first row
+    first = csa_df.iloc[0]
+    snapshot_date = str(first[snap_c]).strip() if snap_c and pd.notna(first[snap_c]) else ""
+    dot_number = str(first[dot_c]).strip() if dot_c and pd.notna(first[dot_c]) else ""
+    avg_pu = str(first[apu_c]).strip() if apu_c and pd.notna(first[apu_c]) else ""
+
+    n_alert = sum(1 for b in basics if b["intervention"])
+    worst = max(basics, key=lambda b: (b["percentile"] or 0))
+    return {
+        "basics": basics,
+        "n_alert": n_alert,
+        "worst": worst,
+        "snapshot_date": snapshot_date,
+        "dot_number": dot_number,
+        "avg_power_units": avg_pu,
+    }
+
+
 # DOT medical card / CDL deadlines tracked from the Alvys Drivers sheet —
 # parallel to LICENSE_EXPIRY_WARN_DAYS but for the Alvys-side feed. The
 # 14-day "critical" cutoff is what triggers the per-driver name-out in
@@ -3298,7 +3367,7 @@ GOOD = "#0f6b3d"
 GOODBG = "#e7f3ec"
 WARN = XFREIGHT_RED       # warnings collapse into the brand accent
 WARNBG = "#fde8ea"
-PAGE_COUNT = 12
+PAGE_COUNT = 13
 ACCENTBG = "#fde8ea"      # light red tint replaces the orange current-week column
 BAD = XFREIGHT_RED
 BADBG = "#fde8ea"
@@ -3308,6 +3377,24 @@ FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
         "font-feature-settings:'tnum';")  # tabular numerals for clean column alignment
 # Serif stack for page-section headlines + hero numbers.
 FONT_SERIF = "font-family:Georgia,'Times New Roman',serif;"
+
+# FMCSA CSA intervention thresholds by BASIC category.
+# Unsafe Driving and Crash Indicator alert at 65th percentile for all carrier
+# sizes; all other BASICs alert at 80th.
+_CSA_INTERVENTION = {
+    "unsafe driving": 65,
+    "crash indicator": 65,
+    "maintenance": 80,
+    "hos compliance": 80,
+    "hours-of-service compliance": 80,
+    "hazardous materials": 80,
+    "haz mat": 80,
+    "driver fitness": 80,
+    "controlled substances": 80,
+    "drugs/alcohol": 80,
+    "drugs & alcohol": 80,
+    "controlled substances/alcohol": 80,
+}
 
 
 def _pill(t, k, nowrap=True):
@@ -5274,7 +5361,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
                         str(c["oldest_days"]), money(c["amount"])],
                        ["left", "right", "right", "right"], [None, None, "bad", "bad"])
 
-    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 10, date_str, section='ACCOUNTING')}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 11, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{qb_tiles}"
             f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
@@ -5325,7 +5412,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 11, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 12, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -5340,7 +5427,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 12, date_str, section='ACCOUNTING')
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 13, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
@@ -5524,12 +5611,78 @@ def _alvys_medical_block(alvys_drivers) -> str:
         ["left", "left", "left", "left", "right"], rows)
 
 
+def build_csa_scorecard_page(csa, date_str) -> str:
+    """Page 10 — FMCSA CSA carrier BASIC percentile scores from SambaSafety."""
+    head = _header("CSA Carrier Scorecard &mdash; X-Trux, Inc.", 10, date_str, section='SAFETY')
+    if not csa or not csa.get("basics"):
+        return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_brief('CSA scorecard data unavailable this run &mdash; place CSA2010 Preview Scorecard.csv in OneDrive/SambaSafety/.', 'warn')}"
+                f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+                f"Source: SambaSafety CSA Scorecard (FMCSA BASIC percentile ranks for X-Trux, Inc.).</div>")
+
+    basics = csa["basics"]
+    n_alert = csa["n_alert"]
+    worst = csa["worst"] or {}
+    snapshot = csa.get("snapshot_date") or "latest"
+    dot_num = csa.get("dot_number") or "841776"
+    avg_pu = csa.get("avg_power_units") or ""
+
+    worst_name = worst.get("category", "n/a")
+    worst_pct = worst.get("percentile")
+    worst_pct_txt = f"{worst_pct:.0f}th" if worst_pct is not None else "n/a"
+    alert_k = "bad" if n_alert > 0 else "good"
+    alert_label = f"{n_alert} BASIC{'s' if n_alert != 1 else ''} above threshold"
+
+    apu_sub = _pill(f"Avg {avg_pu} power units", "mute") if avg_pu else _pill(f"DOT #{dot_num}", "mute")
+    tiles = (
+        _tile("Highest Risk BASIC", worst_name,
+              _pill(f"{worst_pct_txt} percentile", "bad" if worst.get("intervention") else "warn"))
+        + _tile("Intervention Alerts", str(n_alert), _pill(alert_label, alert_k))
+        + _tile("DOT Number", f"#{dot_num}", _pill(f"Snapshot {snapshot}", "mute"))
+        + _tile("FMCSA Snapshot", snapshot, apu_sub)
+    )
+
+    body = ""
+    for b in sorted(basics, key=lambda x: (x["percentile"] or 0), reverse=True):
+        pct = b["percentile"]
+        pct_txt = f"{pct:.1f}" if pct is not None else "&mdash;"
+        insp = str(b["rel_inspections"]) if b["rel_inspections"] is not None else "&mdash;"
+        measure_txt = f"{b['measure']:.2f}" if b["measure"] is not None else "&mdash;"
+        if b["intervention"]:
+            status_pill = _pill("INTERVENTION LIKELY", "bad")
+            row_k = "bad"
+        elif pct is not None and pct >= b["threshold"] * 0.75:
+            status_pill = _pill("WATCH", "warn")
+            row_k = "warn"
+        else:
+            status_pill = _pill("OK", "good")
+            row_k = None
+        body += _tr(
+            [b["category"], insp, measure_txt, f"{pct_txt} &nbsp; {status_pill}"],
+            ["left", "right", "right", "left"],
+            [None, None, None, row_k],
+        )
+
+    section_label = (f"FMCSA BASIC Category Scores &middot; X-Trux, Inc. (DOT #{dot_num})"
+                     f" &middot; Snapshot {snapshot}")
+    return (
+        f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+        f"<tr>{tiles}</tr>"
+        f"{_section(section_label)}"
+        f"{_table(['BASIC Category', 'Rel. Inspections', 'BASIC Measure', 'CSA Percentile Rank'], ['left', 'right', 'right', 'left'], body)}"
+        f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+        f"Percentile ranks from FMCSA Carrier Safety Measurement System (CSMS) via SambaSafety. "
+        f"Unsafe Driving &amp; Crash Indicator alert at 65th percentile; all other BASICs at 80th. "
+        f"Source: SambaSafety CSA Scorecard (DOT #{dot_num}).</div>"
+    )
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None) -> str:
+               customer_rpm=None, csa=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
@@ -5633,7 +5786,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # behind it. Function names build_page<N> are kept for stability,
             # but the page-number arguments in _header reflect the actual
             # render order.
-            # Pages 2-11 grouped into three sections (SAFETY leads):
+            # Pages 2-13 grouped into three sections (SAFETY leads):
             #   SAFETY       (pages 2-6): SambaSafety driver/MVR scan,
             #                              Samsara speed-over-limit detail (pg 3),
             #                              Driver safety scores (pg 4),
@@ -5641,9 +5794,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             #                              Equipment compliance trailers (pg 6)
             #   OPERATIONAL  (pages 7-9): driver mileage, fleet MPG/speeding,
             #                              fleet idle
-            #   ACCOUNTING   (pages 10-12): QB AR overdue + Alvys un-invoiced/90+ AR
-            #                              combined (pg 10); QB-vs-Alvys recon (pg 11);
-            #                              bill match (pg 12)
+            #   CSA SCORECARD (page 10):  FMCSA carrier BASIC percentiles (SambaSafety)
+            #   ACCOUNTING   (pages 11-13): QB AR overdue + Alvys un-invoiced/90+ AR
+            #                              combined (pg 11); QB-vs-Alvys recon (pg 12);
+            #                              bill match (pg 13)
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
@@ -5658,10 +5812,12 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
             f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
             f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
+            # -- CSA SCORECARD --
+            f"{wrap(_strip(10) + build_csa_scorecard_page(csa, date_str))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(10) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(11) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(12) + build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(11) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(12) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
@@ -5690,6 +5846,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
+    csa = compute_csa_scorecard(sambasafety_sheets) if sambasafety_sheets else None
     # Alvys-side driver compliance (CDL + DOT medical card expirations).
     # Read from the same Alvys Pipeline.xlsx as everything else — the
     # `Drivers` sheet is added by src.main when the pipeline writes it.
@@ -5711,7 +5868,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
                       avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm)
+                      customer_rpm=customer_rpm, csa=csa)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
