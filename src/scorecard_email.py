@@ -5503,17 +5503,16 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "font-family:Helvetica,Arial,sans-serif;font-size:8.5pt;color:#999;}}"
         "body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
         ".page-break{page-break-after:always;break-after:page;height:0 !important;background:transparent !important;}"
-        # Screen constraint: cap the email-view width. The max-width lives here
-        # in CSS (not as an inline style) so @media print can override it.
-        ".brief-wrap{max-width:760px;}"
+        # 760px email constraint is screen-only so WeasyPrint never sees it
+        # and the brief fills the full letter printable area in the PDF.
+        "@media screen{.brief-wrap{max-width:760px;}}"
         # Each content 'page' is designed for email scroll, not letter-fit; the
         # PDF footer's 'Page N of M' uses the real letter-page count, so the
         # in-content header's PG number was confusing. Hide it in print.
         ".pg-of{display:inline;}"
         "@media print{"
-        # Print-friendly width: drop the 760px email constraint so content
-        # fills the letter-printable area edge-to-edge (no right-side clip).
-        ".brief-wrap{max-width:none !important;width:100% !important;}"
+        # Ensure full-width in print (belt-and-suspenders alongside screen-only max-width).
+        ".brief-wrap{max-width:none;width:100%;}"
         # Let wide tables wrap to a new page rather than clip in print.
         ".scroll-wide{overflow:visible !important;}"
         # Avoid splitting an individual row of a tile/table across pages.
