@@ -403,7 +403,7 @@ def main() -> int:
 
     log.info("Maintenance: %d assets have DOT inspection records", len(_last_dot))
 
-    # Overlay DOT inspection dates onto trailers_df.
+    # Overlay DOT inspection dates onto trailers_df AND trucks_df.
     # LastInspectionDate = actual last DOT/Annual inspection (from maintenance records).
     # AnnualInspectionDue = last + 365 days (federal DOT rule). The scorecard layers
     # the 120-day company policy on top of LastInspectionDate.
@@ -418,6 +418,19 @@ def main() -> int:
         n_filled = trailers_df["AnnualInspectionDue"].notna().sum()
         log.info("Trailers: %d of %d have LastInspectionDate from maintenance records",
                  n_filled, len(trailers_df))
+    # Same treatment for tractors so the 120-day company policy applies to the
+    # whole fleet (the executive brief calls it out at the bottom-line level).
+    if _last_dot and trucks_df is not None and not trucks_df.empty and "Id" in trucks_df.columns:
+        trucks_df["LastInspectionDate"] = trucks_df["Id"].map(
+            lambda aid: _last_dot[aid].strftime("%Y-%m-%d") if aid in _last_dot else None
+        )
+        trucks_df["AnnualInspectionDue"] = trucks_df["Id"].map(
+            lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
+            if aid in _last_dot else None
+        )
+        n_filled = trucks_df["AnnualInspectionDue"].notna().sum()
+        log.info("Trucks: %d of %d have LastInspectionDate from maintenance records",
+                 n_filled, len(trucks_df))
 
     maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
 
