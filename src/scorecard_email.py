@@ -2990,6 +2990,25 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 continue
             annual_ts, annual_days = _days_until(r.get(annual_col) if annual_col else None)
             reg_ts,    reg_days    = _days_until(r.get(reg_col) if reg_col else None)
+            # Last DOT inspection date — trailers-only, populated from Alvys
+            # /maintenance/search (DOT/Annual category) by src/main.py. The
+            # 120-day company-policy threshold counts FROM this date forward;
+            # AnnualInspectionDue (above) is the federal 365-day rule.
+            last_insp_raw = r.get("LastInspectionDate") if "LastInspectionDate" in df.columns else None
+            last_insp_ts = None
+            policy_days_left = None
+            if last_insp_raw not in (None, "") and pd.notna(last_insp_raw):
+                try:
+                    last_insp_ts = pd.to_datetime(last_insp_raw, errors="coerce")
+                    if pd.notna(last_insp_ts):
+                        if getattr(last_insp_ts, "tz", None) is not None:
+                            last_insp_ts = last_insp_ts.tz_localize(None)
+                        days_since = (now.normalize() - last_insp_ts.normalize()).days
+                        policy_days_left = 120 - days_since
+                    else:
+                        last_insp_ts = None
+                except Exception:
+                    last_insp_ts = None
             # Trucks-only extras — silently absent on the Trailers sheet.
             mileage = r.get("LastMileage") if "LastMileage" in df.columns else None
             try:
@@ -3011,6 +3030,8 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 "status":           status,
                 "annual_due":       annual_ts,
                 "annual_days":      annual_days,
+                "last_inspection":  last_insp_ts,
+                "policy_days":      policy_days_left,
                 "reg_due":          reg_ts,
                 "reg_days":         reg_days,
                 "last_mileage":     mileage_int,
@@ -3018,9 +3039,17 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 "oil_change_days":  oil_days,
                 "oil_change_miles": oil_mi_int,
             })
-        rows.sort(key=lambda r: (
-            r["annual_days"] if isinstance(r["annual_days"], int) else 9999,
-        ))
+        # Soonest urgency first. For trailers, the 120-day company policy fires
+        # before the 365-day federal rule, so sort by policy_days when present
+        # and fall back to annual_days.
+        def _urgency(r):
+            pd_v = r.get("policy_days")
+            ad_v = r.get("annual_days")
+            return (
+                pd_v if isinstance(pd_v, int) else 9999,
+                ad_v if isinstance(ad_v, int) else 9999,
+            )
+        rows.sort(key=_urgency)
         return rows
 
     tractors = _parse_sheet(trucks_df,   exclude=_TRUCK_EXCLUDE)
@@ -3036,9 +3065,12 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
     r_od_a, r_w30_a, r_w60_a = _counts(trailers, "annual_days")
     t_od_r, t_w30_r, t_w60_r = _counts(tractors, "reg_days")
     r_od_r, r_w30_r, r_w60_r = _counts(trailers, "reg_days")
+    # 120-day company policy: trailers only (where LastInspectionDate is populated).
+    r_od_p, r_w30_p, _ = _counts(trailers, "policy_days")
 
     annual_found = any(isinstance(r.get("annual_days"), int) for r in tractors + trailers)
     reg_found    = any(isinstance(r.get("reg_days"),    int) for r in tractors + trailers)
+    policy_found = any(isinstance(r.get("policy_days"), int) for r in trailers)
 
     return {
         "tractors": tractors,
@@ -3047,8 +3079,10 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
         "trailers_overdue_annual": r_od_a, "trailers_warn30_annual": r_w30_a, "trailers_warn60_annual": r_w60_a,
         "tractors_overdue_reg":    t_od_r, "tractors_warn30_reg":    t_w30_r, "tractors_warn60_reg":    t_w60_r,
         "trailers_overdue_reg":    r_od_r, "trailers_warn30_reg":    r_w30_r, "trailers_warn60_reg":    r_w60_r,
+        "trailers_overdue_policy": r_od_p, "trailers_warn30_policy": r_w30_p,
         "annual_found": annual_found,
         "reg_found":    reg_found,
+        "policy_found": policy_found,
         "total_tractors": len(tractors),
         "total_trailers": len(trailers),
     }
@@ -3106,6 +3140,7 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
                     f"No {kind} records found.</div>")
 
         show_annual  = any(isinstance(r.get("annual_days"), int) for r in rows)
+        show_policy  = any(isinstance(r.get("policy_days"), int) for r in rows)
         show_reg     = any(isinstance(r.get("reg_days"),    int) for r in rows)
         show_mileage = any(isinstance(r.get("last_mileage"), int) for r in rows)
         show_oil     = any(r.get("oil_change_date") is not None
@@ -3116,6 +3151,9 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         head_cols = [th.format(t="Unit")]
         if any(r.get("year") or r.get("make") for r in rows):
             head_cols.append(th.format(t="Year/Make"))
+        if show_policy:
+            head_cols.append(th.format(t="Last DOT Insp"))
+            head_cols.append(th.format(t="120d Policy"))
         if show_annual:
             head_cols.append(th.format(t="Annual Insp Due"))
             head_cols.append(th.format(t="Days"))
@@ -3138,6 +3176,9 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             if any(r.get("year") or r.get("make") for r in rows):
                 ym = " ".join(filter(None, [r.get("year"), r.get("make"), r.get("model")])) or "—"
                 cols_td.append(td.format(v=f"<span style='color:{MUTE};font-size:12px;'>{ym}</span>"))
+            if show_policy:
+                cols_td.append(td.format(v=_date_str(r.get("last_inspection"))))
+                cols_td.append(td.format(v=_badge(r.get("policy_days"))))
             if show_annual:
                 cols_td.append(td.format(v=_date_str(r.get("annual_due"))))
                 cols_td.append(td.format(v=_badge(r.get("annual_days"))))
@@ -3174,11 +3215,14 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
 
-    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
+    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r,
+                       overdue_p=None, w30_p=None):
+        parts = [_summary_pill(overdue_a, w30_a, w60_a, "Annual inspection (365d federal):")]
+        if overdue_p is not None:
+            parts.append(_summary_pill(overdue_p, w30_p, 0, "DOT inspection (120d policy):"))
+        parts.append(_summary_pill(overdue_r, w30_r, w60_r, "Registration:"))
         summary = (f"<div style='padding:10px 0 6px;'>"
-                   + _summary_pill(overdue_a, w30_a, w60_a, "Annual inspection:")
-                   + "&nbsp;&nbsp;"
-                   + _summary_pill(overdue_r, w30_r, w60_r, "Registration:")
+                   + "&nbsp;&nbsp;".join(parts)
                    + "</div>")
         return (f"{_section(kind + ' &mdash; ' + str(len(rows)) + ' units')}"
                 + summary
@@ -3195,10 +3239,15 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             equipment["trailers"], "Trailers",
             equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
             equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
+            overdue_p=equipment.get("trailers_overdue_policy", 0),
+            w30_p=equipment.get("trailers_warn30_policy", 0),
         )
+    sort_note = ("Sort: soonest 120-day company policy first (trailers); soonest annual inspection first (tractors)."
+                 if kind == "trailers"
+                 else "Sort: soonest annual inspection first.")
     body += (f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets. "
-             f"Red = overdue or &le;30d. Orange = 31&ndash;60d. Sort: soonest annual inspection first.</div>")
+             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
+             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note}</div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
