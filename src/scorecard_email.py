@@ -1923,10 +1923,12 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
              ("severity",), ("status", "reviewed", "coaching")],
         )
         # "Coaching needs assigned" list — per-driver aggregation over the
-        # 7-day window so the table never empties out the way the 24h slice
-        # often does, and so every driver with even one event is surfaced.
-        _7d = events[ed >= w["7d"]]
-        _7d_dates = ed[ed >= w["7d"]]
+        # last 30 days. Drivers stay on the list until they sign their
+        # coaching session, then carry over for 3 more days as a closeout
+        # window before dropping off (visibility rule applied at render
+        # time in _safety_detail_tables using out["coaching_acks"]).
+        _7d = events[ed >= w["30d"]]
+        _7d_dates = ed[ed >= w["30d"]]
         if not _7d.empty and dcol:
             et_col = _find_col(_7d, ["event type"])
             sev_col = _find_col(_7d, ["severity"])
@@ -2482,11 +2484,28 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # --- Coaching sessions ---------------------------------------------------
     coaching_sheet = sheets.get("CoachingSessions")
     out["coaching_sessions"] = {"self_past_due": [], "manager_past_due": [], "available": False}
+    # coaching_acks: normalized driver name -> sorted list of UTC datetimes when
+    # the driver signed/acknowledged a coaching session (Status == "completed"
+    # in Samsara, which only flips after the driver signs off). Used to render
+    # the "Ack" check in the page-1 safety-events + coaching-needs tables.
+    out["coaching_acks"] = {}
     if coaching_sheet is not None and not coaching_sheet.empty:
         out["coaching_sessions"]["available"] = True
         today_d = _dt.date.today()
         for _, row in coaching_sheet.iterrows():
             status = str(row.get("Status") or "").strip().lower()
+            # Build the per-driver acknowledgment timeline first — any session
+            # marked "completed" with a Completed At timestamp counts.
+            if status == "completed":
+                drv = str(row.get("Driver Name") or "").strip().lower()
+                comp_raw = str(row.get("Completed At") or "").strip()
+                if drv and comp_raw:
+                    try:
+                        comp_ts = pd.to_datetime(comp_raw, utc=True)
+                        if pd.notna(comp_ts):
+                            out["coaching_acks"].setdefault(drv, []).append(comp_ts)
+                    except Exception:
+                        pass
             if status not in ("pending", "not started", "notstarted", "assigned"):
                 continue
             due_raw = str(row.get("Due At") or "").strip()
@@ -2511,6 +2530,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 out["coaching_sessions"]["manager_past_due"].append(rec)
             else:
                 out["coaching_sessions"]["self_past_due"].append(rec)
+        for drv in out["coaching_acks"]:
+            out["coaching_acks"][drv].sort()
 
     # --- Training assignments ------------------------------------------------
     training_sheet = sheets.get("TrainingAssignments")
@@ -4549,24 +4570,54 @@ def _safety_detail_tables(samsara) -> str:
     """HOS violations / Safety events (last 7d) / Open DVIR defects /
     Coaching needs assigned tables. Rendered at the bottom of page 1."""
     detail = (samsara or {}).get("detail", {})
+    acks_by_driver = (samsara or {}).get("coaching_acks", {}) or {}
 
     def _when(r) -> str:
         # Combine date + time for the 7-day windows so the reader knows what
         # day each violation/event landed on.
         return (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;"
 
+    def _ack_after(driver: str, event_ts):
+        """Return the latest matching ack timestamp (a UTC pd.Timestamp) if
+        the driver signed off on a coaching session at or after the given
+        event timestamp, else None."""
+        if not driver or event_ts is None or pd.isna(event_ts):
+            return None
+        latest = None
+        for ack_ts in acks_by_driver.get(driver.strip().lower(), []):
+            if ack_ts >= event_ts and (latest is None or ack_ts > latest):
+                latest = ack_ts
+        return latest
+
+    def _ack_cell(yes: bool) -> str:
+        # &check; renders as a clean ✓ in both desktop email and WeasyPrint PDF.
+        return "&check;" if yes else "&mdash;"
+
+    # "Leave it on for 3 days after acknowledgment" — a driver stays on the
+    # Coaching needs assigned list until they've signed, and then for this
+    # many days after their signature before they drop off entirely.
+    _ACK_KEEP_DAYS = 3
+    _now_utc = pd.Timestamp.now(tz="UTC")
+
     hos_rows = "".join(
         _tr([r.get("driver name", ""), _when(r), r.get("violation type", ""), r.get("status", "")],
             ["left", "left", "left", "left"], [None, None, "bad", None])
         for r in detail.get("hos", []))
 
-    event_rows = "".join(
-        _tr([r.get("driver name", ""), r.get("unit", ""), _when(r),
-             r.get("event type", ""), r.get("severity", ""), r.get("status", "")],
-            ["left", "left", "left", "left", "left", "left"],
+    event_rows = ""
+    for r in detail.get("events", []):
+        evt_ts = pd.to_datetime(
+            (r.get("date", "") + " " + r.get("time", "")).strip(),
+            errors="coerce", utc=True)
+        acked = _ack_after(r.get("driver name", ""), evt_ts) is not None
+        event_rows += _tr(
+            [r.get("driver name", ""), r.get("unit", ""), _when(r),
+             r.get("event type", ""), r.get("severity", ""), r.get("status", ""),
+             _ack_cell(acked)],
+            ["left", "left", "left", "left", "left", "left", "center"],
             [None, None, None, None,
-             ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"), None])
-        for r in detail.get("events", []))
+             ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"),
+             None, ("good" if acked else "mute")])
 
     dvir_rows = "".join(
         _tr([r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
@@ -4584,25 +4635,37 @@ def _safety_detail_tables(samsara) -> str:
     coach_rows = ""
     for c in coaching_list:
         n = c.get("events", 0)
+        # Ack ✓ when the driver has signed any coaching session at or after
+        # the driver's most-recent event in the lookback window.
+        last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
+        ack_ts = _ack_after(c.get("driver", ""), last_ts)
+        # Visibility rule: a driver stays on the list until they sign
+        # (no ack -> always show), then for _ACK_KEEP_DAYS after their
+        # signature before dropping off.
+        if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
+            continue
+        acked = ack_ts is not None
         action = "Assign coaching" if n >= COACH_EVENT_THRESHOLD else "Monitor"
         action_kind = "bad" if n >= COACH_EVENT_THRESHOLD else "warn"
         events_kind = "bad" if n >= COACH_EVENT_THRESHOLD else ("warn" if n > 0 else None)
         types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
         coach_rows += _tr(
-            [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;", action],
-            ["left", "left", "right", "left", "left"],
-            [None, None, events_kind, None, action_kind],
+            [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
+             action, _ack_cell(acked)],
+            ["left", "left", "right", "left", "left", "center"],
+            [None, None, events_kind, None, action_kind,
+             ("good" if acked else "mute")],
         )
 
     return (
         f"{_section('HOS violations &mdash; last 7 days')}"
         f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
         f"{_section('Safety events &mdash; last 7 days')}"
-        f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
+        f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status', 'Ack'], ['left', 'left', 'left', 'left', 'left', 'left', 'center'], event_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
-        f"{_table(['Driver', 'Event Types', 'Events (7d)', 'Last Event', 'Action'], ['left', 'left', 'right', 'left', 'left'], coach_rows)}"
+        f"{_table(['Driver', 'Event Types', 'Events (7d)', 'Last Event', 'Action', 'Ack'], ['left', 'left', 'right', 'left', 'left', 'center'], coach_rows)}"
     )
 
 
