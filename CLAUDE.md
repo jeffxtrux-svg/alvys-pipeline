@@ -114,11 +114,12 @@ upload `output/` as a 7-day artifact (`if: always()`):
 
 | Workflow | Does | Cron (UTC) |
 |----------|------|------------|
-| `refresh.yml` | Alvys pull → OneDrive → artifact | `0 11,18,0 * * *` |
-| `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 11,18,0 * * *` |
-| `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `0 11,18,0 * * *` |
-| `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 13 * * *` |
-| `scorecard_email.yml` | read OneDrive → email daily brief (10 pages) | `30 11 * * *` |
+| `refresh.yml` | Alvys pull → OneDrive → artifact | `0 9,16,22 * * *` |
+| `samsara_refresh.yml` | Samsara pull → OneDrive → alerts → artifact | `0 9,16,22 * * *` |
+| `qb_refresh.yml` | QB pull (+token rotation) → OneDrive → artifact | `0 9,16,22 * * *` |
+| `sambasafety_refresh.yml` | merge SambaSafety CSVs → OneDrive | `30 7 * * *` |
+| `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 11 * * *` |
+| `scorecard_email.yml` | read OneDrive → email daily brief (13 pages) | `30 8 * * *` (+ 4 backup slots) |
 
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
@@ -144,7 +145,7 @@ The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Li
 12. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
 13. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
 
-Crons are fixed UTC: the three pulls (Alvys / Samsara / QB) fire concurrently at **5:00am CST** (6:00am CDT) / 12pm / 6pm Central; the scorecard email follows **30 min later at 5:30am CST** (6:30am CDT). The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
+Crons are fixed UTC and were pulled **2 hours earlier in June 2026**. The three pulls (Alvys / Samsara / QB) fire concurrently at **3:00am CST** (4:00am CDT) / 10am / 4pm Central; SambaSafety lands **at 1:30am CST** (2:30am CDT) so its workbook is in OneDrive an hour before the scorecard; the scorecard email primary follows at **3:30am CST** (4:30am CDT) with 4 backup slots through 5am CST in case GitHub Actions drops the primary. The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
 the new refresh token; without it the run still works but warns and the old
 token lasts ~100 days.

@@ -9,11 +9,11 @@ on:
   # Reusable so the "Refresh All" workflow can call it.
   workflow_call:
 
-  # Same UTC schedule as Alvys: 5am, 12pm, 6pm Central
+  # Same UTC schedule as Alvys: 3am, 10am, 4pm Central
   schedule:
-    - cron: '0 11 * * *'   # 5am CT (winter) / 6am CT (DST)
-    - cron: '0 18 * * *'   # 12pm CT (winter) / 1pm CT (DST)
-    - cron: '0 0 * * *'    # 6pm CT (winter) / 7pm CT (DST)
+    - cron: '0 9 * * *'    # 3am CT (winter) / 4am CT (DST)
+    - cron: '0 16 * * *'   # 10am CT (winter) / 11am CT (DST)
+    - cron: '0 22 * * *'   # 4pm CT (winter) / 5pm CT (DST)
 
 jobs:
   refresh:

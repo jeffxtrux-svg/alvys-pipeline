@@ -28,7 +28,7 @@ SambaSafety   ──email──▶  jeff@xfreight.net
                                  │
                   ┌──────────────┘
                   ▼
-        src.sambasafety_main  (daily 10:30 UTC)
+        src.sambasafety_main  (daily 7:30 UTC)
             ├── download_file × 2     (Graph)
             ├── combine_to_workbook   (sambasafety_combine.py)
             └── upload_file
@@ -38,7 +38,7 @@ SambaSafety   ──email──▶  jeff@xfreight.net
                           SambaSafety_Master.xlsx
                                  │
                                  ▼
-       src.scorecard_email  (daily 11:30 UTC, 60 min later)
+       src.scorecard_email  (daily 8:30 UTC, 60 min later)
            ├── compute_sambasafety    →  monitored / license_issues /
            │                             high_risk / violations / ranked
            ├── page_strips[2]         (real-data callout above page 2)
@@ -130,8 +130,10 @@ a schema migration.
 
 ## Daily refresh job (`sambasafety_refresh.yml`)
 
-- **Cron:** `30 10 * * *` UTC → **4:30am CST** (winter) / **5:30am CDT**
-  (summer). One hour ahead of the scorecard so the workbook is fresh.
+- **Cron:** `30 7 * * *` UTC → **1:30am CST** (winter) / **2:30am CDT**
+  (summer). One hour ahead of the scorecard primary slot (`30 8 UTC` =
+  3:30am CDT) so the merged workbook is reliably present in OneDrive
+  when the scorecard reads it.
 - **Steps:** checkout → install requirements → `python -m src.sambasafety_main`
   → upload `output/sambasafety/` as a 7-day artifact.
 - **Required secrets:** `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,

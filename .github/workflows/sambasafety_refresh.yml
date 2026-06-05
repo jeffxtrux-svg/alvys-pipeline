@@ -16,10 +16,13 @@ on:
   workflow_dispatch:
   workflow_call:
   schedule:
-    # 10:30 UTC = 4:30am CST (winter) / 5:30am CDT (summer).
-    # Runs an hour before the scorecard email job, so the merged workbook is
-    # always fresh when the scorecard reads it.
-    - cron: '30 10 * * *'
+    # 7:30 UTC = 1:30am CST (winter) / 2:30am CDT (summer).
+    # Runs 1 hour before the scorecard primary (30 8 UTC = 3:30am CDT) so
+    # the merged SambaSafety_Master.xlsx is reliably present in OneDrive
+    # when the scorecard reads it. Previously these two collided at the
+    # same minute, leaving the scorecard reading yesterday's workbook on
+    # any run where SambaSafety hadn't finished writing yet.
+    - cron: '30 7 * * *'
 
 jobs:
   refresh:

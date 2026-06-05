@@ -167,8 +167,8 @@ placeholder and the run is not flagged as failed.
        attachments, save attachments to `OneDrive/SambaSafety/`. Set up
        once, runs forever.
      - **SambaSafety API** — long-term replacement; out of scope here.
-  3. The **`Refresh SambaSafety data`** workflow runs daily at 10:30 UTC
-     (4:30am CST / 5:30am CDT, an hour before the scorecard email). It
+  3. The **`Refresh SambaSafety data`** workflow runs daily at 7:30 UTC
+     (1:30am CST / 2:30am CDT, an hour before the scorecard email). It
      reads both CSVs from OneDrive, runs `src.sambasafety_combine`, and
      uploads `SambaSafety_Master.xlsx` back to the same folder. Trigger it
      manually from the Actions tab the first time so you don't have to wait

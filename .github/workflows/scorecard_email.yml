@@ -42,14 +42,14 @@ on:
     # the marker check.
     #
     # GitHub cron is fixed UTC and ignores DST. Times below show CDT/CST.
-    # Target: 5:30am Central year-round. Currently tuned for CDT (DST).
+    # Target: 3:30am Central year-round. Currently tuned for CDT (DST).
     # When DST ends ~early Nov, shift each cron 1 hour later to keep
-    # firing at 5:30am CST (i.e. 30 11, 45 11, 0 12, 30 12, 0 13).
-    - cron: '30 10 * * *'   # primary    5:30am CDT / 4:30am CST
-    - cron: '45 10 * * *'   # backup 1   5:45am CDT / 4:45am CST
-    - cron: '0 11 * * *'    # backup 2   6:00am CDT / 5:00am CST
-    - cron: '30 11 * * *'   # backup 3   6:30am CDT / 5:30am CST
-    - cron: '0 12 * * *'    # backup 4   7:00am CDT / 6:00am CST (last resort)
+    # firing at 3:30am CST (i.e. 30 9, 45 9, 0 10, 30 10, 0 11).
+    - cron: '30 8 * * *'    # primary    3:30am CDT / 2:30am CST
+    - cron: '45 8 * * *'    # backup 1   3:45am CDT / 2:45am CST
+    - cron: '0 9 * * *'     # backup 2   4:00am CDT / 3:00am CST
+    - cron: '30 9 * * *'    # backup 3   4:30am CDT / 3:30am CST
+    - cron: '0 10 * * *'    # backup 4   5:00am CDT / 4:00am CST (last resort)
 
 permissions:
   contents: write
