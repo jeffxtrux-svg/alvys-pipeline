@@ -74,7 +74,7 @@ TARGET_RPM = 2.92
 TARGET_DEADHEAD = 0.06
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
-DRIVER_TARGET_MILES = 2000  # weekly miles target for the mileage page below-target tile
+DRIVER_TARGET_MILES = 2750  # weekly miles target for the mileage page below-target tile
 
 # --- X-Trux rate-per-mile goal -----------------------------------------
 # The goal re-costs the operation every run instead of trusting a stale number.
@@ -129,7 +129,7 @@ RPM_GOAL_PLAUSIBLE_BAND = (1.50, 5.00)     # cost/mi outside this is flagged
 # SambaSafety driver-compliance thresholds (page 2).
 LICENSE_EXPIRY_WARN_DAYS = 30     # flag licenses expiring within this many days
 SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk category column
-VIOLATION_WINDOW_DAYS = 365       # MVR violations are historical records, not real-time
+VIOLATION_WINDOW_DAYS = 90        # MVR violations: surface the last 90d so the tile/page reflect recent risk, not the full year of historical record
                                   # alerts — a year matches how SambaSafety surfaces them
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
@@ -4633,28 +4633,36 @@ def _safety_detail_tables(samsara) -> str:
     # (>= threshold) or just monitor (one-off).
     coaching_list = (samsara or {}).get("coaching_list") or []
     coach_rows = ""
+    _seven_d_ago = _now_utc - pd.Timedelta(days=7)
     for c in coaching_list:
         n = c.get("events", 0)
-        # Ack ✓ when the driver has signed any coaching session at or after
-        # the driver's most-recent event in the lookback window.
         last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
-        ack_ts = _ack_after(c.get("driver", ""), last_ts)
-        # Visibility rule: a driver stays on the list until they sign
-        # (no ack -> always show), then for _ACK_KEEP_DAYS after their
-        # signature before dropping off.
-        if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
-            continue
-        acked = ack_ts is not None
-        action = "Assign coaching" if n >= COACH_EVENT_THRESHOLD else "Monitor"
-        action_kind = "bad" if n >= COACH_EVENT_THRESHOLD else "warn"
-        events_kind = "bad" if n >= COACH_EVENT_THRESHOLD else ("warn" if n > 0 else None)
+        is_coaching = n >= COACH_EVENT_THRESHOLD
+        if is_coaching:
+            # "Assign coaching": stays on the list until the driver signs,
+            # then for _ACK_KEEP_DAYS more days as a closeout indicator.
+            ack_ts = _ack_after(c.get("driver", ""), last_ts)
+            if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
+                continue
+            acked = ack_ts is not None
+        else:
+            # "Monitor": one-off events don't need driver acknowledgment —
+            # roll off naturally after 7 days from the event itself. The Ack
+            # column reads as N/A so it doesn't imply a missing signature.
+            if pd.notna(last_ts) and last_ts < _seven_d_ago:
+                continue
+            acked = False
+        action = "Assign coaching" if is_coaching else "Monitor"
+        action_kind = "bad" if is_coaching else "warn"
+        events_kind = "bad" if is_coaching else ("warn" if n > 0 else None)
         types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
+        ack_cell = _ack_cell(acked) if is_coaching else "n/a"
+        ack_color = ("good" if acked else "mute") if is_coaching else "mute"
         coach_rows += _tr(
             [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
-             action, _ack_cell(acked)],
+             action, ack_cell],
             ["left", "left", "right", "left", "left", "center"],
-            [None, None, events_kind, None, action_kind,
-             ("good" if acked else "mute")],
+            [None, None, events_kind, None, action_kind, ack_color],
         )
 
     return (
