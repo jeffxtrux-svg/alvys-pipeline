@@ -21,17 +21,20 @@ Each connector has its own workflow in `.github/workflows/`. All three:
 | `qb_refresh.yml` | pull (+token rotation) → OneDrive upload → artifact | `0 9,16,22 * * *` |
 | `sambasafety_refresh.yml` | merge raw CSVs → SambaSafety_Master.xlsx → OneDrive | `30 7 * * *` (1×/day) |
 | `sheets_refresh.yml` | pull all 3 → write Google Sheets KPI dashboard | `30 9 * * *` (1×/day) |
-| `scorecard_email.yml` | read OneDrive files → compute KPIs → email daily scorecard | `30 8 * * *` primary + 4 backup slots (1×/day) |
+| `scorecard_email.yml` | read OneDrive files → compute KPIs → email daily scorecard | 5am CT year-round (6 UTC slots gated to ≥ 5am Central) |
 
 The cron times map to **3am / 10am / 4pm Central** for the three pulls (Alvys /
 Samsara / QuickBooks fire concurrently — each writes to its own OneDrive folder
 with its own credentials, no contention). SambaSafety runs at **1:30am CST** so
-its workbook is in OneDrive an hour before the scorecard reads it. The scorecard
-email primary fires at **3:30am CST** with backup slots at `45 8`, `0 9`, `30 9`,
-`0 10` UTC (3:45 / 4:00 / 4:30 / 5:00am CDT) — only the first slot that fires
-sends the email; subsequent backups detect the prior run and no-op. Sheets
-dashboard at 4:30am CDT. Cron is fixed UTC, so the Central clock time shifts by
-an hour across daylight-saving changes.
+its workbook is in OneDrive before the scorecard reads it. The scorecard email
+primary fires at **5:00am Central year-round** — the workflow arms six UTC cron
+slots covering the CDT 5–6am window (`0,15,30 10 UTC`) and the CST 5–6am window
+(`0,30 11 UTC` + `0 12 UTC`), and a first step at the top of the job exits early
+when the current Central-time hour is < 5. That gate, combined with the script's
+same-day idempotency marker in OneDrive, means exactly one slot per day actually
+emails — the first one at or after 5am CT, regardless of DST. Sheets dashboard
+at 4:30am CDT. Cron is fixed UTC; the season guard handles the wall-clock shift
+across daylight-saving changes so no manual cron edits are needed.
 
 ### Per-workflow notable env wiring
 
