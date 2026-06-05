@@ -263,6 +263,56 @@ def _monthly_counts(dates: pd.Series) -> tuple[list[str], list[int]]:
 
 
 # ----------------------------------------------------------------------
+# Speed-over-limit comment rubric — module-scope so scorecard_insights
+# can call the SAME generator. The page-4 detail table and the page-1
+# bottom-line escalation never disagree about who's flagged or whether
+# they're improving — both branch off the trend phrase this returns.
+# ----------------------------------------------------------------------
+def compute_speed_comment(pct_6mo, pct_3mo, pct_mtd) -> str:
+    """Plain-language comment per the speeding-threshold rubric.
+
+    Base message uses the PEAK of the three windows so a chronic 6mo problem
+    and an acute MTD spike both surface. A trend suggestion is layered on:
+    falling fast / improving / spiking / trending worse / no improvement.
+    """
+    pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
+    peak = max(pcts) if pcts else None
+    base = ""
+    if _isnum(peak):
+        if peak >= 3.0:
+            base = "STOP this driver now"
+        elif peak >= 2.5:
+            base = "Need to sit down with this driver &mdash; they have a problem"
+        elif peak >= 2.25:
+            base = "This is too fast"
+        elif peak >= 2.0:
+            base = "Driver needs a conversation"
+        elif peak >= 1.75:
+            base = "Where is the fire?"
+        elif peak >= 1.5:
+            base = "We have a problem with speed"
+        elif peak >= 1.25:
+            base = "Watch this driver"
+    trend = ""
+    if _isnum(pct_6mo) and _isnum(pct_mtd) and pct_6mo >= 0:
+        # MTD spike vs the longer windows — recent jump, address immediately.
+        longer = max(pct_6mo, pct_3mo) if _isnum(pct_3mo) else pct_6mo
+        if _isnum(longer) and pct_mtd - longer >= 2.0:
+            trend = "spiking &mdash; recent jump, address now"
+        elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.3:
+            trend = "falling fast &mdash; keep it up"
+        elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.6:
+            trend = "improving &mdash; keep it up"
+        elif pct_mtd - pct_6mo >= 1.0:
+            trend = "trending worse"
+        elif base and pct_mtd >= pct_6mo - 0.1:
+            trend = "no improvement &mdash; requires action"
+    if base and trend:
+        return f"{base}. {trend}."
+    return base or trend
+
+
+# ----------------------------------------------------------------------
 # Window helpers
 # ----------------------------------------------------------------------
 def _windows() -> dict[str, pd.Timestamp]:
@@ -4890,48 +4940,7 @@ def build_page2(samsara, date_str) -> str:
         if sm: return "warn"
         return None
 
-    def _spd_comment(pct_6mo, pct_3mo, pct_mtd):
-        """Plain-language comment per the speeding-threshold rubric.
-
-        Base message uses the PEAK of the three windows so a chronic 6mo problem
-        and an acute MTD spike both surface. A trend suggestion is layered on:
-        falling fast / improving / spiking / trending worse / no improvement.
-        """
-        pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
-        peak = max(pcts) if pcts else None
-        base = ""
-        if _isnum(peak):
-            if peak >= 3.0:
-                base = "STOP this driver now"
-            elif peak >= 2.5:
-                base = "Need to sit down with this driver &mdash; they have a problem"
-            elif peak >= 2.25:
-                base = "This is too fast"
-            elif peak >= 2.0:
-                base = "Driver needs a conversation"
-            elif peak >= 1.75:
-                base = "Where is the fire?"
-            elif peak >= 1.5:
-                base = "We have a problem with speed"
-            elif peak >= 1.25:
-                base = "Watch this driver"
-        trend = ""
-        if _isnum(pct_6mo) and _isnum(pct_mtd) and pct_6mo >= 0:
-            # MTD spike vs the longer windows — recent jump, address immediately.
-            longer = max(pct_6mo, pct_3mo) if _isnum(pct_3mo) else pct_6mo
-            if _isnum(longer) and pct_mtd - longer >= 2.0:
-                trend = "spiking &mdash; recent jump, address now"
-            elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.3:
-                trend = "falling fast &mdash; keep it up"
-            elif pct_6mo >= 1.0 and pct_mtd <= pct_6mo * 0.6:
-                trend = "improving &mdash; keep it up"
-            elif pct_mtd - pct_6mo >= 1.0:
-                trend = "trending worse"
-            elif base and pct_mtd >= pct_6mo - 0.1:
-                trend = "no improvement &mdash; requires action"
-        if base and trend:
-            return f"{base}. {trend}."
-        return base or trend
+    _spd_comment = compute_speed_comment  # single source of truth (module-scope)
 
     def _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd):
         if not comment:

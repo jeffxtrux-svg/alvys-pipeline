@@ -291,39 +291,34 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"Trailers overdue on 120-day company DOT policy: "
                 f"{units}{more} (pg 6).")
 
-    # Speed-over-limit escalations — name the drivers who hit the "STOP this
-    # driver" (peak >= 3.0%) or "Need to sit down" (peak >= 2.5%) thresholds
-    # on the page-4 detail and are NOT showing improvement. Mirrors the
-    # _spd_comment rubric in build_page2b so the bottom line and the detail
-    # table never disagree about who's escalating.
+    # Speed-over-limit escalations — name the drivers whose page-4
+    # speed-over-limit comment says "STOP this driver now" or "Need to sit
+    # down with this driver" AND does NOT call out any improvement trend
+    # ("improving" / "falling fast"). Uses the SAME compute_speed_comment
+    # generator as the page-4 detail table, so the two are guaranteed to
+    # agree on phrasing and exclusion.
+    from src.scorecard_email import compute_speed_comment as _spd
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
     _stop_drivers: list[tuple[str, str]] = []
     _sit_drivers: list[tuple[str, str]] = []
     for r in scores_all:
-        p6  = r.get("speed_pct_6mo")
-        p3  = r.get("speed_pct_3mo")
+        p6   = r.get("speed_pct_6mo")
+        p3   = r.get("speed_pct_3mo")
         pmtd = r.get("speed_pct_mtd")
-        pcts = [p for p in (p6, p3, pmtd) if _isnum(p)]
-        if not pcts:
+        comment = _spd(p6, p3, pmtd) or ""
+        if "improving" in comment or "falling fast" in comment:
+            continue  # page-4 calls out an improvement trend — don't escalate
+        is_stop = "STOP this driver now" in comment
+        is_sit  = "Need to sit down with this driver" in comment
+        if not (is_stop or is_sit):
             continue
-        peak = max(pcts)
-        if peak < 2.5:
-            continue  # below "Need to sit down" threshold — skip
-        # Improvement detection — same rules as the page-4 comment trend.
-        improving = False
-        if _isnum(p6) and _isnum(pmtd) and p6 >= 1.0:
-            if pmtd <= p6 * 0.3 or pmtd <= p6 * 0.6:
-                improving = True
-        if improving:
-            continue  # showing real improvement — don't escalate on page 1
         nm = (r.get("driver") or "").strip() or "(unknown)"
-        peak_txt = f"{peak:.1f}% peak"
-        mtd_txt = f"MTD {pmtd:.1f}%" if _isnum(pmtd) else "MTD n/a"
+        pcts = [p for p in (p6, p3, pmtd) if _isnum(p)]
+        peak = max(pcts) if pcts else None
+        peak_txt = f"{peak:.1f}% peak" if _isnum(peak) else "peak n/a"
+        mtd_txt  = f"MTD {pmtd:.1f}%" if _isnum(pmtd) else "MTD n/a"
         concern = f"{peak_txt}, {mtd_txt}"
-        if peak >= 3.0:
-            _stop_drivers.append((nm, concern))
-        else:
-            _sit_drivers.append((nm, concern))
+        (_stop_drivers if is_stop else _sit_drivers).append((nm, concern))
     if _stop_drivers:
         names = "; ".join(f"{n} ({c})" for n, c in _stop_drivers[:5])
         more = f" +{len(_stop_drivers) - 5} more" if len(_stop_drivers) > 5 else ""
