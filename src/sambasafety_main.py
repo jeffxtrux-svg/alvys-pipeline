@@ -283,15 +283,25 @@ def _build_from_csv(token: str, user_upn: str, folder: str) -> bytes:
                                "risk_index_report.csv")
     viol_file = os.environ.get("SAMBASAFETY_VIOLATIONS_FILE",
                                "violationsReport.csv")
+    csa_file = os.environ.get("SAMBASAFETY_CSA_FILE",
+                              "CSA2010 Preview Scorecard.csv")
     risk_path = f"{folder}/{risk_file}"
     viol_path = f"{folder}/{viol_file}"
+    csa_path = f"{folder}/{csa_file}"
     log.info("Downloading %s ...", risk_path)
     risk_bytes = download_file(token, user_upn, risk_path)
     log.info("  -> %d bytes", len(risk_bytes))
     log.info("Downloading %s ...", viol_path)
     viol_bytes = download_file(token, user_upn, viol_path)
     log.info("  -> %d bytes", len(viol_bytes))
-    return combine_to_workbook(risk_bytes, viol_bytes)
+    csa_bytes = None
+    log.info("Downloading %s ...", csa_path)
+    try:
+        csa_bytes = download_file(token, user_upn, csa_path)
+        log.info("  -> %d bytes", len(csa_bytes))
+    except Exception as e:
+        log.warning("  CSA scorecard CSV not found (%s) — CSA Scorecard sheet will be omitted", e)
+    return combine_to_workbook(risk_bytes, viol_bytes, csa_csv=csa_bytes)
 
 
 # ----------------------------------------------------------------------

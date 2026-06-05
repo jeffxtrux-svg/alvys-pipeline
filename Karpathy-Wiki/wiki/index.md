@@ -2,14 +2,14 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-03"
+last_compiled: "2026-06-04"
 ---
 
 # Wiki Index
 
 The map of this knowledge base. Every compiled page is listed here, grouped by
 topic, with a one-line description. **Kept up to date automatically by the
-daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-03.
+daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-04.
 
 ## Meta
 

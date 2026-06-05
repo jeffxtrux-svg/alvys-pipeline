@@ -46,8 +46,7 @@ Hard guardrails:
 
 ## What pages will appear
 
-Once the daily compile starts producing output (waiting on
-`CLAUDE_CODE_OAUTH_TOKEN` setup), expect pages organized as:
+Once source material lands in `/raw`, the daily compile will produce pages organized as:
 
 - **Customers** — one page per XFreight customer (e.g. `[[Berry Plastics]]`,
   `[[CH Robinson]]`), with revenue history, AR aging behavior, recurring

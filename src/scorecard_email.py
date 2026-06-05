@@ -104,13 +104,21 @@ RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
 RPM_GOAL_PAY_WINDOW_DAYS = 10
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
 RPM_GOAL_OVERHEAD_ALLOC = 1.0
-RPM_GOAL_INSURANCE_SURCHARGE = 0.07   # liability insurance increase added Jun 2026
+# Liability insurance was tracked as a separate $0.07/mi line while the office-
+# overhead calc lagged behind the rate hike. With overhead now pinned at $0.92/mi
+# (RPM_GOAL_OVERHEAD_PIN) which already absorbs the insurance increase, this
+# surcharge is zeroed so it doesn't double-count.  Re-enable if you ever
+# decouple insurance from overhead again.
+RPM_GOAL_INSURANCE_SURCHARGE = 0.0
 # Office overhead per mile is pinned to a hand-set value while the costing
 # algorithm is being validated against the books. Set to None (or empty the
 # RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
 # through unmodified. The live value is still computed and stashed for the
 # data-check banner so we can watch the two converge.
-RPM_GOAL_OVERHEAD_PIN = 0.92
+# $0.98 = baseline office overhead + the liability-insurance increase folded
+# in (the separate $0.07/mi surcharge line was removed when this was bumped
+# from $0.92 to $0.98, so insurance is no longer double-counted).
+RPM_GOAL_OVERHEAD_PIN = 0.98
 # Fail-soft guards: if the short pay window is too thin to trust, widen it; if the
 # resulting cost lands outside a sane band, flag it on the email's data-check banner.
 RPM_GOAL_MIN_SETTLED_LOADS = 5      # need at least this many settled X-Trux loads…
@@ -159,6 +167,13 @@ def pct(x) -> str:
 
 def rpm(x) -> str:
     return f"${x:.3f}" if _isnum(x) else "n/a"
+
+
+def rpm2(x) -> str:
+    """Two-decimal $/mi for tight trend-chart labels where the 3-decimal
+    rpm format ("$2.687") is wider than the column. Tiles + narratives keep
+    using rpm()."""
+    return f"${x:.2f}" if _isnum(x) else "n/a"
 
 
 def num(x) -> str:
@@ -2861,6 +2876,75 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     }
 
 
+def compute_csa_scorecard(sheets) -> dict | None:
+    """Extract FMCSA CSA carrier scorecard from the 'CSA Scorecard' tab of
+    SambaSafety_Master.xlsx. Returns None if the tab is absent."""
+    if not sheets:
+        return None
+    csa_df = None
+    for name, df in sheets.items():
+        if df is None or df.empty:
+            continue
+        if "csa" in str(name).lower():
+            csa_df = df
+            break
+    if csa_df is None or csa_df.empty:
+        return None
+
+    cat_c = _find_col(csa_df, ["category", "basic category", "basic"])
+    pct_c = _find_col(csa_df, ["percentile", "csa percentile", "rank", "percentile rank"])
+    measure_c = _find_col(csa_df, ["basicmeasure", "basic measure", "measure"])
+    seg_c = _find_col(csa_df, ["segmentviolations", "segment violations", "violations"])
+    insp_c = _find_col(csa_df, ["relevantinspections", "relevant inspections", "inspections"])
+    snap_c = _find_col(csa_df, ["snapshotdate", "snapshot date", "snapshot"])
+    dot_c = _find_col(csa_df, ["dotnumber", "dot number", "dot"])
+    apu_c = _find_col(csa_df, ["avgpowerunits", "avg power units", "power units"])
+
+    if not cat_c:
+        return None
+
+    basics = []
+    for _, r in csa_df.iterrows():
+        cat = str(r[cat_c]).strip() if cat_c else ""
+        if not cat or cat.lower() in ("nan", "category"):
+            continue
+        pct = pd.to_numeric(r[pct_c], errors="coerce") if pct_c else float("nan")
+        measure = pd.to_numeric(r[measure_c], errors="coerce") if measure_c else float("nan")
+        seg = pd.to_numeric(r[seg_c], errors="coerce") if seg_c else float("nan")
+        insp = pd.to_numeric(r[insp_c], errors="coerce") if insp_c else float("nan")
+        cat_lower = cat.lower().rstrip("*")
+        threshold = next((v for k, v in _CSA_INTERVENTION.items() if k in cat_lower), 80)
+        basics.append({
+            "category": cat,
+            "percentile": float(pct) if pd.notna(pct) else None,
+            "measure": float(measure) if pd.notna(measure) else None,
+            "seg_violations": int(seg) if pd.notna(seg) else None,
+            "rel_inspections": int(insp) if pd.notna(insp) else None,
+            "threshold": threshold,
+            "intervention": pd.notna(pct) and float(pct) >= threshold,
+        })
+
+    if not basics:
+        return None
+
+    # Metadata from first row
+    first = csa_df.iloc[0]
+    snapshot_date = str(first[snap_c]).strip() if snap_c and pd.notna(first[snap_c]) else ""
+    dot_number = str(first[dot_c]).strip() if dot_c and pd.notna(first[dot_c]) else ""
+    avg_pu = str(first[apu_c]).strip() if apu_c and pd.notna(first[apu_c]) else ""
+
+    n_alert = sum(1 for b in basics if b["intervention"])
+    worst = max(basics, key=lambda b: (b["percentile"] or 0))
+    return {
+        "basics": basics,
+        "n_alert": n_alert,
+        "worst": worst,
+        "snapshot_date": snapshot_date,
+        "dot_number": dot_number,
+        "avg_power_units": avg_pu,
+    }
+
+
 # DOT medical card / CDL deadlines tracked from the Alvys Drivers sheet —
 # parallel to LICENSE_EXPIRY_WARN_DAYS but for the Alvys-side feed. The
 # 14-day "critical" cutoff is what triggers the per-driver name-out in
@@ -3304,7 +3388,7 @@ GOOD = "#0f6b3d"
 GOODBG = "#e7f3ec"
 WARN = XFREIGHT_RED       # warnings collapse into the brand accent
 WARNBG = "#fde8ea"
-PAGE_COUNT = 12
+PAGE_COUNT = 13
 ACCENTBG = "#fde8ea"      # light red tint replaces the orange current-week column
 BAD = XFREIGHT_RED
 BADBG = "#fde8ea"
@@ -3315,12 +3399,36 @@ FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
 # Serif stack for page-section headlines + hero numbers.
 FONT_SERIF = "font-family:Georgia,'Times New Roman',serif;"
 
+# FMCSA CSA intervention thresholds by BASIC category.
+# Unsafe Driving and Crash Indicator alert at 65th percentile for all carrier
+# sizes; all other BASICs alert at 80th.
+_CSA_INTERVENTION = {
+    "unsafe driving": 65,
+    "crash indicator": 65,
+    "maintenance": 80,
+    "hos compliance": 80,
+    "hours-of-service compliance": 80,
+    "hazardous materials": 80,
+    "haz mat": 80,
+    "driver fitness": 80,
+    "controlled substances": 80,
+    "drugs/alcohol": 80,
+    "drugs & alcohol": 80,
+    "controlled substances/alcohol": 80,
+}
 
-def _pill(t, k):
+
+def _pill(t, k, nowrap=True):
     bg = {"good": GOODBG, "warn": WARNBG, "bad": BADBG, "mute": "#eef2f7"}[k]
     fg = {"good": GOOD, "warn": WARN, "bad": BAD, "mute": MUTE}[k]
+    # Most pills are inline badges that shouldn't break across lines, but
+    # the descriptive pills under tiles (e.g. "Costing Based on Last 10 Days",
+    # "10d pay + YTD overhead") are narrower than their text and need to
+    # wrap to 2 lines rather than overflow + clip — those callers pass
+    # nowrap=False.
+    ws = "white-space:nowrap" if nowrap else "white-space:normal"
     return (f"<span style='display:inline-block;background:{bg};color:{fg};font-size:11px;"
-            f"font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap'>{t}</span>")
+            f"font-weight:700;padding:2px 8px;border-radius:10px;line-height:1.4;{ws}'>{t}</span>")
 
 
 def _wow(current, prior, lower_is_better: bool = False, fmt=None) -> str:
@@ -3381,22 +3489,43 @@ def _bar_chart(title, months, values, sub="", fmt=str):
                 f"padding:14px;color:{MUTE};font-size:12px;'>{title}: data pending</div></td>")
     maxv = max(values) if max(values) else 1
     H = 84
+    # Equal-width column for every month so the bars distribute evenly even
+    # when label content varies (e.g. "$0.000" vs "$2.687", or "0" vs "146")
+    # — without this the auto table layout shrinks short-label columns and
+    # bunches the bars toward the wider-label columns.
+    col_w = f"{100 / len(months):.4f}%"
     bar = lbl = ""
     for i, (m, v) in enumerate(zip(months, values)):
         h = max(int(round(H * v / maxv)), (3 if v > 0 else 0))
         last = (i == len(months) - 1)
         bc = ACCENT if last else BLUE
-        bar += (f"<td valign='bottom' align='center' style='padding:0 5px;'>"
-                f"<div style='font-size:10.5px;font-weight:700;color:{INK};margin-bottom:3px;white-space:nowrap;'>{fmt(v)}</div>"
-                f"<div style='width:22px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
+        # Months with no underlying data (v == 0) get a muted em-dash label
+        # instead of "$0.000" / "0" so empty-month columns read as "no data"
+        # rather than as a real zero. fmt(v) is used for true non-zero values.
+        if v > 0:
+            label_html = fmt(v)
+            label_color = INK
+        else:
+            label_html = "&mdash;"
+            label_color = MUTE
+        # 7.5px label / 1px cell padding: 8.5px still left adjacent labels
+        # touching when bars were clustered with similar values (e.g. Apr/May
+        # rev/mile within $0.04 of each other). 7.5px gives ~0.22in label
+        # width vs ~0.38in column = visible gap, and ~0.27in "$504K" vs
+        # ~0.6in AR/AP column = no overflow at the right edge of the tile.
+        # Add tiny letter-spacing tweak so the label digits don't sit too
+        # close together.
+        bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 1px;'>"
+                f"<div style='font-size:7.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;letter-spacing:-0.1px;'>{label_html}</div>"
+                f"<div style='width:16px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
         lcol = INK if last else MUTE
-        lbl += (f"<td align='center' style='font-size:10px;color:{lcol};font-weight:{'700' if last else '400'};"
-                f"padding-top:4px;'>{m}</td>")
-    return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;'>"
+        lbl += (f"<td align='center' width='{col_w}' style='font-size:9px;color:{lcol};font-weight:{'700' if last else '400'};"
+                f"padding-top:4px;white-space:nowrap;'>{m}</td>")
+    return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;overflow:hidden;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
-            f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;'><tr>{bar}</tr></table>"
-            f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{lbl}</tr></table></div></td>")
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;table-layout:fixed;'><tr>{bar}</tr></table>"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='table-layout:fixed;'><tr>{lbl}</tr></table></div></td>")
 
 
 def _donut_gauge(label: str, pct: float, sub_line: str, detail: str, width: str = "33%") -> str:
@@ -3819,7 +3948,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
-                ontime=None, dh_trend=None, customer_rpm=None) -> str:
+                ontime=None, dh_trend=None, customer_rpm=None, equipment=None) -> str:
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -3845,25 +3974,37 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _ar_gap = float(_alvys_past_due) - float(_qb_past_due)
 
     def _dual_ar_tile() -> str:
+        # NOTE on the inline word-break/white-space overrides: the global PDF
+        # CSS rule `td.tile { word-break:break-word; overflow-wrap:anywhere }`
+        # — which keeps long tile *labels* from blowing past the column width —
+        # was also breaking the money values ($51,277 rendering as $51,27 / 7).
+        # Each money <td> explicitly opts out with white-space:nowrap and
+        # word-break:keep-all so the dollar amounts stay on one line.
+        _money_td_style = (
+            f"font-size:20px;font-weight:800;color:{INK};padding:2px 0;"
+            "white-space:nowrap;word-break:keep-all;overflow-wrap:normal;"
+        )
         rows = (f"<table width='100%' cellpadding='0' cellspacing='0' style='margin:6px 0 6px;'>"
                 f"<tr><td style='font-size:13px;color:{MUTE};padding:2px 0;width:46px;'>QB</td>"
-                f"<td align='right' style='font-size:20px;font-weight:800;color:{INK};padding:2px 0;'>"
+                f"<td align='right' style='{_money_td_style}'>"
                 f"{money(_qb_past_due)}</td></tr>"
                 f"<tr><td style='font-size:13px;color:{MUTE};padding:2px 0;'>Alvys</td>"
-                f"<td align='right' style='font-size:20px;font-weight:800;color:{INK};padding:2px 0;'>"
+                f"<td align='right' style='{_money_td_style}'>"
                 f"{money(_alvys_past_due)}</td></tr>")
         if _ar_gap is not None:
             gap_color = WARN if abs(_ar_gap) >= 1 else MUTE
             rows += (f"<tr><td style='font-size:12px;color:{MUTE};padding:4px 0 0;border-top:1px solid {LINE};'>Gap</td>"
                      f"<td align='right' style='font-size:14px;font-weight:700;color:{gap_color};"
-                     f"padding:4px 0 0;border-top:1px solid {LINE};'>{money(_ar_gap)}</td></tr>")
+                     f"padding:4px 0 0;border-top:1px solid {LINE};"
+                     f"white-space:nowrap;word-break:keep-all;overflow-wrap:normal;'>"
+                     f"{money(_ar_gap)}</td></tr>")
         rows += "</table>"
         return (f"<div style='background:{TILEBG};border:1px solid {LINE};border-radius:10px;"
                 f"padding:14px 14px 12px;margin-bottom:12px;'>"
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"{_pill('see pg 10', 'bad')} &middot; gap = un-invoiced loads (see pg 10)</div></div>")
+                f"{_pill('see pg 11', 'bad')} &middot; gap = un-invoiced loads (see pg 11)</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
@@ -3990,9 +4131,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                                "X-Trux + XFreight &middot; *MTD",
                                fmt=lambda v: f"{v:.1f}%")
                     if _dh_t.get("labels") else empty_td)
-    xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm)
-                + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm)
-                + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm)
+    xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm2)
+                + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm2)
+                + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm2)
                 + _dh_trend_td)
 
     # X-Trux rate-per-mile goal: fully-loaded cost per mile (driver pay + shared
@@ -4008,25 +4149,37 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             goal_pill = _pill("break-even &middot; set profit %", "warn")
         else:
             goal_pill = _pill(f"{pct(_margin)} net &middot; OR {_or:.2f}", "good")
-        gap = g.get("gap")
-        if _isnum(gap):
-            gap_kind = "good" if gap <= 0 else "bad"  # actual >= goal is good
-            gap_sub = _pill(("at/above goal" if gap <= 0 else "below goal"), gap_kind)
+        # Gap to goal compares the Goal Rate against the MTD revenue / mile
+        # (the $2.886 figure on the X-Trux Overview tile), NOT the 10-day
+        # "actual recent" rate.  That way the gap reads against month-to-date
+        # performance rather than the short trailing window.
+        _goal_rpm = g.get("goal_rpm")
+        _mtd_rpm = _xt_rpm  # MTD revenue / mile, computed earlier in this fn
+        if _isnum(_goal_rpm) and _isnum(_mtd_rpm):
+            gap = _goal_rpm - _mtd_rpm
+            gap_kind = "good" if gap <= 0 else "bad"  # MTD >= goal is good
+            gap_sub = _pill(("at/above goal" if gap <= 0 else "below goal"),
+                            gap_kind, nowrap=False)
             gap_val = rpm(abs(gap))
         else:
-            gap_kind, gap_sub, gap_val = "mute", _pill("need QB P&amp;L", "mute"), "n/a"
+            gap_kind, gap_sub, gap_val = "mute", _pill("need MTD rev/mi", "mute", nowrap=False), "n/a"
         # Cost-per-mile sub-pill spells out the time windows behind each
         # component so readers can audit the basis at a glance:
         #   driver pay = trailing N-day window (10d default, widens to
         #               30/60/90 on light weeks via RPM_GOAL_FALLBACK_WINDOWS)
         #   overhead   = fiscal-YTD (QB P&L is "This Fiscal Year")
         _pay_win = g.get("pay_window_used") or g.get("pay_window_days") or "?"
+        # Tile sub-line pills under the rate-per-mile tiles get nowrap=False
+        # so longer descriptive text ("10d pay + YTD overhead",
+        # "Costing Based on Last 10 Days") wraps to a second line inside the
+        # tile rather than overflowing and getting clipped.
         goal_tiles = (
             _tile("Cost / mile &middot; X-Trux", rpm(g.get("cost_per_mile")),
-                  _pill(f"{_pay_win}d pay + YTD overhead", "mute"))
+                  _pill(f"{_pay_win}d pay + YTD overhead", "mute", nowrap=False))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
-                    _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days", "mute"))
+                    _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days",
+                          "mute", nowrap=False))
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
@@ -4087,9 +4240,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _gt_sub = "monthly &middot; X-Trux + XFreight &middot; *MTD"
         goal_trend_row = (
             _bar_chart("Cost / mile", gt["labels"], gt.get("cost") or [],
-                       "overhead held at YTD rate &middot; *MTD", fmt=rpm)
-            + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm)
-            + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm)
+                       "overhead held at YTD rate &middot; *MTD", fmt=rpm2)
+            + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm2)
+            + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm2)
             + empty_td)
 
     # AR & AP 6-month balance trend
@@ -4100,10 +4253,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     ap_chart = _bar_chart("AP &mdash; payable balance", ap_labels, ap_vals,
                           "total open AP by month-end &middot; *as-of", fmt=money_m)
 
-    ar_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ar_chart}</tr></table></td>")
-    ap_col_td = (f"<td valign='top'><table width='100%' cellpadding='0' cellspacing='0'>"
-                 f"<tr>{ap_chart}</tr></table></td>")
+    # Explicit widths so the AR + AP chart cells don't overlap in landscape
+    # PDF.  recv_left is 25%; the two chart cells split the remaining 75% with
+    # a slight extra to the right so the rounded edges stay aligned.
+    ar_col_td = (f"<td valign='top' width='37%'><table width='100%' cellpadding='0' cellspacing='0' "
+                 f"style='table-layout:fixed;'><tr>{ar_chart}</tr></table></td>")
+    ap_col_td = (f"<td valign='top' width='38%'><table width='100%' cellpadding='0' cellspacing='0' "
+                 f"style='table-layout:fixed;'><tr>{ap_chart}</tr></table></td>")
 
     def _dir(vals, noun):
         if not vals:
@@ -4258,7 +4414,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             alvys=alvys, qb_pnl=qb_pnl, samsara=samsara, rpm_goal=rpm_goal,
             margin_projection=margin_projection, qb_ar=qb_ar, ar_hist=ar_hist,
             samba=samba, alvys_entities=alvys_entities,
-            alvys_drivers=alvys_drivers, prior_snapshot=_prior_snapshot)
+            alvys_drivers=alvys_drivers, equipment=equipment,
+            prior_snapshot=_prior_snapshot)
         _insights_actions = _insights.action_items(
             alvys=alvys, qb_ar=qb_ar, alvys_ar=alvys_ar, samsara=samsara,
             rpm_goal=rpm_goal, uninvoiced=uninvoiced,
@@ -4276,7 +4433,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 11). "
+              f"(X-Trux + X-Linx snapshot &mdash; see pg 12). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         legacy_bottom += f" {drag['text']}"
@@ -5267,7 +5424,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
                         str(c["oldest_days"]), money(c["amount"])],
                        ["left", "right", "right", "right"], [None, None, "bad", "bad"])
 
-    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 10, date_str, section='ACCOUNTING')}"
+    return (f"{_header('Accounts Receivable &mdash; Overdue &amp; Alvys Accounting', 11, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{qb_tiles}"
             f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
@@ -5318,7 +5475,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 11, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 12, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -5333,7 +5490,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
     b = compute_bill_reconciliation(qb_ar, alvys_ar) or {}
-    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 12, date_str, section='ACCOUNTING')
+    head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 13, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
                "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
@@ -5517,12 +5674,78 @@ def _alvys_medical_block(alvys_drivers) -> str:
         ["left", "left", "left", "left", "right"], rows)
 
 
+def build_csa_scorecard_page(csa, date_str) -> str:
+    """Page 10 — FMCSA CSA carrier BASIC percentile scores from SambaSafety."""
+    head = _header("CSA Carrier Scorecard &mdash; X-Trux, Inc.", 10, date_str, section='SAFETY')
+    if not csa or not csa.get("basics"):
+        return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+                f"{_brief('CSA scorecard data unavailable this run &mdash; place CSA2010 Preview Scorecard.csv in OneDrive/SambaSafety/.', 'warn')}"
+                f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+                f"Source: SambaSafety CSA Scorecard (FMCSA BASIC percentile ranks for X-Trux, Inc.).</div>")
+
+    basics = csa["basics"]
+    n_alert = csa["n_alert"]
+    worst = csa["worst"] or {}
+    snapshot = csa.get("snapshot_date") or "latest"
+    dot_num = csa.get("dot_number") or "841776"
+    avg_pu = csa.get("avg_power_units") or ""
+
+    worst_name = worst.get("category", "n/a")
+    worst_pct = worst.get("percentile")
+    worst_pct_txt = f"{worst_pct:.0f}th" if worst_pct is not None else "n/a"
+    alert_k = "bad" if n_alert > 0 else "good"
+    alert_label = f"{n_alert} BASIC{'s' if n_alert != 1 else ''} above threshold"
+
+    apu_sub = _pill(f"Avg {avg_pu} power units", "mute") if avg_pu else _pill(f"DOT #{dot_num}", "mute")
+    tiles = (
+        _tile("Highest Risk BASIC", worst_name,
+              _pill(f"{worst_pct_txt} percentile", "bad" if worst.get("intervention") else "warn"))
+        + _tile("Intervention Alerts", str(n_alert), _pill(alert_label, alert_k))
+        + _tile("DOT Number", f"#{dot_num}", _pill(f"Snapshot {snapshot}", "mute"))
+        + _tile("FMCSA Snapshot", snapshot, apu_sub)
+    )
+
+    body = ""
+    for b in sorted(basics, key=lambda x: (x["percentile"] or 0), reverse=True):
+        pct = b["percentile"]
+        pct_txt = f"{pct:.1f}" if pct is not None else "&mdash;"
+        insp = str(b["rel_inspections"]) if b["rel_inspections"] is not None else "&mdash;"
+        measure_txt = f"{b['measure']:.2f}" if b["measure"] is not None else "&mdash;"
+        if b["intervention"]:
+            status_pill = _pill("INTERVENTION LIKELY", "bad")
+            row_k = "bad"
+        elif pct is not None and pct >= b["threshold"] * 0.75:
+            status_pill = _pill("WATCH", "warn")
+            row_k = "warn"
+        else:
+            status_pill = _pill("OK", "good")
+            row_k = None
+        body += _tr(
+            [b["category"], insp, measure_txt, f"{pct_txt} &nbsp; {status_pill}"],
+            ["left", "right", "right", "left"],
+            [None, None, None, row_k],
+        )
+
+    section_label = (f"FMCSA BASIC Category Scores &middot; X-Trux, Inc. (DOT #{dot_num})"
+                     f" &middot; Snapshot {snapshot}")
+    return (
+        f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+        f"<tr>{tiles}</tr>"
+        f"{_section(section_label)}"
+        f"{_table(['BASIC Category', 'Rel. Inspections', 'BASIC Measure', 'CSA Percentile Rank'], ['left', 'right', 'right', 'left'], body)}"
+        f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+        f"Percentile ranks from FMCSA Carrier Safety Measurement System (CSMS) via SambaSafety. "
+        f"Unsafe Driving &amp; Crash Indicator alert at 65th percentile; all other BASICs at 80th. "
+        f"Source: SambaSafety CSA Scorecard (DOT #{dot_num}).</div>"
+    )
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None) -> str:
+               customer_rpm=None, csa=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
@@ -5619,14 +5842,14 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}{print_css}</head>"
             f"<body style='margin:0;background:#f3f3f3;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment))}{pb}"
             # Driver Mileage runs immediately after the Executive Brief (whose
             # last section is X-Linx Overview) so the per-driver weekly view
             # follows the entity-level summary. Safety and AR pages then come
             # behind it. Function names build_page<N> are kept for stability,
             # but the page-number arguments in _header reflect the actual
             # render order.
-            # Pages 2-11 grouped into three sections (SAFETY leads):
+            # Pages 2-13 grouped into three sections (SAFETY leads):
             #   SAFETY       (pages 2-6): SambaSafety driver/MVR scan,
             #                              Samsara speed-over-limit detail (pg 3),
             #                              Driver safety scores (pg 4),
@@ -5634,9 +5857,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             #                              Equipment compliance trailers (pg 6)
             #   OPERATIONAL  (pages 7-9): driver mileage, fleet MPG/speeding,
             #                              fleet idle
-            #   ACCOUNTING   (pages 10-12): QB AR overdue + Alvys un-invoiced/90+ AR
-            #                              combined (pg 10); QB-vs-Alvys recon (pg 11);
-            #                              bill match (pg 12)
+            #   CSA SCORECARD (page 10):  FMCSA carrier BASIC percentiles (SambaSafety)
+            #   ACCOUNTING   (pages 11-13): QB AR overdue + Alvys un-invoiced/90+ AR
+            #                              combined (pg 11); QB-vs-Alvys recon (pg 12);
+            #                              bill match (pg 13)
             # Function names (build_pageN) are kept stable; the integer page
             # number arg to _header() reflects the actual render position.
             # -- SAFETY --
@@ -5651,10 +5875,12 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
             f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
             f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
+            # -- CSA SCORECARD --
+            f"{wrap(_strip(10) + build_csa_scorecard_page(csa, date_str))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(10) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(11) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(12) + build_page8(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(11) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(12) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 
@@ -5683,6 +5909,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     for w in warnings:
         log.warning("Alvys data check: %s", w)
     samba = compute_sambasafety(sambasafety_sheets) if sambasafety_sheets else None
+    csa = compute_csa_scorecard(sambasafety_sheets) if sambasafety_sheets else None
     # Alvys-side driver compliance (CDL + DOT medical card expirations).
     # Read from the same Alvys Pipeline.xlsx as everything else — the
     # `Drivers` sheet is added by src.main when the pipeline writes it.
@@ -5704,7 +5931,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
                       avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm)
+                      customer_rpm=customer_rpm, csa=csa)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
@@ -5820,9 +6047,11 @@ def render_pdf(html: str) -> bytes | None:
         # Risk leaderboard — push to fresh page after violations/MVR alerts.
         _inject_pb_before("Risk leaderboard &middot; highest-scoring drivers")
 
-        # 4. Tag the wrapper <tr> emitted by _table() so its inner data table
-        #    can split across page boundaries.  Each _table() output is wrapped
-        #    in a single outer row (style='padding:0 6px;'); the global
+        # 4. Tag the wrapper <tr> emitted by _table() and other data-table
+        #    builders so the inner data table can split across page boundaries.
+        #    The wrappers all share `<td colspan='4' style='padding:0 6px;'>`
+        #    (some also carry class='scroll-wide' for the wide mobile-scroll
+        #    tables — idle, driver mileage, etc.). The global
         #    `tr { page-break-inside: avoid }` rule below would otherwise
         #    force the entire wrapper row — and the multi-row data table
         #    nested inside it — onto a single page, bumping whole tables to
@@ -5831,6 +6060,24 @@ def render_pdf(html: str) -> bytes | None:
         pdf_html = pdf_html.replace(
             "<tr><td colspan='4' style='padding:0 6px;'>",
             "<tr class='pdf-data-wrap'><td colspan='4' style='padding:0 6px;'>",
+        )
+        pdf_html = pdf_html.replace(
+            "<tr><td colspan='4' class='scroll-wide' style='padding:0 6px;'>",
+            "<tr class='pdf-data-wrap'><td colspan='4' class='scroll-wide' style='padding:0 6px;'>",
+        )
+
+        # 5. Page source-note footers (the "Source: ... " divs that close each
+        #    page builder) were getting orphaned onto an extra page when the
+        #    content above ended near the bottom of the prior page — leaving
+        #    pages like "page 19" almost entirely empty under just the source
+        #    line.  Tag every source-footer div so we can apply
+        #    page-break-before:avoid and shrink the top margin in PDF, pulling
+        #    the source line back onto the same page as the data.
+        pdf_html = pdf_html.replace(
+            "<div style='padding:14px 24px 22px;color:#6b6b6b;font-size:11px;"
+            "border-top:1px solid #ececec;margin-top:14px;'>",
+            "<div class='pdf-source-note' style='padding:6px 24px 14px;color:#6b6b6b;"
+            "font-size:11px;border-top:1px solid #ececec;margin-top:2px;'>",
         )
 
         # --- CSS override appended after document stylesheets ---
@@ -5859,6 +6106,10 @@ def render_pdf(html: str) -> bytes | None:
             # tr{page-break-inside:avoid} so they stay intact.
             "tr.pdf-data-wrap{page-break-inside:auto!important;"
             "break-inside:auto!important;}"
+            # Per-page source-note footer: stays with the prior data table
+            # rather than getting orphaned onto an otherwise-empty page.
+            ".pdf-source-note{page-break-before:avoid!important;"
+            "break-before:avoid!important;}"
         ))
 
         pdf_bytes = (
