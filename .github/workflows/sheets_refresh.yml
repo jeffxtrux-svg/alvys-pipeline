@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '0 11 * * *'   # 5am CT (DST) / 6am CT (standard) — morning refresh
+    - cron: '30 9 * * *'   # 4:30am CT (DST) / 3:30am CT (standard) — morning refresh
 
 jobs:
   refresh:

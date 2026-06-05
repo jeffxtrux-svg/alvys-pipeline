@@ -20,7 +20,7 @@ Each connector has its own workflow in `.github/workflows/`. All three:
 | `samsara_refresh.yml` | pull → OneDrive upload → **alerts** → artifact | `0 9,16,22 * * *` |
 | `qb_refresh.yml` | pull (+token rotation) → OneDrive upload → artifact | `0 9,16,22 * * *` |
 | `sambasafety_refresh.yml` | merge raw CSVs → SambaSafety_Master.xlsx → OneDrive | `30 7 * * *` (1×/day) |
-| `sheets_refresh.yml` | pull all 3 → write Google Sheets KPI dashboard | `0 11 * * *` (1×/day) |
+| `sheets_refresh.yml` | pull all 3 → write Google Sheets KPI dashboard | `30 9 * * *` (1×/day) |
 | `scorecard_email.yml` | read OneDrive files → compute KPIs → email daily scorecard | `30 8 * * *` primary + 4 backup slots (1×/day) |
 
 The cron times map to **3am / 10am / 4pm Central** for the three pulls (Alvys /
@@ -30,8 +30,8 @@ its workbook is in OneDrive an hour before the scorecard reads it. The scorecard
 email primary fires at **3:30am CST** with backup slots at `45 8`, `0 9`, `30 9`,
 `0 10` UTC (3:45 / 4:00 / 4:30 / 5:00am CDT) — only the first slot that fires
 sends the email; subsequent backups detect the prior run and no-op. Sheets
-dashboard at 5am CDT. Cron is fixed UTC, so the Central clock time shifts by an
-hour across daylight-saving changes.
+dashboard at 4:30am CDT. Cron is fixed UTC, so the Central clock time shifts by
+an hour across daylight-saving changes.
 
 ### Per-workflow notable env wiring
 
