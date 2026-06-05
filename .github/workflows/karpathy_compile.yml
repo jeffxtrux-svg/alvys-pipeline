@@ -12,12 +12,16 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Year-round 7:15am Central. CDT (UTC-5) and CST (UTC-6) crons both
-    # armed; the "Gate to 7am CT" step rejects the off-season slot so the
-    # librarian runs exactly once per day, ~2h after the scorecard email
-    # commits today's brief to Karpathy-Wiki/raw/.
+    # Year-round 7:15am and 1:00pm Central. CDT (UTC-5) and CST (UTC-6)
+    # crons both armed; the "Gate to allowed CT hours" step accepts
+    # hours {7, 13} so each season's correct slot runs and the
+    # off-season twin is skipped. Morning run lands ~2h after the
+    # scorecard email commits today's brief to Karpathy-Wiki/raw/;
+    # afternoon run catches any midday additions to /raw.
     - cron: '15 12 * * *'   # 7:15am CDT / 6:15am CST (CST: gated)
     - cron: '15 13 * * *'   # 8:15am CDT (CDT: gated) / 7:15am CST
+    - cron: '0 18 * * *'    # 1:00pm CDT / 12:00pm CST (CST: gated)
+    - cron: '0 19 * * *'    # 2:00pm CDT (CDT: gated) / 1:00pm CST
 
 permissions:
   contents: write
@@ -33,21 +37,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Gate to 7am CT
-        # Year-round target: 7:15am Central. Skip whichever season's slot
-        # maps to the wrong wall-clock hour. Manual / workflow_dispatch
-        # runs bypass the gate so the librarian can be triggered any time.
+      - name: Gate to allowed CT hours
+        # Year-round targets: 7:15am and 1:00pm Central. Cron minute
+        # already enforces the :15/:00 part; this gate just checks the
+        # hour. Manual / workflow_dispatch runs bypass the gate so the
+        # librarian can be triggered any time.
         id: ct_gate
         if: github.event_name == 'schedule'
         run: |
           CT_HOUR=$(TZ=America/Chicago date +%-H)
           echo "Central-time hour: $CT_HOUR"
-          if [ "$CT_HOUR" -ne 7 ]; then
-            echo "Off-target — skipping."
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "7am CT slot — proceeding."
-          fi
+          case "$CT_HOUR" in
+            7|13) echo "Target slot — proceeding." ;;
+            *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Checkout repo
         if: steps.ct_gate.outputs.skip != '1'

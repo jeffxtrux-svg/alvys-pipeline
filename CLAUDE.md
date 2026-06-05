@@ -122,7 +122,7 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `sambasafety_refresh.yml` | 2:30am | `30 7,8 * * *` | `{2}` |
 | `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | `30 9,10`, `0 18,19`, `30 22,23 * * *` | `{4, 13, 17}` |
 | `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups through ~6am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5` |
-| `karpathy_compile.yml` (Karpathy-Wiki librarian) | 7:15am | `15 12,13 * * *` | `{7}` |
+| `karpathy_compile.yml` (Karpathy-Wiki librarian) | 7:15am / 1:00pm | `15 12,13`, `0 18,19 * * *` | `{7, 13}` |
 
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
