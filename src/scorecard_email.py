@@ -5735,6 +5735,7 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     worst = csa["worst"] or {}
     snapshot = csa.get("snapshot_date") or "latest"
     dot_num = csa.get("dot_number") or "841776"
+    mc_num = "375851"  # X-Trux, Inc. motor carrier authority
     avg_pu = csa.get("avg_power_units") or ""
 
     worst_name = worst.get("category", "n/a")
@@ -5743,12 +5744,12 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     alert_k = "bad" if n_alert > 0 else "good"
     alert_label = f"{n_alert} BASIC{'s' if n_alert != 1 else ''} above threshold"
 
-    apu_sub = _pill(f"Avg {avg_pu} power units", "mute") if avg_pu else _pill(f"DOT #{dot_num}", "mute")
+    apu_sub = _pill(f"Avg {avg_pu} power units", "mute") if avg_pu else _pill(f"MC #{mc_num}", "mute")
     tiles = (
         _tile("Highest Risk BASIC", worst_name,
               _pill(f"{worst_pct_txt} percentile", "bad" if worst.get("intervention") else "warn"))
         + _tile("Intervention Alerts", str(n_alert), _pill(alert_label, alert_k))
-        + _tile("DOT Number", f"#{dot_num}", _pill(f"Snapshot {snapshot}", "mute"))
+        + _tile("Carrier Identity", f"DOT #{dot_num}", _pill(f"MC #{mc_num}", "mute"))
         + _tile("FMCSA Snapshot", snapshot, apu_sub)
     )
 
@@ -5773,8 +5774,8 @@ def build_csa_scorecard_page(csa, date_str) -> str:
             [None, None, None, row_k],
         )
 
-    section_label = (f"FMCSA BASIC Category Scores &middot; X-Trux, Inc. (DOT #{dot_num})"
-                     f" &middot; Snapshot {snapshot}")
+    section_label = (f"FMCSA BASIC Category Scores &middot; X-Trux, Inc. "
+                     f"(DOT #{dot_num} &middot; MC #{mc_num}) &middot; Snapshot {snapshot}")
     return (
         f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
         f"<tr>{tiles}</tr>"
@@ -5783,7 +5784,7 @@ def build_csa_scorecard_page(csa, date_str) -> str:
         f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
         f"Percentile ranks from FMCSA Carrier Safety Measurement System (CSMS) via SambaSafety. "
         f"Unsafe Driving &amp; Crash Indicator alert at 65th percentile; all other BASICs at 80th. "
-        f"Source: SambaSafety CSA Scorecard (DOT #{dot_num}).</div>"
+        f"Source: SambaSafety CSA Scorecard (DOT #{dot_num} &middot; MC #{mc_num}).</div>"
     )
 
 

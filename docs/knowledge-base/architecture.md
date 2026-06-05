@@ -4,6 +4,26 @@ This page explains *why* the pipeline is shaped the way it is. The
 source-by-source detail lives in the connector pages; here we cover the ideas
 that are true across all of them.
 
+## Carrier identity (ground truth)
+
+Identifiers used across the brief and the federal data sources. Reference
+these instead of re-deriving fleet size or DOT number from whatever tile
+happens to be on screen — those numbers are downstream snapshots and can
+drift (the FMCSA `AvgPowerUnits` field on the CSA scorecard, for example,
+is a snapshot of carrier-reported assets and is **not** the current
+active-truck count).
+
+| Identifier | Value | Where it's used |
+|------------|-------|-----------------|
+| Carrier name | **X-Trux, Inc.** | CSA scorecard page header, brief title |
+| DOT number | **841776** | `compute_csa_scorecard`, FMCSA SMS, SambaSafety CSA pull |
+| MC number  | **375851** | Motor carrier authority — surfaced on the page-10 carrier tile |
+| Sister company | X-Linx, Inc. (brokerage) | Shares office overhead with X-Trux for the rate-per-mile goal (see `rate-per-mile-goal.md`) |
+
+The hardcoded fallbacks in `build_csa_scorecard_page` are kept in sync
+with this table — if FMCSA reassigns either number, update both this
+section and the literal in `src/scorecard_email.py`.
+
 ## The problem being solved
 
 XFreight runs on three SaaS systems that don't talk to each other:
