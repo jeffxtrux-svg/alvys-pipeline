@@ -120,24 +120,29 @@ upload `output/` as a 7-day artifact (`if: always()`):
 | `sheets_refresh.yml` | all 3 → Google Sheets dashboard | `0 13 * * *` |
 | `scorecard_email.yml` | read OneDrive → email daily brief (10 pages) | `30 11 * * *` |
 
-The daily brief (`src/scorecard_email.py`) is 10 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–10 are grouped into three sections (an `OPERATIONAL` / `SAFETY` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
+The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
 1. **Overview** — bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`).
 
-   *SAFETY (pages 2–3):*
+   *SAFETY (pages 2–6):*
 2. Driver compliance — SambaSafety MVR + license status, plus DOT medical-card expirations from the Alvys Drivers sheet (`build_page9`; SambaSafety section is optional, medical-card section needs only the Alvys feed). See `docs/knowledge-base/connector-sambasafety.md` and `docs/knowledge-base/connector-alvys.md`.
-3. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works).
+3. Safety & compliance detail (last 24h events / HOS violations / DVIR defects / coaching) (`build_page2`). Fleet avg safety score comes from Samsara's per-driver safety-score endpoint — `samsara_client.fetch_driver_safety_scores` discovers a working path by fallback (the `/fleet/drivers/{id}/safety/score` path 404s; the `/v1/...` legacy path still works). The Safety-events table now carries a **driver Ack** column (✓ when the driver signed a Samsara coaching session at or after the event); the Coaching-needs-assigned list keeps a driver visible until they sign and for 3 more days after, on a 30-day event lookback.
+4. Per-driver Samsara safety scores (`build_page2b`) — split off page 3 so the Speed-Over-Limit table and the per-driver score table each get a full page.
+5. Equipment compliance — tractor inspections (`build_page_equipment(kind='tractors')`, fed by `compute_equipment` over the Alvys Trucks sheet with `Maintenance` DOT-inspection dates overlaid).
+6. Equipment compliance — trailer inspections (`build_page_equipment(kind='trailers')`).
 
-   *OPERATIONAL (pages 4–6):*
-4. Driver mileage by settlement week (`build_page4`).
-5. Fleet operations — MPG best/worst + speeders (`build_page_fleet`).
-6. Fleet idle — all trucks ranked by avg idle/wk over 5 settlement weeks, with per-week idle hours, idle %, idle-gallons est. (`idle_hours × 0.8 gph` fallback) and MPG (`build_page_idle`).
+   *OPERATIONAL (pages 7–9):*
+7. Driver mileage by settlement week (`build_page4`).
+8. Fleet operations — MPG best/worst + speeders (`build_page_fleet`).
+9. Fleet idle — all trucks ranked by avg idle/wk over 5 settlement weeks, with per-week idle hours, idle %, idle-gallons est. (`idle_hours × 0.8 gph` fallback) and MPG (`build_page_idle`).
 
-   *ACCOUNTING (pages 7–10):*
-7. AR overdue (31+ days) from QuickBooks (`build_page3`).
-8. Alvys accounting — un-invoiced loads + customers aging 90+ days, combined (`build_page5`). Top half is the un-billed gap behind most of the QB-vs-Alvys variance; bottom half is the 90+ collections list.
-9. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
-10. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
+   *CSA SCORECARD (page 10):*
+10. **FMCSA carrier scorecard** — BASIC percentile ranks for X-Trux, Inc. (DOT #841776) from the SambaSafety CSA2010 Preview Scorecard CSV (`build_csa_scorecard_page`; data shape from `compute_csa_scorecard`). Each BASIC is flagged INTERVENTION LIKELY when its percentile crosses the FMCSA threshold — `65th` for Unsafe Driving and Crash Indicator, `80th` for all others (`_CSA_INTERVENTION`). Fails soft: if `CSA2010 Preview Scorecard.csv` is absent from `OneDrive/SambaSafety/`, the page renders a "data unavailable" notice instead of crashing. See `docs/knowledge-base/connector-sambasafety.md § The CSA Scorecard report`.
+
+   *ACCOUNTING (pages 11–13):*
+11. AR overdue (31+ days) from QuickBooks + Alvys un-invoiced loads + 90+ AR, combined (`build_page_ar_accounting`). Top section is the QB AR overdue list; the lower sections are the un-billed gap behind most of the QB-vs-Alvys variance plus the 90+ collections list.
+12. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
+13. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
 
 Crons are fixed UTC: the three pulls (Alvys / Samsara / QB) fire concurrently at **5:00am CST** (6:00am CDT) / 12pm / 6pm Central; the scorecard email follows **30 min later at 5:30am CST** (6:30am CDT). The scorecard's `:30` minute also reduces the chance of a GitHub Actions schedule drop vs. the busier top-of-hour.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
