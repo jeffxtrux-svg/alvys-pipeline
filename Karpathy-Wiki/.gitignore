@@ -1,6 +1,12 @@
 # Your business content lives on OneDrive, NOT GitHub.
 # Only the reusable scaffold (CLAUDE.md, README, templates, empty index) is
 # committed. Everything ingested from OneDrive stays out of git.
+#
+# Exception: `xfreight-*.md` files are distilled documentation seeds (synthesized
+# from CLAUDE.md / docs/knowledge-base/ which are already public in this repo),
+# not raw business data. They live in git so the GitHub Actions librarian
+# (karpathy_compile.yml) can compile them into /wiki on its cron runs.
 _build/
 raw/*
 !raw/README.md
+!raw/xfreight-*.md
