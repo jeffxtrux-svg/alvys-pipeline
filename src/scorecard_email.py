@@ -74,7 +74,7 @@ TARGET_RPM = 2.92
 TARGET_DEADHEAD = 0.06
 TARGET_OR = 0.95
 COACH_EVENT_THRESHOLD = 2  # drivers with >= this many safety events in window need coaching
-DRIVER_TARGET_MILES = 2000  # weekly miles target for the mileage page below-target tile
+DRIVER_TARGET_MILES = 2750  # weekly miles target for the mileage page below-target tile
 
 # --- X-Trux rate-per-mile goal -----------------------------------------
 # The goal re-costs the operation every run instead of trusting a stale number.
@@ -129,7 +129,7 @@ RPM_GOAL_PLAUSIBLE_BAND = (1.50, 5.00)     # cost/mi outside this is flagged
 # SambaSafety driver-compliance thresholds (page 2).
 LICENSE_EXPIRY_WARN_DAYS = 30     # flag licenses expiring within this many days
 SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk category column
-VIOLATION_WINDOW_DAYS = 365       # MVR violations are historical records, not real-time
+VIOLATION_WINDOW_DAYS = 90        # MVR violations: surface the last 90d so the tile/page reflect recent risk, not the full year of historical record
                                   # alerts — a year matches how SambaSafety surfaces them
 
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
@@ -2063,19 +2063,39 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         t_dist = _find_col(trips_df_for_mpg, ["distancemiles", "distance.miles", "distancemeters", "distance.meters"])
         t_fuel = (_find_col(trips_df_for_mpg, ["fuelconsumedml", "fuel.consumed.ml", "fuelusedml", "fuel.consumed", "fuelused"])
                   or _find_col(trips_df_for_mpg, ["fuelconsumed", "fuel"]))
-        # Date column for MTD filtering — Samsara Trips carry endTime.
-        t_end = _find_col(trips_df_for_mpg, ["endtime", "end time"])
-        log.info("Trips MPG probe: veh=%s dist=%s fuel=%s end=%s", t_veh, t_dist, t_fuel, t_end)
+        # Date column for MTD filtering. v1 /fleet/trips returns `endMs`
+        # (Unix millis); v2 returns `endTime` (ISO). Probe for both forms so
+        # the MTD filter doesn't silently no-op when only the v1 shape is
+        # present — that was inflating fleet_miles by summing the full
+        # SAMSARA_DAYS_BACK window (90d) instead of just MTD.
+        t_end = _find_col(trips_df_for_mpg, ["endtime", "end time", "endms"])
+        t_start = _find_col(trips_df_for_mpg, ["starttime", "start time", "startms"])
+        t_date = t_end or t_start
+        log.info("Trips MPG probe: veh=%s dist=%s fuel=%s date=%s", t_veh, t_dist, t_fuel, t_date)
         if t_veh and t_dist and t_fuel:
-            cols = [t_veh, t_dist, t_fuel] + ([t_end] if t_end else [])
+            cols = [t_veh, t_dist, t_fuel] + ([t_date] if t_date else [])
             td = trips_df_for_mpg[cols].copy()
             # Filter to MTD so the tile labels (Fleet MPG · MTD, Best MPG MTD)
             # actually match the aggregation window.
-            if t_end:
-                td["_end"] = pd.to_datetime(td[t_end], errors="coerce", utc=True)
+            if t_date:
+                # v1 `endMs` / `startMs` are integer Unix milliseconds; pandas
+                # parses those when passed unit='ms'. ISO `endTime` parses fine
+                # without the hint. Detect by column-name suffix.
+                if str(t_date).lower().endswith("ms"):
+                    td["_end"] = pd.to_datetime(td[t_date], errors="coerce",
+                                                 utc=True, unit="ms")
+                else:
+                    td["_end"] = pd.to_datetime(td[t_date], errors="coerce", utc=True)
                 mtd_start = pd.Timestamp.now(tz="UTC").normalize().replace(day=1)
+                before = len(td)
                 td = td[td["_end"] >= mtd_start]
-                log.info("Trips MPG: filtered to MTD (%s+) -> %d rows", mtd_start.date(), len(td))
+                log.info("Trips MPG: filtered to MTD (%s+) -> %d / %d rows",
+                         mtd_start.date(), len(td), before)
+            else:
+                log.warning("Trips MPG: NO date column matched — MTD filter SKIPPED. "
+                            "Columns sampled: %s. Fleet miles will reflect the full "
+                            "SAMSARA_DAYS_BACK window, not MTD.",
+                            list(trips_df_for_mpg.columns)[:20])
             td["_dist"] = pd.to_numeric(td[t_dist], errors="coerce").fillna(0)
             td["_fuel"] = pd.to_numeric(td[t_fuel], errors="coerce").fillna(0)
             # Convert distance/fuel based on column-name unit hints.
@@ -2094,23 +2114,33 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                                                      _gallons=("_gallons", "sum")).reset_index()
             agg = agg[(agg["_miles"] > 0) & (agg["_gallons"] > 0)]
             if not agg.empty:
+                def _unit_label_trips(raw):
+                    s = _normalize_id(raw)
+                    if s in id_to_truck:
+                        return id_to_truck[s]
+                    return _truck_label(str(raw).strip())
+                # Apply the excluded-truck filter BEFORE rolling up the headline
+                # fleet totals so non-X-Trux units (JW Logistics, brokerage assets,
+                # rentals, etc) don't bloat the page-8 "Fleet miles · MTD" tile.
+                agg["_label"] = agg[t_veh].map(_unit_label_trips)
+                _kept = agg["_label"].map(lambda lbl: not _is_excluded_truck(lbl))
+                if _kept.sum() < len(agg):
+                    log.info("Trips MPG: excluded %d of %d trucks from fleet totals "
+                             "(JW Logistics / brokerage / rentals)",
+                             len(agg) - int(_kept.sum()), len(agg))
+                agg = agg[_kept].reset_index(drop=True)
+            if not agg.empty:
                 agg["_mpg"] = agg["_miles"] / agg["_gallons"]
                 fleet_mpg = agg["_miles"].sum() / agg["_gallons"].sum()
                 out["fleet"]["fleet_mpg"] = float(fleet_mpg)
                 out["fleet"]["fleet_miles"] = float(agg["_miles"].sum())
                 out["fleet"]["fleet_gallons"] = float(agg["_gallons"].sum())
                 agg = agg.sort_values("_mpg", ascending=False).reset_index(drop=True)
-                def _unit_label_trips(raw):
-                    s = _normalize_id(raw)
-                    if s in id_to_truck:
-                        return id_to_truck[s]
-                    return _truck_label(str(raw).strip())
                 out["fleet"]["mpg"] = [
-                    {"unit": _unit_label_trips(r[t_veh]), "mpg": round(r["_mpg"], 2),
+                    {"unit": r["_label"], "mpg": round(r["_mpg"], 2),
                      "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1),
                      "driver": ""}  # filled below after id_to_truck + recent map are built
                     for _, r in agg.iterrows()
-                    if not _is_excluded_truck(_unit_label_trips(r[t_veh]))
                 ]
                 log.info("MPG source: Trips (%d trucks)", len(out["fleet"]["mpg"]))
                 mpg_built = True
@@ -2161,12 +2191,6 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 df["_gallons"] = raw_gallons
             df = df[(df["_miles"] > 0) & (df["_gallons"] > 0)]
             if not df.empty:
-                df["_mpg"] = df["_miles"] / df["_gallons"]
-                fleet_mpg = (df["_miles"].sum() / df["_gallons"].sum()) if df["_gallons"].sum() else None
-                out["fleet"]["fleet_mpg"] = float(fleet_mpg) if fleet_mpg else None
-                out["fleet"]["fleet_miles"] = float(df["_miles"].sum())
-                out["fleet"]["fleet_gallons"] = float(df["_gallons"].sum())
-                df = df.sort_values("_mpg", ascending=False).reset_index(drop=True)
                 # Resolve the value in v_col to a truck number — if the
                 # column held vehicleId we go through id_to_truck; if it
                 # already held the truck name we pass through.
@@ -2175,12 +2199,27 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     if s in id_to_truck:
                         return id_to_truck[s]
                     return _truck_label(str(raw).strip())
+                # Drop excluded trucks BEFORE the headline rollup so the
+                # Fleet miles · MTD tile reflects X-Trux only (mirror of the
+                # Trips path above).
+                df["_label"] = df[v_col].map(_unit_label)
+                _kept = df["_label"].map(lambda lbl: not _is_excluded_truck(lbl))
+                if _kept.sum() < len(df):
+                    log.info("IFTA MPG: excluded %d of %d trucks from fleet totals",
+                             len(df) - int(_kept.sum()), len(df))
+                df = df[_kept].reset_index(drop=True)
+            if not df.empty:
+                df["_mpg"] = df["_miles"] / df["_gallons"]
+                fleet_mpg = (df["_miles"].sum() / df["_gallons"].sum()) if df["_gallons"].sum() else None
+                out["fleet"]["fleet_mpg"] = float(fleet_mpg) if fleet_mpg else None
+                out["fleet"]["fleet_miles"] = float(df["_miles"].sum())
+                out["fleet"]["fleet_gallons"] = float(df["_gallons"].sum())
+                df = df.sort_values("_mpg", ascending=False).reset_index(drop=True)
                 out["fleet"]["mpg"] = [
-                    {"unit": _unit_label(r[v_col]), "mpg": round(r["_mpg"], 2),
+                    {"unit": r["_label"], "mpg": round(r["_mpg"], 2),
                      "miles": int(r["_miles"]), "gallons": round(r["_gallons"], 1),
                      "driver": ""}
                     for _, r in df.iterrows()
-                    if not _is_excluded_truck(_unit_label(r[v_col]))
                 ]
 
     # Idle hours per truck (top 5 idlers) from EngineIdle sheet.
@@ -4633,28 +4672,36 @@ def _safety_detail_tables(samsara) -> str:
     # (>= threshold) or just monitor (one-off).
     coaching_list = (samsara or {}).get("coaching_list") or []
     coach_rows = ""
+    _seven_d_ago = _now_utc - pd.Timedelta(days=7)
     for c in coaching_list:
         n = c.get("events", 0)
-        # Ack ✓ when the driver has signed any coaching session at or after
-        # the driver's most-recent event in the lookback window.
         last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
-        ack_ts = _ack_after(c.get("driver", ""), last_ts)
-        # Visibility rule: a driver stays on the list until they sign
-        # (no ack -> always show), then for _ACK_KEEP_DAYS after their
-        # signature before dropping off.
-        if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
-            continue
-        acked = ack_ts is not None
-        action = "Assign coaching" if n >= COACH_EVENT_THRESHOLD else "Monitor"
-        action_kind = "bad" if n >= COACH_EVENT_THRESHOLD else "warn"
-        events_kind = "bad" if n >= COACH_EVENT_THRESHOLD else ("warn" if n > 0 else None)
+        is_coaching = n >= COACH_EVENT_THRESHOLD
+        if is_coaching:
+            # "Assign coaching": stays on the list until the driver signs,
+            # then for _ACK_KEEP_DAYS more days as a closeout indicator.
+            ack_ts = _ack_after(c.get("driver", ""), last_ts)
+            if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
+                continue
+            acked = ack_ts is not None
+        else:
+            # "Monitor": one-off events don't need driver acknowledgment —
+            # roll off naturally after 7 days from the event itself. The Ack
+            # column reads as N/A so it doesn't imply a missing signature.
+            if pd.notna(last_ts) and last_ts < _seven_d_ago:
+                continue
+            acked = False
+        action = "Assign coaching" if is_coaching else "Monitor"
+        action_kind = "bad" if is_coaching else "warn"
+        events_kind = "bad" if is_coaching else ("warn" if n > 0 else None)
         types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
+        ack_cell = _ack_cell(acked) if is_coaching else "n/a"
+        ack_color = ("good" if acked else "mute") if is_coaching else "mute"
         coach_rows += _tr(
             [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
-             action, _ack_cell(acked)],
+             action, ack_cell],
             ["left", "left", "right", "left", "left", "center"],
-            [None, None, events_kind, None, action_kind,
-             ("good" if acked else "mute")],
+            [None, None, events_kind, None, action_kind, ack_color],
         )
 
     return (
@@ -5688,6 +5735,7 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     worst = csa["worst"] or {}
     snapshot = csa.get("snapshot_date") or "latest"
     dot_num = csa.get("dot_number") or "841776"
+    mc_num = "375851"  # X-Trux, Inc. motor carrier authority
     avg_pu = csa.get("avg_power_units") or ""
 
     worst_name = worst.get("category", "n/a")
@@ -5696,12 +5744,12 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     alert_k = "bad" if n_alert > 0 else "good"
     alert_label = f"{n_alert} BASIC{'s' if n_alert != 1 else ''} above threshold"
 
-    apu_sub = _pill(f"Avg {avg_pu} power units", "mute") if avg_pu else _pill(f"DOT #{dot_num}", "mute")
+    apu_sub = _pill(f"Avg {avg_pu} power units", "mute") if avg_pu else _pill(f"MC #{mc_num}", "mute")
     tiles = (
         _tile("Highest Risk BASIC", worst_name,
               _pill(f"{worst_pct_txt} percentile", "bad" if worst.get("intervention") else "warn"))
         + _tile("Intervention Alerts", str(n_alert), _pill(alert_label, alert_k))
-        + _tile("DOT Number", f"#{dot_num}", _pill(f"Snapshot {snapshot}", "mute"))
+        + _tile("Carrier Identity", f"DOT #{dot_num}", _pill(f"MC #{mc_num}", "mute"))
         + _tile("FMCSA Snapshot", snapshot, apu_sub)
     )
 
@@ -5726,8 +5774,8 @@ def build_csa_scorecard_page(csa, date_str) -> str:
             [None, None, None, row_k],
         )
 
-    section_label = (f"FMCSA BASIC Category Scores &middot; X-Trux, Inc. (DOT #{dot_num})"
-                     f" &middot; Snapshot {snapshot}")
+    section_label = (f"FMCSA BASIC Category Scores &middot; X-Trux, Inc. "
+                     f"(DOT #{dot_num} &middot; MC #{mc_num}) &middot; Snapshot {snapshot}")
     return (
         f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
         f"<tr>{tiles}</tr>"
@@ -5736,7 +5784,7 @@ def build_csa_scorecard_page(csa, date_str) -> str:
         f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
         f"Percentile ranks from FMCSA Carrier Safety Measurement System (CSMS) via SambaSafety. "
         f"Unsafe Driving &amp; Crash Indicator alert at 65th percentile; all other BASICs at 80th. "
-        f"Source: SambaSafety CSA Scorecard (DOT #{dot_num}).</div>"
+        f"Source: SambaSafety CSA Scorecard (DOT #{dot_num} &middot; MC #{mc_num}).</div>"
     )
 
 
