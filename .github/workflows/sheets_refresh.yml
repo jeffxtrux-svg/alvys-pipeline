@@ -7,7 +7,10 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '30 9 * * *'   # 4:30am CT (DST) / 3:30am CT (standard) — morning refresh
+    # Year-round 4:30am Central. CDT (UTC-5) and CST (UTC-6) crons both
+    # armed; the "Gate to 4am CT" step rejects the off-season slot.
+    - cron: '30 9 * * *'    # 4:30am CDT / 3:30am CST (CST: gated)
+    - cron: '30 10 * * *'   # 5:30am CDT (CDT: gated) / 4:30am CST
 
 jobs:
   refresh:
@@ -15,22 +18,40 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Gate to 4am CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 4 ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "4am CT slot — proceeding."
+          fi
+
       - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
         run: pip install -r requirements.txt
 
       - name: Write GCP credentials to temp file
+        if: steps.ct_gate.outputs.skip != '1'
         run: echo '${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}' > /tmp/gcp-sa.json
 
       - name: Run Sheets pipeline
+        if: steps.ct_gate.outputs.skip != '1'
         env:
           GCP_SERVICE_ACCOUNT_JSON: /tmp/gcp-sa.json
           GSHEET_ID: ${{ secrets.GSHEET_ID }}

@@ -9,12 +9,19 @@ on:
   # Reusable so the "Refresh All" workflow can call it.
   workflow_call:
 
-  # Cron times are in UTC. Adjust for Central time as needed.
-  # Below = 3am, 10am, 4pm Central (US/Central is UTC-6 in standard time, UTC-5 in DST)
+  # GitHub Actions cron is fixed UTC and ignores DST. To hit the same
+  # Central wall-clock times year-round (4am / 11am / 5pm CT), we arm
+  # two cron families — one for CDT (UTC-5) and one for CST (UTC-6) —
+  # and the "Gate to allowed CT hours" step at the top of the job exits
+  # any cron whose Central-time hour isn't in the target set. Exactly
+  # three runs per day, regardless of DST.
   schedule:
-    - cron: '0 9 * * *'    # 3am CT (winter) / 4am CT (DST)
-    - cron: '0 16 * * *'   # 10am CT (winter) / 11am CT (DST)
-    - cron: '0 22 * * *'   # 4pm CT (winter) / 5pm CT (DST)
+    - cron: '0 9 * * *'    # CDT 4am  / CST 3am  (CST: gated)
+    - cron: '0 16 * * *'   # CDT 11am / CST 10am (CST: gated)
+    - cron: '0 22 * * *'   # CDT 5pm  / CST 4pm  (CST: gated)
+    - cron: '0 10 * * *'   # CDT 5am  / CST 4am  (CDT: gated)
+    - cron: '0 17 * * *'   # CDT 12pm / CST 11am (CDT: gated)
+    - cron: '0 23 * * *'   # CDT 6pm  / CST 5pm  (CDT: gated)
 
 jobs:
   refresh:
@@ -22,19 +29,38 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Gate to allowed CT hours
+        # Year-round target: 4am, 11am, 5pm Central. The CDT and CST cron
+        # families each fire 6× a day across the two; this step lets only
+        # the run whose Central-time hour matches one of the target slots
+        # actually do work. Manual / workflow_call / push trigger bypass.
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          case "$CT_HOUR" in
+            4|11|17) echo "Target slot — proceeding." ;;
+            *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
         run: pip install -r requirements.txt
 
       - name: Run Alvys pull
+        if: steps.ct_gate.outputs.skip != '1'
         env:
           ALVYS_CLIENT_ID: ${{ secrets.ALVYS_CLIENT_ID }}
           ALVYS_CLIENT_SECRET: ${{ secrets.ALVYS_CLIENT_SECRET }}
@@ -43,6 +69,7 @@ jobs:
         run: python -m src.main
 
       - name: Upload to OneDrive
+        if: steps.ct_gate.outputs.skip != '1'
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -61,7 +88,7 @@ jobs:
       # Includes _debug/ folder with sample JSON records and rate-type
       # inventory — useful for diagnosing column-mapping issues.
       - name: Upload output folder as artifact
-        if: always()
+        if: always() && steps.ct_gate.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: alvys-master-${{ github.run_number }}
