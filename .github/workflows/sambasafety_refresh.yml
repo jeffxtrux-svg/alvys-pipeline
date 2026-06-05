@@ -16,10 +16,12 @@ on:
   workflow_dispatch:
   workflow_call:
   schedule:
-    # 10:30 UTC = 4:30am CST (winter) / 5:30am CDT (summer).
-    # Runs an hour before the scorecard email job, so the merged workbook is
-    # always fresh when the scorecard reads it.
-    - cron: '30 10 * * *'
+    # Year-round 2:30am Central. CDT (UTC-5) and CST (UTC-6) crons both
+    # armed; the "Gate to 2am CT" step rejects the season's wrong slot
+    # so the merge happens exactly once per day, well ahead of the
+    # scorecard's 5am CT primary.
+    - cron: '30 7 * * *'    # 2:30am CDT / 1:30am CST (CST: gated)
+    - cron: '30 8 * * *'    # 3:30am CDT (CDT: gated) / 2:30am CST
 
 jobs:
   refresh:
@@ -27,19 +29,36 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - name: Gate to 2am CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 2 ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "2am CT slot — proceeding."
+          fi
+
       - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
         run: pip install -r requirements.txt
 
       - name: Refresh SambaSafety_Master.xlsx
+        if: steps.ct_gate.outputs.skip != '1'
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -66,7 +85,7 @@ jobs:
         run: python -m src.sambasafety_main
 
       - name: Upload output as artifact
-        if: always()
+        if: always() && steps.ct_gate.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: sambasafety-master-${{ github.run_number }}

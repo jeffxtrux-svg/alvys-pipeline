@@ -18,13 +18,17 @@ on:
   workflow_dispatch:
   workflow_call:
   schedule:
-    # Run concurrently with Alvys + Samsara at 5:00am CST so the scorecard
-    # (5:30am CST) has all three feeds fresh in OneDrive. Each connector
-    # uploads to a different folder and uses its own credentials, so there's
-    # no contention.
-    - cron: '0 11 * * *'   # 5:00am CT (standard) / 6:00am CT (DST)
-    - cron: '0 18 * * *'   # 12:00pm CT (DST) / 1:00pm CT (standard)
-    - cron: '0 0 * * *'    # 6:00pm CT (DST) / 7:00pm CT (standard)
+    # Year-round 4am / 11am / 5pm Central (concurrent with Alvys + Samsara).
+    # CDT crons (UTC-5) + CST crons (UTC-6); the "Gate to allowed CT hours"
+    # step gates whichever season's slots are off-target so each pull fires
+    # exactly 3× per day. The QB token rotation is idempotent — if a gated
+    # run skips, the next on-target one rotates as usual.
+    - cron: '0 9 * * *'    # CDT 4am  / CST 3am  (CST: gated)
+    - cron: '0 16 * * *'   # CDT 11am / CST 10am (CST: gated)
+    - cron: '0 22 * * *'   # CDT 5pm  / CST 4pm  (CST: gated)
+    - cron: '0 10 * * *'   # CDT 5am  / CST 4am  (CDT: gated)
+    - cron: '0 17 * * *'   # CDT 12pm / CST 11am (CDT: gated)
+    - cron: '0 23 * * *'   # CDT 6pm  / CST 5pm  (CDT: gated)
 
 jobs:
   refresh:
@@ -32,19 +36,34 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - name: Gate to allowed CT hours
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          case "$CT_HOUR" in
+            4|11|17) echo "Target slot — proceeding." ;;
+            *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
         run: pip install -r requirements.txt
 
       - name: Pull QuickBooks data
+        if: steps.ct_gate.outputs.skip != '1'
         env:
           QB_CLIENT_ID: ${{ secrets.QB_CLIENT_ID }}
           QB_CLIENT_SECRET: ${{ secrets.QB_CLIENT_SECRET }}
@@ -61,6 +80,7 @@ jobs:
         run: python -m src.qb_main
 
       - name: Upload QB files to OneDrive
+        if: steps.ct_gate.outputs.skip != '1'
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -70,7 +90,7 @@ jobs:
         run: python -m src.qb_onedrive_upload
 
       - name: Upload output as artifact
-        if: always()
+        if: always() && steps.ct_gate.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: qb-data-${{ github.run_number }}

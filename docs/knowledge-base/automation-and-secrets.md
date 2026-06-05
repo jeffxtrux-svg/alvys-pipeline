@@ -14,16 +14,18 @@ Each connector has its own workflow in `.github/workflows/`. All three:
   (`if: always()`, 7-day retention) — so you can download results from the
   Actions tab even if the OneDrive step failed.
 
-| Workflow file | Steps | Cron (UTC) |
-|---------------|-------|------------|
-| `refresh.yml` (Alvys) | pull → OneDrive upload → artifact | `0 12,18,0 * * *` |
-| `samsara_refresh.yml` | pull → OneDrive upload → **alerts** → artifact | `0 12,18,0 * * *` |
-| `qb_refresh.yml` | pull (+token rotation) → OneDrive upload → artifact | `30 12,18,0 * * *` |
-| `scorecard_email.yml` | read OneDrive files → compute KPIs → email daily scorecard | `0 13 * * *` (1×/day) |
+All workflows use the same **DST-proof pattern**: each job's `schedule` arms cron entries for both CDT (UTC-5) and CST (UTC-6), and the **first step** in the job is a `Gate to allowed CT hours` check that exits cleanly when `TZ=America/Chicago date +%-H` doesn't match the target set. The wrong-season cron fires but the gate skips it, so Central wall-clock time stays constant year-round without any code change at the DST flip. Manual `workflow_dispatch` / `workflow_call` / `push` runs bypass the gate so on-demand triggers always work.
 
-The cron times map to roughly **6am / 12pm / 6pm Central**. QuickBooks is offset
-30 minutes to avoid overlapping with the Alvys/Samsara runs. (Cron is fixed UTC,
-so the Central clock time shifts by an hour across daylight-saving changes.)
+| Workflow file | Target (Central) | Steps |
+|---------------|------------------|-------|
+| `refresh.yml` (Alvys) | 4am / 11am / 5pm | pull → OneDrive upload → artifact |
+| `samsara_refresh.yml` | 4am / 11am / 5pm | pull → OneDrive upload → **alerts** → artifact |
+| `qb_refresh.yml` | 4am / 11am / 5pm | pull (+token rotation) → OneDrive upload → artifact |
+| `sambasafety_refresh.yml` | 2:30am | merge raw CSVs → SambaSafety_Master.xlsx → OneDrive |
+| `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | pull all 3 → write Google Sheets KPI dashboard (3×/day to match the OneDrive cadence) |
+| `scorecard_email.yml` | 5:00am (primary, with defense-in-depth backups through ~6am) | read OneDrive files → compute KPIs → email daily scorecard |
+
+The three data pulls (Alvys / Samsara / QuickBooks) fire concurrently at 4am CT — each writes to its own OneDrive folder with its own credentials, no contention. SambaSafety runs ahead at 2:30am CT so its workbook is in OneDrive well before the scorecard reads it. The scorecard arms 6 UTC slots across the CDT and CST 5–6am windows with a `≥ 5am CT` gate; the script's same-day idempotency marker in OneDrive ensures exactly one slot per day actually emails.
 
 ### Per-workflow notable env wiring
 
