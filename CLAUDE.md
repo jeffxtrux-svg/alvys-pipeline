@@ -120,7 +120,7 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `samsara_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `qb_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `sambasafety_refresh.yml` | 2:30am | `30 7,8 * * *` | `{2}` |
-| `sheets_refresh.yml` | 4:30am | `30 9,10 * * *` | `{4}` |
+| `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | `30 9,10`, `0 18,19`, `30 22,23 * * *` | `{4, 13, 17}` |
 | `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups through ~6am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5` |
 | `karpathy_compile.yml` (Karpathy-Wiki librarian) | 7:15am | `15 12,13 * * *` | `{7}` |
 
@@ -148,7 +148,7 @@ The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Li
 12. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
 13. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
 
-All times are **Central wall-clock year-round** via the dual-cron + CT-hour-gate pattern above. Pulls (Alvys / Samsara / QB) fire concurrently at **4am / 11am / 5pm CT**; SambaSafety lands at **2:30am CT** so its workbook is in OneDrive ahead of the scorecard; the scorecard email primary follows at **5:00am CT** with backup slots through ~6am CT; the Google Sheets KPI dashboard refresh runs at **4:30am CT**. Manual `workflow_dispatch` / `workflow_call` / `push` triggers all bypass the season gate so on-demand runs work at any hour. The DST flip in early-Nov / mid-Mar requires no code changes.
+All times are **Central wall-clock year-round** via the dual-cron + CT-hour-gate pattern above. Pulls (Alvys / Samsara / QB) fire concurrently at **4am / 11am / 5pm CT**; SambaSafety lands at **2:30am CT** so its workbook is in OneDrive ahead of the scorecard; the scorecard email primary follows at **5:00am CT** with backup slots through ~6am CT; the Google Sheets KPI dashboard refresh runs at **4:30am / 1:00pm / 5:30pm CT** (three updates per day so the dashboard tracks the same morning / midday / evening cadence as the OneDrive pulls). Manual `workflow_dispatch` / `workflow_call` / `push` triggers all bypass the season gate so on-demand runs work at any hour. The DST flip in early-Nov / mid-Mar requires no code changes.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
 the new refresh token; without it the run still works but warns and the old
 token lasts ~100 days.

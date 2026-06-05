@@ -7,10 +7,16 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Year-round 4:30am Central. CDT (UTC-5) and CST (UTC-6) crons both
-    # armed; the "Gate to 4am CT" step rejects the off-season slot.
+    # Year-round 4:30am / 1:00pm / 5:30pm Central. CDT (UTC-5) and CST
+    # (UTC-6) crons both armed; the "Gate to allowed CT hours" step
+    # accepts hours {4, 13, 17} so each season's correct slot runs and
+    # the off-season twin is skipped.
     - cron: '30 9 * * *'    # 4:30am CDT / 3:30am CST (CST: gated)
     - cron: '30 10 * * *'   # 5:30am CDT (CDT: gated) / 4:30am CST
+    - cron: '0 18 * * *'    # 1:00pm CDT / 12:00pm CST (CST: gated)
+    - cron: '0 19 * * *'    # 2:00pm CDT (CDT: gated) / 1:00pm CST
+    - cron: '30 22 * * *'   # 5:30pm CDT / 4:30pm CST (CST: gated)
+    - cron: '30 23 * * *'   # 6:30pm CDT (CDT: gated) / 5:30pm CST
 
 jobs:
   refresh:
@@ -18,18 +24,19 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Gate to 4am CT
+      - name: Gate to allowed CT hours
+        # Year-round targets: 4:30am, 1:00pm, 5:30pm Central.
+        # Cron minute already enforces the :30/:00 part; this gate just
+        # checks the hour. Manual / workflow_call / push runs bypass.
         id: ct_gate
         if: github.event_name == 'schedule'
         run: |
           CT_HOUR=$(TZ=America/Chicago date +%-H)
           echo "Central-time hour: $CT_HOUR"
-          if [ "$CT_HOUR" -ne 4 ]; then
-            echo "Off-target — skipping."
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "4am CT slot — proceeding."
-          fi
+          case "$CT_HOUR" in
+            4|13|17) echo "Target slot — proceeding." ;;
+            *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - name: Checkout repo
         if: steps.ct_gate.outputs.skip != '1'

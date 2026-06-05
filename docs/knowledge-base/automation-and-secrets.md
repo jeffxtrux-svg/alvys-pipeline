@@ -22,7 +22,7 @@ All workflows use the same **DST-proof pattern**: each job's `schedule` arms cro
 | `samsara_refresh.yml` | 4am / 11am / 5pm | pull → OneDrive upload → **alerts** → artifact |
 | `qb_refresh.yml` | 4am / 11am / 5pm | pull (+token rotation) → OneDrive upload → artifact |
 | `sambasafety_refresh.yml` | 2:30am | merge raw CSVs → SambaSafety_Master.xlsx → OneDrive |
-| `sheets_refresh.yml` | 4:30am | pull all 3 → write Google Sheets KPI dashboard |
+| `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | pull all 3 → write Google Sheets KPI dashboard (3×/day to match the OneDrive cadence) |
 | `scorecard_email.yml` | 5:00am (primary, with defense-in-depth backups through ~6am) | read OneDrive files → compute KPIs → email daily scorecard |
 
 The three data pulls (Alvys / Samsara / QuickBooks) fire concurrently at 4am CT — each writes to its own OneDrive folder with its own credentials, no contention. SambaSafety runs ahead at 2:30am CT so its workbook is in OneDrive well before the scorecard reads it. The scorecard arms 6 UTC slots across the CDT and CST 5–6am windows with a `≥ 5am CT` gate; the script's same-day idempotency marker in OneDrive ensures exactly one slot per day actually emails.
