@@ -69,13 +69,17 @@ including them would deflate the rate — so they're excluded until pay lands.
 on the fully-loaded cost (the target the business chose). Adjust the OR to change
 the baked-in profit:
 
-| `RPM_GOAL_TARGET_OR` | Net margin | Goal on a ~$2.75 current cost |
+| `RPM_GOAL_TARGET_OR` | Net margin | Goal on a ~$3.05 current cost |
 |----------------------|-----------|-------------------------------|
-| `1.00` | 0% (break-even) | $2.75 |
-| **`0.95`** | **5% (default)** | **$2.90** |
-| `0.92` | 8% | $2.99 |
-| `0.90` | 10% | $3.06 |
-| `0.85` | 15% | $3.24 |
+| `1.00` | 0% (break-even) | $3.05 |
+| **`0.95`** | **5% (default)** | **$3.21** |
+| `0.92` | 8% | $3.32 |
+| `0.90` | 10% | $3.39 |
+| `0.85` | 15% | $3.59 |
+
+> Sample cost reflects today's pinned overhead (`$0.98/mi`) plus ~$2.05/mi driver
+> pay. The cost number moves with the driver-pay leg every run; the table is here
+> to show how the OR maps to a goal, not to lock a value.
 
 > This margin is **net of total cost** (driver + overhead), which is *not* the
 > same as the 30–36% *gross* margins in the manual goals worksheet — those are
@@ -124,8 +128,29 @@ All optional; defaults live in `src/scorecard_email.py` and are documented in
 | `RPM_GOAL_TARGET_OR` | `0.95` | Operating ratio the goal targets (0.95 = 5% net margin; 1.0 = break-even). |
 | `RPM_GOAL_OVERHEAD_COMPANIES` | `X-Trux Inc,X-Linx Inc` | QB companies whose Total Expenses form the overhead pool. |
 | `RPM_GOAL_OVERHEAD_ALLOC` | `1.0` | Fraction of the combined overhead the X-Trux miles absorb (1.0 = all; lower pushes some onto brokerage). |
+| `RPM_GOAL_OVERHEAD_PIN` | `0.98` | **Hand-set override for the overhead leg.** Skips the live QB-derived calc and uses this dollar value instead. Set to `None` (or empty env var) to fall back to the live calculation. The live value is still computed and shown on the Data-check banner so you can watch the two converge. |
+| `RPM_GOAL_INSURANCE_SURCHARGE` | `0.0` | Separate $/mi line added on top of overhead. **Zeroed in 2026** because the liability-insurance rate hike is already folded into `RPM_GOAL_OVERHEAD_PIN = 0.98`. Re-enable only if you decouple insurance from overhead again. |
 | `RPM_GOAL_PAY_WINDOW_DAYS` | `10` | Trailing window (days) for the driver-pay-per-mile read; settled loads only. |
 | `RPM_GOAL_WORKSHEET_OVERHEAD` | `0.88` | Manual office-cost-per-mile shown as a sanity check. |
+
+### The overhead pin (`RPM_GOAL_OVERHEAD_PIN`)
+
+While the QB-derived overhead leg is being validated against the books, the
+brief uses a pinned value instead of the live calculation. The pin keeps the
+goal stable through pulls that would otherwise read wrong overhead (e.g. a
+late QB refresh, a company-name mismatch, or a near-empty Loads window that
+inflates the per-mile cost).
+
+- **Current value: `$0.98/mi`** — baseline overhead with the liability-insurance
+  rate hike folded in. Bumped from `$0.92` when insurance was rolled in so the
+  separate `RPM_GOAL_INSURANCE_SURCHARGE` line could be zeroed (no
+  double-counting).
+- **Live value still computed.** The brief's **Data check** banner prints both
+  the pinned and live overheads side by side so the gap is visible. When the two
+  converge for several runs, unpin (`RPM_GOAL_OVERHEAD_PIN = None`) and let the
+  live calculation flow through.
+- **Override per-run:** `RPM_GOAL_OVERHEAD_PIN=<value>` in `.env` or GitHub
+  Secrets. Empty string = unpin.
 
 ### Fail-soft guards
 

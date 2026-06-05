@@ -52,19 +52,24 @@ Page numbering: the SambaSafety page is **page 2** in the scorecard email
 `build_page9` for stability — the `_header(..., pg=2, ...)` argument is
 what controls the rendered page number.
 
-## The two source reports
+## The three source reports
 
-You schedule both inside the SambaSafety admin UI to email
-`jeff@xfreight.net` daily:
+You schedule all three inside the SambaSafety admin UI to email
+`jeff@xfreight.net` daily (the CSA scorecard is optional but adds page 10
+of the brief when present):
 
 | SambaSafety report | What it carries | Becomes |
 |--------------------|-----------------|---------|
 | **Overview → Risk Index Report** | one row per monitored driver: name, license #, license status, expiration, state, current risk index score, score bucket (Clean / Activity / Exception) | `risk_index_report.csv` → `Drivers` sheet |
 | **MVR Activity → Violations** | one row per violation: driver, date, violation type, points/score, severity | `violationsReport.csv` → `Violations` sheet |
+| **CSA2010 Preview Scorecard** (optional) | one row per FMCSA BASIC category for X-Trux's DOT: percentile rank, BASIC measure, segment violations, relevant inspections, snapshot date | `CSA2010 Preview Scorecard.csv` → `CSA Scorecard` sheet |
 
-Both CSV filenames are configurable via env (`SAMBASAFETY_RISK_INDEX_FILE` /
-`SAMBASAFETY_VIOLATIONS_FILE`) but defaults match what SambaSafety's
-report exporter writes by default.
+Filenames are configurable via env (`SAMBASAFETY_RISK_INDEX_FILE`,
+`SAMBASAFETY_VIOLATIONS_FILE`, `SAMBASAFETY_CSA_FILE`) but defaults match
+what SambaSafety's report exporter writes by default. The CSA file is
+**fail-soft**: if the download 404s, `sambasafety_main` logs a warning
+and writes the workbook without a `CSA Scorecard` sheet — the scorecard
+brief still renders, just with a "data unavailable" page 10.
 
 ## The column re-mapping (`src/sambasafety_combine.py`)
 
@@ -100,6 +105,28 @@ SambaSafety happens to format the export today.
 walks a list of candidate spellings), so minor header variations are
 non-breaking — but the **Low/Medium/High** label and the **Severity
 thresholds** above are what the bucket / "high risk" logic keys on.
+
+### CSA2010 Preview Scorecard → `CSA Scorecard` sheet
+
+`_build_csa_scorecard` (in `sambasafety_combine.py`) parses the FMCSA
+carrier scorecard CSV as-is — one row per BASIC category for the carrier
+(DOT #841776 for X-Trux, Inc.). Columns the page-10 builder needs:
+
+| Column | Purpose |
+|--------|---------|
+| `Category` (or `BASIC Category` / `BASIC`) | the BASIC name (Unsafe Driving, HOS Compliance, Maintenance, …); `*` suffixes are stripped before matching against the threshold table |
+| `Percentile` (or `CSA Percentile` / `Rank`) | the carrier's percentile rank for that BASIC (0–100). Higher = worse. |
+| `BasicMeasure` (or `Basic Measure` / `Measure`) | raw FMCSA BASIC measure score |
+| `SegmentViolations` (or `Segment Violations` / `Violations`) | count of violations in the BASIC's measurement window |
+| `RelevantInspections` (or `Relevant Inspections` / `Inspections`) | inspection sample size behind the percentile |
+| `SnapshotDate` (or `Snapshot Date` / `Snapshot`) | FMCSA snapshot the row reflects |
+| `DotNumber` (or `DOT Number` / `DOT`) | DOT # — pulled from the first row as page metadata |
+| `AvgPowerUnits` (or `Avg Power Units` / `Power Units`) | carrier size — drives the `_CSA_INTERVENTION` threshold pick for size-sensitive BASICs |
+
+No column is renamed; the page-10 builder fuzzy-matches the same
+candidate-list pattern (`_find_col`) the other two sheets use, so a
+SambaSafety header rename only requires updating the candidate list, not
+a schema migration.
 
 ## Daily refresh job (`sambasafety_refresh.yml`)
 
@@ -152,6 +179,75 @@ Tunable constants live at the top of `src/scorecard_email.py`:
 
 The 365-day window is intentional — SambaSafety violations are historical
 MVR records, not real-time events.
+
+### The CSA Scorecard report (page 10)
+
+The third SambaSafety report drives **page 10 — CSA Carrier Scorecard**.
+`compute_csa_scorecard` reads the `CSA Scorecard` sheet from
+`SambaSafety_Master.xlsx` and produces:
+
+```python
+{
+    "basics": [
+        {"category": "Unsafe Driving", "percentile": 72.3, "measure": 1.84,
+         "seg_violations": 23, "rel_inspections": 412,
+         "threshold": 65, "intervention": True},
+        ...
+    ],
+    "n_alert": 1,              # BASICs at/above their intervention threshold
+    "worst":   { ... },        # the category with the highest percentile
+    "snapshot_date":   "2026-05-23",
+    "dot_number":      "841776",
+    "avg_power_units": "67",
+}
+```
+
+`build_csa_scorecard_page` renders four tiles (highest-risk BASIC,
+intervention-alert count, DOT #, FMCSA snapshot date) and a table of all
+BASICs sorted by percentile (worst first). Each row earns one of:
+
+- **INTERVENTION LIKELY** (`bad`) — percentile ≥ the BASIC's FMCSA
+  threshold (see `_CSA_INTERVENTION` below). FMCSA opens an intervention
+  workflow at these percentile bands.
+- **WATCH** (`warn`) — percentile ≥ 75% of the threshold; not yet
+  intervention-eligible but trending there.
+- **OK** (`good`) — comfortably below threshold.
+
+#### FMCSA BASIC intervention thresholds
+
+The `_CSA_INTERVENTION` table in `src/scorecard_email.py` encodes FMCSA's
+[carrier-of-record intervention bands](https://csa.fmcsa.dot.gov/about/basics/csa-measures):
+
+| BASIC category | Percentile alert threshold |
+|----------------|---------------------------|
+| Unsafe Driving | **65** |
+| Crash Indicator | **65** |
+| Maintenance | 80 |
+| HOS Compliance | 80 |
+| Hazardous Materials | 80 |
+| Driver Fitness | 80 |
+| Controlled Substances / Alcohol | 80 |
+
+Unsafe Driving and Crash Indicator alert sooner because they correlate
+most directly with public-safety risk; the rest follow the standard 80th
+percentile cutoff for general carriers. The category-name match is a
+case-insensitive substring lookup, so SambaSafety renames (e.g.
+"HOS Compliance" → "Hours-of-Service Compliance") don't break the alert
+gate; categories that don't match anything fall through to `80`.
+
+#### Failing soft
+
+- **CSA CSV missing from OneDrive.** `sambasafety_main._build_from_csv`
+  catches the download exception and skips the CSA sheet. The page-10
+  builder sees `csa = None` and renders a `WARN` callout asking the user
+  to place `CSA2010 Preview Scorecard.csv` in `OneDrive/SambaSafety/`.
+- **Header rename in the CSV.** Add the new spelling to the `_find_col`
+  candidate list in `compute_csa_scorecard` (around line ~2894). All
+  fields except `Category` are optional — a missing column degrades to an
+  em-dash in that cell, not a crash.
+- **Empty / single-row file.** If no row has a `Category` value the
+  function returns `None` and the page renders the same "data unavailable"
+  callout.
 
 ## Getting the source CSVs into OneDrive
 
