@@ -62,8 +62,53 @@ _CSA_BASICS = frozenset({
 })
 
 
+def _docx_to_csv_bytes(docx_bytes: bytes) -> bytes:
+    """Extract table and paragraph text from a DOCX file as CSV bytes.
+    Uses only stdlib (zipfile + xml.etree) — no python-docx required.
+    Each body paragraph becomes a single-column row; each table row becomes
+    a multi-column row. This preserves the structure the CSV parser needs."""
+    import csv
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    def _tag(name: str) -> str:
+        return f"{{{W}}}{name}"
+
+    def _elem_text(elem) -> str:
+        return "".join(t.text or "" for t in elem.iter(_tag("t"))).strip()
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+            with z.open("word/document.xml") as f:
+                root = ET.parse(f).getroot()
+    except Exception as e:
+        log.warning("DOCX extraction failed: %s", e)
+        return b""
+
+    body = root.find(_tag("body")) or root
+    rows: list[list[str]] = []
+    for child in body:
+        local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if local == "p":
+            text = _elem_text(child)
+            if text:
+                rows.append([text])
+        elif local == "tbl":
+            for tr in child.iter(_tag("tr")):
+                cells = [_elem_text(tc) for tc in tr.findall(_tag("tc"))]
+                if any(cells):
+                    rows.append(cells)
+
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
 def _build_csa_scorecard(csa_csv) -> pd.DataFrame:
-    """Parse a SambaSafety CSA2010 Preview Scorecard CSV into a clean DataFrame.
+    """Parse a SambaSafety CSA2010 Preview Scorecard CSV (or DOCX) into a
+    clean DataFrame.
 
     Columns: Category, Percentile, BASICMeasure, SegmentViolations,
     RelevantInspections, SnapshotDate, DOTNumber, AvgPowerUnits.
@@ -72,8 +117,17 @@ def _build_csa_scorecard(csa_csv) -> pd.DataFrame:
     collect rows whose first cell matches a known BASIC category name. The
     percentile is the last numeric value per row; BASIC measure is
     second-to-last; first numeric is segment violations.
+
+    If the input bytes start with the ZIP magic (PK) the file is treated as a
+    DOCX — table rows are extracted via stdlib XML parsing and converted to CSV
+    bytes before parsing begins.
     """
     def _read_raw(src):
+        # Auto-detect DOCX (ZIP magic PK\x03\x04) and convert to CSV first.
+        if isinstance(src, (bytes, bytearray)) and src[:4] == b"PK\x03\x04":
+            src = _docx_to_csv_bytes(bytes(src))
+            if not src:
+                return pd.DataFrame()
         kw = dict(header=None, dtype=str)
         if isinstance(src, (bytes, bytearray)):
             return pd.read_csv(io.BytesIO(src), **kw)
