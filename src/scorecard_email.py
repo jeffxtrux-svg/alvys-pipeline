@@ -4390,7 +4390,11 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
-    # Alvys AR aging tiles — all 5 buckets in a single row at 20% each.
+    # Alvys AR aging tiles — 5 buckets wrapped in a nested 5-column table.
+    # The outer brief container is a fixed 4-column layout (colspan='4' on
+    # section headers), so 5 sibling <td> tiles overflow and the 91+ tile
+    # gets clipped on the right edge. Nesting the 5 inside one outer cell
+    # gives them their own 5-column layout.
     aar = alvys_ar or {}
     alvys_ar_row = ""
     if aar.get("total"):
@@ -4399,12 +4403,18 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         # section header above already qualifies them as "Alvys AR · aging by
         # due date", and the long "Alvys AR ·" prefix squeezed the value text
         # in 20%-wide tiles.
-        alvys_ar_row = (
+        _aging_inner = (
             _tile("Current", money(aar.get("current")), _pill("not overdue", "mute"), _w)
             + _tile("1&ndash;30 days", money(aar.get("d1_30")), _pill("past due", "warn"), _w)
             + _tile("31&ndash;60 days", money(aar.get("d31_60")), _pill("escalate", "warn"), _w)
             + _tile("61&ndash;90 days", money(aar.get("d61_90")), _pill("escalate", "bad"), _w)
             + _tile("91+ days", money(aar.get("d91plus")), _pill("collections", "bad"), _w)
+        )
+        alvys_ar_row = (
+            f"<td colspan='4' style='padding:0;'>"
+            f"<table width='100%' cellpadding='0' cellspacing='0' "
+            f"style='table-layout:fixed;width:100%;'>"
+            f"<tr>{_aging_inner}</tr></table></td>"
         )
 
     # AR reconciliation — QuickBooks (system of record) vs Alvys (TMS), X-Trux + X-Linx.
