@@ -1908,10 +1908,12 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
              ("severity",), ("status", "reviewed", "coaching")],
         )
         # "Coaching needs assigned" list — per-driver aggregation over the
-        # 7-day window so the table never empties out the way the 24h slice
-        # often does, and so every driver with even one event is surfaced.
-        _7d = events[ed >= w["7d"]]
-        _7d_dates = ed[ed >= w["7d"]]
+        # last 30 days. Drivers stay on the list until they sign their
+        # coaching session, then carry over for 3 more days as a closeout
+        # window before dropping off (visibility rule applied at render
+        # time in _safety_detail_tables using out["coaching_acks"]).
+        _7d = events[ed >= w["30d"]]
+        _7d_dates = ed[ed >= w["30d"]]
         if not _7d.empty and dcol:
             et_col = _find_col(_7d, ["event type"])
             sev_col = _find_col(_7d, ["severity"])
@@ -4418,20 +4420,27 @@ def _safety_detail_tables(samsara) -> str:
         # day each violation/event landed on.
         return (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;"
 
-    def _ack_after(driver: str, event_ts) -> bool:
-        """True if the driver signed off on a coaching session at or after
-        the given event timestamp (i.e. the driver has acknowledged this
-        specific event or one that landed earlier)."""
+    def _ack_after(driver: str, event_ts):
+        """Return the latest matching ack timestamp (a UTC pd.Timestamp) if
+        the driver signed off on a coaching session at or after the given
+        event timestamp, else None."""
         if not driver or event_ts is None or pd.isna(event_ts):
-            return False
+            return None
+        latest = None
         for ack_ts in acks_by_driver.get(driver.strip().lower(), []):
-            if ack_ts >= event_ts:
-                return True
-        return False
+            if ack_ts >= event_ts and (latest is None or ack_ts > latest):
+                latest = ack_ts
+        return latest
 
     def _ack_cell(yes: bool) -> str:
         # &check; renders as a clean ✓ in both desktop email and WeasyPrint PDF.
         return "&check;" if yes else "&mdash;"
+
+    # "Leave it on for 3 days after acknowledgment" — a driver stays on the
+    # Coaching needs assigned list until they've signed, and then for this
+    # many days after their signature before they drop off entirely.
+    _ACK_KEEP_DAYS = 3
+    _now_utc = pd.Timestamp.now(tz="UTC")
 
     hos_rows = "".join(
         _tr([r.get("driver name", ""), _when(r), r.get("violation type", ""), r.get("status", "")],
@@ -4443,7 +4452,7 @@ def _safety_detail_tables(samsara) -> str:
         evt_ts = pd.to_datetime(
             (r.get("date", "") + " " + r.get("time", "")).strip(),
             errors="coerce", utc=True)
-        acked = _ack_after(r.get("driver name", ""), evt_ts)
+        acked = _ack_after(r.get("driver name", ""), evt_ts) is not None
         event_rows += _tr(
             [r.get("driver name", ""), r.get("unit", ""), _when(r),
              r.get("event type", ""), r.get("severity", ""), r.get("status", ""),
@@ -4469,14 +4478,20 @@ def _safety_detail_tables(samsara) -> str:
     coach_rows = ""
     for c in coaching_list:
         n = c.get("events", 0)
+        # Ack ✓ when the driver has signed any coaching session at or after
+        # the driver's most-recent event in the lookback window.
+        last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
+        ack_ts = _ack_after(c.get("driver", ""), last_ts)
+        # Visibility rule: a driver stays on the list until they sign
+        # (no ack -> always show), then for _ACK_KEEP_DAYS after their
+        # signature before dropping off.
+        if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
+            continue
+        acked = ack_ts is not None
         action = "Assign coaching" if n >= COACH_EVENT_THRESHOLD else "Monitor"
         action_kind = "bad" if n >= COACH_EVENT_THRESHOLD else "warn"
         events_kind = "bad" if n >= COACH_EVENT_THRESHOLD else ("warn" if n > 0 else None)
         types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
-        # Ack ✓ when the driver has signed any coaching session at or after
-        # their earliest event in this 7-day window.
-        last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
-        acked = _ack_after(c.get("driver", ""), last_ts)
         coach_rows += _tr(
             [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
              action, _ack_cell(acked)],
