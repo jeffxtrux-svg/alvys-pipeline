@@ -12,8 +12,12 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 12:15 UTC = 6:15am CST / 7:15am CDT, after the brief lands in /raw.
-    - cron: '15 12 * * *'
+    # Year-round 7:15am Central. CDT (UTC-5) and CST (UTC-6) crons both
+    # armed; the "Gate to 7am CT" step rejects the off-season slot so the
+    # librarian runs exactly once per day, ~2h after the scorecard email
+    # commits today's brief to Karpathy-Wiki/raw/.
+    - cron: '15 12 * * *'   # 7:15am CDT / 6:15am CST (CST: gated)
+    - cron: '15 13 * * *'   # 8:15am CDT (CDT: gated) / 7:15am CST
 
 permissions:
   contents: write
@@ -29,10 +33,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      - name: Gate to 7am CT
+        # Year-round target: 7:15am Central. Skip whichever season's slot
+        # maps to the wrong wall-clock hour. Manual / workflow_dispatch
+        # runs bypass the gate so the librarian can be triggered any time.
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 7 ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "7am CT slot — proceeding."
+          fi
+
       - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/checkout@v4
 
       - name: Run librarian (Claude Code)
+        if: steps.ct_gate.outputs.skip != '1'
         uses: anthropics/claude-code-action@v1
         # Some action versions only read the OAuth token from the env, others
         # only from the `with:` input. Pass it both ways so either works.
@@ -75,7 +97,7 @@ jobs:
             any source contradictions you noticed.
 
       - name: Commit /wiki updates
-        if: always()
+        if: always() && steps.ct_gate.outputs.skip != '1'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
