@@ -5071,7 +5071,6 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
     Scores page (build_page2b, pg 4)."""
     fleet = (samsara or {}).get("fleet", {}) or {}
     mpg_rows = fleet.get("mpg") or []
-    speeders = fleet.get("speeders") or []
 
     # Top tiles — fleet-wide summary numbers.
     fleet_mpg = fleet.get("fleet_mpg")
@@ -5109,17 +5108,6 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
                    if bot5_mpg
                    else f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
 
-    # Top speeders.
-    def _spd_table(rows, cols, fmt_row, span=4):
-        if not rows:
-            return f"<tr><td colspan='{span}' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
-        return _table(cols, ["left", "right", "right", "right"], "".join(fmt_row(r) for r in rows))
-
-    spd_tbl = _spd_table(
-        speeders, ["Driver", "Speeding events", "", ""],
-        lambda r: _tr([r["driver"], str(r["count"]), "", ""],
-                      ["left", "right", "right", "right"], [None, "bad", None, None]))
-
     return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
@@ -5127,13 +5115,11 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"{mpg_top_tbl}"
             f"{_section('Worst MPG &middot; bottom 5 trucks (MTD &middot; Based on Samsara)')}"
             f"{mpg_bot_tbl}"
-            f"{_section('Top speeders &middot; last 7 days')}"
-            f"{spd_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-            f"Sources: Samsara Trips (MPG), Samsara Safety Events filtered by Event Type "
-            f"(speeding, 7 days). "
-            f"Idle detail is on the Fleet Idle page (pg 9); "
-            f"driver safety scores are on the Driver Safety Scores page (pg 4).</div>")
+            f"Source: Samsara Trips (MPG). "
+            f"Per-driver speed-over-limit % and the speeder ranking are on "
+            f"the Driver Safety Scores page (pg 4); "
+            f"idle detail is on the Fleet Idle page (pg 9).</div>")
 
 
 def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> str:
