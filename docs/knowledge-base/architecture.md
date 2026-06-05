@@ -19,10 +19,20 @@ active-truck count).
 | DOT number | **841776** | `compute_csa_scorecard`, FMCSA SMS, SambaSafety CSA pull |
 | MC number  | **375851** | Motor carrier authority — surfaced on the page-10 carrier tile |
 | Sister company | X-Linx, Inc. (brokerage) | Shares office overhead with X-Trux for the rate-per-mile goal (see `rate-per-mile-goal.md`) |
+| Active power units | **~15 trucks** (live from Alvys; fluctuates) | Computed every run and rendered on the page-1 "Active Trucks · MTD" tile. **Use that tile as the live source of truth.** Recent baseline is ~15 — anything dramatically larger on a downstream tile (e.g. Samsara fleet totals reporting 50+ trucks of activity) is a sign the source feed is unfiltered. |
 
 The hardcoded fallbacks in `build_csa_scorecard_page` are kept in sync
 with this table — if FMCSA reassigns either number, update both this
-section and the literal in `src/scorecard_email.py`.
+section and the literal in `src/scorecard_email.py`. Active-truck count is
+intentionally **not** pinned — only the recent baseline is recorded so
+future agents have a sanity-check anchor without falsely freezing the
+number.
+
+**Why FMCSA's "Avg Power Units" doesn't match.** The CSA scorecard page
+shows `AvgPowerUnits` from FMCSA's carrier-of-record snapshot — that's
+historical and counts whatever X-Trux has on file with FMCSA, including
+power units that may no longer be in active service. Don't reach for that
+tile as a fleet-size proxy; use the page-1 Active Trucks tile instead.
 
 ## The problem being solved
 
