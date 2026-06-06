@@ -3,17 +3,22 @@
 xlsx on OneDrive, filtering to month-to-date, and writing a fresh dated
 copy back to OneDrive (with email distribution).
 
-Three tabs, each laid out exactly like the sample workbook the user
-supplied:
+Four tabs:
 
-  * **All Loads** — every MTD load (Cancelled excluded), grouped by
-    Customer Sales Agent, with per-agent subtotals + a grand-total
-    block at the bottom that includes the comprehensive
-    "Mileage / Margin / Goal" projection.
-  * **Customer Loads** — direct customers + no-customer rows (deadhead /
-    repositioning legs that belong to the X-Trux operation). Same
-    per-agent subtotal + simpler grand-total block.
-  * **Spot Market** — broker freight. Same structure as Customer Loads.
+  * **All Loads** — every MTD load (Cancelled excluded), scoped to
+    **X-Trux + XFreight** offices only (matches the Power BI report and
+    the scorecard email's asset-trucking scope). Grouped by Customer
+    Sales Agent, with per-agent subtotals + a grand-total block at the
+    bottom that includes the comprehensive "Mileage / Margin / Goal"
+    projection.
+  * **Customer Loads** — same X-Trux/XFreight scope; direct customers +
+    no-customer rows (deadhead / repositioning legs).
+  * **Spot Market** — same X-Trux/XFreight scope; broker freight.
+  * **X-Linx Loads** — brokerage book. Same per-agent grouped layout,
+    plus a brokerage-specific analysis block at the bottom (top
+    customers by revenue, top carriers, unique counts, overall margin
+    %). The asset-trucking "goal RPM" block is intentionally absent —
+    RPM/cost-out doesn't apply to a brokerage with no fleet.
 
 Date filter is **first of the current calendar month → today** based on
 the Scheduled Pickup column (matches PBI's monthly bucket).
@@ -133,6 +138,21 @@ def _is_no_customer(name) -> bool:
     return n in ("", "nan", "none")
 
 
+def _is_xtrux_office(name) -> bool:
+    """Asset-trucking scope: matches the scorecard's `_alvys_metrics` filter
+    so the All / Customer / Spot tabs report the same load universe as page
+    1 of the daily brief."""
+    n = str(name).strip().lower()
+    return any(k in n for k in ("x-trux", "xtrux", "xfreight"))
+
+
+def _is_xlinx_office(name) -> bool:
+    """Brokerage scope — separated onto its own tab with brokerage-style
+    analytics (no RPM/goal block, since X-Linx has no fleet)."""
+    n = str(name).strip().lower()
+    return any(k in n for k in ("x-linx", "xlinx"))
+
+
 def _pick_source_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     cols_lower = {str(c).strip().lower(): c for c in df.columns}
     for c in candidates:
@@ -213,6 +233,14 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
     for out_col, src_col in cols.items():
         out[out_col] = sub[src_col].values if src_col else [None] * len(sub)
 
+    # Carry Office through for tab splitting (X-Trux/XFreight vs X-Linx).
+    # Not in OUTPUT_COLS so it never appears in the rendered worksheets.
+    office_col = _pick_source_col(sub, ["Office", "Office Name", "Division"])
+    out["__Office"] = sub[office_col].values if office_col else ""
+    if not office_col:
+        log.warning("No Office column found — X-Linx tab will be empty and "
+                    "X-Trux scoping cannot be applied.")
+
     for c in ("Empty Dispatch Mileage", "Loaded Dispatch Mileage",
               "Customer Revenue", "Driver Rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
@@ -233,13 +261,39 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
 
 
 def _split_tabs(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    is_no_cust = df["Customer"].apply(_is_no_customer)
-    is_direct  = df["Customer"].apply(_is_direct_customer)
+    """Split the normalized MTD load list into the four report tabs.
+
+    All / Customer / Spot are all X-Trux+XFreight only — matches Power BI
+    and the scorecard's asset-trucking scope. X-Linx brokerage gets its
+    own tab so it stays out of the asset-truck RPM math. Any rows whose
+    Office isn't recognized (typo, blank, new sub-co) are logged but
+    dropped from every tab so they don't quietly skew totals."""
+    if "__Office" not in df.columns:
+        df = df.assign(__Office="")
+    xtrux_mask = df["__Office"].apply(_is_xtrux_office)
+    xlinx_mask = df["__Office"].apply(_is_xlinx_office)
+    other = df.loc[~(xtrux_mask | xlinx_mask)]
+    if len(other):
+        offices = sorted(set(str(o).strip() for o in other["__Office"]))
+        log.info("Dropped %d loads with unrecognized Office (not X-Trux/XFreight/X-Linx): %s",
+                 len(other), offices)
+
+    main  = df.loc[xtrux_mask].copy()
+    xlinx = df.loc[xlinx_mask].copy()
+
+    is_no_cust = main["Customer"].apply(_is_no_customer)
+    is_direct  = main["Customer"].apply(_is_direct_customer)
     customer_mask = is_no_cust | is_direct
+
+    log.info("Tab scope: All=%d, Customer=%d, Spot=%d, X-Linx=%d",
+             len(main), int(customer_mask.sum()),
+             int((~customer_mask).sum()), len(xlinx))
+
     return {
-        "All Loads":      df.copy(),
-        "Customer Loads": df.loc[customer_mask].copy(),
-        "Spot Market":    df.loc[~customer_mask].copy(),
+        "All Loads":      main,
+        "Customer Loads": main.loc[customer_mask].copy(),
+        "Spot Market":    main.loc[~customer_mask].copy(),
+        "X-Linx Loads":   xlinx,
     }
 
 
@@ -594,6 +648,77 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
     return seen
 
 
+def _write_brokerage_analysis(ws, row: int, df: pd.DataFrame) -> int:
+    """X-Linx-specific analytics that don't apply to the asset-trucking
+    tabs: top customers + top carriers by revenue (with margin %), plus a
+    summary block (load/customer/carrier counts, overall margin %).
+    Brokerage runs on margin %, not RPM — that's why this block replaces
+    the goal-RPM projection on the other tabs."""
+    if df.empty:
+        return row
+
+    ws.cell(row=row, column=1, value="BROKERAGE ANALYSIS").font = _BOLD
+    row += 2
+
+    headers = ["", "Loads", "Revenue", "Carrier Pay", "Margin", "Margin %"]
+    for ci, h in enumerate(headers, start=1):
+        ws.cell(row=row, column=ci, value=h).font = _BOLD
+    row += 1
+
+    def _top(by: str, n: int = 10) -> pd.DataFrame:
+        return (df.groupby(by, dropna=False)
+                  .agg(Loads=("Customer Revenue", "size"),
+                        Revenue=("Customer Revenue", "sum"),
+                        Pay=("Driver Rate", "sum"),
+                        Margin=("Margin", "sum"))
+                  .sort_values("Revenue", ascending=False)
+                  .head(n))
+
+    for label, by in (("Top 10 Customers", "Customer"),
+                       ("Top 10 Carriers",  "Carrier")):
+        ws.cell(row=row, column=1, value=label).font = _BOLD
+        row += 1
+        for name, r in _top(by).iterrows():
+            rev = float(r["Revenue"] or 0)
+            mgn = float(r["Margin"] or 0)
+            pct = (mgn / rev) if rev else 0
+            display = str(name) if pd.notna(name) and str(name).strip() else "(blank)"
+            ws.cell(row=row, column=1, value=display)
+            ws.cell(row=row, column=2, value=int(r["Loads"]))
+            ws.cell(row=row, column=3, value=rev).number_format = _FMT_ACCOUNTING
+            ws.cell(row=row, column=4, value=float(r["Pay"] or 0)).number_format = _FMT_ACCOUNTING
+            ws.cell(row=row, column=5, value=mgn).number_format = _FMT_MARGIN
+            ws.cell(row=row, column=6, value=pct).number_format = _FMT_MARGIN_PCT
+            row += 1
+        row += 1
+
+    total_rev = float(df["Customer Revenue"].sum() or 0)
+    total_pay = float(df["Driver Rate"].sum() or 0)
+    total_mgn = float(df["Margin"].sum() or 0)
+    overall_pct = (total_mgn / total_rev) if total_rev else 0
+    n_cust = df["Customer"].astype(str).str.strip().replace({"nan": "", "None": ""}).loc[lambda s: s != ""].nunique()
+    n_carr = df["Carrier"].astype(str).str.strip().replace({"nan": "", "None": ""}).loc[lambda s: s != ""].nunique()
+
+    ws.cell(row=row, column=1, value="SUMMARY").font = _BOLD
+    row += 1
+    for label, val, fmt in (
+        ("Total Loads",      len(df),     None),
+        ("Total Revenue",    total_rev,   _FMT_ACCOUNTING),
+        ("Total Carrier Pay", total_pay,  _FMT_ACCOUNTING),
+        ("Total Margin",     total_mgn,   _FMT_MARGIN),
+        ("Overall Margin %", overall_pct, _FMT_MARGIN_PCT),
+        ("Unique Customers", n_cust,      None),
+        ("Unique Carriers",  n_carr,      None),
+    ):
+        ws.cell(row=row, column=1, value=label).font = _BOLD
+        c = ws.cell(row=row, column=2, value=val)
+        if fmt:
+            c.number_format = fmt
+        row += 1
+
+    return row
+
+
 def _autosize_columns(ws, padding: int = 2, min_width: int = 8, max_width: int = 50) -> None:
     """Set each column width to fit its widest non-formula content.
 
@@ -618,7 +743,8 @@ def _autosize_columns(ws, padding: int = 2, min_width: int = 8, max_width: int =
 
 
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
-                today_chi: pd.Timestamp, goal_rpm: float) -> None:
+                today_chi: pd.Timestamp, goal_rpm: float,
+                brokerage_analysis: bool = False) -> None:
     row = 1
     row = _write_header(ws, row)
 
@@ -653,6 +779,8 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                               today_chi=today_chi,
                               include_goal_block=include_goal_block,
                               goal_rpm=goal_rpm)
+    if brokerage_analysis:
+        row = _write_brokerage_analysis(ws, row + 2, df)
     _autosize_columns(ws)
 
 
@@ -662,8 +790,10 @@ def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
     wb.remove(wb.active)
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
-        _write_tab(ws, df, include_goal_block=(name == "All Loads"),
-                    today_chi=today_chi, goal_rpm=goal_rpm)
+        _write_tab(ws, df,
+                    include_goal_block=(name == "All Loads"),
+                    today_chi=today_chi, goal_rpm=goal_rpm,
+                    brokerage_analysis=(name == "X-Linx Loads"))
         log.info("Tab %r: %d data rows", name, len(df))
     wb.save(file_path)
     log.info("Wrote %s", file_path)
@@ -723,14 +853,17 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
       * Mileage = Loaded Miles + Empty Miles (billed columns, NOT dispatch)
 
     The daily upload's All Loads uses:
-      * All carriers (X-Trux + X-Linx brokerage)
+      * X-Trux + XFreight offices (same scope as PBI; X-Linx is on its
+        own tab so it doesn't skew asset-trucking totals)
       * Same date + Cancelled filters
       * NO settled filter (open loads included)
       * Dispatch Mileage columns
       * 65-mi empty-mileage estimate on open loads (post-normalization)
 
     The check logs every divergence so we can see exactly where the two
-    methodologies differ on this morning's data.
+    methodologies differ on this morning's data — with the X-Trux/XFreight
+    scope now applied, remaining gaps should be the settled vs open-load
+    filter and the dispatch-vs-billed mileage column choice.
     """
     log.info("=" * 60)
     log.info("POWER BI PARITY SMOKE TEST  (MTD %s..%s)",
