@@ -17,14 +17,6 @@ on:
         description: 'Comma-separated email override (default: standing list jeff+jb). Use for one-shot sends to a single address.'
         required: false
         default: ''
-      include_open_loads:
-        description: 'Default value of the in-workbook toggle (cell B1 of every tab). You can flip the toggle in Excel without re-dispatching — every subtotal and the goal projection recalculate live.'
-        required: false
-        default: 'yes'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
   schedule:
     # Year-round 5am Central. CDT (UTC-5) + CST (UTC-6) both armed; the
     # CT-hour-gate step rejects the off-season slot.
@@ -87,9 +79,6 @@ jobs:
           # Empty string = drop the file in OneDrive root. Override here if
           # you want it tucked into a subfolder like "Daily Uploads".
           DAILY_UPLOAD_FOLDER: ""
-          # Toggle from the "Run workflow" form. Scheduled runs always get
-          # the full view; dispatching lets you flip to settled-only.
-          INCLUDE_OPEN_LOADS: ${{ inputs.include_open_loads || 'yes' }}
         run: python -m src.daily_upload
 
       - name: Notify on failure

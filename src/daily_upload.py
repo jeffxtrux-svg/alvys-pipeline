@@ -347,14 +347,12 @@ def _write_agent_subtotal(ws, row: int, agent: str,
 def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, int]],
                         data_first: int, data_last: int, total_loads: int,
                         today_chi: pd.Timestamp, include_goal_block: bool,
-                        goal_rpm: float, include_open_loads: bool) -> int:
+                        goal_rpm: float) -> int:
     """Grand-total + per-agent % table + (All Loads only) goal projection.
 
     Sum rows are plain SUM-of-agent-sum-cells; per-agent counts are static
-    numbers (rows are pre-filtered at generation time, so no in-workbook
-    toggle math). agent_sum_rows entry =
-    (agent_name, data_first, data_last, agent_sum_row).
-    `include_open_loads` flips the banner above the projection block."""
+    numbers. agent_sum_rows entry =
+    (agent_name, data_first, data_last, agent_sum_row)."""
     row = _write_header(ws, row)
 
     sum_row = row
@@ -439,23 +437,6 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     row += 1
     ws.cell(row=row, column=14, value="Percentage of Total Loads")
     ws.cell(row=row, column=15, value=1).number_format = "0.00%"
-    row += 2
-
-    # Static state marker above "We are at" — Excel can't dynamically
-    # hide load rows from a cell-driven toggle without macros, so the
-    # workbook is generated for one view at a time. To flip, re-dispatch
-    # the workflow with the include_open_loads input toggled.
-    state_text = ("OPEN LOADS: INCLUDED  (full MTD view)"
-                  if include_open_loads
-                  else "OPEN LOADS: EXCLUDED  (settled-only view)")
-    state_cell = ws.cell(row=row, column=1, value=state_text)
-    state_cell.font = Font(bold=True, size=11,
-                            color="1A1A1A" if include_open_loads else "C41E2A")
-    state_cell.fill = YELLOW_FILL
-    row += 1
-    hint_cell = ws.cell(row=row, column=1,
-                         value="(re-dispatch the workflow with include_open_loads=no to see the other view)")
-    hint_cell.font = Font(italic=True, size=9, color="6B6B6B")
     row += 2
 
     ws.cell(row=row, column=2, value="We are at").font = _BOLD
@@ -597,29 +578,14 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
 
 
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
-                today_chi: pd.Timestamp, goal_rpm: float,
-                default_include: bool) -> None:
-    widths = {1: 12, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
+                today_chi: pd.Timestamp, goal_rpm: float) -> None:
+    widths = {1: 7, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
               9: 16, 10: 16, 11: 14, 12: 14, 13: 12, 14: 22, 15: 14,
-              16: 12, 17: 12, 18: 9, 19: 4}
+              16: 12, 17: 12, 18: 9}
     for ci, w in widths.items():
         ws.column_dimensions[get_column_letter(ci)].width = w
 
-    # State banner at the top of each tab. Static — the workbook is
-    # generated for one view at a time (Excel can't dynamically hide rows
-    # from a cell-driven toggle without macros, which are disabled when
-    # files open from email). Switching views = re-dispatching the
-    # workflow with include_open_loads toggled.
-    state_text = ("OPEN LOADS INCLUDED  (full MTD view)"
-                  if default_include
-                  else "OPEN LOADS EXCLUDED  (settled-only view)")
-    banner_cell = ws.cell(row=1, column=1, value=state_text)
-    banner_cell.font = Font(bold=True, size=12,
-                             color="1A1A1A" if default_include else "C41E2A")
-    banner_cell.fill = YELLOW_FILL
-    ws.row_dimensions[1].height = 22
-
-    row = 3
+    row = 1
     row = _write_header(ws, row)
 
     if df.empty:
@@ -652,39 +618,29 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                               total_loads=len(df),
                               today_chi=today_chi,
                               include_goal_block=include_goal_block,
-                              goal_rpm=goal_rpm,
-                              include_open_loads=default_include)
+                              goal_rpm=goal_rpm)
 
 
 def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
-                 today_chi: pd.Timestamp, goal_rpm: float,
-                 default_include: bool) -> None:
+                 today_chi: pd.Timestamp, goal_rpm: float) -> None:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
         _write_tab(ws, df, include_goal_block=(name == "All Loads"),
-                    today_chi=today_chi, goal_rpm=goal_rpm,
-                    default_include=default_include)
+                    today_chi=today_chi, goal_rpm=goal_rpm)
         log.info("Tab %r: %d data rows", name, len(df))
     wb.save(file_path)
     log.info("Wrote %s", file_path)
 
 
 def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
-                   default_include: bool, onedrive_link: str = "") -> str:
-    state_pill = (
-        '<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
-        'font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;'
-        + ('background:#FFF9C4;color:#1A1A1A">OPEN LOADS INCLUDED</span>'
-           if default_include
-           else 'background:#FFEBEE;color:#C41E2A">SETTLED ONLY</span>')
-    )
+                   onedrive_link: str = "") -> str:
     parts = ['<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
               'font-size:14px;color:#1a1a1a;line-height:1.5;padding:24px;max-width:560px">']
     parts.append('<div style="font-weight:700;letter-spacing:1.5px;font-size:11px;'
                   'color:#c41e2a;text-transform:uppercase;margin-bottom:14px">'
-                  f'XFreight &middot; Daily MTD Upload &nbsp; {state_pill}</div>')
+                  'XFreight &middot; Daily MTD Upload</div>')
 
     # "Open in OneDrive" button — bypasses the email-preview Read-Only
     # mode (Spark/Outlook iPad lock the attachment).
@@ -700,19 +656,9 @@ def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
 
     parts.append(f"<p style='margin:0 0 12px'>Attached: <b>{file_label}</b> &mdash; "
                   "month-to-date load list grouped by Customer Sales Agent with "
-                  "per-agent subtotals and a goal-projection block on All Loads.</p>")
-
-    parts.append(
-        f"<p style='margin:0 0 14px;color:#555;font-size:12.5px'>"
-        "<b>Want the other view?</b> The workbook is generated for one "
-        "view at a time (Excel can&rsquo;t dynamically hide rows from a "
-        "toggle without macros). To get the "
-        + ("settled-only" if default_include else "full MTD")
-        + " view, go to <i>GitHub Actions &rarr; Daily MTD Upload Report "
-          "&rarr; Run workflow</i> and set <code>include_open_loads</code> "
-        + ("to <b>no</b>" if default_include else "to <b>yes</b>")
-        + ". A second file with a <code>_settled</code> "
-          "suffix will land in OneDrive.</p>")
+                  "per-agent subtotals and a goal-projection block on All Loads. "
+                  "Open / in-flight loads are included with a 65-mi empty-mileage "
+                  "estimate so the snapshot reads fairly while loads are still in motion.</p>")
     parts.append("<table cellpadding='6' cellspacing='0' style='border-collapse:collapse;"
                   "border:1px solid #ececec;border-radius:6px;font-size:12.5px;margin:6px 0 16px'>"
                   "<tr style='background:#fafafa;color:#6b6b6b;text-transform:uppercase;"
@@ -740,6 +686,129 @@ def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
     return "".join(parts)
 
 
+def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
+                       today_chi: pd.Timestamp) -> None:
+    """Smoke test: compute Power-BI's standard X-Trux totals plus an
+    apples-to-apples 'PBI with open loads' variant, and compare against
+    the daily upload's own All Loads totals. Logs the side-by-side so a
+    drift is obvious in the run output without needing to open Excel.
+
+    Power BI conventions (from the scorecard's diag block):
+      * Scope: Office in (X-Trux, XFreight) — asset trucking only (no X-Linx)
+      * Date filter: Scheduled Pickup within the current calendar month
+      * Cancelled excluded
+      * Driver Rate > 0 (settled only) — THIS is what we relax for the
+        'with open loads' variant
+      * Mileage = Loaded Miles + Empty Miles (billed columns, NOT dispatch)
+
+    The daily upload's All Loads uses:
+      * All carriers (X-Trux + X-Linx brokerage)
+      * Same date + Cancelled filters
+      * NO settled filter (open loads included)
+      * Dispatch Mileage columns
+      * 65-mi empty-mileage estimate on open loads (post-normalization)
+
+    The check logs every divergence so we can see exactly where the two
+    methodologies differ on this morning's data.
+    """
+    log.info("=" * 60)
+    log.info("POWER BI PARITY SMOKE TEST  (MTD %s..%s)",
+             pd.Timestamp(today_chi.year, today_chi.month, 1).date(),
+             today_chi.date())
+    log.info("=" * 60)
+
+    # --- PBI-style filter set (X-Trux scope, billed mileage, all loads) -----
+    date_col = _find_col(loads, ["scheduled pickup", "pickup date"])
+    if not date_col:
+        log.warning("PBI parity: no date column found, skipping check.")
+        return
+    sub = loads.copy()
+    if "Load Status" in sub.columns:
+        sub = sub[sub["Load Status"].astype(str).str.strip().str.lower() != "cancelled"]
+    # X-Trux + XFreight scope (matches scorecard's _alvys_metrics asset filter)
+    office_col = _pick_source_col(sub, ["Office", "Office Name", "Division"])
+    if office_col:
+        xtrux_mask = sub[office_col].astype(str).str.strip().str.lower().str.contains(
+            "x-trux|xtrux|xfreight", regex=True, na=False)
+        sub = sub[xtrux_mask]
+        log.info("PBI parity: scoped to X-Trux/XFreight via %r (%d rows)",
+                 office_col, len(sub))
+    else:
+        log.warning("PBI parity: no Office column found — using ALL carriers "
+                    "(will overstate vs true PBI X-Trux scope).")
+    dates = _to_naive_dt(sub[date_col])
+    mtd_start = pd.Timestamp(today_chi.year, today_chi.month, 1)
+    mtd_end   = pd.Timestamp(today_chi.year, today_chi.month, today_chi.day, 23, 59, 59)
+    sub = sub.loc[dates.notna() & (dates >= mtd_start) & (dates <= mtd_end)].copy()
+
+    # Billed mileage columns (Loaded Miles / Empty Miles), NOT dispatch
+    loaded_col = _pick_source_col(sub, ["Loaded Miles", "Loaded Mileage"])
+    empty_col  = _pick_source_col(sub, ["Empty Miles", "Empty Mileage"])
+    rev_col    = _pick_source_col(sub, ["Customer Revenue", "Revenue"])
+    rate_col   = _pick_source_col(sub, ["Driver Rate"])
+
+    def _sum(df, col):
+        if not col or col not in df.columns:
+            return 0
+        return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
+
+    # PBI standard view: Driver Rate > 0 (settled only)
+    if rate_col:
+        settled = sub[pd.to_numeric(sub[rate_col], errors="coerce").fillna(0) > 0]
+    else:
+        settled = sub.iloc[0:0]
+    # PBI with open loads: drop the settled filter
+    pbi_open = sub  # already X-Trux scoped + date filtered + Cancelled dropped
+
+    def _block(label: str, df: pd.DataFrame) -> dict:
+        loaded = _sum(df, loaded_col)
+        empty  = _sum(df, empty_col)
+        total  = loaded + empty
+        rev    = _sum(df, rev_col)
+        pay    = _sum(df, rate_col)
+        rpm    = (rev / total) if total else 0
+        return {
+            "label": label, "loads": len(df),
+            "loaded": loaded, "empty": empty, "total": total,
+            "rev": rev, "pay": pay, "rpm": rpm,
+        }
+
+    pbi_settled = _block("PBI (settled only)", settled)
+    pbi_with_open = _block("PBI + open loads", pbi_open)
+
+    # Daily upload's All Loads — already normalized (dispatch mileage,
+    # 65mi estimate applied, no scope filter)
+    du = {
+        "label": "Daily Upload All Loads",
+        "loads": len(normalized),
+        "loaded": float(normalized["Loaded Dispatch Mileage"].sum()),
+        "empty":  float(normalized["Empty Dispatch Mileage"].sum()),
+        "rev":    float(normalized["Customer Revenue"].sum()),
+        "pay":    float(normalized["Driver Rate"].sum()),
+    }
+    du["total"] = du["loaded"] + du["empty"]
+    du["rpm"]   = (du["rev"] / du["total"]) if du["total"] else 0
+
+    log.info(f"{'METRIC':<22} | {'PBI (settled)':>16} | {'PBI + open':>16} | "
+             f"{'Daily Upload':>16} | {'DU vs PBI+open':>16}")
+    log.info("-" * 100)
+    for key, fmt in (("loads", "{:>16,.0f}"), ("loaded", "{:>16,.0f}"),
+                      ("empty", "{:>16,.0f}"), ("total", "{:>16,.0f}"),
+                      ("rev", "${:>15,.2f}"), ("pay", "${:>15,.2f}"),
+                      ("rpm", "${:>15,.4f}")):
+        a = pbi_settled[key]; b = pbi_with_open[key]; c = du[key]
+        diff = c - b
+        log.info(f"{key:<22} | {fmt.format(a)} | {fmt.format(b)} | "
+                 f"{fmt.format(c)} | {fmt.format(diff)}")
+    log.info("-" * 100)
+    log.info("Note: 'DU vs PBI+open' should be ~0 for loaded/empty/rev/pay if "
+              "the daily upload's All Loads tab matches a PBI view that includes "
+              "open loads. Differences > 1%% likely indicate scope mismatch "
+              "(X-Trux only vs all carriers) or mileage-column choice "
+              "(billed vs dispatch).")
+    log.info("=" * 60)
+
+
 def main() -> int:
     tenant = os.environ["AZURE_TENANT_ID"]
     client = os.environ["AZURE_CLIENT_ID"]
@@ -754,18 +823,6 @@ def main() -> int:
                  for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS",
                                           "jeff@xfreight.net").split(",")
                  if e.strip()]
-    # The workbook now has a live in-Excel toggle on cell B1 of each tab,
-    # so all data rows are always written and the toggle controls what the
-    # SUMIFS / COUNTIFS pick up. INCLUDE_OPEN_LOADS just sets the DEFAULT
-    # INCLUDE_OPEN_LOADS controls which view of the workbook is produced
-    # at generation time. Excel can't dynamically hide load rows from a
-    # cell-driven toggle without macros (and macros are disabled when the
-    # file opens from email), so the workbook is generated for one view at
-    # a time. To switch views, re-dispatch the workflow with the toggle
-    # flipped.
-    include_open = os.environ.get("INCLUDE_OPEN_LOADS", "yes").strip().lower()
-    default_include = include_open not in ("no", "false", "0", "n", "off")
-
     token = get_token(tenant, client, secret)
     log.info("Reading Alvys Master 2026 via share URL…")
     workbook_bytes = download_shared_file(token, share)
@@ -778,23 +835,21 @@ def main() -> int:
 
     today_chi = pd.Timestamp.now(tz=CHI_TZ).normalize()
     normalized = _build_normalized(loads, today_chi)
-    if not default_include:
-        status_lower = normalized["Load Status"].astype(str).str.strip().str.lower()
-        before = len(normalized)
-        normalized = normalized[status_lower.isin(SETTLED_STATUSES)].copy()
-        log.info("INCLUDE_OPEN_LOADS=no → dropped %d open loads (%d settled remaining)",
-                 before - len(normalized), len(normalized))
     tabs = _split_tabs(normalized)
+
+    # Power-BI parity smoke test — confirms the daily upload's All Loads
+    # grand-total matches what PBI would show IF it didn't filter out
+    # open loads (its standard view excludes them via Driver Rate > 0).
+    _pbi_parity_check(loads, normalized, today_chi)
 
     # Pull the same live goal RPM the scorecard reports so the two emails
     # don't disagree on what the target is for this month.
     goal_rpm = _live_goal_rpm(token, upn, qb_dir, sheets)
 
-    suffix = "" if default_include else "_settled"
-    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}{suffix}.xlsx"
+    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         local_path = Path(tmp) / file_label
-        _write_xlsx(tabs, local_path, today_chi, goal_rpm, default_include)
+        _write_xlsx(tabs, local_path, today_chi, goal_rpm)
 
         if out_folder:
             ensure_folder(token, upn, out_folder)
@@ -805,8 +860,7 @@ def main() -> int:
 
         # `webUrl` on the returned driveItem opens the file directly in
         # OneDrive — bypasses the email-preview Read-Only mode (Spark /
-        # Outlook iPad both lock the attachment). Falls back to the
-        # standard OneDrive base if Graph didn't return webUrl.
+        # Outlook iPad both lock the attachment).
         onedrive_link = (upload_resp or {}).get("webUrl") or ""
         if onedrive_link:
             log.info("OneDrive web link: %s", onedrive_link)
@@ -816,11 +870,10 @@ def main() -> int:
         if to_emails:
             with open(local_path, "rb") as fh:
                 content_bytes = fh.read()
-            subj_state = "" if default_include else " (settled only)"
             send_email(
                 token, upn, to_emails,
-                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}{subj_state}",
-                _summary_html(tabs, file_label, default_include, onedrive_link),
+                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}",
+                _summary_html(tabs, file_label, onedrive_link),
                 attachments=[{
                     "name": file_label,
                     "content_bytes": content_bytes,
