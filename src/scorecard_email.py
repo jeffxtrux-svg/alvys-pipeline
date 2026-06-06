@@ -2046,12 +2046,21 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 # event of theirs in the 30d window has been closed (status
                 # in coached/dismissed/recognized). The ack timestamp is the
                 # latest coachedAt, falling back to the event's own time.
+                # ts comes from _to_naive_dt (tz stripped but actually UTC),
+                # so re-localize so ack_ts is uniformly tz-aware — the
+                # render does `_now_utc - ack_ts` and tz-naive vs tz-aware
+                # raises TypeError.
                 ev_status = str(r.get(status_col, "") or "").strip().lower() if status_col else ""
                 if ev_status not in _COACHED_STATUSES:
                     slot["all_coached"] = False
                 else:
                     cat = pd.to_datetime(r.get(coach_at_col, ""), errors="coerce", utc=True) if coach_at_col else pd.NaT
-                    cand = cat if pd.notna(cat) else ts
+                    if pd.notna(cat):
+                        cand = cat
+                    elif pd.notna(ts):
+                        cand = pd.Timestamp(ts).tz_localize("UTC") if ts.tzinfo is None else ts
+                    else:
+                        cand = pd.NaT
                     if pd.notna(cand) and (slot["ack_ts"] is None or cand > slot["ack_ts"]):
                         slot["ack_ts"] = cand
                     if coach_col:
