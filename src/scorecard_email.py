@@ -4726,20 +4726,15 @@ def _safety_detail_tables(samsara) -> str:
             ["left", "left", "left", "left"], [None, None, "bad", None])
         for r in detail.get("hos", []))
 
-    event_rows = ""
-    for r in detail.get("events", []):
-        evt_ts = pd.to_datetime(
-            (r.get("date", "") + " " + r.get("time", "")).strip(),
-            errors="coerce", utc=True)
-        acked = _ack_after(r.get("driver name", ""), evt_ts) is not None
-        event_rows += _tr(
+    event_rows = "".join(
+        _tr(
             [r.get("driver name", ""), r.get("unit", ""), _when(r),
-             r.get("event type", ""), r.get("severity", ""), r.get("status", ""),
-             _ack_cell(acked)],
-            ["left", "left", "left", "left", "left", "left", "center"],
+             r.get("event type", ""), r.get("severity", ""), r.get("status", "")],
+            ["left", "left", "left", "left", "left", "left"],
             [None, None, None, None,
              ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"),
-             None, ("good" if acked else "mute")])
+             None])
+        for r in detail.get("events", []))
 
     dvir_rows = "".join(
         _tr([r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
@@ -4791,7 +4786,7 @@ def _safety_detail_tables(samsara) -> str:
         f"{_section('HOS violations &mdash; last 7 days')}"
         f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
         f"{_section('Safety events &mdash; last 7 days')}"
-        f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status', 'Ack'], ['left', 'left', 'left', 'left', 'left', 'left', 'center'], event_rows)}"
+        f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
