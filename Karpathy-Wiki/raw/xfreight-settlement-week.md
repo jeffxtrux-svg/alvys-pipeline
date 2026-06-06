@@ -32,3 +32,13 @@ Not documented in code comments. It's an XFreight operational convention — lik
 ## Driver pay timing relative to the cycle
 
 Owner-operator pay (the `Driver Rate` column on Alvys Loads) lands when a load **settles**, not when it delivers. There's a lag of a few days between delivery and settlement. The rate-per-mile cost-out (see `xfreight-rate-per-mile-goal.md`) filters to settled-only loads for exactly this reason — including unsettled loads would deflate the per-mile pay rate.
+
+## Weekly pay-rate revision aligned to the cycle
+
+**The owner-op loaded + empty per-mile rate AND the fuel surcharge are revised every Wednesday** — i.e. at the start of each settlement week. This is why:
+
+- The settlement-week cycle begins Wednesday 3pm CT rather than at a random day boundary — the rate change and the settlement boundary are intentionally aligned so each settlement week has a single per-mile rate.
+- A settlement worksheet for a given driver covers loads delivered within one rate band, simplifying reconciliation.
+- The `RPM_GOAL_PAY_WINDOW_DAYS = 10` trailing window in the rate-per-mile cost-out captures roughly one-and-a-half rate weeks, smoothing the week-over-week rate change into a stable read while still tracking it fast enough to be current.
+
+See `xfreight-owner-operator-program.md` § "Weekly rate revision" for the full detail. The current week's rate is whatever was set on the most recent Wednesday; the published $1.89/mi reference is a recent baseline, not a fixed rate.

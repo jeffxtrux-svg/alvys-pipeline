@@ -21,15 +21,27 @@
 
 ## Driver pay rates
 
-| Mile type | Rate (PC Miler Practical) |
+| Mile type | Recent reference rate (PC Miler Practical) |
 |---|---|
-| **Loaded miles** | **$1.89/mile** |
-| **Empty miles** | **$1.89/mile** |
+| **Loaded miles** | **~$1.89/mile** (varies weekly) |
+| **Empty miles** | **~$1.89/mile** (varies weekly — same as loaded) |
 
-- Rates adjust with fuel prices
-- Loaded and empty paid at the same rate (unusual industry-wide; deliberate at XFreight)
+### Weekly rate revision — every Wednesday
 
-### Additional pay
+**Both loaded and empty per-mile rates change every week on Wednesday**, along with the fuel surcharge. The $1.89/mi figure above is a recent reference point, NOT a fixed published rate. The current week's rate is whatever was set on the most recent Wednesday revision.
+
+Implications:
+
+- **Driver settlements** reflect the rate that was in effect for the loads' delivery week, not a single annual rate.
+- The owner-op recruiting one-pager publishes a representative rate but recruits should understand it floats weekly.
+- The **rate-per-mile cost-out** in the daily brief (`compute_rpm_goal`, `RPM_GOAL_PAY_WINDOW_DAYS = 10`) deliberately uses a **10-day trailing window** specifically because the per-mile rate moves weekly — a 10-day window captures the current week + most of the prior week and blends to a stable read. A longer window would drag in stale rates; a shorter one wouldn't have enough settled loads.
+- The weekly Wednesday revision **aligns with the settlement-week boundary** (Wed 3pm CT → following Wed 2:59pm CT). New rate effective from the start of the settlement week.
+
+### Why same rate loaded + empty
+
+Loaded and empty paid at the same per-mile rate is unusual industry-wide (many carriers pay less on empty). It's deliberate at XFreight — simplifies math for drivers, removes incentive to game empty miles, and the deadhead % (~7-8%) is small enough that the cost difference is manageable. The empty miles still get absorbed into the rate-per-mile goal so customers ultimately cover it via the loaded-mile rate.
+
+### Additional pay (typically stable, not tied to weekly revision)
 
 - **Extra stops:** $40/stop (one pickup + one delivery included standard)
 - **Detention:** $30/hour after first 2 hours
