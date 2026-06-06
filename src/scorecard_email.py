@@ -1160,9 +1160,8 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
         return empty
     cust_col = "Customer" if "Customer" in loads.columns else _find_col(loads, ["customer name", "customer"])
     rev_col = _find_col(loads, ["customer revenue", "revenue"])
-    miles_col = _find_col(loads, ["total dispatch mileage", "dispatch mileage", "loaded dispatch mileage", "mileage"])
     date_col = _find_col(loads, ["scheduled pickup", "pickup date"])
-    if not all([cust_col, rev_col, miles_col, date_col]):
+    if not all([cust_col, rev_col, date_col]):
         return empty
 
     sub = loads.copy()
@@ -1182,7 +1181,20 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
 
     is_direct = sub[cust_col].apply(_is_direct_customer)
     rev = pd.to_numeric(sub[rev_col], errors="coerce").fillna(0)
-    miles = pd.to_numeric(sub[miles_col], errors="coerce").fillna(0)
+    # Mileage: use the SAME column logic as _alvys_metrics (billed Loaded Miles +
+    # Empty Miles, with Dispatch Mileage as a fallback). Required so the chart's
+    # June MTD bar matches the page-1 Revenue/Mile MTD tile to the cent. Earlier
+    # versions of this function used "Total Dispatch Mileage" alone, which can
+    # diverge from billed Loaded+Empty by a few hundred miles due to NaN rows or
+    # rounding differences — that produced the brief's tile-vs-chart mismatch
+    # ($2.893 tile vs $2.93 chart for the same period).
+    loaded_mi = pd.to_numeric(
+        _col_any(sub, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]),
+        errors="coerce").fillna(0)
+    empty_mi = pd.to_numeric(
+        _col_any(sub, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]),
+        errors="coerce").fillna(0)
+    miles = loaded_mi + empty_mi
 
     months = _last_6_months()
     d_labels, d_values = [], []
