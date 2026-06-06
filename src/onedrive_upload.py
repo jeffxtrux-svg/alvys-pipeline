@@ -123,12 +123,26 @@ def upload_file(
             "name": filename,
         }
     }
-    s_resp = requests.post(
-        session_url,
-        headers={**headers, "Content-Type": "application/json"},
-        json=session_body,
-        timeout=30,
-    )
+    # OneDrive occasionally returns 409 nameAlreadyExists when a prior
+    # upload session for the same filename hasn't fully closed yet (the
+    # session lock typically clears within 30–90s). Retry with backoff
+    # before failing the whole run.
+    s_resp = None
+    for attempt, delay in enumerate((0, 15, 30, 60, 120)):
+        if delay:
+            log.warning("Upload session lock — retrying in %ds (attempt %d)…", delay, attempt + 1)
+            import time; time.sleep(delay)
+        s_resp = requests.post(
+            session_url,
+            headers={**headers, "Content-Type": "application/json"},
+            json=session_body,
+            timeout=30,
+        )
+        if s_resp.status_code == 200:
+            break
+        if s_resp.status_code == 409 and "nameAlreadyExists" in (s_resp.text or ""):
+            continue  # transient — retry
+        break  # non-retryable error
     if s_resp.status_code != 200:
         log.error("Create upload session failed [%s]: %s",
                   s_resp.status_code, s_resp.text[:500])
