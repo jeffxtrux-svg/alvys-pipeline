@@ -59,7 +59,9 @@ jobs:
       - name: Install dependencies
         if: steps.ct_gate.outputs.skip != '1'
         # Only the slice the daily report needs — no WeasyPrint / charts.
-        run: pip install pandas openpyxl msal requests
+        # python-dotenv is required because src/onedrive_upload.py imports
+        # load_dotenv at module load even though CI doesn't use a .env file.
+        run: pip install pandas openpyxl msal requests python-dotenv
 
       - name: Build and send daily upload
         if: steps.ct_gate.outputs.skip != '1'
