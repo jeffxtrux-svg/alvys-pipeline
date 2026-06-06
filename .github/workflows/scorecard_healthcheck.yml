@@ -1,0 +1,203 @@
+# Scorecard healthcheck — fires at 6:30am Central if the morning brief
+# hasn't been sent yet. Solves the silent-GitHub-Actions-cron-drop
+# problem: if all 6 scorecard slots between 5:00–7:00am CDT drop (as
+# happened on 2026-06-06), nobody knew the brief was missing until the
+# user noticed mid-morning.
+#
+# How it works:
+#   1. Cron fires at 6:30am Central (dual-cron + CT-hour-gate, year-round).
+#   2. Authenticate to Microsoft Graph using the same Azure app as the
+#      scorecard.
+#   3. Check whether the `Scorecard/sent-{YYYY-MM-DD}.txt` marker exists
+#      in OneDrive for today (Central time).
+#   4. If marker present → exit cleanly. Healthcheck passed.
+#   5. If marker absent → dispatch scorecard_email.yml via the GitHub
+#      API. That run fires immediately and sends the brief.
+#
+# Race window: there's a small chance (~3-5 min) that the 6:00am
+# scorecard slot is still mid-send when the healthcheck fires at 6:30am.
+# If so, both runs would send and you'd get a duplicate brief. Mitigated
+# by: (a) scorecard runs typically take 3-5 min, so the 6:00am should
+# be done by 6:30am; (b) a duplicate is harmless vs the alternative
+# (missing the brief entirely until manual intervention).
+#
+# Required GitHub Secrets (shared with scorecard_email.yml):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+
+name: Scorecard healthcheck (6:30am CT)
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Year-round 6:30am Central. CDT (UTC-5) + CST (UTC-6) crons both
+    # armed; the "Gate to 6am CT" step rejects the off-season slot.
+    - cron: '30 11 * * *'   # 6:30am CDT / 5:30am CST (CST: gated)
+    - cron: '30 12 * * *'   # 7:30am CDT (CDT: gated) / 6:30am CST
+
+permissions:
+  contents: read
+  actions: write   # required to dispatch scorecard_email.yml via gh CLI
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Gate to 6am CT
+        # Year-round target: 6:30am Central. Skip whichever season's
+        # cron lands on the wrong wall-clock hour. Manual /
+        # workflow_dispatch runs bypass the gate so the healthcheck
+        # can be triggered any time on demand.
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 6 ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "6am CT slot — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        # Only need msal + requests to call Graph; no WeasyPrint /
+        # pandas etc. needed for a marker-presence check.
+        run: pip install msal requests
+
+      - name: Check today's scorecard marker
+        if: steps.ct_gate.outputs.skip != '1'
+        id: marker
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+        run: |
+          python - <<'PY'
+          """
+          Check whether the daily scorecard marker file exists in OneDrive.
+
+          Marker path follows the convention in src/scorecard_email.py:
+              Scorecard/sent-{YYYY-MM-DD}.txt
+          where the date is today in America/Chicago.
+          """
+          import os
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          # Reuse the same Graph helpers the scorecard uses so the auth
+          # and download semantics are identical.
+          sys.path.insert(0, ".")
+          from src.onedrive_upload import get_token, download_file
+          import requests
+
+          today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+          marker_path = f"Scorecard/sent-{today}.txt"
+
+          print(f"Checking marker for {today} → {marker_path}")
+          tok = get_token(
+              os.environ["AZURE_TENANT_ID"],
+              os.environ["AZURE_CLIENT_ID"],
+              os.environ["AZURE_CLIENT_SECRET"],
+          )
+
+          try:
+              download_file(tok, os.environ["ONEDRIVE_USER_UPN"], marker_path)
+              print(f"✓ Marker found — scorecard already sent today. Healthcheck PASS.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("needs_send=0\n")
+          except requests.HTTPError as e:
+              code = e.response.status_code if e.response is not None else None
+              if code == 404:
+                  print(f"⚠ No marker — scorecard NOT yet sent today.")
+                  print(f"  Will dispatch scorecard_email.yml to recover.")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write("needs_send=1\n")
+              else:
+                  print(f"Unexpected Graph error ({code}) — failing closed (treating as needs_send to be safe).")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write("needs_send=1\n")
+          except Exception as e:
+              # Any other error (auth, network) — fail closed: dispatch
+              # the scorecard. If the marker actually was there, the
+              # scorecard's own check will dedupe on its end.
+              print(f"Marker check raised {type(e).__name__}: {e}")
+              print(f"Failing closed — dispatching scorecard to be safe.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("needs_send=1\n")
+          PY
+
+      - name: Dispatch scorecard_email.yml (marker missing)
+        if: steps.ct_gate.outputs.skip != '1' && steps.marker.outputs.needs_send == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Dispatching scorecard_email.yml via gh workflow run…"
+          gh workflow run scorecard_email.yml --ref main
+          echo "✓ Dispatched. Brief should land in ~3-5 minutes."
+
+      - name: Healthcheck summary
+        if: steps.ct_gate.outputs.skip != '1'
+        run: |
+          if [ "${{ steps.marker.outputs.needs_send }}" = "1" ]; then
+            echo "::warning::Scorecard healthcheck recovered a missed morning brief."
+          else
+            echo "::notice::Scorecard healthcheck OK — brief already sent for today."
+          fi
+
+      # Notify on failure so a broken healthcheck doesn't go silent.
+      # Reuses the same Graph send_email function as the scorecard.
+      - name: Notify on failure
+        if: failure() && steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SCORECARD_TO_EMAILS: jeff@xfreight.net,jb@xfreight.net
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, ".")
+          from src.onedrive_upload import get_token
+          from src.scorecard_email import send_email
+          tok = get_token(
+              os.environ["AZURE_TENANT_ID"],
+              os.environ["AZURE_CLIENT_ID"],
+              os.environ["AZURE_CLIENT_SECRET"],
+          )
+          to = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+          run = os.environ.get("RUN_URL", "")
+          html = (
+              f"<p>The <b>scorecard healthcheck</b> at 6:30am CT failed — "
+              f"this morning's brief may or may not have landed.</p>"
+              f"<p>Manually verify by checking jeff@xfreight.net inbox for "
+              f"\"XFreight Executive Brief — \" with today's date.</p>"
+              f"<p>Run log: <a href='{run}'>{run}</a></p>"
+          )
+          send_email(
+              tok,
+              os.environ["ONEDRIVE_USER_UPN"],
+              to,
+              "⚠️ XFreight scorecard HEALTHCHECK failed",
+              html,
+          )
+          PY
