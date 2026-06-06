@@ -151,6 +151,7 @@ def upload_file(
     log.info("Upload session created, streaming chunks…")
 
     last_resp = None
+    import time as _time
     with open(file_path, "rb") as f:
         uploaded = 0
         while uploaded < file_size:
@@ -160,7 +161,22 @@ def upload_file(
                 "Content-Length": str(len(chunk)),
                 "Content-Range": f"bytes {uploaded}-{chunk_end}/{file_size}",
             }
-            cresp = requests.put(upload_url, headers=chunk_headers, data=chunk, timeout=300)
+            # Retry on 423 resourceLocked — fires when the destination
+            # file is currently open in OneDrive web / Excel desktop /
+            # Excel mobile. The lock auto-clears when the user closes it.
+            cresp = None
+            for attempt, delay in enumerate((0, 15, 30, 60)):
+                if delay:
+                    log.warning("File locked (someone has it open) — "
+                                 "retrying in %ds (attempt %d)…", delay, attempt + 1)
+                    _time.sleep(delay)
+                cresp = requests.put(upload_url, headers=chunk_headers,
+                                      data=chunk, timeout=300)
+                if cresp.status_code in (200, 201, 202):
+                    break
+                if cresp.status_code == 423:
+                    continue
+                break  # non-retryable error
             if cresp.status_code not in (200, 201, 202):
                 log.error("Chunk upload failed [%s]: %s",
                           cresp.status_code, cresp.text[:500])
