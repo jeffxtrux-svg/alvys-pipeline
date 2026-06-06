@@ -1172,6 +1172,13 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
     sub = loads.copy()
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
+    # Match compute_alvys: Power BI's monthly table only sums settled loads
+    # (Driver Rate > 0). Without this filter the chart includes pre-booked /
+    # unsettled loads that the page-2 Rev/Mile tile excludes, so the tile and
+    # the chart's MTD bar disagree — that was the $2.893 tile vs $2.93 chart
+    # mismatch (see also: column logic alignment a few lines below).
+    if "Driver Rate" in sub.columns:
+        sub = sub[_col(sub, "Driver Rate").fillna(0) > 0]
     # Scope to the X-Trux + XFreight asset fleet (matches the X-Trux Overview
     # section where these charts now live; X-Linx brokerage is excluded).
     office_col = _find_col(sub, OFFICE_COL_NEEDLES)
