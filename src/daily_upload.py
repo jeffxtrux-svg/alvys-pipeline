@@ -757,24 +757,43 @@ def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
 
 
 def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
-                   default_include: bool) -> str:
+                   default_include: bool, onedrive_link: str = "") -> str:
     default_pill = (
         '<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
         'font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;'
         'background:#FFF9C4;color:#1A1A1A">OPENS DEFAULT: '
-        + ("YES" if default_include else "NO") + "</span>"
+        + ("INCLUDE" if default_include else "EXCLUDE") + "</span>"
     )
     parts = ['<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
               'font-size:14px;color:#1a1a1a;line-height:1.5;padding:24px;max-width:560px">']
     parts.append('<div style="font-weight:700;letter-spacing:1.5px;font-size:11px;'
                   'color:#c41e2a;text-transform:uppercase;margin-bottom:14px">'
                   f'XFreight &middot; Daily MTD Upload &nbsp; {default_pill}</div>')
+
+    # Big "Open in OneDrive" button above the fold. Email-preview apps
+    # (Spark, Outlook iPad) open the attachment in Read-Only mode, which
+    # locks the Include/Exclude dropdown — this link opens the live
+    # OneDrive copy where the toggle is interactive.
+    if onedrive_link:
+        parts.append(
+            f'<p style="margin:0 0 14px">'
+            f'<a href="{onedrive_link}" '
+            f'style="display:inline-block;padding:10px 18px;background:#c41e2a;'
+            f'color:#ffffff;text-decoration:none;border-radius:6px;'
+            f'font-weight:700;font-size:13px;letter-spacing:.3px;">'
+            f'Open in OneDrive (live toggle)</a></p>'
+            f'<p style="margin:0 0 14px;font-size:12px;color:#6b6b6b;">'
+            f'Use the OneDrive link if the attachment opens in Read Only '
+            f'mode &mdash; the Include / Exclude dropdown on cell B1 only '
+            f'works when the workbook is editable.</p>'
+        )
+
     parts.append(f"<p style='margin:0 0 12px'>Attached: <b>{file_label}</b> &mdash; "
                   "month-to-date load list grouped by Customer Sales Agent with "
-                  "per-agent subtotals. <b>Cell B1 of every tab is a Yes/No "
-                  "dropdown</b> &mdash; flip it to include or exclude open "
-                  "(in-flight) loads. Every subtotal, RPM, and goal-projection "
-                  "row recalculates live in Excel.</p>")
+                  "per-agent subtotals. <b>Cell B1 of every tab is an "
+                  "Include / Exclude dropdown</b> &mdash; flip it to include "
+                  "or exclude open (in-flight) loads. Every subtotal, RPM, and "
+                  "goal-projection row recalculates live in Excel.</p>")
     parts.append("<table cellpadding='6' cellspacing='0' style='border-collapse:collapse;"
                   "border:1px solid #ececec;border-radius:6px;font-size:12.5px;margin:6px 0 16px'>"
                   "<tr style='background:#fafafa;color:#6b6b6b;text-transform:uppercase;"
@@ -852,7 +871,17 @@ def main() -> int:
             log.info("Uploading to OneDrive folder %r as %s …", out_folder, file_label)
         else:
             log.info("Uploading to OneDrive root as %s …", file_label)
-        upload_file(token, upn, out_folder, file_label, local_path)
+        upload_resp = upload_file(token, upn, out_folder, file_label, local_path)
+
+        # `webUrl` on the returned driveItem opens the file directly in
+        # OneDrive — bypasses the email-preview Read-Only mode (Spark /
+        # Outlook iPad both lock the attachment). Falls back to the
+        # standard OneDrive base if Graph didn't return webUrl.
+        onedrive_link = (upload_resp or {}).get("webUrl") or ""
+        if onedrive_link:
+            log.info("OneDrive web link: %s", onedrive_link)
+        else:
+            log.warning("Upload response did not include webUrl — email link will be omitted.")
 
         if to_emails:
             with open(local_path, "rb") as fh:
@@ -860,7 +889,7 @@ def main() -> int:
             send_email(
                 token, upn, to_emails,
                 f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}",
-                _summary_html(tabs, file_label, default_include),
+                _summary_html(tabs, file_label, default_include, onedrive_link),
                 attachments=[{
                     "name": file_label,
                     "content_bytes": content_bytes,
