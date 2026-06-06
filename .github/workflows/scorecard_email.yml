@@ -19,6 +19,11 @@ name: Daily KPI Scorecard Email
 
 on:
   workflow_dispatch:
+    inputs:
+      recipients:
+        description: 'Comma-separated email override (default: standing list jeff+jb). Use for one-shot sends to a single address.'
+        required: false
+        default: ''
   # Reusable so the "Refresh All" workflow can call it after the four
   # source refreshes succeed. The script bypasses its "sent today" marker
   # whenever GITHUB_EVENT_NAME is workflow_dispatch, including when called
@@ -111,7 +116,10 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          SCORECARD_TO_EMAILS: jeff@xfreight.net,jb@xfreight.net
+          # workflow_dispatch can pass `recipients` to override the standing
+          # list for one-shot sends (e.g. preview to one mailbox before
+          # publishing to the team).
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # idempotency marker so the on-demand resend actually sends.
           # Empty string for cron/dispatch leaves the marker check in force.
