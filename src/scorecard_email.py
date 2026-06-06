@@ -5394,8 +5394,12 @@ def build_page4(mileage, date_str) -> str:
     week_totals = m.get("week_totals") or [0] * SETTLEMENT_WEEKS
     cur = SETTLEMENT_WEEKS - 1
 
-    # Drivers below target (current settlement week only)
-    _below_tgt = sum(1 for r in rows if 0 < r["weeks"][cur] < DRIVER_TARGET_MILES)
+    # Drivers below target — measured on LAST settlement week (the most
+    # recent COMPLETE Wed-3pm-to-Wed-3pm cycle). The current week is partial,
+    # so a low number there could just mean the week hasn't elapsed yet —
+    # not actionable. Using last week's complete cycle gives a fair read.
+    last_idx = cur - 1
+    _below_tgt = sum(1 for r in rows if 0 < r["weeks"][last_idx] < DRIVER_TARGET_MILES)
     _below_kind = "bad" if _below_tgt >= 3 else ("warn" if _below_tgt >= 1 else "good")
     tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")),
                    _pill("settled legs", "mute")
@@ -5403,8 +5407,8 @@ def build_page4(mileage, date_str) -> str:
                    + _pill(f"avg {num(m.get('avg_per_driver'))} mi / driver", "mute"))
              + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
              + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
-             + _tile("Drivers below target &middot; this week", num(_below_tgt),
-                     _pill(f"&lt; {num(DRIVER_TARGET_MILES)} mi this week", _below_kind)))
+             + _tile("Drivers below target &middot; last week", num(_below_tgt),
+                     _pill(f"&lt; {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last week'}", _below_kind)))
 
     def mcell(text, al="right", cur=False, bold=False, small=False):
         bg = f"background:{ACCENTBG};" if cur else ""
