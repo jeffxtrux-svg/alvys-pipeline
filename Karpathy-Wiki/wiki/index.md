@@ -2,12 +2,12 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-05"
+last_compiled: "2026-06-06"
 ---
 
 # Wiki Index
 
-The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-05.
+The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-06.
 
 ## Meta
 
@@ -57,6 +57,7 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 - [[Brokerage X-Linx]] — X-Linx brokerage operations: co-broker (ABT), margin target (17.5%), revenue collapse 2024→2026.
 - [[Daily Schedule]] — year-round Central wall-clock automation schedule; dual-cron + CT-hour-gate DST pattern.
 - [[Daily Scorecard Email]] — 13-page daily executive brief: page-by-page breakdown, key constants, Bottom Line logic.
+- [[Daily Operations]] — day-to-day operating rhythm: three email cadences, escalation patterns, full phone directory, fuel spend.
 
 ---
 
@@ -72,7 +73,7 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 
 ## Decisions & Events
 
-- [[Recent Decisions 2026-06-05]] — PRs #86–#93: driver Ack column, coaching policy, MVR window, fleet-miles MTD bug, MC # on page 10, AR tile layout fix, speed escalation Bottom Line, DST cron hardening, JB added as recipient.
+- [[Recent Decisions 2026-06-05]] — PRs #86–#97: driver Ack, coaching policy, MVR window, fleet-miles MTD bug, MC # on page 10, AR tile layout, speed escalation, DST cron, JB as recipient, dispatch-date-locks-rate rule.
 
 ---
 

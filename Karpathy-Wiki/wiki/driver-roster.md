@@ -35,6 +35,8 @@ As of the 2024-12-26 snapshot, 21 drivers were named in the goals spreadsheet wi
 
 **Pay timing:** Driver Rate on Alvys loads lands when a load **settles**, not when it delivers. The rate-per-mile cost-out filters to settled-only loads to avoid deflating the per-mile read with unsettled loads showing $0 Driver Rate.
 
+**Dispatch date locks the rate:** The per-mile rate effective when a load is dispatched stays on that load for its entire life — including delivery, settlement, and payment. A load dispatched on Tuesday uses that week's rate even if it delivers on Friday; a load dispatched on Wednesday or later uses the new week's rate. A single settlement week therefore contains loads at two different per-mile rates. See [[Owner-Operator Program]] § "The Dispatch Date Locks the Rate" for full detail.
+
 ## Driver Roster (Dec 2024 Snapshot)
 
 21 active drivers + 20 "Future" reserved slots (XFreight Goal.xlsx has slots 1–41):

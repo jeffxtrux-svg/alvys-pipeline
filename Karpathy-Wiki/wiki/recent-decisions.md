@@ -2,17 +2,17 @@
 title: Recent Decisions 2026-06-05
 type: concept
 tags: [decisions, pipeline, prs, changelog]
-sources: ["raw/xfreight-recent-decisions-2026-06-05.md"]
-related: ["[[Daily Scorecard Email]]", "[[Safety Program]]", "[[Daily Schedule]]", "[[Key People]]"]
+sources: ["raw/xfreight-recent-decisions-2026-06-05.md", "raw/xfreight-owner-operator-program.md", "raw/xfreight-settlement-week.md"]
+related: ["[[Daily Scorecard Email]]", "[[Safety Program]]", "[[Daily Schedule]]", "[[Key People]]", "[[Owner-Operator Program]]", "[[Driver Roster]]"]
 ---
 
-# Recent Decisions — 2026-06-05
+# Recent Decisions — 2026-06-05 / 2026-06-06
 
-A log of the pipeline changes shipped on June 5, 2026 (PRs #86–#93) and the rationale behind each. Preserved here so future readers don't lose the why.
+A log of the pipeline changes shipped on June 5–6, 2026 (PRs #86–#97) and the rationale behind each. Preserved here so future readers don't lose the why.
 
 ## Summary
 
-Eight PRs shipped in a single day of iteration: driver acknowledgment tracking, coaching list visibility policy, MVR window narrowing, mileage target update, fleet-miles MTD bug fix, MC # surfaced on page 10, AR aging layout fix, speed escalation in Bottom Line, cron DST hardening, and JB added to scorecard recipients.
+Nine PRs spanning two days: driver acknowledgment tracking, coaching list visibility policy, MVR window narrowing, mileage target update, fleet-miles MTD bug fix, MC # surfaced on page 10, AR aging layout fix, speed escalation in Bottom Line, cron DST hardening, JB added to scorecard recipients, and documentation of the dispatch-date-locks-rate rule.
 
 ## PR Log
 
@@ -99,6 +99,20 @@ Capped at 5 names per tier + "+N more."
 
 **Decision:** `SCORECARD_TO_EMAILS = jeff@xfreight.net,jb@xfreight.net`. JB receives both the daily brief AND the failure-notification email.
 
+### PR #97 — Dispatch Date Locks the Per-Mile Rate (Docs)
+
+**Change:** Documented the dispatch-date-locks-rate rule in `xfreight-owner-operator-program.md` and `xfreight-settlement-week.md`.
+
+**Rule:** A load's per-mile rate is set by its **dispatch date**, not delivery date or settlement date.
+- Load dispatched on a **Tuesday** → uses that week's rate for the entire load.
+- Load dispatched on **Wednesday or later** → uses the **new** week's rate.
+
+A single settlement week (Wed 3pm CT → Wed 2:59pm CT) therefore contains loads at two different per-mile rates. The settlement worksheet accounts for both bands.
+
+**Why it matters:** Drivers know exactly what they earn at the moment of dispatch — no ambiguity. The pipeline's 10-day trailing window in `RPM_GOAL_PAY_WINDOW_DAYS` is set specifically to blend across the weekly rate boundary and produce a stable read.
+
+See [[Owner-Operator Program]] § "The Dispatch Date Locks the Rate" for full detail.
+
 ## Connections
 
 - [[Daily Scorecard Email]] — most changes target this artifact.
@@ -106,7 +120,11 @@ Capped at 5 names per tier + "+N more."
 - [[Daily Schedule]] — DST cron pattern hardened.
 - [[Key People]] — JB Sweere added to recipients.
 - [[FMCSA CSA Scorecard]] — MC # surfaced on page 10.
+- [[Owner-Operator Program]] — dispatch-date rate rule documented.
+- [[Driver Roster]] — settlement week cycle; dispatch rate context.
 
 ## Sources
 
-- `raw/xfreight-recent-decisions-2026-06-05.md`
+- `raw/xfreight-recent-decisions-2026-06-05.md` — PRs #86–#93.
+- `raw/xfreight-owner-operator-program.md` — dispatch-date-locks-rate rule.
+- `raw/xfreight-settlement-week.md` — settlement week cycle + dispatch date context.

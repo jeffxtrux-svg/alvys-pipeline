@@ -26,10 +26,29 @@ X-Trux contracts owner-operators (OOs) at **$1.89/mile loaded + empty** (PC Mile
 
 | Mile type | Rate (PC Miler Practical) |
 |---|---|
-| **Loaded miles** | **$1.89/mile** |
-| **Empty miles** | **$1.89/mile** |
+| **Loaded miles** | **~$1.89/mile** (varies — see below) |
+| **Empty miles** | **~$1.89/mile** (same rate as loaded) |
 
-Rates adjust with fuel prices.
+### Weekly Rate Revision — Every Wednesday
+
+**Both loaded and empty per-mile rates change every Wednesday**, along with the fuel surcharge. The $1.89/mi figure is a recent reference baseline, NOT a fixed published rate. The current week's rate is whatever was set on the most recent Wednesday revision.
+
+### The Dispatch Date Locks the Rate
+
+**A load's per-mile rate is set by its dispatch date, not delivery date or settlement date.**
+
+- Load **dispatched on a Tuesday** → uses that week's rate for the entire load, even if it delivers Friday, Saturday, or the following Monday.
+- Load **dispatched on Wednesday or later** → uses the **new** week's rate.
+
+This means a single settlement week (Wed 3pm CT → Wed 2:59pm CT) typically contains loads at **two different per-mile rates** — loads dispatched the prior Tuesday and loads dispatched Wednesday onward. The settlement worksheet accounts for both bands.
+
+**Why it matters:**
+- Drivers know exactly what they earn the moment dispatch happens — no ambiguity at delivery, no surprises on settlement.
+- The Alvys `Driver Rate` column on each load is locked at dispatch using the rate in effect that day.
+- The pipeline's rate-per-mile cost-out uses a **10-day trailing window** (`RPM_GOAL_PAY_WINDOW_DAYS = 10`) because the rate moves weekly — 10 days captures the current week + most of the prior week and blends to a stable read.
+- Filters to settled-only loads so freshly-dispatched loads with $0 Driver Rate don't deflate the per-mile average.
+
+See [[Driver Roster]] for the settlement-week cycle and [[Rate-Per-Mile Goal]] for how this feeds the cost-out.
 
 ### Additional Pay
 
