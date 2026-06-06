@@ -302,7 +302,12 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     _stop_drivers: list[tuple[str, str]] = []
     _sit_drivers: list[tuple[str, str]] = []
     for r in scores_all:
-        p6   = r.get("speed_pct_6mo")
+        # The 6-month value lives on the row under "speed_pct" (no suffix);
+        # the suffixed _3mo / _mtd keys are stamped on separately at compute
+        # time. Reading "speed_pct_6mo" was returning None, which silenced
+        # the trend-detection branch in compute_speed_comment so "improving"
+        # / "falling fast" never got appended → exclusion never matched.
+        p6   = r.get("speed_pct")
         p3   = r.get("speed_pct_3mo")
         pmtd = r.get("speed_pct_mtd")
         comment = _spd(p6, p3, pmtd) or ""
