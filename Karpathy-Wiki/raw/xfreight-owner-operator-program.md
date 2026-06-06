@@ -30,12 +30,26 @@
 
 **Both loaded and empty per-mile rates change every week on Wednesday**, along with the fuel surcharge. The $1.89/mi figure above is a recent reference point, NOT a fixed published rate. The current week's rate is whatever was set on the most recent Wednesday revision.
 
-Implications:
+### The dispatch date locks the rate (critical rule)
 
-- **Driver settlements** reflect the rate that was in effect for the loads' delivery week, not a single annual rate.
-- The owner-op recruiting one-pager publishes a representative rate but recruits should understand it floats weekly.
-- The **rate-per-mile cost-out** in the daily brief (`compute_rpm_goal`, `RPM_GOAL_PAY_WINDOW_DAYS = 10`) deliberately uses a **10-day trailing window** specifically because the per-mile rate moves weekly — a 10-day window captures the current week + most of the prior week and blends to a stable read. A longer window would drag in stale rates; a shorter one wouldn't have enough settled loads.
-- The weekly Wednesday revision **aligns with the settlement-week boundary** (Wed 3pm CT → following Wed 2:59pm CT). New rate effective from the start of the settlement week.
+**A load's per-mile rate is set by its DISPATCH date, not delivery date or settlement date.** Concretely:
+
+- Load **dispatched on a Tuesday** → uses **that week's** mileage rate for the entire load, even if it delivers Friday, Saturday, Sunday, or the following Monday.
+- Load **dispatched on Wednesday or later** → uses the **NEW** week's mileage rate.
+
+This means a single settlement week typically contains loads at two different per-mile rates: loads dispatched the previous Tuesday (still on the old rate) and loads dispatched Wednesday or later (on the new rate). The settlement worksheet accounts for both bands.
+
+Why this matters:
+- **Drivers know exactly what they're earning the moment dispatch happens** — no ambiguity at delivery time, no surprises on settlement.
+- The Alvys `Driver Rate` column on each load is locked at dispatch using the rate effective that day.
+- The pipeline's rate-per-mile cost-out filters to settled-only loads, so it naturally captures whichever rate band each load was dispatched under — no special handling needed.
+
+### Implications
+
+- **Driver settlements** reflect each load's dispatch-date rate, not a single weekly rate.
+- The owner-op recruiting one-pager publishes a representative rate, but recruits should understand it floats weekly and the rate they earn on any given load is the one in effect when that load was dispatched.
+- The **rate-per-mile cost-out** in the daily brief (`compute_rpm_goal`, `RPM_GOAL_PAY_WINDOW_DAYS = 10`) deliberately uses a **10-day trailing window** because the per-mile rate moves weekly — a 10-day window captures the current week + most of the prior week and blends to a stable read.
+- The weekly Wednesday revision aligns with the settlement-week boundary (Wed 3pm CT → following Wed 2:59pm CT), but the rate-locking rule is at the **load's dispatch event**, not the settlement boundary itself.
 
 ### Why same rate loaded + empty
 

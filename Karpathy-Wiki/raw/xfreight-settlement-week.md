@@ -35,10 +35,19 @@ Owner-operator pay (the `Driver Rate` column on Alvys Loads) lands when a load *
 
 ## Weekly pay-rate revision aligned to the cycle
 
-**The owner-op loaded + empty per-mile rate AND the fuel surcharge are revised every Wednesday** — i.e. at the start of each settlement week. This is why:
+**The owner-op loaded + empty per-mile rate AND the fuel surcharge are revised every Wednesday** — at the start of each settlement week.
 
-- The settlement-week cycle begins Wednesday 3pm CT rather than at a random day boundary — the rate change and the settlement boundary are intentionally aligned so each settlement week has a single per-mile rate.
-- A settlement worksheet for a given driver covers loads delivered within one rate band, simplifying reconciliation.
+### The dispatch date locks the rate (not delivery, not settlement)
+
+**A load's per-mile rate is set the moment dispatch happens, based on the rate effective on that calendar day.** Concretely:
+
+- Load **dispatched on a Tuesday** → uses **that week's** mileage rate for the entire load, even if it delivers Friday, Saturday, or the following Monday.
+- Load **dispatched on Wednesday or later** → uses the **NEW** week's mileage rate.
+
+Implications for the settlement-week cycle:
+
+- A single settlement week (Wed 3pm CT → following Wed 2:59pm CT) typically contains **loads at two different per-mile rates** — loads dispatched the prior Tuesday (still on the old rate) plus loads dispatched Wednesday or later (on the new rate). The settlement worksheet accounts for both bands.
+- The Wed 3pm CT settlement-week boundary doesn't itself change pay rates; the rate-change event is the Wednesday rate revision, applied to **new dispatches** from that point forward.
 - The `RPM_GOAL_PAY_WINDOW_DAYS = 10` trailing window in the rate-per-mile cost-out captures roughly one-and-a-half rate weeks, smoothing the week-over-week rate change into a stable read while still tracking it fast enough to be current.
 
-See `xfreight-owner-operator-program.md` § "Weekly rate revision" for the full detail. The current week's rate is whatever was set on the most recent Wednesday; the published $1.89/mi reference is a recent baseline, not a fixed rate.
+See `xfreight-owner-operator-program.md` § "Weekly rate revision" + "The dispatch date locks the rate" for full detail. The current week's rate is whatever was set on the most recent Wednesday; the published $1.89/mi reference is a recent baseline, not a fixed rate.
