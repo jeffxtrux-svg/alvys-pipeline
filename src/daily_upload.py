@@ -68,6 +68,12 @@ CHI_TZ = ZoneInfo("America/Chicago")
 OPEN_EMPTY_ESTIMATE_MI = 65
 SETTLED_STATUSES = {"completed", "invoiced"}
 
+# OneDrive folder where the post-send "sent-YYYY-MM-DD.txt" marker is
+# written. Mirrors the scorecard's pattern: a healthcheck workflow at
+# 6:30am CT checks for today's marker and dispatches a recovery run if
+# the 5am send dropped silently.
+_SENT_MARKER_FOLDER = "DailyUpload"
+
 # --- Goal-analysis tunables (match the manually-maintained sample) --------
 TRUCK_PAY_PER_MI    = 1.85
 BREAK_EVEN_RPM      = 2.81
@@ -978,6 +984,27 @@ def main() -> int:
                                           "jeff@xfreight.net").split(",")
                  if e.strip()]
     token = get_token(tenant, client, secret)
+
+    # Idempotency: if today's daily upload was already sent (marker file
+    # present in OneDrive), exit cleanly so a healthcheck-triggered run
+    # doesn't double-send. workflow_dispatch and DAILY_UPLOAD_SKIP_IDEMPOTENCY=1
+    # bypass the check so on-demand resends still work.
+    today_key = pd.Timestamp.now(tz=CHI_TZ).strftime("%Y-%m-%d")
+    if (os.environ.get("GITHUB_EVENT_NAME", "").strip() != "workflow_dispatch"
+            and os.environ.get("DAILY_UPLOAD_SKIP_IDEMPOTENCY", "").strip() != "1"):
+        marker_path = f"{_SENT_MARKER_FOLDER}/sent-{today_key}.txt"
+        try:
+            download_file(token, upn, marker_path)
+            log.info("Today's daily upload was already sent (marker: %s) — skipping.",
+                     marker_path)
+            return 0
+        except Exception as e:
+            # 404 / not found → no marker yet, proceed. Any other error
+            # also proceeds (fail-open: we'd rather risk a duplicate send
+            # than skip when we shouldn't have).
+            log.info("No sent marker for %s — proceeding (%s).",
+                     today_key, type(e).__name__)
+
     log.info("Reading Alvys Master 2026 via share URL…")
     workbook_bytes = download_shared_file(token, share)
     sheets = pd.read_excel(io.BytesIO(workbook_bytes), sheet_name=None)
@@ -1032,6 +1059,21 @@ def main() -> int:
                     "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 }],
             )
+
+            # Write today's 'sent' marker so the 6:30am healthcheck
+            # short-circuits when the morning send already succeeded.
+            # Marker write failure is non-fatal — at worst we re-send today.
+            try:
+                marker_name = f"sent-{today_key}.txt"
+                marker_path_local = Path(tmp) / marker_name
+                marker_path_local.write_text(
+                    f"{today_key}\n{pd.Timestamp.now(tz=CHI_TZ).isoformat()}\n"
+                )
+                ensure_folder(token, upn, _SENT_MARKER_FOLDER)
+                upload_file(token, upn, _SENT_MARKER_FOLDER, marker_name, marker_path_local)
+                log.info("Marker written: %s/%s", _SENT_MARKER_FOLDER, marker_name)
+            except Exception as exc:
+                log.warning("Failed to write 'sent' marker (%s) — healthcheck may resend.", exc)
 
     log.info("Done.")
     return 0
