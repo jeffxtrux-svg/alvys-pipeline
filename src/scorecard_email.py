@@ -1127,6 +1127,11 @@ DIRECT_CUSTOMERS: frozenset[str] = frozenset({
     "enertec", "rainbow", "kraft tool", "dakota pottery", "lewis drug",
     "traco", "bandag", "design tanks", "top lot processors",
     "johnson brothers", "innovative",
+    # ABT Brokerage — XFreight has a co-brokerage agreement in place
+    # with ABT, so ABT freight is treated as direct customer freight
+    # across every XFreight report despite the name. Co-brokered loads
+    # roll into the direct-customer rev/mile chart, never broker freight.
+    "abt brokerage",
 })
 
 

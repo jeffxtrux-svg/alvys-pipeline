@@ -111,6 +111,12 @@ DIRECT_CUSTOMERS = {
     "frontier ag", "frontier coop", "sun opta", "sunopta",
     "fortune logistics", "twin cities logistics", "twin city logistics",
     "moc products", "valley queen", "valley queen cheese",
+    # ABT Brokerage — XFreight has a co-brokerage agreement in place
+    # with ABT, so ABT freight is treated as direct customer freight
+    # across all XFreight reports even though the carrier-side name
+    # reads "Brokerage". Co-brokered loads count in the Customer Loads
+    # tab; never Spot Market.
+    "abt brokerage",
 }
 
 
@@ -661,19 +667,24 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
     state_display.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[1].height = 22
 
-    # Data validation: dropdown over Include / Exclude on the toggle cell.
-    # Order matters — ws.add_data_validation(dv) MUST come before dv.add(cell)
-    # or some Excel versions ignore the sqref entry. allow_blank=True so a
-    # mid-edit blank state during the dropdown selection doesn't get
-    # rejected (which is what was preventing the change from sticking).
-    dv = DataValidation(type="list", formula1='"Include,Exclude"',
-                         allow_blank=True, showDropDown=False)
-    dv.error = "Choose Include or Exclude."
-    dv.errorTitle = "Invalid toggle value"
-    dv.prompt = "Include = all loads count. Exclude = settled (Completed/Invoiced) only."
+    # Data validation: lookup-range dropdown sourced from a hidden config
+    # sheet. This form is the most universally compatible — Excel desktop,
+    # Excel Online, and Excel for iPad all honor it. Inline lists (the old
+    # formula1='"Include,Exclude"' form) silently fail to render the
+    # dropdown arrow in some Excel/Outlook viewers.
+    #
+    # Loose validation on purpose: showErrorMessage=False so typing
+    # "Include" or "Exclude" directly into B1 also works as a fallback if
+    # the dropdown UI isn't interactive (e.g. opened via a preview pane).
+    dv = DataValidation(
+        type="list",
+        formula1="=_Config!$A$1:$A$2",
+        allow_blank=True,
+    )
+    dv.prompt = "Include or Exclude. Toggle drives every total in the workbook."
     dv.promptTitle = "Open-loads toggle"
     dv.showInputMessage = True
-    dv.showErrorMessage = True
+    dv.showErrorMessage = False  # don't reject manual edits
     ws.add_data_validation(dv)
     dv.add(toggle_value_cell)
 
@@ -718,6 +729,20 @@ def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
                  default_include: bool) -> None:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
+
+    # Hidden config sheet hosts the dropdown's lookup values. Per-tab
+    # data validations source from _Config!$A$1:$A$2 — the most
+    # universally compatible form (works in Excel desktop, Online, and
+    # iPad, where inline list dropdowns silently fail to render).
+    config_ws = wb.create_sheet(title="_Config")
+    config_ws["A1"] = "Include"
+    config_ws["A2"] = "Exclude"
+    config_ws["A1"].number_format = "@"
+    config_ws["A2"].number_format = "@"
+    # Keep the lookup values visible-but-out-of-the-way on the config
+    # sheet itself, then hide the whole sheet from the tab strip.
+    config_ws.sheet_state = "hidden"
+
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
         _write_tab(ws, df, include_goal_block=(name == "All Loads"),
