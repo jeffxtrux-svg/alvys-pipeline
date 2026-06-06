@@ -1989,15 +1989,25 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         )
         # "Coaching needs assigned" list — per-driver aggregation over the
         # last 30 days. Drivers stay on the list until they sign their
-        # coaching session, then carry over for 3 more days as a closeout
-        # window before dropping off (visibility rule applied at render
-        # time in _safety_detail_tables using out["coaching_acks"]).
+        # coaching session (every event status flips to coached/dismissed/
+        # recognized), then carry over for 3 more days as a closeout window
+        # before dropping off. Per-row `acked`/`ack_ts`/`coach` are computed
+        # below and consumed at render time in _safety_detail_tables.
         _7d = events[ed >= w["30d"]]
         _7d_dates = ed[ed >= w["30d"]]
         if not _7d.empty and dcol:
             et_col = _find_col(_7d, ["event type"])
             sev_col = _find_col(_7d, ["severity"])
             unit_col = _find_col(_7d, ["unit", "vehicle"])
+            # Status / coach columns sourced from the safety event itself —
+            # see "Coaching ack derivation" in CLAUDE.md. The Samsara
+            # /coaching/sessions endpoint 404s, so we reconstruct ack state
+            # from each event's coachingStatus (already in the SafetyEvents
+            # sheet under one of the names below).
+            status_col = _find_col(_7d, ["status", "reviewed", "coaching"])
+            coach_col  = _find_col(_7d, ["coachedby.name", "coached by", "coachedby"])
+            coach_at_col = _find_col(_7d, ["coachedat", "coached at"])
+            _COACHED_STATUSES = {"coached", "dismissed", "recognized"}
             agg: dict = {}
             for idx in _7d.index:
                 r = _7d.loc[idx]
@@ -2008,6 +2018,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     "driver": driver, "events": 0,
                     "types": set(), "severities": set(),
                     "units": set(), "last_ts": None,
+                    "all_coached": True, "ack_ts": None,
+                    "coaches": {},
                 })
                 slot["events"] += 1
                 if et_col:
@@ -2025,6 +2037,22 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 ts = _7d_dates.loc[idx]
                 if pd.notna(ts) and (slot["last_ts"] is None or ts > slot["last_ts"]):
                     slot["last_ts"] = ts
+                # Ack-state tracking: a driver is "acked" only when every
+                # event of theirs in the 30d window has been closed (status
+                # in coached/dismissed/recognized). The ack timestamp is the
+                # latest coachedAt, falling back to the event's own time.
+                ev_status = str(r.get(status_col, "") or "").strip().lower() if status_col else ""
+                if ev_status not in _COACHED_STATUSES:
+                    slot["all_coached"] = False
+                else:
+                    cat = pd.to_datetime(r.get(coach_at_col, ""), errors="coerce", utc=True) if coach_at_col else pd.NaT
+                    cand = cat if pd.notna(cat) else ts
+                    if pd.notna(cand) and (slot["ack_ts"] is None or cand > slot["ack_ts"]):
+                        slot["ack_ts"] = cand
+                    if coach_col:
+                        cn = str(r.get(coach_col, "") or "").strip()
+                        if cn:
+                            slot["coaches"][cn] = slot["coaches"].get(cn, 0) + 1
             out["coaching_list"] = [
                 {
                     "driver": s["driver"], "events": s["events"],
@@ -2032,6 +2060,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     "severities": sorted(s["severities"]),
                     "units": sorted(s["units"]),
                     "last": s["last_ts"].strftime("%Y-%m-%d %H:%M") if s["last_ts"] is not None else "",
+                    "acked": s["all_coached"] and s["ack_ts"] is not None,
+                    "ack_ts": s["ack_ts"],
+                    "coach": (max(s["coaches"].items(), key=lambda kv: kv[1])[0]
+                              if s["coaches"] else ""),
                 }
                 for s in sorted(agg.values(), key=lambda x: -x["events"])
             ]
@@ -2586,30 +2618,20 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         r["speed_pct_3mo"] = pct_3mo[nm]
 
     # --- Coaching sessions ---------------------------------------------------
+    # NOTE: Samsara's /coaching/sessions endpoint 404s for our account, so the
+    # CoachingSessions sheet is an empty placeholder on every run. Ack state
+    # for the page-1 "Coaching needs assigned" table is now derived from the
+    # SafetyEvents `status` column (status=coached / dismissed / recognized
+    # means the session was completed in Samsara — see compute_samsara
+    # coaching_list builder above). The past-due block below is kept defensive
+    # in case the endpoint comes back online or moves to a working path.
     coaching_sheet = sheets.get("CoachingSessions")
     out["coaching_sessions"] = {"self_past_due": [], "manager_past_due": [], "available": False}
-    # coaching_acks: normalized driver name -> sorted list of UTC datetimes when
-    # the driver signed/acknowledged a coaching session (Status == "completed"
-    # in Samsara, which only flips after the driver signs off). Used to render
-    # the "Ack" check in the page-1 safety-events + coaching-needs tables.
-    out["coaching_acks"] = {}
     if coaching_sheet is not None and not coaching_sheet.empty:
         out["coaching_sessions"]["available"] = True
         today_d = _dt.date.today()
         for _, row in coaching_sheet.iterrows():
             status = str(row.get("Status") or "").strip().lower()
-            # Build the per-driver acknowledgment timeline first — any session
-            # marked "completed" with a Completed At timestamp counts.
-            if status == "completed":
-                drv = str(row.get("Driver Name") or "").strip().lower()
-                comp_raw = str(row.get("Completed At") or "").strip()
-                if drv and comp_raw:
-                    try:
-                        comp_ts = pd.to_datetime(comp_raw, utc=True)
-                        if pd.notna(comp_ts):
-                            out["coaching_acks"].setdefault(drv, []).append(comp_ts)
-                    except Exception:
-                        pass
             if status not in ("pending", "not started", "notstarted", "assigned"):
                 continue
             due_raw = str(row.get("Due At") or "").strip()
@@ -2634,8 +2656,6 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 out["coaching_sessions"]["manager_past_due"].append(rec)
             else:
                 out["coaching_sessions"]["self_past_due"].append(rec)
-        for drv in out["coaching_acks"]:
-            out["coaching_acks"][drv].sort()
 
     # --- Training assignments ------------------------------------------------
     training_sheet = sheets.get("TrainingAssignments")
@@ -4692,24 +4712,11 @@ def _safety_detail_tables(samsara) -> str:
     """HOS violations / Safety events (last 7d) / Open DVIR defects /
     Coaching needs assigned tables. Rendered at the bottom of page 1."""
     detail = (samsara or {}).get("detail", {})
-    acks_by_driver = (samsara or {}).get("coaching_acks", {}) or {}
 
     def _when(r) -> str:
         # Combine date + time for the 7-day windows so the reader knows what
         # day each violation/event landed on.
         return (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;"
-
-    def _ack_after(driver: str, event_ts):
-        """Return the latest matching ack timestamp (a UTC pd.Timestamp) if
-        the driver signed off on a coaching session at or after the given
-        event timestamp, else None."""
-        if not driver or event_ts is None or pd.isna(event_ts):
-            return None
-        latest = None
-        for ack_ts in acks_by_driver.get(driver.strip().lower(), []):
-            if ack_ts >= event_ts and (latest is None or ack_ts > latest):
-                latest = ack_ts
-        return latest
 
     def _ack_cell(yes: bool) -> str:
         # &check; renders as a clean ✓ in both desktop email and WeasyPrint PDF.
@@ -4748,6 +4755,10 @@ def _safety_detail_tables(samsara) -> str:
     # driver with any safety event in the window stays on the list; the
     # action column tells the safety manager whether to assign coaching now
     # (>= threshold) or just monitor (one-off).
+    # Ack source: each row's `acked` / `ack_ts` is computed in compute_samsara
+    # from the SafetyEvents `status` column (status=coached means the session
+    # was completed in Samsara). The /coaching/sessions endpoint we used to
+    # consult 404s on every run, so this is the authoritative source.
     coaching_list = (samsara or {}).get("coaching_list") or []
     coach_rows = ""
     _seven_d_ago = _now_utc - pd.Timedelta(days=7)
@@ -4758,7 +4769,7 @@ def _safety_detail_tables(samsara) -> str:
         if is_coaching:
             # "Assign coaching": stays on the list until the driver signs,
             # then for _ACK_KEEP_DAYS more days as a closeout indicator.
-            ack_ts = _ack_after(c.get("driver", ""), last_ts)
+            ack_ts = c.get("ack_ts") if c.get("acked") else None
             if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
                 continue
             acked = ack_ts is not None
@@ -4775,11 +4786,12 @@ def _safety_detail_tables(samsara) -> str:
         types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
         ack_cell = _ack_cell(acked) if is_coaching else "n/a"
         ack_color = ("good" if acked else "mute") if is_coaching else "mute"
+        coach_cell = c.get("coach") or "&mdash;"
         coach_rows += _tr(
             [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
-             action, ack_cell],
-            ["left", "left", "right", "left", "left", "center"],
-            [None, None, events_kind, None, action_kind, ack_color],
+             action, coach_cell, ack_cell],
+            ["left", "left", "right", "left", "left", "left", "center"],
+            [None, None, events_kind, None, action_kind, None, ack_color],
         )
 
     return (
@@ -4790,7 +4802,7 @@ def _safety_detail_tables(samsara) -> str:
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
-        f"{_table(['Driver', 'Event Types', 'Events (7d)', 'Last Event', 'Action', 'Ack'], ['left', 'left', 'right', 'left', 'left', 'center'], coach_rows)}"
+        f"{_table(['Driver', 'Event Types', 'Events (7d)', 'Last Event', 'Action', 'Coach', 'Ack'], ['left', 'left', 'right', 'left', 'left', 'left', 'center'], coach_rows)}"
     )
 
 
