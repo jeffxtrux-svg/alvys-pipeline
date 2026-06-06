@@ -634,26 +634,12 @@ def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
     log.info("Wrote %s", file_path)
 
 
-def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
-                   onedrive_link: str = "") -> str:
+def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str) -> str:
     parts = ['<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
               'font-size:14px;color:#1a1a1a;line-height:1.5;padding:24px;max-width:560px">']
     parts.append('<div style="font-weight:700;letter-spacing:1.5px;font-size:11px;'
                   'color:#c41e2a;text-transform:uppercase;margin-bottom:14px">'
                   'XFreight &middot; Daily MTD Upload</div>')
-
-    # "Open in OneDrive" button — bypasses the email-preview Read-Only
-    # mode (Spark/Outlook iPad lock the attachment).
-    if onedrive_link:
-        parts.append(
-            f'<p style="margin:0 0 14px">'
-            f'<a href="{onedrive_link}" '
-            f'style="display:inline-block;padding:10px 18px;background:#c41e2a;'
-            f'color:#ffffff;text-decoration:none;border-radius:6px;'
-            f'font-weight:700;font-size:13px;letter-spacing:.3px;">'
-            f'Open in OneDrive</a></p>'
-        )
-
     parts.append(f"<p style='margin:0 0 12px'>Attached: <b>{file_label}</b> &mdash; "
                   "month-to-date load list grouped by Customer Sales Agent with "
                   "per-agent subtotals and a goal-projection block on All Loads. "
@@ -851,21 +837,19 @@ def main() -> int:
         local_path = Path(tmp) / file_label
         _write_xlsx(tabs, local_path, today_chi, goal_rpm)
 
-        if out_folder:
-            ensure_folder(token, upn, out_folder)
-            log.info("Uploading to OneDrive folder %r as %s …", out_folder, file_label)
-        else:
-            log.info("Uploading to OneDrive root as %s …", file_label)
-        upload_resp = upload_file(token, upn, out_folder, file_label, local_path)
-
-        # `webUrl` on the returned driveItem opens the file directly in
-        # OneDrive — bypasses the email-preview Read-Only mode (Spark /
-        # Outlook iPad both lock the attachment).
-        onedrive_link = (upload_resp or {}).get("webUrl") or ""
-        if onedrive_link:
-            log.info("OneDrive web link: %s", onedrive_link)
-        else:
-            log.warning("Upload response did not include webUrl — email link will be omitted.")
+        # OneDrive upload is best-effort — if the destination file is
+        # locked (someone has it open in Excel / OneDrive) or any other
+        # upload error fires, log it and continue. The email attachment
+        # is the deliverable; the OneDrive copy is a nice-to-have.
+        try:
+            if out_folder:
+                ensure_folder(token, upn, out_folder)
+                log.info("Uploading to OneDrive folder %r as %s …", out_folder, file_label)
+            else:
+                log.info("Uploading to OneDrive root as %s …", file_label)
+            upload_file(token, upn, out_folder, file_label, local_path)
+        except Exception as exc:
+            log.warning("OneDrive upload failed (%s) — sending email anyway.", exc)
 
         if to_emails:
             with open(local_path, "rb") as fh:
@@ -873,7 +857,7 @@ def main() -> int:
             send_email(
                 token, upn, to_emails,
                 f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}",
-                _summary_html(tabs, file_label, onedrive_link),
+                _summary_html(tabs, file_label),
                 attachments=[{
                     "name": file_label,
                     "content_bytes": content_bytes,
