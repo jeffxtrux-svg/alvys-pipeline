@@ -594,33 +594,31 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
     return seen
 
 
+def _autosize_columns(ws, padding: int = 2, min_width: int = 8, max_width: int = 50) -> None:
+    """Set each column width to fit its widest non-formula content.
+
+    Formula cells are skipped — their rendered width can't be known without
+    calculating the workbook. The header row and all literal-value cells
+    (text, numbers) determine the width; numeric columns fall back to their
+    header name length, which is the right floor for those columns.
+    """
+    col_widths: dict[int, int] = {}
+    for row_cells in ws.iter_rows():
+        for cell in row_cells:
+            if cell.value is None:
+                continue
+            val = cell.value
+            if isinstance(val, str) and val.startswith("="):
+                continue  # rendered width unknowable; header row sets the floor
+            col_widths[cell.column] = max(col_widths.get(cell.column, 0), len(str(val)))
+    for col_idx, width in col_widths.items():
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(
+            min_width, min(width + padding, max_width)
+        )
+
+
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                 today_chi: pd.Timestamp, goal_rpm: float) -> None:
-    # Column widths lifted from the user's manually-maintained sample
-    # workbook so the new generator matches its layout cell-for-cell.
-    widths = {
-        1: 7.0,       # A  Count
-        2: 22.73,     # B  Customer Sales Agent
-        3: 12.64,     # C  Load #
-        4: 12.38,     # D  Load Status
-        5: 15.20,     # E  Carrier
-        6: 38.88,     # F  Customer  (long names need the room)
-        7: 15.74,     # G  Pick City
-        8: 8.43,      # H  Pick State (Excel default; sample left as-is)
-        9: 16.54,     # I  First Pick Status
-        10: 20.71,    # J  Drop City
-        11: 14.39,    # K  Drop State
-        12: 17.08,    # L  Last Drop Status
-        13: 25.15,    # M  Empty Dispatch Mileage
-        14: 26.63,    # N  Loaded Dispatch Mileage
-        15: 19.50,    # O  Customer Revenue
-        16: 11.97,    # P  Driver Rate
-        17: 13.45,    # Q  Margin
-        18: 9.0,      # R  Margin %
-    }
-    for ci, w in widths.items():
-        ws.column_dimensions[get_column_letter(ci)].width = w
-
     row = 1
     row = _write_header(ws, row)
 
@@ -655,6 +653,7 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                               today_chi=today_chi,
                               include_goal_block=include_goal_block,
                               goal_rpm=goal_rpm)
+    _autosize_columns(ws)
 
 
 def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
