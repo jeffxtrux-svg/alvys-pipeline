@@ -294,10 +294,10 @@ def _write_data_row(ws, row: int, count: int, rec: dict,
         if col in _NUM_FMT:
             cell.number_format = _NUM_FMT[col]
     # Helper col S — drives every SUMIFS / COUNTIFS in the sheet. Returns 1
-    # when the toggle is "Yes" (all rows count) or when the row is settled
-    # (Completed/Invoiced), 0 otherwise.
+    # when the toggle is "Include" (all rows count) or when the row is
+    # settled (Completed/Invoiced), 0 otherwise.
     ws.cell(row=row, column=19,
-             value=(f'=IF(OR({toggle_cell}="Yes",'
+             value=(f'=IF(OR({toggle_cell}="Include",'
                     f'OR(D{row}="Completed",D{row}="Invoiced")),1,0)'))
     return row + 1
 
@@ -312,8 +312,8 @@ def _write_agent_subtotal(ws, row: int, agent: str,
 
     sum_row = row
     # SUMIFS over this agent's data rows, filtered by helper col S = 1.
-    # When the toggle is "Yes", every row's helper = 1 (full view).
-    # When "No", only settled rows (Completed/Invoiced) contribute.
+    # When the toggle is "Include", every row's helper = 1 (full view).
+    # When "Exclude", only settled rows (Completed/Invoiced) contribute.
     rng = lambda c: f"${c}${data_first}:${c}${data_last}"
     ws.cell(row=sum_row, column=13,
              value=f"=SUMIFS({rng('M')},{rng('S')},1)").number_format = "#,##0"
@@ -470,7 +470,7 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     # so flipping it updates this banner in-place.
     state_cell = ws.cell(
         row=row, column=1,
-        value=(f'=IF({toggle_cell}="Yes",'
+        value=(f'=IF({toggle_cell}="Include",'
                '"OPEN LOADS: INCLUDED  (full MTD view)",'
                '"OPEN LOADS: EXCLUDED  (settled-only view)")'))
     state_cell.font = Font(bold=True, size=11, color="1A1A1A")
@@ -640,7 +640,12 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
     label_cell.alignment = Alignment(horizontal="right", vertical="center")
     toggle_value_cell = ws.cell(
         row=1, column=2,
-        value="Yes" if default_include else "No")
+        value="Include" if default_include else "Exclude")
+    # Force the cell to text format so Excel doesn't try to auto-convert
+    # the dropdown value into something it isn't (the old "Yes"/"No" pair
+    # would silently flip to TRUE/FALSE on some Excel locales, which broke
+    # the IF($B$1="Yes",...) comparison and made the dropdown look stuck).
+    toggle_value_cell.number_format = "@"
     toggle_value_cell.font = Font(bold=True, size=12, color="1A1A1A")
     toggle_value_cell.fill = YELLOW_FILL
     toggle_value_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -648,7 +653,7 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
     toggle_value_cell.border = Border(top=thick, bottom=thick, left=thick, right=thick)
     state_display = ws.cell(
         row=1, column=3,
-        value=(f'=IF({toggle_cell}="Yes",'
+        value=(f'=IF({toggle_cell}="Include",'
                '"INCLUDED (full MTD)",'
                '"EXCLUDED (settled only)")'))
     state_display.font = Font(bold=True, italic=True, size=11, color="C41E2A")
@@ -656,15 +661,21 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
     state_display.alignment = Alignment(horizontal="left", vertical="center")
     ws.row_dimensions[1].height = 22
 
-    # Data validation: dropdown over Yes / No values on the toggle cell.
-    dv = DataValidation(type="list", formula1='"Yes,No"',
-                         allow_blank=False, showDropDown=False)
-    dv.error = "Choose Yes or No"
+    # Data validation: dropdown over Include / Exclude on the toggle cell.
+    # Order matters — ws.add_data_validation(dv) MUST come before dv.add(cell)
+    # or some Excel versions ignore the sqref entry. allow_blank=True so a
+    # mid-edit blank state during the dropdown selection doesn't get
+    # rejected (which is what was preventing the change from sticking).
+    dv = DataValidation(type="list", formula1='"Include,Exclude"',
+                         allow_blank=True, showDropDown=False)
+    dv.error = "Choose Include or Exclude."
     dv.errorTitle = "Invalid toggle value"
-    dv.prompt = "Yes = include all loads. No = settled (Completed/Invoiced) only."
+    dv.prompt = "Include = all loads count. Exclude = settled (Completed/Invoiced) only."
     dv.promptTitle = "Open-loads toggle"
-    dv.add("B1")
+    dv.showInputMessage = True
+    dv.showErrorMessage = True
     ws.add_data_validation(dv)
+    dv.add(toggle_value_cell)
 
     row = 3
     row = _write_header(ws, row)
