@@ -70,10 +70,9 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          # NOTE: standing recipient list intentionally jeff-only during the
-          # testing window. Once the report is reviewed, add jb back here:
-          #   jeff@xfreight.net,jb@xfreight.net
-          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net' }}
+          # Standing recipient list. Override via the `recipients`
+          # workflow_dispatch input for one-off sends to a single address.
+          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
           # Same share URL as the scorecard so both feeds read the same workbook.
           DAILY_UPLOAD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
           # Empty string = drop the file in OneDrive root. Override here if
@@ -88,7 +87,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net' }}
+          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
