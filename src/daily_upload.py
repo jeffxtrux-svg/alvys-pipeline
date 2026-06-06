@@ -49,9 +49,9 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from src.onedrive_upload import (
-    download_shared_file, ensure_folder, get_token, upload_file,
+    download_file, download_shared_file, ensure_folder, get_token, upload_file,
 )
-from src.scorecard_email import send_email
+from src.scorecard_email import compute_qb_pnl, compute_rpm_goal, send_email
 
 log = logging.getLogger("daily_upload")
 logging.basicConfig(level=logging.INFO,
@@ -76,6 +76,31 @@ OUTPUT_COLS = [
     "Empty Dispatch Mileage", "Loaded Dispatch Mileage",
     "Customer Revenue", "Driver Rate", "Margin", "Margin %",
 ]
+
+
+def _live_goal_rpm(token: str, upn: str, qb_dir: str,
+                    alvys_sheets: dict) -> float:
+    """Compute the same goal RPM the scorecard shows on page 1 (live
+    cost-out: driver pay/mi + office overhead/mi ÷ target OR). Falls back
+    to the GOAL_RPM constant when the QB P&L workbook isn't readable.
+
+    Keeping daily_upload and the scorecard on the same goal so the two
+    morning emails don't disagree."""
+    try:
+        pnl_bytes = download_file(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx")
+        pnl_sheets = pd.read_excel(io.BytesIO(pnl_bytes), sheet_name=None)
+        qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values())))
+        goal = compute_rpm_goal(alvys_sheets, qb_pnl)
+        if goal and goal.get("goal_rpm"):
+            live = float(goal["goal_rpm"])
+            log.info("Live goal RPM from scorecard cost-out: %.4f (constant fallback: %.2f)",
+                     live, GOAL_RPM)
+            return live
+    except Exception as exc:
+        log.warning("Could not compute live goal RPM (%s) — using constant %.2f",
+                     exc, GOAL_RPM)
+    return GOAL_RPM
+
 
 DIRECT_CUSTOMERS = {
     "berry plastics", "rainbow play", "ascendant", "graham packaging",
@@ -228,6 +253,15 @@ _HDR_FILL = PatternFill("solid", fgColor="F2F2F2")
 _HDR_FONT = Font(bold=True)
 _BOLD = Font(bold=True)
 
+# Color palette pulled from the sample workbook's "We are at" projection
+# block so the report looks visually identical to the one the user has
+# been maintaining by hand.
+PURPLE_FILL = PatternFill("solid", fgColor="C198E0")  # labels (col A) + header
+BLUE_FILL   = PatternFill("solid", fgColor="00B0F0")  # current-period values
+GRAY_FILL   = PatternFill("solid", fgColor="A6A6A6")  # break-even / goal values
+YELLOW_FILL = PatternFill("solid", fgColor="FFFF00")  # tunable constants + flagged rows
+RED_FILL    = PatternFill("solid", fgColor="FF0000")  # negative variance to goal
+
 
 def _write_header(ws, row: int) -> int:
     for ci, name in enumerate(OUTPUT_COLS, start=1):
@@ -303,7 +337,8 @@ def _write_agent_subtotal(ws, row: int, agent: str, group: pd.DataFrame) -> int:
 
 
 def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
-                        today_chi: pd.Timestamp, include_goal_block: bool) -> int:
+                        today_chi: pd.Timestamp, include_goal_block: bool,
+                        goal_rpm: float) -> int:
     total_loads = len(tab_df)
     empty_mi  = float(tab_df["Empty Dispatch Mileage"].sum())
     loaded_mi = float(tab_df["Loaded Dispatch Mileage"].sum())
@@ -315,9 +350,9 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
     dh_pct     = (empty_mi / total_mi) if total_mi else 0
     pay_per_mi = (pay / total_mi) if total_mi else 0
     mgn_per_mi = (margin / total_mi) if total_mi else 0
-    goal_mgn_per_mi    = GOAL_RPM - TRUCK_PAY_PER_MI
-    diff_from_goal_rpm = rpm - GOAL_RPM
-    pct_diff_from_goal = (diff_from_goal_rpm / GOAL_RPM) if GOAL_RPM else 0
+    goal_mgn_per_mi    = goal_rpm - TRUCK_PAY_PER_MI
+    diff_from_goal_rpm = rpm - goal_rpm
+    pct_diff_from_goal = (diff_from_goal_rpm / goal_rpm) if goal_rpm else 0
     rev_missed = diff_from_goal_rpm * total_mi
     mgn_missed = rev_missed
 
@@ -358,18 +393,22 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
             "mgn_pct":   (ag_mgn / margin) if margin else 0,
         })
 
+    # `tunable` flag = yellow-highlight the value cell so the reader can
+    # tell at a glance which number to edit in the source if the assumption
+    # needs to change. Goal RPM is live (matches the scorecard cost-out)
+    # but still represents a tunable input to the rest of the math.
     goal_block_lines = [
-        ("Goal RPM",                       GOAL_RPM,              '"$"#,##0.00'),
-        ("Difference from Goal",           diff_from_goal_rpm,    '"$"#,##0.0000'),
-        ("% of Difference from Goal",      pct_diff_from_goal,    "0.00%"),
-        ("Total Miles",                    total_mi,              "#,##0"),
-        ("DH %",                           dh_pct,                "0.00%"),
-        ("Average Truck Pay per Mile",     pay_per_mi,            '"$"#,##0.0000'),
-        ("Average Margin Per Mile",        mgn_per_mi,            '"$"#,##0.0000'),
-        ("Goal Margin Per Mile",           goal_mgn_per_mi,       '"$"#,##0.0000'),
-        ("Difference from Goal",           diff_from_goal_rpm,    '"$"#,##0.0000'),
-        ("Revenue Missed Opportunity",     rev_missed,            '"$"#,##0.00'),
-        ("Margin Missed Opportunity",      mgn_missed,            '"$"#,##0.00'),
+        ("Goal RPM",                       goal_rpm,              '"$"#,##0.00',  True),
+        ("Difference from Goal",           diff_from_goal_rpm,    '"$"#,##0.0000', False),
+        ("% of Difference from Goal",      pct_diff_from_goal,    "0.00%",        False),
+        ("Total Miles",                    total_mi,              "#,##0",        False),
+        ("DH %",                           dh_pct,                "0.00%",        False),
+        ("Average Truck Pay per Mile",     pay_per_mi,            '"$"#,##0.0000', False),
+        ("Average Margin Per Mile",        mgn_per_mi,            '"$"#,##0.0000', False),
+        ("Goal Margin Per Mile",           goal_mgn_per_mi,       '"$"#,##0.0000', False),
+        ("Difference from Goal",           diff_from_goal_rpm,    '"$"#,##0.0000', False),
+        ("Revenue Missed Opportunity",     rev_missed,            '"$"#,##0.00',  False),
+        ("Margin Missed Opportunity",      mgn_missed,            '"$"#,##0.00',  False),
     ]
 
     n_rows = max(len(agent_metrics) + 1, len(goal_block_lines))
@@ -386,9 +425,12 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
             ws.cell(row=row, column=10, value=1).number_format = "0.00%"
             ws.cell(row=row, column=11, value=1).number_format = "0.00%"
         if i < len(goal_block_lines):
-            label, value, fmt = goal_block_lines[i]
+            label, value, fmt, tunable = goal_block_lines[i]
             ws.cell(row=row, column=14, value=label)
-            ws.cell(row=row, column=15, value=value).number_format = fmt
+            value_cell = ws.cell(row=row, column=15, value=value)
+            value_cell.number_format = fmt
+            if tunable:
+                value_cell.fill = YELLOW_FILL
         row += 1
 
     if not include_goal_block:
@@ -417,7 +459,7 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
 
     cur_mpm = rpm - TRUCK_PAY_PER_MI
     be_mpm  = BREAK_EVEN_RPM - TRUCK_PAY_PER_MI
-    gl_mpm  = GOAL_RPM - TRUCK_PAY_PER_MI
+    gl_mpm  = goal_rpm - TRUCK_PAY_PER_MI
 
     cur_margin_est = est_mileage * cur_mpm
     be_margin_est  = est_mileage * be_mpm
@@ -449,32 +491,85 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
     trucks_needed_be  = total_needed_be  / est_mi_per_truck if est_mi_per_truck else 0
     trucks_needed_gl  = total_needed_gl  / est_mi_per_truck if est_mi_per_truck else 0
 
-    ws.cell(row=row, column=3, value="Break Even").font = _BOLD
-    ws.cell(row=row, column=4, value="Goal").font = _BOLD
+    # Projection rows. Each row spec:
+    #   (label, current_val, break_even_val, goal_val, fmt, fill_override)
+    # fill_override is one of:
+    #   None         — apply the default scheme (purple label, blue current,
+    #                  gray break-even, gray goal)
+    #   "tunable_b"  — current value comes from a tunable constant → yellow B
+    #                  (label + break-even + goal stay default)
+    #   "tunable_all"— every value column is a tunable constant → yellow B/C/D
+    #   "tunable_cd" — current is computed, break-even + goal are tunables
+    #                  → yellow C/D only
+    #   "highlight"  — label + all value cells yellow (key emphasis rows
+    #                  like Estimated Margin / Margin Needed in the sample)
+    #   "variance"   — yellow label, current red-if-negative else gray, C/D gray
+    #   "gray_b"     — current value cell rendered gray instead of blue
+    #                  (matches sample for Estimated Mileage)
     proj_rows = [
-        ("Dead Head",                   dh_pct,            dh_pct,            dh_pct,            "0.00%"),
-        ("Trux RPM",                    rpm,               BREAK_EVEN_RPM,    GOAL_RPM,          '"$"#,##0.00'),
-        ("Trux Margin Est",             cur_margin_est,    be_margin_est,     gl_margin_est,     '"$"#,##0.00'),
-        ("Truck Miles",                 total_mi,          total_mi,          total_mi,          "#,##0"),
-        ("Truck Pay",                   TRUCK_PAY_PER_MI,  TRUCK_PAY_PER_MI,  TRUCK_PAY_PER_MI,  '"$"#,##0.00'),
-        ("Truck Margin Per Mile",       cur_mpm,           be_mpm,            gl_mpm,            '"$"#,##0.00'),
-        ("Estimated Mileage",           est_mileage,       est_mileage,       est_mileage,       "#,##0"),
-        ("Estimated Margin",            cur_margin_est,    be_margin_est,     gl_margin_est,     '"$"#,##0.00'),
-        ("Margin Needed",               MARGIN_GOAL_MONTHLY, MARGIN_GOAL_MONTHLY, MARGIN_GOAL_MONTHLY, '"$"#,##0.00'),
-        ("Estimate Margin to Goal",     cur_est_to_goal,   be_est_to_goal,    gl_est_to_goal,    '"$"#,##0.00'),
-        ("Mileage Short Needed for Goal", cur_short, be_short, gl_short, "#,##0"),
-        ("Total Miles Needed",          total_needed_cur,  total_needed_be,   total_needed_gl,   "#,##0"),
-        ("Number of Trucks",            NUM_TRUCKS,        NUM_TRUCKS,        NUM_TRUCKS,        "0"),
-        ("Mileage per truck",           mi_per_truck,      mi_per_truck,      mi_per_truck,      "#,##0"),
-        ("Estimated Mileage per truck", est_mi_per_truck,  est_mi_per_truck,  est_mi_per_truck,  "#,##0"),
-        ("Mileage Need per truck",      need_pt_cur,       need_pt_be,        need_pt_gl,        "#,##0"),
-        ("Short Mileage per truck",     short_pt_cur,      short_pt_be,       short_pt_gl,       "#,##0"),
-        ("Trucks Needed at Estimated Mileage", trucks_needed_cur, trucks_needed_be, trucks_needed_gl, "0.00"),
+        ("Dead Head",                   dh_pct,            dh_pct,            dh_pct,            "0.00%",        None),
+        ("Trux RPM",                    rpm,               BREAK_EVEN_RPM,    goal_rpm,          '"$"#,##0.00',  "tunable_cd"),
+        ("Trux Margin Est",             cur_margin_est,    be_margin_est,     gl_margin_est,     '"$"#,##0.00',  None),
+        ("Truck Miles",                 total_mi,          total_mi,          total_mi,          "#,##0",        None),
+        ("Truck Pay",                   TRUCK_PAY_PER_MI,  TRUCK_PAY_PER_MI,  TRUCK_PAY_PER_MI,  '"$"#,##0.00',  "tunable_all"),
+        ("Truck Margin Per Mile",       cur_mpm,           be_mpm,            gl_mpm,            '"$"#,##0.00',  None),
+        ("Estimated Mileage",           est_mileage,       est_mileage,       est_mileage,       "#,##0",        "gray_b"),
+        ("Estimated Margin",            cur_margin_est,    be_margin_est,     gl_margin_est,     '"$"#,##0.00',  "highlight"),
+        ("Margin Needed",               MARGIN_GOAL_MONTHLY, MARGIN_GOAL_MONTHLY, MARGIN_GOAL_MONTHLY, '"$"#,##0.00', "highlight"),
+        ("Estimate Margin to Goal",     cur_est_to_goal,   be_est_to_goal,    gl_est_to_goal,    '"$"#,##0.00',  "variance"),
+        ("Mileage Short Needed for Goal", cur_short, be_short, gl_short, "#,##0",                                  None),
+        ("Total Miles Needed",          total_needed_cur,  total_needed_be,   total_needed_gl,   "#,##0",        None),
+        ("Number of Trucks",            NUM_TRUCKS,        NUM_TRUCKS,        NUM_TRUCKS,        "0",            "tunable_all"),
+        ("Mileage per truck",           mi_per_truck,      mi_per_truck,      mi_per_truck,      "#,##0",        "gray_b"),
+        ("Estimated Mileage per truck", est_mi_per_truck,  est_mi_per_truck,  est_mi_per_truck,  "#,##0",        "gray_b"),
+        ("Mileage Need per truck",      need_pt_cur,       need_pt_be,        need_pt_gl,        "#,##0",        "gray_b"),
+        ("Short Mileage per truck",     short_pt_cur,      short_pt_be,       short_pt_gl,       "#,##0",        "gray_b"),
+        ("Trucks Needed at Estimated Mileage", trucks_needed_cur, trucks_needed_be, trucks_needed_gl, "0.00",     "gray_b"),
     ]
-    for label, cv, bv, gv, fmt in proj_rows:
-        ws.cell(row=row, column=1, value=label).font = _BOLD
-        for ci, val in zip((2, 3, 4), (cv, bv, gv)):
-            ws.cell(row=row, column=ci, value=val).number_format = fmt
+    # Default header-row fills for "Current" / "Break Even" / "Goal"
+    ws.cell(row=row, column=2, value="").fill = PURPLE_FILL
+    ws.cell(row=row, column=3, value="Break Even").font = _BOLD
+    ws.cell(row=row, column=3).fill = PURPLE_FILL
+    ws.cell(row=row, column=4, value="Goal").font = _BOLD
+    ws.cell(row=row, column=4).fill = PURPLE_FILL
+
+    for label, cv, bv, gv, fmt, kind in proj_rows:
+        label_cell = ws.cell(row=row, column=1, value=label)
+        label_cell.font = _BOLD
+        b_cell = ws.cell(row=row, column=2, value=cv)
+        c_cell = ws.cell(row=row, column=3, value=bv)
+        d_cell = ws.cell(row=row, column=4, value=gv)
+        for cell in (b_cell, c_cell, d_cell):
+            cell.number_format = fmt
+
+        # Default scheme — overrides below.
+        label_cell.fill = PURPLE_FILL
+        b_cell.fill = BLUE_FILL
+        c_cell.fill = GRAY_FILL
+        d_cell.fill = GRAY_FILL
+
+        if kind == "tunable_cd":
+            c_cell.fill = YELLOW_FILL
+            d_cell.fill = YELLOW_FILL
+        elif kind == "tunable_all":
+            b_cell.fill = YELLOW_FILL
+            c_cell.fill = YELLOW_FILL
+            d_cell.fill = YELLOW_FILL
+        elif kind == "highlight":
+            label_cell.fill = YELLOW_FILL
+            b_cell.fill = YELLOW_FILL
+            c_cell.fill = YELLOW_FILL
+            d_cell.fill = YELLOW_FILL
+        elif kind == "variance":
+            label_cell.fill = YELLOW_FILL
+            # red if the current variance is negative (below goal)
+            b_cell.fill = RED_FILL if (isinstance(cv, (int, float)) and cv < 0) else GRAY_FILL
+            c_cell.fill = GRAY_FILL
+            d_cell.fill = GRAY_FILL
+        elif kind == "gray_b":
+            b_cell.fill = GRAY_FILL
+        # else: leave defaults
+
         row += 1
 
     return row
@@ -494,7 +589,7 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
 
 
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
-                today_chi: pd.Timestamp) -> None:
+                today_chi: pd.Timestamp, goal_rpm: float) -> None:
     widths = {1: 7, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
               9: 16, 10: 16, 11: 14, 12: 14, 13: 12, 14: 22, 15: 14,
               16: 12, 17: 12, 18: 9}
@@ -518,17 +613,18 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
             row = _write_data_row(ws, row, count, rec.to_dict())
         row = _write_agent_subtotal(ws, row, agent, group)
 
-    row = _write_grand_total(ws, row, df, agents, today_chi, include_goal_block)
+    row = _write_grand_total(ws, row, df, agents, today_chi,
+                              include_goal_block, goal_rpm)
 
 
 def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
-                 today_chi: pd.Timestamp) -> None:
+                 today_chi: pd.Timestamp, goal_rpm: float) -> None:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
         _write_tab(ws, df, include_goal_block=(name == "All Loads"),
-                    today_chi=today_chi)
+                    today_chi=today_chi, goal_rpm=goal_rpm)
         log.info("Tab %r: %d data rows", name, len(df))
     wb.save(file_path)
     log.info("Wrote %s", file_path)
@@ -579,6 +675,7 @@ def main() -> int:
     if not share:
         raise SystemExit("DAILY_UPLOAD_ALVYS_SHARE_URL is required.")
     out_folder = os.environ.get("DAILY_UPLOAD_FOLDER", "").strip("/")
+    qb_dir = os.environ.get("DAILY_UPLOAD_QB_DIR", "QuickBooks").strip("/")
     to_emails = [e.strip()
                  for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS",
                                           "jeff@xfreight.net").split(",")
@@ -598,10 +695,14 @@ def main() -> int:
     normalized = _build_normalized(loads, today_chi)
     tabs = _split_tabs(normalized)
 
+    # Pull the same live goal RPM the scorecard reports so the two emails
+    # don't disagree on what the target is for this month.
+    goal_rpm = _live_goal_rpm(token, upn, qb_dir, sheets)
+
     file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         local_path = Path(tmp) / file_label
-        _write_xlsx(tabs, local_path, today_chi)
+        _write_xlsx(tabs, local_path, today_chi, goal_rpm)
 
         if out_folder:
             ensure_folder(token, upn, out_folder)
