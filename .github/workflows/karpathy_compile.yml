@@ -12,16 +12,28 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Year-round 7:15am and 1:00pm Central. CDT (UTC-5) and CST (UTC-6)
-    # crons both armed; the "Gate to allowed CT hours" step accepts
-    # hours {7, 13} so each season's correct slot runs and the
-    # off-season twin is skipped. Morning run lands ~2h after the
-    # scorecard email commits today's brief to Karpathy-Wiki/raw/;
-    # afternoon run catches any midday additions to /raw.
-    - cron: '15 12 * * *'   # 7:15am CDT / 6:15am CST (CST: gated)
-    - cron: '15 13 * * *'   # 8:15am CDT (CDT: gated) / 7:15am CST
-    - cron: '0 18 * * *'    # 1:00pm CDT / 12:00pm CST (CST: gated)
-    - cron: '0 19 * * *'    # 2:00pm CDT (CDT: gated) / 1:00pm CST
+    # Year-round 7:15am and 1:00pm Central, with a 30-min backup behind
+    # each primary slot. CDT (UTC-5) and CST (UTC-6) crons both armed;
+    # the "Gate to allowed CT hours" step accepts hours {7, 13} so
+    # each season's correct slot runs and the off-season twin is
+    # skipped. Backup-slot idempotency is naturally handled: if the
+    # primary already compiled + committed to main, the backup's
+    # checkout pulls those /wiki/ changes, the librarian re-runs and
+    # produces identical output, and the commit step's "no changes"
+    # check exits cleanly. Morning run lands ~2h after the scorecard
+    # email commits today's brief to Karpathy-Wiki/raw/; afternoon
+    # run catches any midday additions.
+    #
+    # 7am CT slot (primary + 30-min backup):
+    - cron: '15 12 * * *'   # 7:15am CDT primary  / 6:15am CST gated
+    - cron: '45 12 * * *'   # 7:45am CDT backup   / 6:45am CST gated
+    - cron: '15 13 * * *'   # 8:15am CDT gated    / 7:15am CST primary
+    - cron: '45 13 * * *'   # 8:45am CDT gated    / 7:45am CST backup
+    # 1pm CT slot (primary + 30-min backup):
+    - cron: '0 18 * * *'    # 1:00pm CDT primary  / 12:00pm CST gated
+    - cron: '30 18 * * *'   # 1:30pm CDT backup   / 12:30pm CST gated
+    - cron: '0 19 * * *'    # 2:00pm CDT gated    / 1:00pm CST primary
+    - cron: '30 19 * * *'   # 2:30pm CDT gated    / 1:30pm CST backup
 
 permissions:
   contents: write
