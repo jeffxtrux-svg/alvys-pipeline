@@ -247,16 +247,22 @@ def _split_tabs(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 # Xlsx writer — replicates the manual workbook's per-agent grouped layout
 # ---------------------------------------------------------------------------
 
+# Number formats lifted verbatim from the user's manually-maintained
+# sample workbook. Most cells stay on Excel's 'General' format; only
+# Margin (and the per-agent / grand-total RPM and $-per-mile cells)
+# get the dollar-with-red-on-negative treatment.
+_FMT_MARGIN     = '"$"#,##0.00_);[Red]\\("$"#,##0.00\\)'  # data-row margin + RPM-style cells
+_FMT_MARGIN_PCT = "0.00%"
+_FMT_NUMBER     = "#,##0.00_);[Red](#,##0.00)"            # Total Miles in per-agent calc rows
+_FMT_PCT_TENTHS = "0.0%"                                   # DH % in per-agent calc rows
+_FMT_PCT        = "0.00%"
+_FMT_ACCOUNTING = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
+_FMT_NUMBER_NEG = "#,##0.00_);(#,##0.00)"                  # grand-total sum (M-P)
+
 _NUM_FMT = {
-    "Count":                  "#,##0",
-    "Empty Dispatch Mileage": "#,##0",
-    "Loaded Dispatch Mileage": "#,##0",
-    "Customer Revenue":       '"$"#,##0.00',
-    "Driver Rate":            '"$"#,##0.00',
-    "Margin":                 '"$"#,##0.00',
-    "Margin %":               "0.00%",
+    "Margin":   _FMT_MARGIN,
+    "Margin %": _FMT_MARGIN_PCT,
 }
-_HDR_FILL = PatternFill("solid", fgColor="F2F2F2")
 _HDR_FONT = Font(bold=True)
 _BOLD = Font(bold=True)
 
@@ -271,16 +277,22 @@ RED_FILL    = PatternFill("solid", fgColor="FF0000")  # negative variance to goa
 
 
 def _write_header(ws, row: int) -> int:
+    # Header rows in the user's manual workbook are just bold black text on
+    # a white background — no fill. Matching that here.
     for ci, name in enumerate(OUTPUT_COLS, start=1):
         cell = ws.cell(row=row, column=ci, value=name)
         cell.font = _HDR_FONT
-        cell.fill = _HDR_FILL
     return row + 1
 
 
 def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
     """Emit one load row. Margin / Margin % stay as formulas so a manual
     edit to Revenue or Driver Rate in Excel still recomputes the row."""
+    # Per the sample workbook: data cells stay on Excel's General format;
+    # only Margin gets the dollar-with-red-on-negative treatment and
+    # Margin % is a plain percent. Margin % formula intentionally does NOT
+    # wrap in IFERROR — the sample shows #DIV/0! on zero-revenue rows
+    # (matches the user's existing workbook behavior).
     values = [
         count,
         rec["Customer Sales Agent"], rec["Load #"], rec["Load Status"],
@@ -289,8 +301,8 @@ def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
         rec["Drop City"], rec["Drop State"], rec["Last Drop Status"],
         rec["Empty Dispatch Mileage"], rec["Loaded Dispatch Mileage"],
         rec["Customer Revenue"], rec["Driver Rate"],
-        f"=O{row}-P{row}",                    # Margin = Revenue - Driver Rate
-        f"=IFERROR(Q{row}/O{row},0)",         # Margin %
+        f"=O{row}-P{row}",   # Margin = Revenue - Driver Rate
+        f"=Q{row}/O{row}",   # Margin % (matches sample's =Q2/O2)
     ]
     for ci, val in enumerate(values, start=1):
         cell = ws.cell(row=row, column=ci, value=val)
@@ -311,29 +323,32 @@ def _write_agent_subtotal(ws, row: int, agent: str,
 
     sum_row = row
     rng = lambda c: f"${c}${data_first}:${c}${data_last}"
-    ws.cell(row=sum_row, column=13, value=f"=SUM({rng('M')})").number_format = "#,##0"
-    ws.cell(row=sum_row, column=14, value=f"=SUM({rng('N')})").number_format = "#,##0"
-    ws.cell(row=sum_row, column=15, value=f"=SUM({rng('O')})").number_format = '"$"#,##0.00'
-    ws.cell(row=sum_row, column=16, value=f"=SUM({rng('P')})").number_format = '"$"#,##0.00'
+    # Per sample: sum cells on M-P are plain General format (no commas,
+    # no currency); only Q (Margin) gets the red-on-negative dollar fmt.
+    ws.cell(row=sum_row, column=13, value=f"=SUM({rng('M')})")
+    ws.cell(row=sum_row, column=14, value=f"=SUM({rng('N')})")
+    ws.cell(row=sum_row, column=15, value=f"=SUM({rng('O')})")
+    ws.cell(row=sum_row, column=16, value=f"=SUM({rng('P')})")
     ws.cell(row=sum_row, column=17,
-             value=f"=O{sum_row}-P{sum_row}").number_format = '"$"#,##0.00'
-    for c in (13, 14, 15, 16, 17):
-        ws.cell(row=sum_row, column=c).font = _BOLD
+             value=f"=O{sum_row}-P{sum_row}").number_format = _FMT_MARGIN
     row += 2  # blank
 
     first = (agent or "").split()[0] if agent else ""
     label = f"{first} Totals" if first else "Totals"
     ws.cell(row=row, column=13, value=label).font = _BOLD
     ws.cell(row=row, column=14, value="RPM")
+    # IFERROR wrapper retained on RPM-style calcs to avoid #DIV/0! cascade
+    # when an agent has zero miles (sample has the data so the error doesn't
+    # surface there — but defensive).
     ws.cell(row=row, column=15,
-             value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)").number_format = '"$"#,##0.0000'
+             value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)").number_format = _FMT_MARGIN
     row += 1
 
     formulas = (
-        ("Total Miles",                f"=M{sum_row}+N{sum_row}",                              "#,##0"),
-        ("DH %",                       f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",       "0.00%"),
-        ("Average Truck Pay per Mile", f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",       '"$"#,##0.0000'),
-        ("Average Margin Per Mile",    f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",       '"$"#,##0.0000'),
+        ("Total Miles",                f"=M{sum_row}+N{sum_row}",                                _FMT_NUMBER),
+        ("DH %",                       f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_PCT_TENTHS),
+        ("Average Truck Pay per Mile", f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_MARGIN),
+        ("Average Margin Per Mile",    f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_MARGIN),
     )
     for lbl, formula, fmt in formulas:
         ws.cell(row=row, column=14, value=lbl)
@@ -361,12 +376,14 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
             return "0"
         parts = [f"{col_letter}{sr[3]}" for sr in agent_sum_rows]
         return "+".join(parts)
+    # Sample's grand-total sum uses negative-parens number format on M-P
+    # and an accounting dollar on Q (margin).
     ws.cell(row=sum_row, column=1, value=total_loads)
-    ws.cell(row=sum_row, column=13, value=f"={_sum_of_cells('M')}").number_format = "#,##0"
-    ws.cell(row=sum_row, column=14, value=f"={_sum_of_cells('N')}").number_format = "#,##0"
-    ws.cell(row=sum_row, column=15, value=f"={_sum_of_cells('O')}").number_format = '"$"#,##0.00'
-    ws.cell(row=sum_row, column=16, value=f"={_sum_of_cells('P')}").number_format = '"$"#,##0.00'
-    ws.cell(row=sum_row, column=17, value=f"=O{sum_row}-P{sum_row}").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=13, value=f"={_sum_of_cells('M')}").number_format = _FMT_NUMBER_NEG
+    ws.cell(row=sum_row, column=14, value=f"={_sum_of_cells('N')}").number_format = _FMT_NUMBER_NEG
+    ws.cell(row=sum_row, column=15, value=f"={_sum_of_cells('O')}").number_format = _FMT_NUMBER_NEG
+    ws.cell(row=sum_row, column=16, value=f"={_sum_of_cells('P')}").number_format = _FMT_NUMBER_NEG
+    ws.cell(row=sum_row, column=17, value=f"=O{sum_row}-P{sum_row}").number_format = _FMT_ACCOUNTING
     for c in (1, 13, 14, 15, 16, 17):
         ws.cell(row=sum_row, column=c).font = _BOLD
     row += 2
@@ -378,22 +395,25 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     ws.cell(row=row, column=14, value="RPM")
     rpm_cell = ws.cell(row=row, column=15,
                         value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)")
-    rpm_cell.number_format = '"$"#,##0.0000'
+    rpm_cell.number_format = _FMT_ACCOUNTING
     row += 1
 
+    # Goal-block rows. Per sample these use the accounting-dollar format
+    # consistently (no yellow fill on Goal RPM here — the yellow on
+    # tunables only shows in the "We are at" projection block below).
     goal_block_lines = [
-        # (label, value_formula, fmt, tunable)
-        ("Goal RPM",                       f"={goal_rpm}",                                       '"$"#,##0.00',  True),
-        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",   '"$"#,##0.0000', False),
-        ("% of Difference from Goal",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})/{goal_rpm}", "0.00%", False),
-        ("Total Miles",                    f"=M{sum_row}+N{sum_row}",                            "#,##0",        False),
-        ("DH %",                           f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",    "0.00%",        False),
-        ("Average Truck Pay per Mile",     f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",    '"$"#,##0.0000', False),
-        ("Average Margin Per Mile",        f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",    '"$"#,##0.0000', False),
-        ("Goal Margin Per Mile",           f"={goal_rpm}-{TRUCK_PAY_PER_MI}",                    '"$"#,##0.0000', False),
-        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",    '"$"#,##0.0000', False),
-        ("Revenue Missed Opportunity",     f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})", '"$"#,##0.00', False),
-        ("Margin Missed Opportunity",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})", '"$"#,##0.00', False),
+        # (label, value_formula, fmt)
+        ("Goal RPM",                       f"={goal_rpm}",                                                                  _FMT_ACCOUNTING),
+        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",                                _FMT_ACCOUNTING),
+        ("% of Difference from Goal",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})/{goal_rpm}",                   _FMT_PCT_TENTHS),
+        ("Total Miles",                    f"=M{sum_row}+N{sum_row}",                                                        _FMT_NUMBER),
+        ("DH %",                           f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_PCT),
+        ("Average Truck Pay per Mile",     f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_ACCOUNTING),
+        ("Average Margin Per Mile",        f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_ACCOUNTING),
+        ("Goal Margin Per Mile",           f"={goal_rpm}-{TRUCK_PAY_PER_MI}",                                                _FMT_ACCOUNTING),
+        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",                                _FMT_ACCOUNTING),
+        ("Revenue Missed Opportunity",     f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})",      _FMT_ACCOUNTING),
+        ("Margin Missed Opportunity",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})",      _FMT_ACCOUNTING),
     ]
 
     n_rows = max(len(agent_sum_rows) + 1, len(goal_block_lines))
@@ -415,12 +435,9 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
             ws.cell(row=row, column=10, value=1).number_format = "0.00%"
             ws.cell(row=row, column=11, value=1).number_format = "0.00%"
         if i < len(goal_block_lines):
-            label, formula, fmt, tunable = goal_block_lines[i]
+            label, formula, fmt = goal_block_lines[i]
             ws.cell(row=row, column=14, value=label)
-            value_cell = ws.cell(row=row, column=15, value=formula)
-            value_cell.number_format = fmt
-            if tunable:
-                value_cell.fill = YELLOW_FILL
+            ws.cell(row=row, column=15, value=formula).number_format = fmt
         row += 1
 
     if not include_goal_block:
@@ -579,9 +596,28 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
 
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                 today_chi: pd.Timestamp, goal_rpm: float) -> None:
-    widths = {1: 7, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
-              9: 16, 10: 16, 11: 14, 12: 14, 13: 12, 14: 22, 15: 14,
-              16: 12, 17: 12, 18: 9}
+    # Column widths lifted from the user's manually-maintained sample
+    # workbook so the new generator matches its layout cell-for-cell.
+    widths = {
+        1: 7.0,       # A  Count
+        2: 22.73,     # B  Customer Sales Agent
+        3: 12.64,     # C  Load #
+        4: 12.38,     # D  Load Status
+        5: 15.20,     # E  Carrier
+        6: 38.88,     # F  Customer  (long names need the room)
+        7: 15.74,     # G  Pick City
+        8: 8.43,      # H  Pick State (Excel default; sample left as-is)
+        9: 16.54,     # I  First Pick Status
+        10: 20.71,    # J  Drop City
+        11: 14.39,    # K  Drop State
+        12: 17.08,    # L  Last Drop Status
+        13: 25.15,    # M  Empty Dispatch Mileage
+        14: 26.63,    # N  Loaded Dispatch Mileage
+        15: 19.50,    # O  Customer Revenue
+        16: 11.97,    # P  Driver Rate
+        17: 13.45,    # Q  Margin
+        18: 9.0,      # R  Margin %
+    }
     for ci, w in widths.items():
         ws.column_dimensions[get_column_letter(ci)].width = w
 
