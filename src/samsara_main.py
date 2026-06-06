@@ -208,6 +208,12 @@ def build_engine_idle(raw_engine_history: list[dict],
     window_start = starts[0]
     week_labels = ["W1", "W2", "W3", "W4", "Cur"]
 
+    # MTD slice — same engineStates loop, but bucket whatever falls inside
+    # the current calendar month (Chicago time). Lets page 8's MPG column
+    # pair drive-only fuel with same-period idle gallons, so the brief can
+    # surface an honest "all-in MPG" number rather than mixing windows.
+    mtd_start = now.normalize().replace(day=1)
+
     rows = []
     dmap = driver_by_vehicle_id or {}
     for rec in raw_engine_history or []:
@@ -257,6 +263,7 @@ def build_engine_idle(raw_engine_history: list[dict],
 
         per_week = [{"Idle": 0.0, "On": 0.0, "Off": 0.0, "Running": 0.0,
                      "IdleGal": 0.0} for _ in range(5)]
+        mtd = {"Idle": 0.0, "IdleGal": 0.0}
         for i in range(len(states) - 1):
             t0 = pd.to_datetime(states[i].get("time"), errors="coerce", utc=True)
             t1 = pd.to_datetime(states[i + 1].get("time"), errors="coerce", utc=True)
@@ -286,8 +293,17 @@ def build_engine_idle(raw_engine_history: list[dict],
             if key == "Idle":
                 f0 = fuel_at(t0)
                 f1 = fuel_at(t1)
+                idle_gal_delta = 0.0
                 if f0 is not None and f1 is not None and f1 >= f0:
-                    per_week[idx]["IdleGal"] += (f1 - f0)
+                    idle_gal_delta = f1 - f0
+                per_week[idx]["IdleGal"] += idle_gal_delta
+                # Also accumulate the MTD slice when t0 falls inside the
+                # current calendar month. (Transitions straddling the
+                # boundary get credited by their start time — same rule the
+                # week buckets use, so the two windows stay consistent.)
+                if t0_chi >= mtd_start:
+                    mtd["Idle"] += secs
+                    mtd["IdleGal"] += idle_gal_delta
 
         # Heuristic fallback: when the OBD fuel counter isn't returned for a
         # given vehicle/week, fall back to idle_hours * IDLE_FUEL_RATE_GPH.
@@ -297,6 +313,8 @@ def build_engine_idle(raw_engine_history: list[dict],
         for k in range(5):
             if per_week[k]["IdleGal"] == 0 and per_week[k]["Idle"] > 0:
                 per_week[k]["IdleGal"] = (per_week[k]["Idle"] / 3600) * IDLE_FUEL_RATE_GPH
+        if mtd["IdleGal"] == 0 and mtd["Idle"] > 0:
+            mtd["IdleGal"] = (mtd["Idle"] / 3600) * IDLE_FUEL_RATE_GPH
 
         vid = rec.get("id")
         row = {
@@ -320,6 +338,8 @@ def build_engine_idle(raw_engine_history: list[dict],
         row["Running Hours"] = round(tot_run / 3600, 2)
         row["Engine Hours"] = round((tot_idle + tot_on + tot_run) / 3600, 2)
         row["Idle Gallons"] = round(tot_idle_gal, 1)
+        row["Idle Hours MTD"] = round(mtd["Idle"] / 3600, 2)
+        row["Idle Gallons MTD"] = round(mtd["IdleGal"], 1)
         rows.append(row)
     df = pd.DataFrame(rows)
     if not df.empty:

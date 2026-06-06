@@ -2422,6 +2422,12 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 "mpg": mpg_by_unit.get(unit),
                 "idle_gallons": float(r.get("Idle Gallons") or 0)
                                 if _isnum(r.get("Idle Gallons")) else None,
+                # MTD slice — pairs with the Trips-MPG MTD window on page 8
+                # so the "all-in MPG" calculation uses matched periods.
+                "idle_hours_mtd": float(r.get("Idle Hours MTD") or 0)
+                                  if _isnum(r.get("Idle Hours MTD")) else 0.0,
+                "idle_gallons_mtd": float(r.get("Idle Gallons MTD") or 0)
+                                    if _isnum(r.get("Idle Gallons MTD")) else 0.0,
             })
         rows.sort(key=lambda x: x["avg_wk"], reverse=True)
         rows = [r for r in rows if not _is_excluded_truck(r["unit"])]
@@ -5116,17 +5122,46 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
     fleet = (samsara or {}).get("fleet", {}) or {}
     mpg_rows = fleet.get("mpg") or []
 
+    # Join MTD idle gallons per truck so the per-truck table can show
+    # drive-only fuel side-by-side with idle fuel and an "all-in" MPG.
+    # Lookup keyed by unit label (already canonicalized by _truck_label
+    # in both feeds).
+    idle_mtd_by_unit: dict[str, dict] = {}
+    for r in (fleet.get("idle") or []):
+        u = r.get("unit")
+        if u:
+            idle_mtd_by_unit[u] = {
+                "idle_hours_mtd": r.get("idle_hours_mtd") or 0.0,
+                "idle_gallons_mtd": r.get("idle_gallons_mtd") or 0.0,
+            }
+    # Fleet-wide MTD idle totals (sum over trucks present in the MPG list,
+    # so excluded units stay excluded — matches the page-1/page-8 fleet
+    # framing).
+    fleet_idle_gal_mtd = sum(
+        (idle_mtd_by_unit.get(r["unit"], {}).get("idle_gallons_mtd") or 0.0)
+        for r in mpg_rows
+    )
+
     # Top tiles — fleet-wide summary numbers.
     fleet_mpg = fleet.get("fleet_mpg")
     fleet_score = fleet.get("fleet_score")
     fleet_idle = fleet.get("fleet_idle_hours")
     fleet_miles = fleet.get("fleet_miles")
+    fleet_gallons = fleet.get("fleet_gallons")
+    # "All-in" = drive gallons (Trips) + idle gallons (engine-state history),
+    # both MTD. MPG drops because the miles stay the same while the gallons
+    # grow by the idle burn.
+    fleet_allin_gal = (fleet_gallons or 0) + fleet_idle_gal_mtd
+    fleet_allin_mpg = (fleet_miles / fleet_allin_gal) if (fleet_miles and fleet_allin_gal) else None
     tiles = (
         _tile("Fleet MPG", (f"{fleet_mpg:.2f}" if _isnum(fleet_mpg) else "n/a"),
-              _pill("MTD (Based on Samsara)", "mute"))
-        + _tile("Fleet miles &middot; MTD", num(fleet_miles),
-                _pill("MTD (Based on Samsara)", "mute"))
-        + _tile("Fleet idle hours &middot; 5 wks", num(fleet_idle), _pill("detail on pg 9", "mute"))
+              _pill("drive only &middot; MTD", "mute"))
+        + _tile("Fleet MPG &middot; all-in",
+                (f"{fleet_allin_mpg:.2f}" if _isnum(fleet_allin_mpg) else "n/a"),
+                _pill("incl. idle &middot; MTD", "warn" if _isnum(fleet_allin_mpg) else "mute"))
+        + _tile("Idle gallons &middot; MTD",
+                (f"{fleet_idle_gal_mtd:,.0f}" if fleet_idle_gal_mtd else "n/a"),
+                _pill("from engine-state history", "mute"))
         + _tile("Fleet avg safety score",
                 (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
                 _pill("0&ndash;100, higher better", "mute"))
@@ -5135,22 +5170,36 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
     # Top 5 MPG (best) — the highlights, plus a bottom-5 table further down.
     top5_mpg = mpg_rows[:5]
     bot5_mpg = list(reversed(mpg_rows[-5:])) if len(mpg_rows) >= 5 else []
-    mpg_headers = ["Truck", "Driver", "MPG", "Miles", "Gallons"]
-    mpg_aligns = ["left", "left", "right", "right", "right"]
+    mpg_headers = ["Truck", "Driver", "MPG", "Miles", "Drive Gal",
+                   "Idle Gal", "All-in Gal", "All-in MPG"]
+    mpg_aligns = ["left", "left", "right", "right", "right",
+                  "right", "right", "right"]
 
     def _mpg_row(r, mpg_kind: str | None) -> str:
-        return _tr([r["unit"], r.get("driver") or "&mdash;",
-                    f"{r['mpg']:.2f}", num(r["miles"]), f"{r['gallons']:.0f}"],
-                   mpg_aligns, [None, None, mpg_kind, None, None])
+        idle_gal = (idle_mtd_by_unit.get(r["unit"], {}).get("idle_gallons_mtd") or 0.0)
+        drive_gal = r["gallons"]
+        all_gal = drive_gal + idle_gal
+        all_mpg = (r["miles"] / all_gal) if all_gal else None
+        return _tr(
+            [r["unit"], r.get("driver") or "&mdash;",
+             f"{r['mpg']:.2f}", num(r["miles"]), f"{drive_gal:.0f}",
+             (f"{idle_gal:.0f}" if idle_gal else "&mdash;"),
+             f"{all_gal:.0f}",
+             (f"{all_mpg:.2f}" if _isnum(all_mpg) else "&mdash;")],
+            mpg_aligns,
+            [None, None, mpg_kind, None, None,
+             ("warn" if idle_gal else None), None,
+             ("warn" if mpg_kind == "good" else mpg_kind)],
+        )
 
     mpg_top_tbl = (_table(mpg_headers, mpg_aligns,
                           "".join(_mpg_row(r, "good") for r in top5_mpg))
                    if top5_mpg
-                   else f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
+                   else f"<tr><td colspan='{len(mpg_headers)}' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
     mpg_bot_tbl = (_table(mpg_headers, mpg_aligns,
                           "".join(_mpg_row(r, "bad") for r in bot5_mpg))
                    if bot5_mpg
-                   else f"<tr><td colspan='5' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
+                   else f"<tr><td colspan='{len(mpg_headers)}' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
 
     return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
@@ -5160,10 +5209,14 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"{_section('Worst MPG &middot; bottom 5 trucks (MTD &middot; Based on Samsara)')}"
             f"{mpg_bot_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-            f"Source: Samsara Trips (MPG). "
-            f"Per-driver speed-over-limit % and the speeder ranking are on "
-            f"the Driver Safety Scores page (pg 4); "
-            f"idle detail is on the Fleet Idle page (pg 9).</div>")
+            f"Source: Samsara Trips (MPG, drive gallons). Idle gallons from "
+            f"Samsara engine-state history over the same MTD window: integrated "
+            f"from the OBD cumulative-fuel counter per idle interval, falling "
+            f"back to <code>idle_hours &times; 0.8 gph</code> when the counter "
+            f"isn't exposed. All-in MPG = miles &divide; (drive gallons + idle "
+            f"gallons). Per-driver speed-over-limit % and the speeder ranking "
+            f"are on the Driver Safety Scores page (pg 4); 5-week idle "
+            f"ranking is on the Fleet Idle page (pg 9).</div>")
 
 
 def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> str:
