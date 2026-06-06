@@ -4826,7 +4826,11 @@ def _safety_detail_tables(samsara) -> str:
         types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
         ack_cell = _ack_cell(acked) if is_coaching else "n/a"
         ack_color = ("good" if acked else "mute") if is_coaching else "mute"
-        coach_cell = c.get("coach") or "&mdash;"
+        # First name only — keeps the column narrow ("Audra" vs
+        # "Audra Heidelberger"). Internal staff are known by first name
+        # anyway, so no ambiguity at XFreight's scale.
+        _coach_full = (c.get("coach") or "").strip()
+        coach_cell = _coach_full.split()[0] if _coach_full else "&mdash;"
         coach_rows += _tr(
             [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
              action, coach_cell, ack_cell],
