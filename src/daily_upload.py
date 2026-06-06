@@ -278,11 +278,9 @@ def _write_header(ws, row: int) -> int:
     return row + 1
 
 
-def _write_data_row(ws, row: int, count: int, rec: dict,
-                     toggle_cell: str = "$B$1") -> int:
-    """Emit one load row, with Margin/Margin% as formulas (responsive to
-    in-place edits to Revenue or Driver Rate) and a helper flag in col S
-    that returns 1 when the row should be included by the current toggle."""
+def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
+    """Emit one load row. Margin / Margin % stay as formulas so a manual
+    edit to Revenue or Driver Rate in Excel still recomputes the row."""
     values = [
         count,
         rec["Customer Sales Agent"], rec["Load #"], rec["Load Status"],
@@ -299,36 +297,24 @@ def _write_data_row(ws, row: int, count: int, rec: dict,
         col = OUTPUT_COLS[ci - 1]
         if col in _NUM_FMT:
             cell.number_format = _NUM_FMT[col]
-    # Helper col S — drives every SUMIFS / COUNTIFS in the sheet. Returns 1
-    # when the toggle is "Include" (all rows count) or when the row is
-    # settled (Completed/Invoiced), 0 otherwise.
-    ws.cell(row=row, column=19,
-             value=(f'=IF(OR({toggle_cell}="Include",'
-                    f'OR(D{row}="Completed",D{row}="Invoiced")),1,0)'))
     return row + 1
 
 
 def _write_agent_subtotal(ws, row: int, agent: str,
                             data_first: int, data_last: int) -> tuple[int, int]:
-    """Per-agent subtotal block — sum/calc rows now use SUMIFS so they
-    respond live to the in-workbook toggle. Returns (next_row, sum_row)
-    so the grand-total can reference each agent's sum cells for the
-    per-agent percentage table."""
+    """Per-agent subtotal block. Sum row uses plain SUM over the agent's
+    data range — open-load filtering happens at generation time (rows are
+    dropped from the DataFrame before write), so no in-workbook toggle is
+    needed. Returns (next_row, sum_row) so the grand total can reference
+    each agent's sum cells."""
     row += 1  # leading blank
 
     sum_row = row
-    # SUMIFS over this agent's data rows, filtered by helper col S = 1.
-    # When the toggle is "Include", every row's helper = 1 (full view).
-    # When "Exclude", only settled rows (Completed/Invoiced) contribute.
     rng = lambda c: f"${c}${data_first}:${c}${data_last}"
-    ws.cell(row=sum_row, column=13,
-             value=f"=SUMIFS({rng('M')},{rng('S')},1)").number_format = "#,##0"
-    ws.cell(row=sum_row, column=14,
-             value=f"=SUMIFS({rng('N')},{rng('S')},1)").number_format = "#,##0"
-    ws.cell(row=sum_row, column=15,
-             value=f"=SUMIFS({rng('O')},{rng('S')},1)").number_format = '"$"#,##0.00'
-    ws.cell(row=sum_row, column=16,
-             value=f"=SUMIFS({rng('P')},{rng('S')},1)").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=13, value=f"=SUM({rng('M')})").number_format = "#,##0"
+    ws.cell(row=sum_row, column=14, value=f"=SUM({rng('N')})").number_format = "#,##0"
+    ws.cell(row=sum_row, column=15, value=f"=SUM({rng('O')})").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=16, value=f"=SUM({rng('P')})").number_format = '"$"#,##0.00'
     ws.cell(row=sum_row, column=17,
              value=f"=O{sum_row}-P{sum_row}").number_format = '"$"#,##0.00'
     for c in (13, 14, 15, 16, 17):
@@ -359,29 +345,25 @@ def _write_agent_subtotal(ws, row: int, agent: str,
 
 
 def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, int]],
-                        data_first: int, data_last: int,
+                        data_first: int, data_last: int, total_loads: int,
                         today_chi: pd.Timestamp, include_goal_block: bool,
-                        goal_rpm: float, toggle_cell: str = "$B$1") -> int:
+                        goal_rpm: float, include_open_loads: bool) -> int:
     """Grand-total + per-agent % table + (All Loads only) goal projection.
-    All numeric cells are formulas keyed off the per-agent sum rows + the
-    overall data range, so flipping the toggle recalculates everything.
 
-    agent_sum_rows is the list returned by _write_tab: each entry is
-    (agent_name, data_first, data_last, agent_sum_row)."""
+    Sum rows are plain SUM-of-agent-sum-cells; per-agent counts are static
+    numbers (rows are pre-filtered at generation time, so no in-workbook
+    toggle math). agent_sum_rows entry =
+    (agent_name, data_first, data_last, agent_sum_row).
+    `include_open_loads` flips the banner above the projection block."""
     row = _write_header(ws, row)
 
-    # Grand-total sum row. Aggregates = SUMs of per-agent sum cells (each
-    # of which is a SUMIFS that already respects the toggle).
     sum_row = row
     def _sum_of_cells(col_letter: str) -> str:
         if not agent_sum_rows:
             return "0"
         parts = [f"{col_letter}{sr[3]}" for sr in agent_sum_rows]
         return "+".join(parts)
-    # Total load count = COUNTIFS on helper col over the whole data area
-    # (subtotal-block rows have blank helper so they don't count).
-    ws.cell(row=sum_row, column=1,
-             value=f"=COUNTIFS($S${data_first}:$S${data_last},1)")
+    ws.cell(row=sum_row, column=1, value=total_loads)
     ws.cell(row=sum_row, column=13, value=f"={_sum_of_cells('M')}").number_format = "#,##0"
     ws.cell(row=sum_row, column=14, value=f"={_sum_of_cells('N')}").number_format = "#,##0"
     ws.cell(row=sum_row, column=15, value=f"={_sum_of_cells('O')}").number_format = '"$"#,##0.00'
@@ -401,19 +383,6 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     rpm_cell.number_format = '"$"#,##0.0000'
     row += 1
 
-    # Per-agent rows — all percentages are ratios of cell references so
-    # they recompute with the toggle.
-    agent_first_names = [(ag.split()[0] if ag else "") for ag, _, _, _ in agent_sum_rows]
-    for ag_name, ag_first, _ag_data_first, ag_sum_row in (
-        (name, first, df_first, sr)
-        for (name, df_first, _df_last, sr), first
-        in zip(agent_sum_rows, agent_first_names)
-    ):
-        # Note: variable unpacking above is a little weird; we just need
-        # name + first + sum_row + data_first/data_last for the count ratio.
-        pass
-
-    # Use a simpler loop with proper structure.
     goal_block_lines = [
         # (label, value_formula, fmt, tunable)
         ("Goal RPM",                       f"={goal_rpm}",                                       '"$"#,##0.00',  True),
@@ -434,10 +403,10 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
         if i < len(agent_sum_rows):
             ag_name, ag_df_first, ag_df_last, ag_sum_row = agent_sum_rows[i]
             first = ag_name.split()[0] if ag_name else ""
+            ag_count = ag_df_last - ag_df_first + 1
             ws.cell(row=row, column=8, value=first)
             ws.cell(row=row, column=9,
-                     value=(f"=IFERROR(COUNTIFS($S${ag_df_first}:$S${ag_df_last},1)/"
-                            f"$A${sum_row},0)")).number_format = "0.00%"
+                     value=f"=IFERROR({ag_count}/$A${sum_row},0)").number_format = "0.00%"
             ws.cell(row=row, column=10,
                      value=f"=IFERROR(O{ag_sum_row}/$O${sum_row},0)").number_format = "0.00%"
             ws.cell(row=row, column=11,
@@ -472,18 +441,20 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     ws.cell(row=row, column=15, value=1).number_format = "0.00%"
     row += 2
 
-    # Live state marker above "We are at" — formula reads the toggle cell
-    # so flipping it updates this banner in-place.
-    state_cell = ws.cell(
-        row=row, column=1,
-        value=(f'=IF({toggle_cell}="Include",'
-               '"OPEN LOADS: INCLUDED  (full MTD view)",'
-               '"OPEN LOADS: EXCLUDED  (settled-only view)")'))
-    state_cell.font = Font(bold=True, size=11, color="1A1A1A")
+    # Static state marker above "We are at" — Excel can't dynamically
+    # hide load rows from a cell-driven toggle without macros, so the
+    # workbook is generated for one view at a time. To flip, re-dispatch
+    # the workflow with the include_open_loads input toggled.
+    state_text = ("OPEN LOADS: INCLUDED  (full MTD view)"
+                  if include_open_loads
+                  else "OPEN LOADS: EXCLUDED  (settled-only view)")
+    state_cell = ws.cell(row=row, column=1, value=state_text)
+    state_cell.font = Font(bold=True, size=11,
+                            color="1A1A1A" if include_open_loads else "C41E2A")
     state_cell.fill = YELLOW_FILL
     row += 1
     hint_cell = ws.cell(row=row, column=1,
-                         value=f'Flip the toggle in {toggle_cell.replace("$", "")} above to switch views — every number recalculates.')
+                         value="(re-dispatch the workflow with include_open_loads=no to see the other view)")
     hint_cell.font = Font(italic=True, size=9, color="6B6B6B")
     row += 2
 
@@ -634,59 +605,19 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
     for ci, w in widths.items():
         ws.column_dimensions[get_column_letter(ci)].width = w
 
-    # ---- Toggle row (cell B1) -------------------------------------------
-    # A1 = bold label. B1 = the dropdown (Yes/No). C1 = live state display.
-    # The toggle drives the helper col S on every data row, which in turn
-    # drives every SUMIFS / COUNTIFS in the workbook. Flip B1 → everything
-    # recomputes live in Excel; no re-dispatch needed.
-    toggle_cell = "$B$1"
-    label_cell = ws.cell(row=1, column=1, value="Open Loads:")
-    label_cell.font = Font(bold=True, size=11)
-    label_cell.fill = YELLOW_FILL
-    label_cell.alignment = Alignment(horizontal="right", vertical="center")
-    toggle_value_cell = ws.cell(
-        row=1, column=2,
-        value="Include" if default_include else "Exclude")
-    # Force the cell to text format so Excel doesn't try to auto-convert
-    # the dropdown value into something it isn't (the old "Yes"/"No" pair
-    # would silently flip to TRUE/FALSE on some Excel locales, which broke
-    # the IF($B$1="Yes",...) comparison and made the dropdown look stuck).
-    toggle_value_cell.number_format = "@"
-    toggle_value_cell.font = Font(bold=True, size=12, color="1A1A1A")
-    toggle_value_cell.fill = YELLOW_FILL
-    toggle_value_cell.alignment = Alignment(horizontal="center", vertical="center")
-    thick = Side(border_style="medium", color="C41E2A")
-    toggle_value_cell.border = Border(top=thick, bottom=thick, left=thick, right=thick)
-    state_display = ws.cell(
-        row=1, column=3,
-        value=(f'=IF({toggle_cell}="Include",'
-               '"INCLUDED (full MTD)",'
-               '"EXCLUDED (settled only)")'))
-    state_display.font = Font(bold=True, italic=True, size=11, color="C41E2A")
-    state_display.fill = YELLOW_FILL
-    state_display.alignment = Alignment(horizontal="left", vertical="center")
+    # State banner at the top of each tab. Static — the workbook is
+    # generated for one view at a time (Excel can't dynamically hide rows
+    # from a cell-driven toggle without macros, which are disabled when
+    # files open from email). Switching views = re-dispatching the
+    # workflow with include_open_loads toggled.
+    state_text = ("OPEN LOADS INCLUDED  (full MTD view)"
+                  if default_include
+                  else "OPEN LOADS EXCLUDED  (settled-only view)")
+    banner_cell = ws.cell(row=1, column=1, value=state_text)
+    banner_cell.font = Font(bold=True, size=12,
+                             color="1A1A1A" if default_include else "C41E2A")
+    banner_cell.fill = YELLOW_FILL
     ws.row_dimensions[1].height = 22
-
-    # Data validation: lookup-range dropdown sourced from a hidden config
-    # sheet. This form is the most universally compatible — Excel desktop,
-    # Excel Online, and Excel for iPad all honor it. Inline lists (the old
-    # formula1='"Include,Exclude"' form) silently fail to render the
-    # dropdown arrow in some Excel/Outlook viewers.
-    #
-    # Loose validation on purpose: showErrorMessage=False so typing
-    # "Include" or "Exclude" directly into B1 also works as a fallback if
-    # the dropdown UI isn't interactive (e.g. opened via a preview pane).
-    dv = DataValidation(
-        type="list",
-        formula1="=_Config!$A$1:$A$2",
-        allow_blank=True,
-    )
-    dv.prompt = "Include or Exclude. Toggle drives every total in the workbook."
-    dv.promptTitle = "Open-loads toggle"
-    dv.showInputMessage = True
-    dv.showErrorMessage = False  # don't reject manual edits
-    ws.add_data_validation(dv)
-    dv.add(toggle_value_cell)
 
     row = 3
     row = _write_header(ws, row)
@@ -709,7 +640,7 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
             group = df[df["Customer Sales Agent"].astype(str).str.strip() == agent]
         data_first = row
         for count, (_, rec) in enumerate(group.iterrows(), start=1):
-            row = _write_data_row(ws, row, count, rec.to_dict(), toggle_cell=toggle_cell)
+            row = _write_data_row(ws, row, count, rec.to_dict())
         data_last = row - 1
         overall_data_last = max(overall_data_last, data_last)
         row, sum_row = _write_agent_subtotal(ws, row, agent, data_first, data_last)
@@ -718,10 +649,11 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
     row = _write_grand_total(ws, row, agent_sum_rows,
                               data_first=overall_data_first,
                               data_last=overall_data_last,
+                              total_loads=len(df),
                               today_chi=today_chi,
                               include_goal_block=include_goal_block,
                               goal_rpm=goal_rpm,
-                              toggle_cell=toggle_cell)
+                              include_open_loads=default_include)
 
 
 def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
@@ -729,28 +661,11 @@ def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
                  default_include: bool) -> None:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-
-    # Hidden config sheet hosts the dropdown's lookup values. Per-tab
-    # data validations source from _Config!$A$1:$A$2 — the most
-    # universally compatible form (works in Excel desktop, Online, and
-    # iPad, where inline list dropdowns silently fail to render).
-    config_ws = wb.create_sheet(title="_Config")
-    config_ws["A1"] = "Include"
-    config_ws["A2"] = "Exclude"
-    config_ws["A1"].number_format = "@"
-    config_ws["A2"].number_format = "@"
-    # Keep the lookup values visible-but-out-of-the-way on the config
-    # sheet itself, then hide the whole sheet from the tab strip.
-    config_ws.sheet_state = "hidden"
-
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
         _write_tab(ws, df, include_goal_block=(name == "All Loads"),
                     today_chi=today_chi, goal_rpm=goal_rpm,
                     default_include=default_include)
-        # Hide the helper column S — it drives every formula but reading
-        # it adds noise.
-        ws.column_dimensions["S"].hidden = True
         log.info("Tab %r: %d data rows", name, len(df))
     wb.save(file_path)
     log.info("Wrote %s", file_path)
@@ -758,22 +673,21 @@ def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
 
 def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
                    default_include: bool, onedrive_link: str = "") -> str:
-    default_pill = (
+    state_pill = (
         '<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
         'font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;'
-        'background:#FFF9C4;color:#1A1A1A">OPENS DEFAULT: '
-        + ("INCLUDE" if default_include else "EXCLUDE") + "</span>"
+        + ('background:#FFF9C4;color:#1A1A1A">OPEN LOADS INCLUDED</span>'
+           if default_include
+           else 'background:#FFEBEE;color:#C41E2A">SETTLED ONLY</span>')
     )
     parts = ['<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
               'font-size:14px;color:#1a1a1a;line-height:1.5;padding:24px;max-width:560px">']
     parts.append('<div style="font-weight:700;letter-spacing:1.5px;font-size:11px;'
                   'color:#c41e2a;text-transform:uppercase;margin-bottom:14px">'
-                  f'XFreight &middot; Daily MTD Upload &nbsp; {default_pill}</div>')
+                  f'XFreight &middot; Daily MTD Upload &nbsp; {state_pill}</div>')
 
-    # Big "Open in OneDrive" button above the fold. Email-preview apps
-    # (Spark, Outlook iPad) open the attachment in Read-Only mode, which
-    # locks the Include/Exclude dropdown — this link opens the live
-    # OneDrive copy where the toggle is interactive.
+    # "Open in OneDrive" button — bypasses the email-preview Read-Only
+    # mode (Spark/Outlook iPad lock the attachment).
     if onedrive_link:
         parts.append(
             f'<p style="margin:0 0 14px">'
@@ -781,19 +695,24 @@ def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
             f'style="display:inline-block;padding:10px 18px;background:#c41e2a;'
             f'color:#ffffff;text-decoration:none;border-radius:6px;'
             f'font-weight:700;font-size:13px;letter-spacing:.3px;">'
-            f'Open in OneDrive (live toggle)</a></p>'
-            f'<p style="margin:0 0 14px;font-size:12px;color:#6b6b6b;">'
-            f'Use the OneDrive link if the attachment opens in Read Only '
-            f'mode &mdash; the Include / Exclude dropdown on cell B1 only '
-            f'works when the workbook is editable.</p>'
+            f'Open in OneDrive</a></p>'
         )
 
     parts.append(f"<p style='margin:0 0 12px'>Attached: <b>{file_label}</b> &mdash; "
                   "month-to-date load list grouped by Customer Sales Agent with "
-                  "per-agent subtotals. <b>Cell B1 of every tab is an "
-                  "Include / Exclude dropdown</b> &mdash; flip it to include "
-                  "or exclude open (in-flight) loads. Every subtotal, RPM, and "
-                  "goal-projection row recalculates live in Excel.</p>")
+                  "per-agent subtotals and a goal-projection block on All Loads.</p>")
+
+    parts.append(
+        f"<p style='margin:0 0 14px;color:#555;font-size:12.5px'>"
+        "<b>Want the other view?</b> The workbook is generated for one "
+        "view at a time (Excel can&rsquo;t dynamically hide rows from a "
+        "toggle without macros). To get the "
+        + ("settled-only" if default_include else "full MTD")
+        + " view, go to <i>GitHub Actions &rarr; Daily MTD Upload Report "
+          "&rarr; Run workflow</i> and set <code>include_open_loads</code> "
+        + ("to <b>no</b>" if default_include else "to <b>yes</b>")
+        + ". A second file with a <code>_settled</code> "
+          "suffix will land in OneDrive.</p>")
     parts.append("<table cellpadding='6' cellspacing='0' style='border-collapse:collapse;"
                   "border:1px solid #ececec;border-radius:6px;font-size:12.5px;margin:6px 0 16px'>"
                   "<tr style='background:#fafafa;color:#6b6b6b;text-transform:uppercase;"
@@ -838,8 +757,12 @@ def main() -> int:
     # The workbook now has a live in-Excel toggle on cell B1 of each tab,
     # so all data rows are always written and the toggle controls what the
     # SUMIFS / COUNTIFS pick up. INCLUDE_OPEN_LOADS just sets the DEFAULT
-    # value of the toggle when the workbook opens — the user can flip it
-    # in Excel without re-dispatching.
+    # INCLUDE_OPEN_LOADS controls which view of the workbook is produced
+    # at generation time. Excel can't dynamically hide load rows from a
+    # cell-driven toggle without macros (and macros are disabled when the
+    # file opens from email), so the workbook is generated for one view at
+    # a time. To switch views, re-dispatch the workflow with the toggle
+    # flipped.
     include_open = os.environ.get("INCLUDE_OPEN_LOADS", "yes").strip().lower()
     default_include = include_open not in ("no", "false", "0", "n", "off")
 
@@ -855,13 +778,20 @@ def main() -> int:
 
     today_chi = pd.Timestamp.now(tz=CHI_TZ).normalize()
     normalized = _build_normalized(loads, today_chi)
+    if not default_include:
+        status_lower = normalized["Load Status"].astype(str).str.strip().str.lower()
+        before = len(normalized)
+        normalized = normalized[status_lower.isin(SETTLED_STATUSES)].copy()
+        log.info("INCLUDE_OPEN_LOADS=no → dropped %d open loads (%d settled remaining)",
+                 before - len(normalized), len(normalized))
     tabs = _split_tabs(normalized)
 
     # Pull the same live goal RPM the scorecard reports so the two emails
     # don't disagree on what the target is for this month.
     goal_rpm = _live_goal_rpm(token, upn, qb_dir, sheets)
 
-    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}.xlsx"
+    suffix = "" if default_include else "_settled"
+    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}{suffix}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         local_path = Path(tmp) / file_label
         _write_xlsx(tabs, local_path, today_chi, goal_rpm, default_include)
@@ -886,9 +816,10 @@ def main() -> int:
         if to_emails:
             with open(local_path, "rb") as fh:
                 content_bytes = fh.read()
+            subj_state = "" if default_include else " (settled only)"
             send_email(
                 token, upn, to_emails,
-                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}",
+                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}{subj_state}",
                 _summary_html(tabs, file_label, default_include, onedrive_link),
                 attachments=[{
                     "name": file_label,
