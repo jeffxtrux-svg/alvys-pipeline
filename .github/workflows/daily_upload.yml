@@ -18,7 +18,7 @@ on:
         required: false
         default: ''
       include_open_loads:
-        description: 'Include open / in-flight loads? "yes" = full MTD view (default), "no" = settled-only view (filename gets _settled suffix).'
+        description: 'Default value of the in-workbook toggle (cell B1 of every tab). You can flip the toggle in Excel without re-dispatching — every subtotal and the goal projection recalculate live.'
         required: false
         default: 'yes'
         type: choice

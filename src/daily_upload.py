@@ -45,7 +45,8 @@ from zoneinfo import ZoneInfo
 
 import openpyxl
 import pandas as pd
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
 
 from src.onedrive_upload import (
@@ -271,7 +272,11 @@ def _write_header(ws, row: int) -> int:
     return row + 1
 
 
-def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
+def _write_data_row(ws, row: int, count: int, rec: dict,
+                     toggle_cell: str = "$B$1") -> int:
+    """Emit one load row, with Margin/Margin% as formulas (responsive to
+    in-place edits to Revenue or Driver Rate) and a helper flag in col S
+    that returns 1 when the row should be included by the current toggle."""
     values = [
         count,
         rec["Customer Sales Agent"], rec["Load #"], rec["Load Status"],
@@ -279,155 +284,167 @@ def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
         rec["Pick City"], rec["Pick State"], rec["First Pick Status"],
         rec["Drop City"], rec["Drop State"], rec["Last Drop Status"],
         rec["Empty Dispatch Mileage"], rec["Loaded Dispatch Mileage"],
-        rec["Customer Revenue"], rec["Driver Rate"], rec["Margin"],
-        rec["Margin %"],
+        rec["Customer Revenue"], rec["Driver Rate"],
+        f"=O{row}-P{row}",                    # Margin = Revenue - Driver Rate
+        f"=IFERROR(Q{row}/O{row},0)",         # Margin %
     ]
     for ci, val in enumerate(values, start=1):
         cell = ws.cell(row=row, column=ci, value=val)
         col = OUTPUT_COLS[ci - 1]
         if col in _NUM_FMT:
             cell.number_format = _NUM_FMT[col]
+    # Helper col S — drives every SUMIFS / COUNTIFS in the sheet. Returns 1
+    # when the toggle is "Yes" (all rows count) or when the row is settled
+    # (Completed/Invoiced), 0 otherwise.
+    ws.cell(row=row, column=19,
+             value=(f'=IF(OR({toggle_cell}="Yes",'
+                    f'OR(D{row}="Completed",D{row}="Invoiced")),1,0)'))
     return row + 1
 
 
-def _write_agent_subtotal(ws, row: int, agent: str, group: pd.DataFrame) -> int:
-    """Per-agent subtotal block, matching the sample's layout exactly."""
-    empty_mi  = float(group["Empty Dispatch Mileage"].sum())
-    loaded_mi = float(group["Loaded Dispatch Mileage"].sum())
-    total_mi  = empty_mi + loaded_mi
-    revenue   = float(group["Customer Revenue"].sum())
-    pay       = float(group["Driver Rate"].sum())
-    margin    = revenue - pay
-    rpm        = (revenue / total_mi) if total_mi else 0
-    dh_pct     = (empty_mi / total_mi) if total_mi else 0
-    pay_per_mi = (pay / total_mi) if total_mi else 0
-    mgn_per_mi = (margin / total_mi) if total_mi else 0
-
+def _write_agent_subtotal(ws, row: int, agent: str,
+                            data_first: int, data_last: int) -> tuple[int, int]:
+    """Per-agent subtotal block — sum/calc rows now use SUMIFS so they
+    respond live to the in-workbook toggle. Returns (next_row, sum_row)
+    so the grand-total can reference each agent's sum cells for the
+    per-agent percentage table."""
     row += 1  # leading blank
 
-    # Sum row — cols M..Q (13..17)
-    ws.cell(row=row, column=13, value=empty_mi).number_format = "#,##0"
-    ws.cell(row=row, column=14, value=loaded_mi).number_format = "#,##0"
-    ws.cell(row=row, column=15, value=revenue).number_format = '"$"#,##0.00'
-    ws.cell(row=row, column=16, value=pay).number_format = '"$"#,##0.00'
-    ws.cell(row=row, column=17, value=margin).number_format = '"$"#,##0.00'
+    sum_row = row
+    # SUMIFS over this agent's data rows, filtered by helper col S = 1.
+    # When the toggle is "Yes", every row's helper = 1 (full view).
+    # When "No", only settled rows (Completed/Invoiced) contribute.
+    rng = lambda c: f"${c}${data_first}:${c}${data_last}"
+    ws.cell(row=sum_row, column=13,
+             value=f"=SUMIFS({rng('M')},{rng('S')},1)").number_format = "#,##0"
+    ws.cell(row=sum_row, column=14,
+             value=f"=SUMIFS({rng('N')},{rng('S')},1)").number_format = "#,##0"
+    ws.cell(row=sum_row, column=15,
+             value=f"=SUMIFS({rng('O')},{rng('S')},1)").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=16,
+             value=f"=SUMIFS({rng('P')},{rng('S')},1)").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=17,
+             value=f"=O{sum_row}-P{sum_row}").number_format = '"$"#,##0.00'
     for c in (13, 14, 15, 16, 17):
-        ws.cell(row=row, column=c).font = _BOLD
-    row += 2  # blank between sum and labeled calcs
+        ws.cell(row=sum_row, column=c).font = _BOLD
+    row += 2  # blank
 
     first = (agent or "").split()[0] if agent else ""
     label = f"{first} Totals" if first else "Totals"
     ws.cell(row=row, column=13, value=label).font = _BOLD
     ws.cell(row=row, column=14, value="RPM")
-    ws.cell(row=row, column=15, value=rpm).number_format = '"$"#,##0.0000'
+    ws.cell(row=row, column=15,
+             value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)").number_format = '"$"#,##0.0000'
     row += 1
 
-    for lbl, val, fmt in (
-        ("Total Miles", total_mi, "#,##0"),
-        ("DH %", dh_pct, "0.00%"),
-        ("Average Truck Pay per Mile", pay_per_mi, '"$"#,##0.0000'),
-        ("Average Margin Per Mile", mgn_per_mi, '"$"#,##0.0000'),
-    ):
+    formulas = (
+        ("Total Miles",                f"=M{sum_row}+N{sum_row}",                              "#,##0"),
+        ("DH %",                       f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",       "0.00%"),
+        ("Average Truck Pay per Mile", f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",       '"$"#,##0.0000'),
+        ("Average Margin Per Mile",    f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",       '"$"#,##0.0000'),
+    )
+    for lbl, formula, fmt in formulas:
         ws.cell(row=row, column=14, value=lbl)
-        ws.cell(row=row, column=15, value=val).number_format = fmt
+        ws.cell(row=row, column=15, value=formula).number_format = fmt
         row += 1
 
-    row += 4  # trailing blanks before next agent's repeated header
-    return row
+    row += 4  # trailing blanks
+    return row, sum_row
 
 
-def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
+def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, int]],
+                        data_first: int, data_last: int,
                         today_chi: pd.Timestamp, include_goal_block: bool,
-                        goal_rpm: float, include_open_loads: bool = True) -> int:
-    total_loads = len(tab_df)
-    empty_mi  = float(tab_df["Empty Dispatch Mileage"].sum())
-    loaded_mi = float(tab_df["Loaded Dispatch Mileage"].sum())
-    total_mi  = empty_mi + loaded_mi
-    revenue   = float(tab_df["Customer Revenue"].sum())
-    pay       = float(tab_df["Driver Rate"].sum())
-    margin    = revenue - pay
-    rpm        = (revenue / total_mi) if total_mi else 0
-    dh_pct     = (empty_mi / total_mi) if total_mi else 0
-    pay_per_mi = (pay / total_mi) if total_mi else 0
-    mgn_per_mi = (margin / total_mi) if total_mi else 0
-    goal_mgn_per_mi    = goal_rpm - TRUCK_PAY_PER_MI
-    diff_from_goal_rpm = rpm - goal_rpm
-    pct_diff_from_goal = (diff_from_goal_rpm / goal_rpm) if goal_rpm else 0
-    rev_missed = diff_from_goal_rpm * total_mi
-    mgn_missed = rev_missed
+                        goal_rpm: float, toggle_cell: str = "$B$1") -> int:
+    """Grand-total + per-agent % table + (All Loads only) goal projection.
+    All numeric cells are formulas keyed off the per-agent sum rows + the
+    overall data range, so flipping the toggle recalculates everything.
 
+    agent_sum_rows is the list returned by _write_tab: each entry is
+    (agent_name, data_first, data_last, agent_sum_row)."""
     row = _write_header(ws, row)
 
-    # Sum row
-    ws.cell(row=row, column=1, value=total_loads).font = _BOLD
-    ws.cell(row=row, column=13, value=empty_mi).number_format = "#,##0"
-    ws.cell(row=row, column=14, value=loaded_mi).number_format = "#,##0"
-    ws.cell(row=row, column=15, value=revenue).number_format = '"$"#,##0.00'
-    ws.cell(row=row, column=16, value=pay).number_format = '"$"#,##0.00'
-    ws.cell(row=row, column=17, value=margin).number_format = '"$"#,##0.00'
+    # Grand-total sum row. Aggregates = SUMs of per-agent sum cells (each
+    # of which is a SUMIFS that already respects the toggle).
+    sum_row = row
+    def _sum_of_cells(col_letter: str) -> str:
+        if not agent_sum_rows:
+            return "0"
+        parts = [f"{col_letter}{sr[3]}" for sr in agent_sum_rows]
+        return "+".join(parts)
+    # Total load count = COUNTIFS on helper col over the whole data area
+    # (subtotal-block rows have blank helper so they don't count).
+    ws.cell(row=sum_row, column=1,
+             value=f"=COUNTIFS($S${data_first}:$S${data_last},1)")
+    ws.cell(row=sum_row, column=13, value=f"={_sum_of_cells('M')}").number_format = "#,##0"
+    ws.cell(row=sum_row, column=14, value=f"={_sum_of_cells('N')}").number_format = "#,##0"
+    ws.cell(row=sum_row, column=15, value=f"={_sum_of_cells('O')}").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=16, value=f"={_sum_of_cells('P')}").number_format = '"$"#,##0.00'
+    ws.cell(row=sum_row, column=17, value=f"=O{sum_row}-P{sum_row}").number_format = '"$"#,##0.00'
     for c in (1, 13, 14, 15, 16, 17):
-        ws.cell(row=row, column=c).font = _BOLD
+        ws.cell(row=sum_row, column=c).font = _BOLD
     row += 2
 
-    # Per-agent percentage table headers (cols I/J/K) + RPM (cols N/O)
-    ws.cell(row=row, column=9, value="% of Loads Booked").font = _BOLD
+    # Per-agent percentage table (cols I/J/K) + RPM/Goal block (cols N/O).
+    ws.cell(row=row, column=9,  value="% of Loads Booked").font = _BOLD
     ws.cell(row=row, column=10, value="% of Revenue").font = _BOLD
     ws.cell(row=row, column=11, value="% of Margin").font = _BOLD
     ws.cell(row=row, column=14, value="RPM")
-    ws.cell(row=row, column=15, value=rpm).number_format = '"$"#,##0.0000'
+    rpm_cell = ws.cell(row=row, column=15,
+                        value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)")
+    rpm_cell.number_format = '"$"#,##0.0000'
     row += 1
 
-    # Per-agent rows
-    agent_metrics = []
-    for ag in agents:
-        if ag == "Unassigned":
-            g = tab_df[tab_df["Customer Sales Agent"].astype(str).str.strip().isin(("", "nan", "None"))]
-        else:
-            g = tab_df[tab_df["Customer Sales Agent"].astype(str).str.strip() == ag]
-        ag_rev = float(g["Customer Revenue"].sum())
-        ag_mgn = float((g["Customer Revenue"] - g["Driver Rate"]).sum())
-        agent_metrics.append({
-            "first": (ag.split()[0] if ag else ""),
-            "loads_pct": (len(g) / total_loads) if total_loads else 0,
-            "rev_pct":   (ag_rev / revenue) if revenue else 0,
-            "mgn_pct":   (ag_mgn / margin) if margin else 0,
-        })
+    # Per-agent rows — all percentages are ratios of cell references so
+    # they recompute with the toggle.
+    agent_first_names = [(ag.split()[0] if ag else "") for ag, _, _, _ in agent_sum_rows]
+    for ag_name, ag_first, _ag_data_first, ag_sum_row in (
+        (name, first, df_first, sr)
+        for (name, df_first, _df_last, sr), first
+        in zip(agent_sum_rows, agent_first_names)
+    ):
+        # Note: variable unpacking above is a little weird; we just need
+        # name + first + sum_row + data_first/data_last for the count ratio.
+        pass
 
-    # `tunable` flag = yellow-highlight the value cell so the reader can
-    # tell at a glance which number to edit in the source if the assumption
-    # needs to change. Goal RPM is live (matches the scorecard cost-out)
-    # but still represents a tunable input to the rest of the math.
+    # Use a simpler loop with proper structure.
     goal_block_lines = [
-        ("Goal RPM",                       goal_rpm,              '"$"#,##0.00',  True),
-        ("Difference from Goal",           diff_from_goal_rpm,    '"$"#,##0.0000', False),
-        ("% of Difference from Goal",      pct_diff_from_goal,    "0.00%",        False),
-        ("Total Miles",                    total_mi,              "#,##0",        False),
-        ("DH %",                           dh_pct,                "0.00%",        False),
-        ("Average Truck Pay per Mile",     pay_per_mi,            '"$"#,##0.0000', False),
-        ("Average Margin Per Mile",        mgn_per_mi,            '"$"#,##0.0000', False),
-        ("Goal Margin Per Mile",           goal_mgn_per_mi,       '"$"#,##0.0000', False),
-        ("Difference from Goal",           diff_from_goal_rpm,    '"$"#,##0.0000', False),
-        ("Revenue Missed Opportunity",     rev_missed,            '"$"#,##0.00',  False),
-        ("Margin Missed Opportunity",      mgn_missed,            '"$"#,##0.00',  False),
+        # (label, value_formula, fmt, tunable)
+        ("Goal RPM",                       f"={goal_rpm}",                                       '"$"#,##0.00',  True),
+        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",   '"$"#,##0.0000', False),
+        ("% of Difference from Goal",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})/{goal_rpm}", "0.00%", False),
+        ("Total Miles",                    f"=M{sum_row}+N{sum_row}",                            "#,##0",        False),
+        ("DH %",                           f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",    "0.00%",        False),
+        ("Average Truck Pay per Mile",     f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",    '"$"#,##0.0000', False),
+        ("Average Margin Per Mile",        f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",    '"$"#,##0.0000', False),
+        ("Goal Margin Per Mile",           f"={goal_rpm}-{TRUCK_PAY_PER_MI}",                    '"$"#,##0.0000', False),
+        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",    '"$"#,##0.0000', False),
+        ("Revenue Missed Opportunity",     f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})", '"$"#,##0.00', False),
+        ("Margin Missed Opportunity",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})", '"$"#,##0.00', False),
     ]
 
-    n_rows = max(len(agent_metrics) + 1, len(goal_block_lines))
+    n_rows = max(len(agent_sum_rows) + 1, len(goal_block_lines))
     for i in range(n_rows):
-        if i < len(agent_metrics):
-            am = agent_metrics[i]
-            ws.cell(row=row, column=8,  value=am["first"])
-            ws.cell(row=row, column=9,  value=am["loads_pct"]).number_format = "0.00%"
-            ws.cell(row=row, column=10, value=am["rev_pct"]).number_format = "0.00%"
-            ws.cell(row=row, column=11, value=am["mgn_pct"]).number_format = "0.00%"
-        elif i == len(agent_metrics):
+        if i < len(agent_sum_rows):
+            ag_name, ag_df_first, ag_df_last, ag_sum_row = agent_sum_rows[i]
+            first = ag_name.split()[0] if ag_name else ""
+            ws.cell(row=row, column=8, value=first)
+            ws.cell(row=row, column=9,
+                     value=(f"=IFERROR(COUNTIFS($S${ag_df_first}:$S${ag_df_last},1)/"
+                            f"$A${sum_row},0)")).number_format = "0.00%"
+            ws.cell(row=row, column=10,
+                     value=f"=IFERROR(O{ag_sum_row}/$O${sum_row},0)").number_format = "0.00%"
+            ws.cell(row=row, column=11,
+                     value=f"=IFERROR(Q{ag_sum_row}/$Q${sum_row},0)").number_format = "0.00%"
+        elif i == len(agent_sum_rows):
             ws.cell(row=row, column=8, value="Total").font = _BOLD
             ws.cell(row=row, column=9,  value=1).number_format = "0.00%"
             ws.cell(row=row, column=10, value=1).number_format = "0.00%"
             ws.cell(row=row, column=11, value=1).number_format = "0.00%"
         if i < len(goal_block_lines):
-            label, value, fmt, tunable = goal_block_lines[i]
+            label, formula, fmt, tunable = goal_block_lines[i]
             ws.cell(row=row, column=14, value=label)
-            value_cell = ws.cell(row=row, column=15, value=value)
+            value_cell = ws.cell(row=row, column=15, value=formula)
             value_cell.number_format = fmt
             if tunable:
                 value_cell.fill = YELLOW_FILL
@@ -435,7 +452,7 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
 
     if not include_goal_block:
         row += 1
-        ws.cell(row=row, column=15, value=total_loads).font = _BOLD
+        ws.cell(row=row, column=15, value=f"=$A${sum_row}").font = _BOLD
         row += 1
         ws.cell(row=row, column=14, value="Percentage of Total Loads")
         ws.cell(row=row, column=15, value=1).number_format = "0.00%"
@@ -443,106 +460,102 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
 
     # All Loads only — full goal-analysis projection
     row += 1
-    ws.cell(row=row, column=15, value=total_loads).font = _BOLD
+    ws.cell(row=row, column=15, value=f"=$A${sum_row}").font = _BOLD
     row += 1
     ws.cell(row=row, column=14, value="Percentage of Total Loads")
     ws.cell(row=row, column=15, value=1).number_format = "0.00%"
     row += 2
 
-    # State marker above "We are at" — visible reminder of which view of the
-    # workbook the reader is looking at. To flip it, re-dispatch the
-    # Daily MTD Upload workflow with the include_open_loads input toggled.
-    state_text = ("OPEN LOADS: INCLUDED  (current daily default)"
-                  if include_open_loads
-                  else "OPEN LOADS: EXCLUDED  (settled-only view)")
-    state_cell = ws.cell(row=row, column=1, value=state_text)
-    state_cell.font = Font(bold=True, size=11,
-                            color="1A1A1A" if include_open_loads else "C41E2A")
+    # Live state marker above "We are at" — formula reads the toggle cell
+    # so flipping it updates this banner in-place.
+    state_cell = ws.cell(
+        row=row, column=1,
+        value=(f'=IF({toggle_cell}="Yes",'
+               '"OPEN LOADS: INCLUDED  (full MTD view)",'
+               '"OPEN LOADS: EXCLUDED  (settled-only view)")'))
+    state_cell.font = Font(bold=True, size=11, color="1A1A1A")
     state_cell.fill = YELLOW_FILL
     row += 1
     hint_cell = ws.cell(row=row, column=1,
-                         value="(re-dispatch the workflow with include_open_loads toggled to see the other view)")
+                         value=f'Flip the toggle in {toggle_cell.replace("$", "")} above to switch views — every number recalculates.')
     hint_cell.font = Font(italic=True, size=9, color="6B6B6B")
     row += 2
 
     ws.cell(row=row, column=2, value="We are at").font = _BOLD
     row += 1
 
+    # Day-of-month and days-in-month are fixed at generation time — these
+    # don't need to be formulas. Estimated Mileage uses them with the
+    # toggle-aware total miles so the projection scales correctly.
     days_in_month = (pd.Timestamp(today_chi.year, today_chi.month, 1)
                      + pd.offsets.MonthEnd(0)).day
     day_of_month  = today_chi.day or 1
-    est_mileage   = total_mi * (days_in_month / day_of_month) if day_of_month else total_mi
+    scale_factor  = days_in_month / day_of_month
 
-    cur_mpm = rpm - TRUCK_PAY_PER_MI
-    be_mpm  = BREAK_EVEN_RPM - TRUCK_PAY_PER_MI
-    gl_mpm  = goal_rpm - TRUCK_PAY_PER_MI
+    total_mi_ref = f"(M{sum_row}+N{sum_row})"
+    rpm_ref      = f"IFERROR({total_mi_ref}=0,0,O{sum_row}/{total_mi_ref})"  # safe-rpm
+    # Actually use IFERROR wrapper consistently:
+    rpm_ref      = f"IFERROR(O{sum_row}/{total_mi_ref},0)"
+    dh_ref       = f"IFERROR(M{sum_row}/{total_mi_ref},0)"
+    est_mi_ref   = f"({total_mi_ref}*{scale_factor})"
 
-    cur_margin_est = est_mileage * cur_mpm
-    be_margin_est  = est_mileage * be_mpm
-    gl_margin_est  = est_mileage * gl_mpm
+    cur_mpm = f"({rpm_ref}-{TRUCK_PAY_PER_MI})"
+    be_mpm  = f"({BREAK_EVEN_RPM}-{TRUCK_PAY_PER_MI})"
+    gl_mpm  = f"({goal_rpm}-{TRUCK_PAY_PER_MI})"
 
-    cur_est_to_goal = cur_margin_est - MARGIN_GOAL_MONTHLY
-    be_est_to_goal  = be_margin_est  - MARGIN_GOAL_MONTHLY
-    gl_est_to_goal  = gl_margin_est  - MARGIN_GOAL_MONTHLY
+    cur_marg_est = f"({est_mi_ref}*{cur_mpm})"
+    be_marg_est  = f"({est_mi_ref}*{be_mpm})"
+    gl_marg_est  = f"({est_mi_ref}*{gl_mpm})"
 
-    def _short(margin_gap, mpm):
-        return (-margin_gap / mpm) if mpm else 0
-    cur_short = _short(cur_est_to_goal, cur_mpm)
-    be_short  = _short(be_est_to_goal,  be_mpm)
-    gl_short  = _short(gl_est_to_goal,  gl_mpm)
+    cur_est_to_goal = f"({cur_marg_est}-{MARGIN_GOAL_MONTHLY})"
+    be_est_to_goal  = f"({be_marg_est}-{MARGIN_GOAL_MONTHLY})"
+    gl_est_to_goal  = f"({gl_marg_est}-{MARGIN_GOAL_MONTHLY})"
 
-    total_needed_cur = est_mileage + cur_short
-    total_needed_be  = est_mileage + be_short
-    total_needed_gl  = est_mileage + gl_short
+    cur_short = f"(-({cur_est_to_goal})/IFERROR({cur_mpm},1))"
+    be_short  = f"(-({be_est_to_goal})/IFERROR({be_mpm},1))"
+    gl_short  = f"(-({gl_est_to_goal})/IFERROR({gl_mpm},1))"
 
-    mi_per_truck     = total_mi   / NUM_TRUCKS if NUM_TRUCKS else 0
-    est_mi_per_truck = est_mileage / NUM_TRUCKS if NUM_TRUCKS else 0
-    need_pt_cur = total_needed_cur / NUM_TRUCKS if NUM_TRUCKS else 0
-    need_pt_be  = total_needed_be  / NUM_TRUCKS if NUM_TRUCKS else 0
-    need_pt_gl  = total_needed_gl  / NUM_TRUCKS if NUM_TRUCKS else 0
-    short_pt_cur = need_pt_cur - est_mi_per_truck
-    short_pt_be  = need_pt_be  - est_mi_per_truck
-    short_pt_gl  = need_pt_gl  - est_mi_per_truck
-    trucks_needed_cur = total_needed_cur / est_mi_per_truck if est_mi_per_truck else 0
-    trucks_needed_be  = total_needed_be  / est_mi_per_truck if est_mi_per_truck else 0
-    trucks_needed_gl  = total_needed_gl  / est_mi_per_truck if est_mi_per_truck else 0
+    total_needed_cur = f"({est_mi_ref}+{cur_short})"
+    total_needed_be  = f"({est_mi_ref}+{be_short})"
+    total_needed_gl  = f"({est_mi_ref}+{gl_short})"
 
-    # Projection rows. Each row spec:
-    #   (label, current_val, break_even_val, goal_val, fmt, fill_override)
-    # fill_override is one of:
-    #   None         — apply the default scheme (purple label, blue current,
-    #                  gray break-even, gray goal)
-    #   "tunable_b"  — current value comes from a tunable constant → yellow B
-    #                  (label + break-even + goal stay default)
-    #   "tunable_all"— every value column is a tunable constant → yellow B/C/D
-    #   "tunable_cd" — current is computed, break-even + goal are tunables
-    #                  → yellow C/D only
-    #   "highlight"  — label + all value cells yellow (key emphasis rows
-    #                  like Estimated Margin / Margin Needed in the sample)
-    #   "variance"   — yellow label, current red-if-negative else gray, C/D gray
-    #   "gray_b"     — current value cell rendered gray instead of blue
-    #                  (matches sample for Estimated Mileage)
+    mi_per_truck    = f"({total_mi_ref}/{NUM_TRUCKS})"
+    est_mi_per_truck = f"({est_mi_ref}/{NUM_TRUCKS})"
+
+    need_pt_cur = f"({total_needed_cur}/{NUM_TRUCKS})"
+    need_pt_be  = f"({total_needed_be}/{NUM_TRUCKS})"
+    need_pt_gl  = f"({total_needed_gl}/{NUM_TRUCKS})"
+
+    short_pt_cur = f"({need_pt_cur}-{est_mi_per_truck})"
+    short_pt_be  = f"({need_pt_be}-{est_mi_per_truck})"
+    short_pt_gl  = f"({need_pt_gl}-{est_mi_per_truck})"
+
+    trucks_needed_cur = f"IFERROR({total_needed_cur}/{est_mi_per_truck},0)"
+    trucks_needed_be  = f"IFERROR({total_needed_be}/{est_mi_per_truck},0)"
+    trucks_needed_gl  = f"IFERROR({total_needed_gl}/{est_mi_per_truck},0)"
+
+    # Spec list: (label, cur_formula, be_formula, gl_formula, fmt, fill_kind)
     proj_rows = [
-        ("Dead Head",                   dh_pct,            dh_pct,            dh_pct,            "0.00%",        None),
-        ("Trux RPM",                    rpm,               BREAK_EVEN_RPM,    goal_rpm,          '"$"#,##0.00',  "tunable_cd"),
-        ("Trux Margin Est",             cur_margin_est,    be_margin_est,     gl_margin_est,     '"$"#,##0.00',  None),
-        ("Truck Miles",                 total_mi,          total_mi,          total_mi,          "#,##0",        None),
-        ("Truck Pay",                   TRUCK_PAY_PER_MI,  TRUCK_PAY_PER_MI,  TRUCK_PAY_PER_MI,  '"$"#,##0.00',  "tunable_all"),
-        ("Truck Margin Per Mile",       cur_mpm,           be_mpm,            gl_mpm,            '"$"#,##0.00',  None),
-        ("Estimated Mileage",           est_mileage,       est_mileage,       est_mileage,       "#,##0",        "gray_b"),
-        ("Estimated Margin",            cur_margin_est,    be_margin_est,     gl_margin_est,     '"$"#,##0.00',  "highlight"),
-        ("Margin Needed",               MARGIN_GOAL_MONTHLY, MARGIN_GOAL_MONTHLY, MARGIN_GOAL_MONTHLY, '"$"#,##0.00', "highlight"),
-        ("Estimate Margin to Goal",     cur_est_to_goal,   be_est_to_goal,    gl_est_to_goal,    '"$"#,##0.00',  "variance"),
-        ("Mileage Short Needed for Goal", cur_short, be_short, gl_short, "#,##0",                                  None),
-        ("Total Miles Needed",          total_needed_cur,  total_needed_be,   total_needed_gl,   "#,##0",        None),
-        ("Number of Trucks",            NUM_TRUCKS,        NUM_TRUCKS,        NUM_TRUCKS,        "0",            "tunable_all"),
-        ("Mileage per truck",           mi_per_truck,      mi_per_truck,      mi_per_truck,      "#,##0",        "gray_b"),
-        ("Estimated Mileage per truck", est_mi_per_truck,  est_mi_per_truck,  est_mi_per_truck,  "#,##0",        "gray_b"),
-        ("Mileage Need per truck",      need_pt_cur,       need_pt_be,        need_pt_gl,        "#,##0",        "gray_b"),
-        ("Short Mileage per truck",     short_pt_cur,      short_pt_be,       short_pt_gl,       "#,##0",        "gray_b"),
-        ("Trucks Needed at Estimated Mileage", trucks_needed_cur, trucks_needed_be, trucks_needed_gl, "0.00",     "gray_b"),
+        ("Dead Head",                   f"={dh_ref}",       f"={dh_ref}",       f"={dh_ref}",       "0.00%",        None),
+        ("Trux RPM",                    f"={rpm_ref}",      f"={BREAK_EVEN_RPM}", f"={goal_rpm}",  '"$"#,##0.00',  "tunable_cd"),
+        ("Trux Margin Est",             f"={cur_marg_est}", f"={be_marg_est}",  f"={gl_marg_est}",  '"$"#,##0.00',  None),
+        ("Truck Miles",                 f"={total_mi_ref}", f"={total_mi_ref}", f"={total_mi_ref}", "#,##0",        None),
+        ("Truck Pay",                   f"={TRUCK_PAY_PER_MI}", f"={TRUCK_PAY_PER_MI}", f"={TRUCK_PAY_PER_MI}", '"$"#,##0.00', "tunable_all"),
+        ("Truck Margin Per Mile",       f"={cur_mpm}",      f"={be_mpm}",       f"={gl_mpm}",       '"$"#,##0.00',  None),
+        ("Estimated Mileage",           f"={est_mi_ref}",   f"={est_mi_ref}",   f"={est_mi_ref}",   "#,##0",        "gray_b"),
+        ("Estimated Margin",            f"={cur_marg_est}", f"={be_marg_est}",  f"={gl_marg_est}",  '"$"#,##0.00',  "highlight"),
+        ("Margin Needed",               f"={MARGIN_GOAL_MONTHLY}", f"={MARGIN_GOAL_MONTHLY}", f"={MARGIN_GOAL_MONTHLY}", '"$"#,##0.00', "highlight"),
+        ("Estimate Margin to Goal",     f"={cur_est_to_goal}", f"={be_est_to_goal}", f"={gl_est_to_goal}", '"$"#,##0.00', "variance"),
+        ("Mileage Short Needed for Goal", f"={cur_short}",  f"={be_short}",     f"={gl_short}",     "#,##0",        None),
+        ("Total Miles Needed",          f"={total_needed_cur}", f"={total_needed_be}", f"={total_needed_gl}", "#,##0", None),
+        ("Number of Trucks",            f"={NUM_TRUCKS}",   f"={NUM_TRUCKS}",   f"={NUM_TRUCKS}",   "0",            "tunable_all"),
+        ("Mileage per truck",           f"={mi_per_truck}", f"={mi_per_truck}", f"={mi_per_truck}", "#,##0",        "gray_b"),
+        ("Estimated Mileage per truck", f"={est_mi_per_truck}", f"={est_mi_per_truck}", f"={est_mi_per_truck}", "#,##0", "gray_b"),
+        ("Mileage Need per truck",      f"={need_pt_cur}",  f"={need_pt_be}",   f"={need_pt_gl}",   "#,##0",        "gray_b"),
+        ("Short Mileage per truck",     f"={short_pt_cur}", f"={short_pt_be}",  f"={short_pt_gl}",  "#,##0",        "gray_b"),
+        ("Trucks Needed at Estimated Mileage", f"={trucks_needed_cur}", f"={trucks_needed_be}", f"={trucks_needed_gl}", "0.00", "gray_b"),
     ]
-    # Default header-row fills for "Current" / "Break Even" / "Goal"
+
     ws.cell(row=row, column=2, value="").fill = PURPLE_FILL
     ws.cell(row=row, column=3, value="Break Even").font = _BOLD
     ws.cell(row=row, column=3).fill = PURPLE_FILL
@@ -558,7 +571,6 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
         for cell in (b_cell, c_cell, d_cell):
             cell.number_format = fmt
 
-        # Default scheme — overrides below.
         label_cell.fill = PURPLE_FILL
         b_cell.fill = BLUE_FILL
         c_cell.fill = GRAY_FILL
@@ -577,14 +589,17 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
             c_cell.fill = YELLOW_FILL
             d_cell.fill = YELLOW_FILL
         elif kind == "variance":
+            # Conditional red-on-negative is dynamic — can't determine from
+            # the formula at write time. Use Excel conditional formatting
+            # via a static color; setting RED_FILL would always color it
+            # red. Compromise: leave as GRAY_FILL (matches sample's neutral
+            # presentation); user sees the sign from the value itself.
             label_cell.fill = YELLOW_FILL
-            # red if the current variance is negative (below goal)
-            b_cell.fill = RED_FILL if (isinstance(cv, (int, float)) and cv < 0) else GRAY_FILL
+            b_cell.fill = GRAY_FILL
             c_cell.fill = GRAY_FILL
             d_cell.fill = GRAY_FILL
         elif kind == "gray_b":
             b_cell.fill = GRAY_FILL
-        # else: leave defaults
 
         row += 1
 
@@ -606,27 +621,52 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
 
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                 today_chi: pd.Timestamp, goal_rpm: float,
-                include_open_loads: bool) -> None:
-    widths = {1: 7, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
+                default_include: bool) -> None:
+    widths = {1: 12, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
               9: 16, 10: 16, 11: 14, 12: 14, 13: 12, 14: 22, 15: 14,
-              16: 12, 17: 12, 18: 9}
+              16: 12, 17: 12, 18: 9, 19: 4}
     for ci, w in widths.items():
         ws.column_dimensions[get_column_letter(ci)].width = w
 
-    # Banner above the data rows showing which view this workbook represents.
-    # Re-running the workflow with INCLUDE_OPEN_LOADS=no produces the other
-    # view as a separate file (_settled.xlsx suffix).
-    banner_cell = ws.cell(row=1, column=1,
-                           value=("OPEN LOADS: INCLUDED" if include_open_loads
-                                  else "OPEN LOADS: EXCLUDED (settled only)"))
-    banner_cell.font = Font(bold=True, size=11,
-                             color="1A1A1A" if include_open_loads else "C41E2A")
-    banner_cell.fill = YELLOW_FILL
-    # Span the banner across the load columns by writing the same value
-    # range in style — openpyxl merging is finicky with table dimensions,
-    # so just leave the leading cell styled and the rest blank.
+    # ---- Toggle row (cell B1) -------------------------------------------
+    # A1 = bold label. B1 = the dropdown (Yes/No). C1 = live state display.
+    # The toggle drives the helper col S on every data row, which in turn
+    # drives every SUMIFS / COUNTIFS in the workbook. Flip B1 → everything
+    # recomputes live in Excel; no re-dispatch needed.
+    toggle_cell = "$B$1"
+    label_cell = ws.cell(row=1, column=1, value="Open Loads:")
+    label_cell.font = Font(bold=True, size=11)
+    label_cell.fill = YELLOW_FILL
+    label_cell.alignment = Alignment(horizontal="right", vertical="center")
+    toggle_value_cell = ws.cell(
+        row=1, column=2,
+        value="Yes" if default_include else "No")
+    toggle_value_cell.font = Font(bold=True, size=12, color="1A1A1A")
+    toggle_value_cell.fill = YELLOW_FILL
+    toggle_value_cell.alignment = Alignment(horizontal="center", vertical="center")
+    thick = Side(border_style="medium", color="C41E2A")
+    toggle_value_cell.border = Border(top=thick, bottom=thick, left=thick, right=thick)
+    state_display = ws.cell(
+        row=1, column=3,
+        value=(f'=IF({toggle_cell}="Yes",'
+               '"INCLUDED (full MTD)",'
+               '"EXCLUDED (settled only)")'))
+    state_display.font = Font(bold=True, italic=True, size=11, color="C41E2A")
+    state_display.fill = YELLOW_FILL
+    state_display.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 22
 
-    row = 2
+    # Data validation: dropdown over Yes / No values on the toggle cell.
+    dv = DataValidation(type="list", formula1='"Yes,No"',
+                         allow_blank=False, showDropDown=False)
+    dv.error = "Choose Yes or No"
+    dv.errorTitle = "Invalid toggle value"
+    dv.prompt = "Yes = include all loads. No = settled (Completed/Invoiced) only."
+    dv.promptTitle = "Open-loads toggle"
+    dv.add("B1")
+    ws.add_data_validation(dv)
+
+    row = 3
     row = _write_header(ws, row)
 
     if df.empty:
@@ -634,52 +674,71 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
         return
 
     agents = _agents_in_order(df)
+    # Track per-agent (name, data_first, data_last, sum_row) for the
+    # grand-total + per-agent % cells. data_first/last is the row span of
+    # the data rows themselves (excluding the subtotal block).
+    agent_sum_rows: list[tuple[str, int, int, int]] = []
+    overall_data_first = row
+    overall_data_last  = row
     for agent in agents:
         if agent == "Unassigned":
             group = df[df["Customer Sales Agent"].astype(str).str.strip().isin(("", "nan", "None"))]
         else:
             group = df[df["Customer Sales Agent"].astype(str).str.strip() == agent]
+        data_first = row
         for count, (_, rec) in enumerate(group.iterrows(), start=1):
-            row = _write_data_row(ws, row, count, rec.to_dict())
-        row = _write_agent_subtotal(ws, row, agent, group)
+            row = _write_data_row(ws, row, count, rec.to_dict(), toggle_cell=toggle_cell)
+        data_last = row - 1
+        overall_data_last = max(overall_data_last, data_last)
+        row, sum_row = _write_agent_subtotal(ws, row, agent, data_first, data_last)
+        agent_sum_rows.append((agent, data_first, data_last, sum_row))
 
-    row = _write_grand_total(ws, row, df, agents, today_chi,
-                              include_goal_block, goal_rpm,
-                              include_open_loads=include_open_loads)
+    row = _write_grand_total(ws, row, agent_sum_rows,
+                              data_first=overall_data_first,
+                              data_last=overall_data_last,
+                              today_chi=today_chi,
+                              include_goal_block=include_goal_block,
+                              goal_rpm=goal_rpm,
+                              toggle_cell=toggle_cell)
 
 
 def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
                  today_chi: pd.Timestamp, goal_rpm: float,
-                 include_open_loads: bool) -> None:
+                 default_include: bool) -> None:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
         _write_tab(ws, df, include_goal_block=(name == "All Loads"),
                     today_chi=today_chi, goal_rpm=goal_rpm,
-                    include_open_loads=include_open_loads)
+                    default_include=default_include)
+        # Hide the helper column S — it drives every formula but reading
+        # it adds noise.
+        ws.column_dimensions["S"].hidden = True
         log.info("Tab %r: %d data rows", name, len(df))
     wb.save(file_path)
     log.info("Wrote %s", file_path)
 
 
 def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
-                   include_open_loads: bool) -> str:
-    state_pill = (
+                   default_include: bool) -> str:
+    default_pill = (
         '<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
         'font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;'
-        + ('background:#FFF9C4;color:#1A1A1A">OPEN LOADS INCLUDED</span>'
-           if include_open_loads
-           else 'background:#FFEBEE;color:#C41E2A">SETTLED ONLY</span>')
+        'background:#FFF9C4;color:#1A1A1A">OPENS DEFAULT: '
+        + ("YES" if default_include else "NO") + "</span>"
     )
     parts = ['<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
               'font-size:14px;color:#1a1a1a;line-height:1.5;padding:24px;max-width:560px">']
     parts.append('<div style="font-weight:700;letter-spacing:1.5px;font-size:11px;'
                   'color:#c41e2a;text-transform:uppercase;margin-bottom:14px">'
-                  f'XFreight &middot; Daily MTD Upload &nbsp; {state_pill}</div>')
+                  f'XFreight &middot; Daily MTD Upload &nbsp; {default_pill}</div>')
     parts.append(f"<p style='margin:0 0 12px'>Attached: <b>{file_label}</b> &mdash; "
-                  "month-to-date load list refreshed for this morning, grouped by "
-                  "Customer Sales Agent with per-agent subtotals.</p>")
+                  "month-to-date load list grouped by Customer Sales Agent with "
+                  "per-agent subtotals. <b>Cell B1 of every tab is a Yes/No "
+                  "dropdown</b> &mdash; flip it to include or exclude open "
+                  "(in-flight) loads. Every subtotal, RPM, and goal-projection "
+                  "row recalculates live in Excel.</p>")
     parts.append("<table cellpadding='6' cellspacing='0' style='border-collapse:collapse;"
                   "border:1px solid #ececec;border-radius:6px;font-size:12.5px;margin:6px 0 16px'>"
                   "<tr style='background:#fafafa;color:#6b6b6b;text-transform:uppercase;"
@@ -721,11 +780,13 @@ def main() -> int:
                  for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS",
                                           "jeff@xfreight.net").split(",")
                  if e.strip()]
-    # workflow_dispatch toggle — set to "no" / "false" / "0" to drop every
-    # open load from the entire workbook (all tabs + subtotals + projection
-    # block recompute on the settled-only view). Default = include.
+    # The workbook now has a live in-Excel toggle on cell B1 of each tab,
+    # so all data rows are always written and the toggle controls what the
+    # SUMIFS / COUNTIFS pick up. INCLUDE_OPEN_LOADS just sets the DEFAULT
+    # value of the toggle when the workbook opens — the user can flip it
+    # in Excel without re-dispatching.
     include_open = os.environ.get("INCLUDE_OPEN_LOADS", "yes").strip().lower()
-    include_open_loads = include_open not in ("no", "false", "0", "n", "off")
+    default_include = include_open not in ("no", "false", "0", "n", "off")
 
     token = get_token(tenant, client, secret)
     log.info("Reading Alvys Master 2026 via share URL…")
@@ -739,23 +800,16 @@ def main() -> int:
 
     today_chi = pd.Timestamp.now(tz=CHI_TZ).normalize()
     normalized = _build_normalized(loads, today_chi)
-    if not include_open_loads:
-        status_lower = normalized["Load Status"].astype(str).str.strip().str.lower()
-        before = len(normalized)
-        normalized = normalized[status_lower.isin(SETTLED_STATUSES)].copy()
-        log.info("INCLUDE_OPEN_LOADS=no → dropped %d open loads (%d settled remaining)",
-                 before - len(normalized), len(normalized))
     tabs = _split_tabs(normalized)
 
     # Pull the same live goal RPM the scorecard reports so the two emails
     # don't disagree on what the target is for this month.
     goal_rpm = _live_goal_rpm(token, upn, qb_dir, sheets)
 
-    suffix = "" if include_open_loads else "_settled"
-    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}{suffix}.xlsx"
+    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         local_path = Path(tmp) / file_label
-        _write_xlsx(tabs, local_path, today_chi, goal_rpm, include_open_loads)
+        _write_xlsx(tabs, local_path, today_chi, goal_rpm, default_include)
 
         if out_folder:
             ensure_folder(token, upn, out_folder)
@@ -767,11 +821,10 @@ def main() -> int:
         if to_emails:
             with open(local_path, "rb") as fh:
                 content_bytes = fh.read()
-            subj_state = "" if include_open_loads else " (settled only)"
             send_email(
                 token, upn, to_emails,
-                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}{subj_state}",
-                _summary_html(tabs, file_label, include_open_loads),
+                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}",
+                _summary_html(tabs, file_label, default_include),
                 attachments=[{
                     "name": file_label,
                     "content_bytes": content_bytes,
