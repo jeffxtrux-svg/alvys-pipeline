@@ -1082,9 +1082,12 @@ def qb_company_totals(qb_pnl: dict) -> dict:
 # Use lowercase; matching is case-insensitive prefix (so "JW Logistics LLC" also matches).
 _AR_DETAIL_EXCLUDE: frozenset[str] = frozenset({"jw logistics"})
 
-# Samsara driver records that are placeholders / test accounts, not real
-# drivers. Normalized via _norm_name so punctuation/case variations match.
-_DRIVER_EXCLUDE: frozenset[str] = frozenset({"tempd"})
+# Driver records that are placeholders / test accounts, not real drivers.
+# Applied across Samsara safety/score lists AND the Alvys + SambaSafety
+# CDL/medical-card pages (page 2). Normalized via _norm_name so
+# punctuation and case variations all match ("Test D", "test-d", "TEST D"
+# → "test d").
+_DRIVER_EXCLUDE: frozenset[str] = frozenset({"tempd", "test d", "testd"})
 
 # Trucks removed from the fleet. Idle / MPG / driver tables drop them so
 # decommissioned units don't keep appearing in the brief after they're sold
@@ -2903,6 +2906,10 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         name = str(r[name_c]).strip() if name_c else ""
         if not name or name.lower() == "nan":
             continue
+        # Skip placeholder / test driver records ("Test D" etc.) so they
+        # don't appear in CDL expiring or risk-index lists on page 2.
+        if _is_excluded_driver(name):
+            continue
         status = (str(r[status_c]).strip() if status_c and pd.notna(r[status_c]) else "")
         exp = pd.to_datetime(r[exp_c], errors="coerce") if exp_c else pd.NaT
         state = (str(r[state_c]).strip() if state_c and pd.notna(r[state_c]) else "")
@@ -3085,6 +3092,10 @@ def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | Non
     for _, r in df.iterrows():
         name = str(r[name_c]).strip() if pd.notna(r[name_c]) else ""
         if not name or name.lower() == "nan":
+            continue
+        # Skip placeholder / test driver records ("Test D" etc.) so they
+        # don't appear in CDL or DOT-medical expiring lists on page 2.
+        if _is_excluded_driver(name):
             continue
         terminated = pd.notna(r[term_c]) if term_c else False
         if terminated:
