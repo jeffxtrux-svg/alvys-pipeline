@@ -338,7 +338,7 @@ def _write_agent_subtotal(ws, row: int, agent: str, group: pd.DataFrame) -> int:
 
 def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
                         today_chi: pd.Timestamp, include_goal_block: bool,
-                        goal_rpm: float) -> int:
+                        goal_rpm: float, include_open_loads: bool = True) -> int:
     total_loads = len(tab_df)
     empty_mi  = float(tab_df["Empty Dispatch Mileage"].sum())
     loaded_mi = float(tab_df["Loaded Dispatch Mileage"].sum())
@@ -447,6 +447,22 @@ def _write_grand_total(ws, row: int, tab_df: pd.DataFrame, agents: list[str],
     row += 1
     ws.cell(row=row, column=14, value="Percentage of Total Loads")
     ws.cell(row=row, column=15, value=1).number_format = "0.00%"
+    row += 2
+
+    # State marker above "We are at" — visible reminder of which view of the
+    # workbook the reader is looking at. To flip it, re-dispatch the
+    # Daily MTD Upload workflow with the include_open_loads input toggled.
+    state_text = ("OPEN LOADS: INCLUDED  (current daily default)"
+                  if include_open_loads
+                  else "OPEN LOADS: EXCLUDED  (settled-only view)")
+    state_cell = ws.cell(row=row, column=1, value=state_text)
+    state_cell.font = Font(bold=True, size=11,
+                            color="1A1A1A" if include_open_loads else "C41E2A")
+    state_cell.fill = YELLOW_FILL
+    row += 1
+    hint_cell = ws.cell(row=row, column=1,
+                         value="(re-dispatch the workflow with include_open_loads toggled to see the other view)")
+    hint_cell.font = Font(italic=True, size=9, color="6B6B6B")
     row += 2
 
     ws.cell(row=row, column=2, value="We are at").font = _BOLD
@@ -589,14 +605,28 @@ def _agents_in_order(df: pd.DataFrame) -> list[str]:
 
 
 def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
-                today_chi: pd.Timestamp, goal_rpm: float) -> None:
+                today_chi: pd.Timestamp, goal_rpm: float,
+                include_open_loads: bool) -> None:
     widths = {1: 7, 2: 22, 3: 11, 4: 13, 5: 18, 6: 30, 7: 18, 8: 6,
               9: 16, 10: 16, 11: 14, 12: 14, 13: 12, 14: 22, 15: 14,
               16: 12, 17: 12, 18: 9}
     for ci, w in widths.items():
         ws.column_dimensions[get_column_letter(ci)].width = w
 
-    row = 1
+    # Banner above the data rows showing which view this workbook represents.
+    # Re-running the workflow with INCLUDE_OPEN_LOADS=no produces the other
+    # view as a separate file (_settled.xlsx suffix).
+    banner_cell = ws.cell(row=1, column=1,
+                           value=("OPEN LOADS: INCLUDED" if include_open_loads
+                                  else "OPEN LOADS: EXCLUDED (settled only)"))
+    banner_cell.font = Font(bold=True, size=11,
+                             color="1A1A1A" if include_open_loads else "C41E2A")
+    banner_cell.fill = YELLOW_FILL
+    # Span the banner across the load columns by writing the same value
+    # range in style — openpyxl merging is finicky with table dimensions,
+    # so just leave the leading cell styled and the rest blank.
+
+    row = 2
     row = _write_header(ws, row)
 
     if df.empty:
@@ -614,28 +644,39 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
         row = _write_agent_subtotal(ws, row, agent, group)
 
     row = _write_grand_total(ws, row, df, agents, today_chi,
-                              include_goal_block, goal_rpm)
+                              include_goal_block, goal_rpm,
+                              include_open_loads=include_open_loads)
 
 
 def _write_xlsx(tabs: dict[str, pd.DataFrame], file_path: Path,
-                 today_chi: pd.Timestamp, goal_rpm: float) -> None:
+                 today_chi: pd.Timestamp, goal_rpm: float,
+                 include_open_loads: bool) -> None:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for name, df in tabs.items():
         ws = wb.create_sheet(title=name)
         _write_tab(ws, df, include_goal_block=(name == "All Loads"),
-                    today_chi=today_chi, goal_rpm=goal_rpm)
+                    today_chi=today_chi, goal_rpm=goal_rpm,
+                    include_open_loads=include_open_loads)
         log.info("Tab %r: %d data rows", name, len(df))
     wb.save(file_path)
     log.info("Wrote %s", file_path)
 
 
-def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str) -> str:
+def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str,
+                   include_open_loads: bool) -> str:
+    state_pill = (
+        '<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
+        'font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;'
+        + ('background:#FFF9C4;color:#1A1A1A">OPEN LOADS INCLUDED</span>'
+           if include_open_loads
+           else 'background:#FFEBEE;color:#C41E2A">SETTLED ONLY</span>')
+    )
     parts = ['<div style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
               'font-size:14px;color:#1a1a1a;line-height:1.5;padding:24px;max-width:560px">']
     parts.append('<div style="font-weight:700;letter-spacing:1.5px;font-size:11px;'
                   'color:#c41e2a;text-transform:uppercase;margin-bottom:14px">'
-                  'XFreight &middot; Daily MTD Upload</div>')
+                  f'XFreight &middot; Daily MTD Upload &nbsp; {state_pill}</div>')
     parts.append(f"<p style='margin:0 0 12px'>Attached: <b>{file_label}</b> &mdash; "
                   "month-to-date load list refreshed for this morning, grouped by "
                   "Customer Sales Agent with per-agent subtotals.</p>")
@@ -680,6 +721,11 @@ def main() -> int:
                  for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS",
                                           "jeff@xfreight.net").split(",")
                  if e.strip()]
+    # workflow_dispatch toggle — set to "no" / "false" / "0" to drop every
+    # open load from the entire workbook (all tabs + subtotals + projection
+    # block recompute on the settled-only view). Default = include.
+    include_open = os.environ.get("INCLUDE_OPEN_LOADS", "yes").strip().lower()
+    include_open_loads = include_open not in ("no", "false", "0", "n", "off")
 
     token = get_token(tenant, client, secret)
     log.info("Reading Alvys Master 2026 via share URL…")
@@ -693,16 +739,23 @@ def main() -> int:
 
     today_chi = pd.Timestamp.now(tz=CHI_TZ).normalize()
     normalized = _build_normalized(loads, today_chi)
+    if not include_open_loads:
+        status_lower = normalized["Load Status"].astype(str).str.strip().str.lower()
+        before = len(normalized)
+        normalized = normalized[status_lower.isin(SETTLED_STATUSES)].copy()
+        log.info("INCLUDE_OPEN_LOADS=no → dropped %d open loads (%d settled remaining)",
+                 before - len(normalized), len(normalized))
     tabs = _split_tabs(normalized)
 
     # Pull the same live goal RPM the scorecard reports so the two emails
     # don't disagree on what the target is for this month.
     goal_rpm = _live_goal_rpm(token, upn, qb_dir, sheets)
 
-    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}.xlsx"
+    suffix = "" if include_open_loads else "_settled"
+    file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}{suffix}.xlsx"
     with tempfile.TemporaryDirectory() as tmp:
         local_path = Path(tmp) / file_label
-        _write_xlsx(tabs, local_path, today_chi, goal_rpm)
+        _write_xlsx(tabs, local_path, today_chi, goal_rpm, include_open_loads)
 
         if out_folder:
             ensure_folder(token, upn, out_folder)
@@ -714,10 +767,11 @@ def main() -> int:
         if to_emails:
             with open(local_path, "rb") as fh:
                 content_bytes = fh.read()
+            subj_state = "" if include_open_loads else " (settled only)"
             send_email(
                 token, upn, to_emails,
-                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}",
-                _summary_html(tabs, file_label),
+                f"XFreight Daily MTD Upload — {today_chi.strftime('%b %d, %Y')}{subj_state}",
+                _summary_html(tabs, file_label, include_open_loads),
                 attachments=[{
                     "name": file_label,
                     "content_bytes": content_bytes,
