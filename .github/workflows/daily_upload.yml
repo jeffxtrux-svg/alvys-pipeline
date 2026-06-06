@@ -1,0 +1,104 @@
+# Daily MTD Load Upload — reads Alvys Master 2026 from OneDrive, filters
+# to the current calendar month, splits into All / Customer / Spot tabs,
+# uploads a dated copy back to OneDrive, and emails the workbook.
+#
+# Year-round 5am Central via the dual-cron + CT-hour-gate pattern. Same
+# pattern as scorecard_email.yml so the DST flip needs no code changes.
+#
+# Required GitHub Secrets (shared with the rest of the pipeline):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+
+name: Daily MTD Upload Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipients:
+        description: 'Comma-separated email override (default: standing list jeff+jb). Use for one-shot sends to a single address.'
+        required: false
+        default: ''
+  schedule:
+    # Year-round 5am Central. CDT (UTC-5) + CST (UTC-6) both armed; the
+    # CT-hour-gate step rejects the off-season slot.
+    - cron: '0 10 * * *'   # 5:00am CDT primary / 4:00am CST (gated)
+    - cron: '0 11 * * *'   # 6:00am CDT (gated) / 5:00am CST primary
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Gate to 5am CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 5 ]; then
+            echo "Off-target hour — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "5am CT slot — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        # Only the slice the daily report needs — no WeasyPrint / charts.
+        run: pip install pandas openpyxl msal requests
+
+      - name: Build and send daily upload
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          # NOTE: standing recipient list intentionally jeff-only during the
+          # testing window. Once the report is reviewed, add jb back here:
+          #   jeff@xfreight.net,jb@xfreight.net
+          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net' }}
+          # Same share URL as the scorecard so both feeds read the same workbook.
+          DAILY_UPLOAD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+          # Empty string = drop the file in OneDrive root. Override here if
+          # you want it tucked into a subfolder like "Daily Uploads".
+          DAILY_UPLOAD_FOLDER: ""
+        run: python -m src.daily_upload
+
+      - name: Notify on failure
+        if: failure() && steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from src.onedrive_upload import get_token
+          from src.scorecard_email import send_email
+          tok = get_token(os.environ["AZURE_TENANT_ID"], os.environ["AZURE_CLIENT_ID"], os.environ["AZURE_CLIENT_SECRET"])
+          to = [e.strip() for e in os.environ["DAILY_UPLOAD_TO_EMAILS"].split(",") if e.strip()]
+          run = os.environ.get("RUN_URL", "")
+          html = (f"<p>The <b>daily MTD upload</b> job failed &mdash; this morning's "
+                  f"Daily_Upload_*.xlsx was not generated or sent.</p>"
+                  f"<p>Run log: <a href='{run}'>{run}</a></p>")
+          send_email(tok, os.environ["ONEDRIVE_USER_UPN"], to,
+                     "⚠️ XFreight Daily Upload FAILED", html)
+          PY
