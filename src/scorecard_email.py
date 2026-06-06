@@ -2017,8 +2017,21 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             # from each event's coachingStatus (already in the SafetyEvents
             # sheet under one of the names below).
             status_col = _find_col(_7d, ["status", "reviewed", "coaching"])
-            coach_col  = _find_col(_7d, ["coachedby.name", "coached by", "coachedby"])
-            coach_at_col = _find_col(_7d, ["coachedat", "coached at"])
+            # Coach name probe — Samsara's json_normalize can surface this
+            # under several shapes; cast a wide net and log what we found
+            # so the column choice is visible if Coach renders blank.
+            coach_col  = _find_col(_7d, [
+                "coachedby.name", "coached by.name", "coachedbyuser.name",
+                "reviewedby.name", "coach.name",
+                "coachedby", "coached by", "reviewedby", "coach",
+                "coachname", "coach name",
+            ])
+            coach_at_col = _find_col(_7d, [
+                "coachedat", "coached at", "coachedattime",
+                "coachedby.completedattime", "reviewedat",
+            ])
+            log.info("Coaching list cols: status=%s coach=%s coachedAt=%s",
+                     status_col, coach_col, coach_at_col)
             _COACHED_STATUSES = {"coached", "dismissed", "recognized"}
             agg: dict = {}
             for idx in _7d.index:
