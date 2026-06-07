@@ -92,6 +92,11 @@ class SamsaraClient:
             log.warning("GET %s → %s — skipping", path, e)
             return []
 
+    # Class-level counter so we only log the first few _get_one failures
+    # per process — enough to diagnose endpoint issues without spamming the
+    # log for legitimate "this id doesn't exist" cases.
+    _GET_ONE_LOG_BUDGET = 3
+
     def _get_one(self, path: str, params: dict | None = None) -> dict | None:
         """Single-resource GET. Returns the `data` dict from the response,
         or None on any HTTP error. Used by detail endpoints (e.g. fetching
@@ -102,11 +107,23 @@ class SamsaraClient:
                 url, headers=self._headers(), params=(params or {}), timeout=30
             )
             if resp.status_code != 200:
+                if SamsaraClient._GET_ONE_LOG_BUDGET > 0:
+                    SamsaraClient._GET_ONE_LOG_BUDGET -= 1
+                    log.warning("DIAG _get_one %s → HTTP %d: %s",
+                                path, resp.status_code, resp.text[:200])
                 return None
             payload = resp.json()
             d = payload.get("data")
+            if not isinstance(d, dict):
+                if SamsaraClient._GET_ONE_LOG_BUDGET > 0:
+                    SamsaraClient._GET_ONE_LOG_BUDGET -= 1
+                    log.warning("DIAG _get_one %s → 200 but no data dict; "
+                                "payload keys=%s", path, list(payload.keys()))
             return d if isinstance(d, dict) else None
-        except Exception:
+        except Exception as e:
+            if SamsaraClient._GET_ONE_LOG_BUDGET > 0:
+                SamsaraClient._GET_ONE_LOG_BUDGET -= 1
+                log.warning("DIAG _get_one %s → exception: %s", path, e)
             return None
 
     # ------------------------------------------------------------------
