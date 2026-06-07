@@ -279,6 +279,32 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
                  n_rate, avg_rate, source,
                  f"{settled_mi:,.0f}", f"{settled_pay:,.0f}")
 
+    # In-flight load adjustment (per user rule):
+    # When Last Drop Status = "open" AND existing Driver Rate is non-zero
+    # but suspiciously low (< $200), the load is mid-trip with only a
+    # partial driver pay recorded so far. Add 65 empty miles for the
+    # return trip and set Driver Rate to the *gap* between the full
+    # estimated pay and what's already recorded — so the column shows
+    # the additional pay still expected on this load (not the full pay).
+    # Note: Margin = Revenue - Driver Rate, so these rows' Margin will
+    # be inflated by the existing-pay portion vs settled loads. Treat
+    # the per-row margin on these as a planning estimate, not actuals.
+    drop_status = out["Last Drop Status"].astype(str).str.strip().str.lower()
+    is_drop_open = drop_status.str.contains("open", na=False)
+    needs_inflight = is_drop_open & (out["Driver Rate"] > 0) & (out["Driver Rate"] < 200)
+    n_inflight = int(needs_inflight.sum())
+    if n_inflight:
+        out.loc[needs_inflight, "Empty Dispatch Mileage"] = (
+            out.loc[needs_inflight, "Empty Dispatch Mileage"] + 65
+        )
+        new_total = (out.loc[needs_inflight, "Empty Dispatch Mileage"]
+                     + out.loc[needs_inflight, "Loaded Dispatch Mileage"])
+        existing_rate = out.loc[needs_inflight, "Driver Rate"]
+        out.loc[needs_inflight, "Driver Rate"] = (new_total * avg_rate - existing_rate).round(2)
+        log.info("In-flight adjustment on %d loads (Last Drop=open, $0<rate<$200): "
+                 "+65 empty mi, Driver Rate set to (total * $%.4f/mi) - existing",
+                 n_inflight, avg_rate)
+
     out["Margin"] = out["Customer Revenue"] - out["Driver Rate"]
     out["Margin %"] = (out["Margin"] / out["Customer Revenue"]).where(out["Customer Revenue"] != 0)
 
