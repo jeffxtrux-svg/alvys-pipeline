@@ -5789,10 +5789,20 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
     LIM = 20
     match_pct = (b["matched"] / b["alvys_n"]) if b["alvys_n"] else None
     key_label = "Load #" if b.get("key_used") == "load" else "invoice #"
+    # Net = QB-only - Alvys-only; in sign-matched terms this is the same
+    # QB-minus-Alvys variance the page 1 reconciliation tile shows, just
+    # computed from the bill-level lists instead of the AR aging totals.
+    # When the bill matching is clean the two should agree to the cent;
+    # divergence means a customer with no shared invoice number on either
+    # side (rolled up only on page 1's customer-keyed view).
+    _net = float(b.get("qb_only_total") or 0) - float(b.get("alvys_only_total") or 0)
+    _net_kind = "good" if abs(_net) < 0.01 else ("bad" if _net < 0 else "warn")
+    _net_sub = ("matches pg 1 variance" if abs(_net) >= 0.01
+                else "bill lists balance")
     tiles = (_tile("Open in Alvys, not QB", money(b["alvys_only_total"]), _pill(f"{len(ao)} bills", "bad"))
              + _tile("Open in QB, not Alvys", money(b["qb_only_total"]), _pill(f"{len(qo)} bills", "warn"))
-             + _tile("Match rate", pct(match_pct), _pill(f"on {key_label} &middot; {b['matched']}/{b['alvys_n']}", "mute"))
-             + "<td class='tile-empty' width='25%' style='padding:6px;'></td>")
+             + _tile("Net &middot; QB &minus; Alvys", money(_net), _pill(_net_sub, _net_kind))
+             + _tile("Match rate", pct(match_pct), _pill(f"on {key_label} &middot; {b['matched']}/{b['alvys_n']}", "mute")))
 
     def _tbl(title, rows, cols, mk):
         if not rows:
@@ -6322,10 +6332,13 @@ def render_pdf(html: str) -> bytes | None:
         # XFreight Overview — pushes the entity tiles + reconciliation to
         # page 2, letting page 1 carry only the narrative.
         _inject_pb_before("XFreight Overview")
-        # Overdue invoices (31+ days) table — pushes the customer-by-customer
-        # AR detail to a fresh page after the AR aging tiles / Receivables
-        # & payables chart row.
-        _inject_pb_before("Overdue invoices (31+ days) by customer")
+        # NOTE: the "Overdue invoices (31+ days) by customer" injected page
+        # break used to live here. It's been removed because build_page1 is
+        # now rendered in two parts (overview + rest), with build_page8
+        # inserted between them — the Overdue Invoices table is the first
+        # row of part='rest' and already starts on a fresh page from the
+        # wrap+pb in build_html. Re-injecting here would force a duplicate
+        # break and leave a blank page in front of the table.
         # Safety & compliance — starts the safety tile + 6-month trend block
         # on a fresh page after the AR overdue customer table.  Match the
         # HTML-entity form ("&amp;" etc.) as it appears in the rendered string.
