@@ -217,6 +217,12 @@ def test_implausible_cost_is_flagged():
 
 
 if __name__ == "__main__":
+    # These tests verify the live cost-out math; the operational
+    # RPM_GOAL_OVERHEAD_PIN constant overrides the live overhead with a
+    # hand-set value (0.98 currently) and would break every cost-of-mile
+    # assertion below. Unset it for the duration of the run so the tests
+    # exercise what they're actually documenting.
+    os.environ["RPM_GOAL_OVERHEAD_PIN"] = "0"
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
     for fn in fns:
