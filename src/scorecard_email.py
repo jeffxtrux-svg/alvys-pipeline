@@ -4166,7 +4166,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
-                ontime=None, dh_trend=None, customer_rpm=None, equipment=None) -> str:
+                ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
+                part: str = "all") -> str:
+    """Executive overview page. `part` controls split rendering so build_page8
+    (bill-by-bill matching) can land on physical PDF page 5 between the AR
+    reconciliation/insight bubble and the Overdue Invoices table:
+      * "all"      — full original output (single page render).
+      * "overview" — header + bottom-line + tiles through the AR insight
+                     bubble; cuts BEFORE the Overdue Invoices table so the
+                     bill-by-bill page can be inserted here.
+      * "rest"     — Overdue Invoices + safety summary + footer; no header
+                     (renders as a continuation of the overview)."""
     co = qb_company_totals(qb_pnl) if qb_pnl else {}
     w7 = (alvys or {}).get("7d", {})
     wmtd = (alvys or {}).get("mtd", {})
@@ -4607,20 +4617,32 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             + _tile("Variance &middot; QB &minus; Alvys", money(abs(_d)),
                     _pill(pct(recon["pct"]) + " of AR", recon["kind"]))
             + empty_td)
+        # Forward pointers: the bill-by-bill matching page (anchor pg=13)
+        # is rendered immediately after this block so the reader can see
+        # which individual invoices drive the variance, and the full
+        # customer-level reconciliation lives on build_page7 (anchors
+        # pg=12 for its first page, pg=120 for its last). _pgref resolves
+        # to whatever physical PDF page each anchor lands on.
+        _recon_pgs = (f" Variance details on {_pgref(13, paren=False)}. "
+                      f"Full AR reconciliation on {_pgref(12, paren=False)} "
+                      f"and {_pgref(120, paren=False)}.")
         if recon["kind"] == "good":
             recon_note = ("QuickBooks and Alvys agree on open AR within 1% "
-                          f"({money(abs(_d))} apart) &mdash; receivables are in sync.")
+                          f"({money(abs(_d))} apart) &mdash; receivables are in sync."
+                          f"{_recon_pgs}")
         elif _d < 0:
             recon_note = (f"QuickBooks shows {money(abs(_d))} less open AR than Alvys "
                           f"({pct(recon['pct'])} of the balance). The likely cause is customer "
                           "payments applied in QuickBooks that haven&rsquo;t synced back to Alvys &mdash; "
                           "paid invoices drop out of QB&rsquo;s AR but still read open in the TMS, "
-                          "piling into the older buckets. Spot-check the oldest Alvys balances against QB.")
+                          "piling into the older buckets. Spot-check the oldest Alvys balances against QB."
+                          f"{_recon_pgs}")
         else:
             recon_note = (f"QuickBooks shows {money(abs(_d))} more open AR than Alvys "
                           f"({pct(recon['pct'])} of the balance) &mdash; likely invoices posted to "
                           "QuickBooks that Alvys hasn&rsquo;t billed or recorded yet. "
-                          "Reconcile X-Trux + X-Linx to clear it.")
+                          "Reconcile X-Trux + X-Linx to clear it."
+                          f"{_recon_pgs}")
 
     _goal_rpm = (rpm_goal or {}).get("goal_rpm")
     _goal_txt = f"goal {rpm(_goal_rpm)}" if _isnum(_goal_rpm) else "goal pending QB cost-out"
@@ -4757,41 +4779,56 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             f"<table width='100%' cellpadding='0' cellspacing='0'>"
             f"<tr>{''.join(_cards)}</tr></table></div>")
 
-    return (f"{_header('Morning Executive Brief', 1, date_str)}"
-            f"<div style='padding:18px 24px 4px;'>"
-            f"<div style='background:#fafafa;border-left:4px solid {XFREIGHT_RED};padding:16px 20px;"
-            f"color:{INK};font-size:13.5px;line-height:1.6;'>"
-            f"<span style='color:{XFREIGHT_RED};font-weight:800;text-transform:uppercase;"
-            f"font-size:10px;letter-spacing:1.5px;display:block;margin-bottom:6px;'>The bottom line</span>"
-            f"{bottom}</div></div>"
-            f"{rollover_banner}"
-            f"{action_items_html}"
-            f"{coaching_html}"
-            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            f"{warn_row}"
-            f"{_section('XFreight Overview')}"
-            f"<tr>{t1}</tr><tr>{t1b}</tr>"
-            f"{_section(_entity_section)}"
-            f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
-            f"{mtd_note}"
-            f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
-            + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
-               + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
-               if goal_tiles else "")
-            + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
-            + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
-               f"{_brief(recon_note, recon['kind'])}"
-               if recon_row else "")
-            + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
-               if alvys_ar_row else "")
-            + f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
-            + f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
-            + _qb_overdue_html
-            + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
-            + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
-            + _safety_detail_tables(samsara)
-            + f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-            + f"{asof}Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
+    _head = (f"{_header('Morning Executive Brief', 1, date_str)}"
+             f"<div style='padding:18px 24px 4px;'>"
+             f"<div style='background:#fafafa;border-left:4px solid {XFREIGHT_RED};padding:16px 20px;"
+             f"color:{INK};font-size:13.5px;line-height:1.6;'>"
+             f"<span style='color:{XFREIGHT_RED};font-weight:800;text-transform:uppercase;"
+             f"font-size:10px;letter-spacing:1.5px;display:block;margin-bottom:6px;'>The bottom line</span>"
+             f"{bottom}</div></div>"
+             f"{rollover_banner}"
+             f"{action_items_html}"
+             f"{coaching_html}")
+    _table_open = f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+    _overview_rows = (
+        f"{warn_row}"
+        f"{_section('XFreight Overview')}"
+        f"<tr>{t1}</tr><tr>{t1b}</tr>"
+        f"{_section(_entity_section)}"
+        f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
+        f"{mtd_note}"
+        f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
+        + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
+           + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
+           if goal_tiles else "")
+        + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
+        + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
+           f"{_brief(recon_note, recon['kind'])}"
+           if recon_row else "")
+        + (f"{_section('Alvys AR &mdash; aging by due date &middot; X-Trux + X-Linx open invoices')}<tr>{alvys_ar_row}</tr>"
+           if alvys_ar_row else "")
+        + f"{_section('Receivables &amp; payables &mdash; 6-month balance trend')}<tr>{recv_left}{ar_col_td}{ap_col_td}</tr>"
+        + f"{_brief(ar_insight, 'bad' if ar_rising else 'good')}"
+    )
+    _rest_rows = (
+        _qb_overdue_html
+        + f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}<tr>{safety_tiles}</tr>"
+        + f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}<tr>{safety_charts}</tr>"
+        + _safety_detail_tables(samsara)
+    )
+    _table_close = "</table>"
+    _footer = (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
+               f"border-top:1px solid {LINE};margin-top:14px;'>"
+               f"{asof}Orange bar = current month (MTD, partial). Sources: Alvys Master 2026, QuickBooks, Samsara.</div>")
+    if part == "overview":
+        # Cuts before the Overdue Invoices table so build_page8 can render
+        # on the next physical page (PDF p5) — no footer; the continuation
+        # carries it.
+        return f"{_head}{_table_open}{_overview_rows}{_table_close}"
+    if part == "rest":
+        # No header — renders as a visual continuation of the overview.
+        return f"{_table_open}{_rest_rows}{_table_close}{_footer}"
+    return f"{_head}{_table_open}{_overview_rows}{_rest_rows}{_table_close}{_footer}"
 
 
 def _safety_detail_tables(samsara) -> str:
@@ -5708,7 +5745,12 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
             f"a negative (red) value means Alvys shows more open AR &mdash; most often invoices already paid in QB but "
             f"not synced back. Rows sum to the page-1 variance. Customers joined by name; a one-sided row can be the "
             f"same customer spelled differently in the two systems. True bill-by-bill matching needs a shared invoice "
-            f"number (not in the Alvys feed today). Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+            f"number (not in the Alvys feed today). Sources: QuickBooks A/R Aging Detail, Alvys API (Loads)."
+            # Tail anchor for page 1's "Full AR reconciliation on pg X and Y" reference —
+            # _pgref(120) resolves to the LAST physical page of this report, since the
+            # _section/_table block above can wrap onto a second page.
+            f"<a id='pgref-120' style='display:inline-block;width:0;height:0;'></a>"
+            f"</div>")
 
 
 def build_page8(qb_ar, alvys_ar, date_str) -> str:
@@ -6075,27 +6117,33 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}{print_css}</head>"
             f"<body style='margin:0;background:#f3f3f3;{FONT}'>"
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment))}{pb}"
-            # Driver Mileage runs immediately after the Executive Brief (whose
-            # last section is X-Linx Overview) so the per-driver weekly view
-            # follows the entity-level summary. Safety and AR pages then come
-            # behind it. Function names build_page<N> are kept for stability,
-            # but the page-number arguments in _header reflect the actual
-            # render order.
-            # Pages 2-13 grouped into three sections (SAFETY leads):
-            #   SAFETY       (pages 2-6): SambaSafety driver/MVR scan,
-            #                              Samsara speed-over-limit detail (pg 3),
-            #                              Driver safety scores (pg 4),
-            #                              Equipment compliance tractors (pg 5),
-            #                              Equipment compliance trailers (pg 6)
-            #   OPERATIONAL  (pages 7-9): driver mileage, fleet MPG/speeding,
-            #                              fleet idle
-            #   CSA SCORECARD (page 10):  FMCSA carrier BASIC percentiles (SambaSafety)
-            #   ACCOUNTING   (pages 11-13): QB AR overdue + Alvys un-invoiced/90+ AR
-            #                              combined (pg 11); QB-vs-Alvys recon (pg 12);
-            #                              bill match (pg 13)
-            # Function names (build_pageN) are kept stable; the integer page
-            # number arg to _header() reflects the actual render position.
+            # build_page1 is rendered in two halves so the bill-by-bill
+            # matching page (build_page8) can land on physical PDF page 5
+            # between the AR reconciliation and the Overdue Invoices table.
+            # The recon_note above carries forward "Variance details on pg X"
+            # / "Full AR reconciliation on pg Y and Z" cross-references that
+            # auto-resolve to whatever physical pages the targets land on.
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='overview'))}{pb}"
+            f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
+            f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
+            # Logical page ordering (function names build_page<N> kept
+            # stable for git history; the integer page-number arg to
+            # _header()/_strip() is just an anchor id consumed by
+            # CSS target-counter):
+            #   1   Executive overview (part='overview')   — build_page1
+            #   --  Bill-by-bill matching                  — build_page8 (moved up)
+            #   1b  Executive overview (part='rest')       — build_page1
+            #   SAFETY  (then): SambaSafety scan, Samsara safety detail,
+            #                   per-driver safety scores, tractor + trailer
+            #                   equipment compliance
+            #   OPERATIONAL:    driver mileage, fleet MPG/speeding, fleet idle
+            #   CSA SCORECARD:  FMCSA carrier BASIC percentiles
+            #   ACCOUNTING:     QB AR overdue + Alvys un-invoiced/90+ AR
+            #                   combined; QB-vs-Alvys recon by customer
+            # build_page8 used to close the brief as logical page 13; it now
+            # renders right after the AR reconciliation tiles on page 1 so
+            # the variance has its drill-down before the reader has to
+            # leaf through 25+ pages.
             # -- SAFETY --
             # SambaSafety driver scan (build_page9) leads the safety section;
             # Samsara safety detail (build_page2) follows.
@@ -6112,8 +6160,11 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(10) + build_csa_scorecard_page(csa, date_str))}{pb}"
             # -- ACCOUNTING --
             f"{wrap(_strip(11) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(12) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}"
+            # build_page8 (bill-by-bill matching) used to render here as
+            # the very last page; it now renders early, between the two
+            # halves of build_page1, so the variance has a forward pointer
+            # readers can chase before they finish the executive overview.
+            f"{wrap(_strip(12) + build_page7(qb_ar, alvys_ar, date_str))}"
             f"</body></html>")
 
 

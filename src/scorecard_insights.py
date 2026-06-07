@@ -698,8 +698,10 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
     out[12] = ("QB-vs-Alvys gap broken down per customer. Top rows = "
                "biggest contributors to the variance.")
 
-    # Page 13 — Bill-by-bill match
-    out[13] = ("Page 12 showed customer-level variances. This page drills to "
-               "individual unmatched invoices.")
+    # Page 13 — Bill-by-bill match (rendered early in the brief — right after
+    # the AR reconciliation on page 1 — so the prose can't lean on a prior
+    # page's customer-level view.)
+    out[13] = ("Drills the QB-vs-Alvys variance to individual unmatched "
+               "invoices &mdash; the bills behind the page 1 gap.")
 
     return out
