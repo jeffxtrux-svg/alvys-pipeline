@@ -1669,7 +1669,11 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
         if bucket is None:
             continue
         amt = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
-        if not _isnum(amt) or amt == 0:
+        # Drop sub-cent rows so QuickBooks rounding artifacts (e.g. the
+        # DAKOTA POTTERS SUPPLY row that displays as "$-0" with no invoice
+        # number) don't clutter the actionable overdue list. Exact-zero
+        # and near-zero values both get filtered here.
+        if not _isnum(amt) or abs(amt) < 0.01:
             continue
         totals[bucket] += float(amt)
         rows.append({
