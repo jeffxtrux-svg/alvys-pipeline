@@ -7,6 +7,9 @@
 # trigger: shift crons 1hr earlier for 5:30am CDT delivery.
 # trigger: pin office overhead/mi to $0.92 while costing algorithm catches up.
 # trigger: manual fire for 2026-06-06 — all 6 scheduled slots dropped.
+# trigger: 2026-06-07 — re-fire after restoring 9 scorecard fixes that were
+# lost when the karpathy branch was force-pushed (coaching ack from
+# SafetyEvents, BL speed key, RPM chart/tile parity, MTD idle gallons, etc.).
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.
