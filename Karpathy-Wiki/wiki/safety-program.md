@@ -3,7 +3,7 @@ title: Safety Program
 type: concept
 tags: [safety, compliance, samsara, sambasafety, fmcsa]
 sources: ["raw/xfreight-safety-program.md", "raw/xfreight-safety-program-policies.md", "raw/xfreight-driver-discipline-and-incidents.md"]
-related: ["[[FMCSA CSA Scorecard]]", "[[Driver Roster]]", "[[Key People]]", "[[Daily Scorecard Email]]", "[[Owner-Operator Program]]"]
+related: ["[[FMCSA CSA Scorecard]]", "[[Driver Roster]]", "[[Key People]]", "[[Daily Scorecard Email]]", "[[Owner-Operator Program]]", "[[Coaching Ack]]"]
 ---
 
 # Safety Program
@@ -62,9 +62,11 @@ Two-tier policy on the Coaching needs assigned list:
 | Tier | Events | Behavior |
 |---|---|---|
 | **Monitor** | < `COACH_EVENT_THRESHOLD` (2) | Drops off 7 days after last event. Ack = "n/a". |
-| **Assign coaching** | ≥ 2 | Stays until driver signs Samsara coaching session, then 3 more days (`_ACK_KEEP_DAYS = 3`). |
+| **Assign coaching** | ≥ 2 | Stays until all events for that driver are coached, then 3 more days (`_ACK_KEEP_DAYS = 3`). Shows **Coach** and **Ack** columns. |
 
-Driver signing is detected from Samsara CoachingSessions: `Status = completed` with `Completed At` ≥ event timestamp. The **Ack** column shows ✓ (green) when signed.
+**Ack derivation (as of 2026-06-06 fix):** Ack state is derived from each safety event's `coachingStatus` field on the SafetyEvents sheet — `all_coached = True` when every event in the 30-day window has status in `{coached, dismissed, recognized}`. The `coach` field is the most-frequent `coachedBy.name` across coached events. `ack_ts` is the latest `coachedAtTime` (falling back to the event timestamp if unpopulated).
+
+> **Note:** The original design (PR #86) derived acks from Samsara's CoachingSessions sheet using a `coaching_acks` dict and `_ack_after()` helper. That approach was broken from the start — Samsara's `/coaching/sessions` endpoint returns HTTP 404 on every run, so the CoachingSessions sheet was always a placeholder and the Ack column always showed em-dash. The June 6 fix replaced that entirely. See [[Coaching Ack]] for the full root-cause analysis.
 
 ## MVR & License Program (Page 2)
 

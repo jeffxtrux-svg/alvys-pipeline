@@ -2,8 +2,8 @@
 title: Recent Decisions 2026-06-05
 type: concept
 tags: [decisions, pipeline, prs, changelog]
-sources: ["raw/xfreight-recent-decisions-2026-06-05.md", "raw/xfreight-owner-operator-program.md", "raw/xfreight-settlement-week.md"]
-related: ["[[Daily Scorecard Email]]", "[[Safety Program]]", "[[Daily Schedule]]", "[[Key People]]", "[[Owner-Operator Program]]", "[[Driver Roster]]"]
+sources: ["raw/xfreight-recent-decisions-2026-06-05.md", "raw/xfreight-coaching-ack-from-safety-events-2026-06-06.md", "raw/xfreight-owner-operator-program.md", "raw/xfreight-settlement-week.md"]
+related: ["[[Daily Scorecard Email]]", "[[Safety Program]]", "[[Daily Schedule]]", "[[Key People]]", "[[Owner-Operator Program]]", "[[Driver Roster]]", "[[Coaching Ack]]"]
 ---
 
 # Recent Decisions — 2026-06-05 / 2026-06-06
@@ -113,10 +113,23 @@ A single settlement week (Wed 3pm CT → Wed 2:59pm CT) therefore contains loads
 
 See [[Owner-Operator Program]] § "The Dispatch Date Locks the Rate" for full detail.
 
+## 2026-06-06 — Coaching Ack Fix (Post-PR #86 Correction)
+
+**Problem:** The Ack column on the "Coaching needs assigned" table was always em-dash for every "Assign coaching" driver — including Michael Hall, who had completed his session eight days earlier.
+
+**Root cause:** Samsara's `/coaching/sessions` REST endpoint returns HTTP 404 on every run. `_safe_get` swallowed the error, CoachingSessions was always a 1-row placeholder, and `out["coaching_acks"]` was always empty.
+
+**Fix:** `compute_samsara` now derives ack state directly from each safety event's `coachingStatus` field on the SafetyEvents sheet. `all_coached = True` when every event for the driver in the 30-day window has status in `{coached, dismissed, recognized}`. A new **Coach** column (from `coachedBy.name`) was added between Action and Ack. The dead `coaching_acks` builder and `_ack_after` helper were removed.
+
+This fix **supersedes the PR #86 approach** documented in the section above.
+
+→ Full root-cause analysis: [[Coaching Ack]].
+
 ## Connections
 
 - [[Daily Scorecard Email]] — most changes target this artifact.
 - [[Safety Program]] — driver Ack, coaching policy, speed escalation, MVR window.
+- [[Coaching Ack]] — June 6 fix to ack derivation (supersedes PR #86).
 - [[Daily Schedule]] — DST cron pattern hardened.
 - [[Key People]] — JB Sweere added to recipients.
 - [[FMCSA CSA Scorecard]] — MC # surfaced on page 10.
@@ -126,5 +139,6 @@ See [[Owner-Operator Program]] § "The Dispatch Date Locks the Rate" for full de
 ## Sources
 
 - `raw/xfreight-recent-decisions-2026-06-05.md` — PRs #86–#93.
+- `raw/xfreight-coaching-ack-from-safety-events-2026-06-06.md` — June 6 coaching-ack fix.
 - `raw/xfreight-owner-operator-program.md` — dispatch-date-locks-rate rule.
 - `raw/xfreight-settlement-week.md` — settlement week cycle + dispatch date context.

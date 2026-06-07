@@ -90,10 +90,12 @@ Track: Has the $43,739 been applied? What was the final settlement?
 ## Connections
 
 - [[Key People]] — Jeff, JB, Jami Hewitt, Kurt Swanson.
+- [[Insurance and Banking]] — full insurance program context: carriers, historical broker, banking, entity IDs.
 - [[Financial Performance]] — insurance cost affects net margin.
 - [[Rate-Per-Mile Goal]] — overhead pin absorbs insurance hike.
 - [[SBA 504 Financing]] — $43,739 credit (if applied) directly improves cash position for down payment.
 - [[Truk-Way Leasing]] — WC audit (Inv 29033) covers Truk-Way payroll.
+- [[Active Disputes and Open Issues]] — this dispute is item 1 on the open watch list.
 
 ## Sources
 

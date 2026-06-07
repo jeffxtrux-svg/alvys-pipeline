@@ -2,12 +2,12 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-06"
+last_compiled: "2026-06-07"
 ---
 
 # Wiki Index
 
-The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-06.
+The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-07.
 
 ## Meta
 
@@ -39,13 +39,16 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 - [[Cost Per Mile]] — itemized office-overhead breakdown (Jeff's "Jeff's Number" tab); currently pinned at $0.98/mi.
 - [[Factoring]] — four vendors compared (Pathward, Triumph, OTR, eCapital); decision pending as of Oct 2025.
 - [[Acrisure Dispute]] — active billing dispute with insurance broker; ~$95K claim vs ~$31K likely liability; unresolved as of June 2026.
+- [[Insurance and Banking]] — insurance program (Acrisure/Great West), historical broker, banking (First Dakota NB), and entity IDs.
 - [[SBA 504 Financing]] — ~$3M real-estate+business purchase under evaluation; expected to bring N&J entities online.
+- [[Active Disputes and Open Issues]] — consolidated watch list: Acrisure dispute, Billion Auto expiry, JWL, AGCO, X-Linx collapse, fleet shrinkage, SBA 504.
 
 ---
 
 ## Safety & Compliance
 
 - [[Safety Program]] — speed-over-limit rubric, coaching policy, MVR workflow, equipment inspections, and driver discipline framework.
+- [[Coaching Ack]] — June 6, 2026 fix: coaching ack now derived from SafetyEvents `coachingStatus`, not the always-empty CoachingSessions sheet.
 - [[FMCSA CSA Scorecard]] — X-Trux carrier profile (DOT #841776 / MC #375851), BASIC percentile thresholds, page-10 rendering.
 - [[Owner-Operator Program]] — $1.89/mi loaded+empty, no driver-facing cameras, no forced dispatch; hybrid direct-OO and OO-group structure.
 - [[Driver Roster]] — Dec 2024 snapshot (21 drivers); settlement-week cycle (Wed 3pm CT); mileage target 2,750 mi/wk.
@@ -73,7 +76,7 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 
 ## Decisions & Events
 
-- [[Recent Decisions 2026-06-05]] — PRs #86–#97: driver Ack, coaching policy, MVR window, fleet-miles MTD bug, MC # on page 10, AR tile layout, speed escalation, DST cron, JB as recipient, dispatch-date-locks-rate rule.
+- [[Recent Decisions 2026-06-05]] — PRs #86–#97 (June 5–6): driver Ack, coaching policy, MVR window, fleet-miles MTD bug, MC # on page 10, AR tile layout, speed escalation, DST cron, JB as recipient, dispatch-date-locks-rate rule, and the June 6 coaching-ack fix.
 
 ---
 
