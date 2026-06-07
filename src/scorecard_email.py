@@ -3817,6 +3817,15 @@ def _xfreight_logo_svg(width: int = 180, height: int = 32) -> str:
     )
 
 
+def _pgref(n: int, paren: bool = True) -> str:
+    """Anchor link that CSS target-counter resolves to the actual PDF page
+    where logical page `n` lands. Matches the helper of the same name in
+    scorecard_insights (kept duplicated here so prose generators in this
+    module don't need a circular import)."""
+    cls = "pgref" if paren else "pgref-bare"
+    return f"<a class='{cls}' href='#pgref-{int(n)}'></a>"
+
+
 def _header(sub, pg, date_str, section=None):
     """Branded page header — XFreight logo bar + serif italic doc label + date,
     with an optional section chip and a thick red rule below.
@@ -3838,6 +3847,7 @@ def _header(sub, pg, date_str, section=None):
     except Exception:
         day_part, date_part = date_str, ""
     return (
+        f"<a id='pgref-{pg}' style='display:inline-block;width:0;height:0;'></a>"
         f"<table width='100%' cellpadding='0' cellspacing='0' "
         f"style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 24px 14px;'>"
         f"<tr>"
@@ -4109,7 +4119,7 @@ def compute_drag_attribution(
         if hos24:
             bits.append(f"{hos24} HOS violation{'s' if hos24 != 1 else ''}")
         return {
-            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review page 3.",
+            "text": f"Biggest drag is safety: {' and '.join(bits)} in last 24h &mdash; review {_pgref(3, paren=False)}.",
             "metric": "safety", "kind": "bad",
         }
 
@@ -4212,7 +4222,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"{_pill('see pg 11', 'bad')} &middot; gap = un-invoiced loads (see pg 11)</div></div>")
+                f"{_pill(f'see {_pgref(11, paren=False)}', 'bad')} &middot; gap = un-invoiced loads (see {_pgref(11, paren=False)})</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
@@ -4651,7 +4661,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
               f"RPM {rpm(wmtda.get('rpm'))} ({_goal_txt}), "
               f"deadhead {pct(wmtda.get('deadhead'))} (goal &le;{pct(TARGET_DEADHEAD)}). "
               f"{money(qb_ar.get('total31') if qb_ar else None)} is 31+ days overdue per QuickBooks "
-              f"(X-Trux + X-Linx snapshot &mdash; see pg 12). "
+              f"(X-Trux + X-Linx snapshot &mdash; see {_pgref(12, paren=False)}). "
               f"Safety: {swv('events', '24h')} events &amp; {swv('hos', '24h')} HOS violations &middot; last 24h.")
     if drag and drag.get("text"):
         legacy_bottom += f" {drag['text']}"
@@ -5284,8 +5294,8 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"back to <code>idle_hours &times; 0.8 gph</code> when the counter "
             f"isn't exposed. All-in MPG = miles &divide; (drive gallons + idle "
             f"gallons). Per-driver speed-over-limit % and the speeder ranking "
-            f"are on the Driver Safety Scores page (pg 4); 5-week idle "
-            f"ranking is on the Fleet Idle page (pg 9).</div>")
+            f"are on the Driver Safety Scores page {_pgref(4)}; 5-week idle "
+            f"ranking is on the Fleet Idle page {_pgref(9)}.</div>")
 
 
 def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> str:
@@ -5706,7 +5716,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
     head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 13, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
-               "numbers, or there is no open AR. See page 12 for the customer-level reconciliation.")
+              f"numbers, or there is no open AR. See {_pgref(12, paren=False)} for the customer-level reconciliation.")
         return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_brief(msg, 'warn')}</table>"
                 f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
@@ -5716,7 +5726,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
         # Neither invoice # nor Load # overlapped QB's Num — show samples to compare formats.
         msg = ("Couldn&rsquo;t match bills: neither the Alvys invoice number nor the Alvys Load # overlaps the "
                "QuickBooks invoice &lsquo;Num&rsquo;. Sample identifiers below &mdash; the two systems appear to "
-               "number invoices differently. Use page 12 (by customer) meanwhile.")
+              f"number invoices differently. Use {_pgref(12, paren=False)} (by customer) meanwhile.")
         srows = ""
         al_s, qb_s = b.get("alvys_sample", []), b.get("qb_sample", [])
         for i in range(max(len(al_s), len(qb_s))):
@@ -5766,7 +5776,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
             f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
             f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
             f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
-            f"differently and this view is partial &mdash; use page 12. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+            f"differently and this view is partial &mdash; use {_pgref(12, paren=False)}. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
 def build_page9(samba, date_str, alvys_drivers=None) -> str:
@@ -6049,6 +6059,15 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         # Hide the in-content 'Page N of M' badge in print to avoid the
         # mismatch with the real-letter-page counter in the running footer.
         ".pg-of{display:none !important;}"
+        # Cross-page references resolved against the live PDF layout via
+        # CSS target-counter — anchors are dropped in each _header() block
+        # as `<a id="pgref-N">` for the logical page N, then prose links
+        # like `<a class="pgref" href="#pgref-3">` render as "(pg 9)" when
+        # logical page 3 actually lands on PDF page 9. Stays accurate
+        # forever; no manual mapping to maintain.
+        ".pgref,.pgref-bare{color:" + MUTE + ";text-decoration:none;font-weight:500;}"
+        ".pgref::before{content:'(pg ' target-counter(attr(href), page) ')';}"
+        ".pgref-bare::before{content:'pg ' target-counter(attr(href), page);}"
         "}"
         "</style>"
     )
@@ -6324,6 +6343,12 @@ def render_pdf(html: str) -> bytes | None:
             # rather than getting orphaned onto an otherwise-empty page.
             ".pdf-source-note{page-break-before:avoid!important;"
             "break-before:avoid!important;}"
+            # Same target-counter trick as the main print stylesheet —
+            # re-declared because @page rules don't cascade between
+            # stylesheets and the landscape override drops the main rules.
+            ".pgref,.pgref-bare{color:" + MUTE + ";text-decoration:none;font-weight:500;}"
+            ".pgref::before{content:'(pg ' target-counter(attr(href), page) ')';}"
+            ".pgref-bare::before{content:'pg ' target-counter(attr(href), page);}"
         ))
 
         pdf_bytes = (

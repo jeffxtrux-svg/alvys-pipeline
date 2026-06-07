@@ -30,6 +30,23 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def _pgref(n: int, paren: bool = True) -> str:
+    """Render a cross-page reference whose printed number is the actual
+    PDF page where logical page `n` lands. Resolved by CSS target-counter
+    at WeasyPrint render time against an anchor `<a id='pgref-N'>` that
+    `_header()` in scorecard_email drops at the top of each logical page.
+
+    paren=True  → "(pg 9)"  for inline parentheticals like "...drivers (pg 2)."
+    paren=False → "pg 9"    for sentence-flowing refs like "Collections list on pg 12."
+
+    Why: the brief's logical structure (page 1 overview, page 3 safety
+    detail, etc.) maps to physical PDF pages dynamically because sections
+    overflow. Hard-coding "(pg 3)" in prose drifts as content grows; this
+    helper stays accurate forever with no maintenance."""
+    cls = "pgref" if paren else "pgref-bare"
+    return f"<a class='{cls}' href='#pgref-{int(n)}'></a>"
+
+
 # ----------------------------------------------------------------------
 # Small helpers
 # ----------------------------------------------------------------------
@@ -215,7 +232,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
         if n_high:
             parts.append(
                 f"Driver compliance: {n_high} driver"
-                f"{'s' if n_high != 1 else ''} high-risk per MVR (pg 2).")
+                f"{'s' if n_high != 1 else ''} high-risk per MVR {_pgref(2)}.")
 
         # Name every driver inside the 14-day window with their exact
         # expiration date — short-fuse renewals are operationally
@@ -232,7 +249,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 date_str = "(unknown date)"
             parts.append(
                 f"{name} license will expire on {date_str}, and that is "
-                f"{int(d['days_to_exp'])} days from expiration (pg 2).")
+                f"{int(d['days_to_exp'])} days from expiration {_pgref(2)}.")
 
     # Alvys-side driver compliance — DOT medical card + CDL. Per Jeff:
     # only name drivers inside the 14-day window in the BOTTOM LINE
@@ -248,7 +265,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 date_str = "(unknown date)"
             parts.append(
                 f"{name}'s med card will expire on {date_str} which is "
-                f"{int(d['medical_days'])} days away (pg 2).")
+                f"{int(d['medical_days'])} days away {_pgref(2)}.")
         # Alvys can also flag CDL expirations — surface only when SambaSafety
         # didn't already cover the same driver (avoid double-naming).
         samba_named = {(_str_name(d) or "").lower()
@@ -266,7 +283,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 date_str = "(unknown date)"
             parts.append(
                 f"{name} CDL will expire on {date_str}, and that is "
-                f"{int(d['license_days'])} days from expiration (pg 2).")
+                f"{int(d['license_days'])} days from expiration {_pgref(2)}.")
 
     # Equipment compliance — surface overdue inspections at the executive
     # level so they don't get buried on the Equipment Compliance pages.
@@ -281,7 +298,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
             parts.append(
                 f"Tractors overdue on 120-day company DOT policy: "
-                f"{units}{more} (pg 5).")
+                f"{units}{more} {_pgref(5)}.")
         od_trailers = [t for t in (equipment.get("trailers") or [])
                        if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
         if od_trailers:
@@ -289,7 +306,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""
             parts.append(
                 f"Trailers overdue on 120-day company DOT policy: "
-                f"{units}{more} (pg 6).")
+                f"{units}{more} {_pgref(6)}.")
 
     # Speed-over-limit escalations — name the drivers whose page-4
     # speed-over-limit comment says "STOP this driver now" or "Need to sit
@@ -327,11 +344,11 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     if _stop_drivers:
         names = "; ".join(f"{n} ({c})" for n, c in _stop_drivers[:5])
         more = f" +{len(_stop_drivers) - 5} more" if len(_stop_drivers) > 5 else ""
-        parts.append(f"STOP-THIS-DRIVER speed escalations (pg 3): {names}{more}.")
+        parts.append(f"STOP-THIS-DRIVER speed escalations {_pgref(3)}: {names}{more}.")
     if _sit_drivers:
         names = "; ".join(f"{n} ({c})" for n, c in _sit_drivers[:5])
         more = f" +{len(_sit_drivers) - 5} more" if len(_sit_drivers) > 5 else ""
-        parts.append(f"Sit-down conversations needed on speed (pg 3): {names}{more}.")
+        parts.append(f"Sit-down conversations needed on speed {_pgref(3)}: {names}{more}.")
 
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
@@ -371,7 +388,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 f"TOP IDLER · {driver.upper()}",
                 f"Truck {top.get('unit', '—')} · {_pct(idle_pct)} idle. "
                 f"~{_money(fuel_cost)}/mo of fuel burned parked. "
-                f"See pg 9 for the full idle ranking and talk track."))
+                f"See {_pgref(9, paren=False)} for the full idle ranking and talk track."))
 
     # 2. RPM goal gap.
     if rpm_goal:
@@ -404,13 +421,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 "AR 31-60 CLIMBING",
                 f"{_money(v_31_60)} in 31-60 (+{_money(delta)}{since}). "
-                f"Collections call list on pg 12."))
+                f"Collections call list on {_pgref(12, paren=False)}."))
         elif v_31_60 > 20000 or (v_31_60 > 10000 and share > 0.20):
             items.append((
                 "warn",
                 "AR 31-60 BUCKET",
                 f"{_money(v_31_60)} in 31-60 ({_pct(share)} of 31+ total). "
-                f"Collections call list on pg 12."))
+                f"Collections call list on {_pgref(12, paren=False)}."))
 
     # 4. Un-invoiced loads (gap between Alvys revenue and QB invoicing).
     # Fire 'GROWING' label when count is up materially vs prior snapshot.
@@ -428,13 +445,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "warn",
                 "UN-INVOICED LOADS GROWING",
                 f"{n} delivered Alvys loads not yet invoiced (+{delta_n}{since}). "
-                f"{_money(amt)} total. See pg 11."))
+                f"{_money(amt)} total. See {_pgref(11, paren=False)}."))
         elif n >= 10 or amt > 50000:
             items.append((
                 "warn",
                 "UN-INVOICED LOADS",
                 f"{n} delivered Alvys loads not yet invoiced in QB "
-                f"({_money(amt)}). See pg 11."))
+                f"({_money(amt)}). See {_pgref(11, paren=False)}."))
 
     # 5. SambaSafety — expiring license is hard-deadline operational risk;
     # an expired CDL grounds the truck immediately. Surface as 'bad' if
@@ -459,19 +476,19 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "bad",
                 f"CDL {when} · {str(worst.get('name', '')).upper()}",
                 f"{len(expired)} expired + {len(soon_7)} expiring within 7d. "
-                f"Pull driver off the board until renewed. See pg 2."))
+                f"Pull driver off the board until renewed. See {_pgref(2, paren=False)}."))
         elif soon_30:
             items.append((
                 "warn",
                 "CDL RENEWALS UPCOMING",
                 f"{len(soon_30)} driver{'s' if len(soon_30) != 1 else ''} "
-                f"with license expiring within 30d. See pg 2."))
+                f"with license expiring within 30d. See {_pgref(2, paren=False)}."))
         n_high = len(samba.get("high_risk") or [])
         if n_high:
             items.append((
                 "warn",
                 f"MVR HIGH RISK · {n_high} DRIVER{'S' if n_high != 1 else ''}",
-                f"Per latest SambaSafety MVR scan. See pg 2 for names."))
+                f"Per latest SambaSafety MVR scan. See {_pgref(2, paren=False)} for names."))
 
     # 5b. Alvys DOT medical card — expired or expiring within 7d is a
     # hard-deadline operational risk (an expired medical card grounds the
@@ -489,13 +506,13 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
                 "bad",
                 f"DOT MEDICAL CARD · {str(worst.get('name', '')).upper()}",
                 f"Expires in {int(days or 0)}d ({len(med_7)} driver{'s' if len(med_7) != 1 else ''} "
-                f"inside 7d). Pull from board until renewed. See pg 2."))
+                f"inside 7d). Pull from board until renewed. See {_pgref(2, paren=False)}."))
         elif med_all:
             items.append((
                 "warn",
                 "DOT MEDICAL RENEWALS UPCOMING",
                 f"{len(med_all)} driver{'s' if len(med_all) != 1 else ''} "
-                f"with medical card expiring within 30d. See pg 2."))
+                f"with medical card expiring within 30d. See {_pgref(2, paren=False)}."))
 
     # 6. Safety event — only surface if 24h count is non-zero.
     win24 = ((samsara or {}).get("windows") or {}).get("events") or {}
@@ -505,7 +522,7 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
             "warn",
             "SAFETY EVENT · 24h",
             f"{int(e24)} event{'s' if int(e24) != 1 else ''} in last 24h. "
-            f"See pg 3 for detail."))
+            f"See {_pgref(3, paren=False)} for detail."))
 
     # Severity-sort: bad first, then warn.
     items.sort(key=lambda x: 0 if x[0] == "bad" else 1)
@@ -617,7 +634,7 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
     out[3] = (f"Page 1's safety summary captured {int(e24 or 0)} event"
               f"{'s' if int(e24 or 0) != 1 else ''} in last 24h. "
               f"Per-driver speed-over-limit detail below; full safety-score "
-              f"ranking is on page 4.")
+              f"ranking is on {_pgref(4, paren=False)}.")
 
     # Page 4 — Driver Safety Scores (split out from page 3)
     out[4] = ("Per-driver Samsara safety score with the harsh-event counts "
@@ -642,7 +659,7 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
     if _isnum(fleet_mpg):
         out[8] = (f"Fleet MPG is running {fleet_mpg:.2f} (Samsara Trips). "
                   f"Best/worst trucks and speeders below; full idle ranking "
-                  f"is on page 9.")
+                  f"is on {_pgref(9, paren=False)}.")
 
     # Page 9 — Fleet Idle (its own page)
     idle = fleet.get("idle") or []
