@@ -5095,10 +5095,10 @@ def _safety_detail_tables(samsara) -> str:
         )
 
     return (
-        f"{_section('HOS violations &mdash; last 7 days')}"
-        f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
         f"{_section('Safety events &mdash; last 7 days')}"
         f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
+        f"{_section('HOS violations &mdash; last 7 days')}"
+        f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
