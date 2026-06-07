@@ -4274,7 +4274,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"{_pill(f'see {_pgref(11, paren=False)}', 'bad')} &middot; gap = un-invoiced loads (see {_pgref(11, paren=False)})</div></div>")
+                f"gap = un-invoiced + or &minus; Net QB &minus; Alvys "
+                f"{_pgref(60, paren=False)} and {_pgref(70, paren=False)}</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
@@ -4602,7 +4603,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"border-top:2px solid {LINE};'>{money(_g_diff)}</td>"
                 f"<td style='border-top:2px solid {LINE};'></td></tr>"
             )
+            # pgref-60 / pgref-70 are start/end anchors for the AR-aging
+            # block — the page-4 AR PAST DUE tile uses them to render
+            # "pg X and Y" pointing at this section's actual physical
+            # pages, auto-updating if the layout shifts.
             _qb_overdue_html = (
+                f"<tr><td colspan='4' style='padding:0;'>"
+                f"<a id='pgref-60' style='display:inline-block;width:0;height:0;'></a></td></tr>"
                 f"{_section('AR aging &mdash; past due (all buckets) &middot; QuickBooks vs Alvys &middot; as of ' + date_str)}"
                 f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'QB amount', 'Alvys amount', 'Difference', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'right', 'right', 'left'], _pd_body + _pd_total)}"
             )
@@ -4671,7 +4678,20 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 _qb_overdue_html += (
                     f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
                     f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total + _orph_caption)}"
+                    # pgref-70 = tail anchor for the AR-aging block. Lives
+                    # after the orphan caption so it resolves to whichever
+                    # physical page the section ends on (one or two pages).
+                    f"<tr><td colspan='4' style='padding:0;'>"
+                    f"<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a></td></tr>"
                 )
+        # When there's no past-due data at all, still plant the anchors so
+        # the page-4 tile reference doesn't error out with empty "pg ".
+        if not _qb_overdue_html:
+            _qb_overdue_html = (
+                f"<tr><td colspan='4' style='padding:0;'>"
+                f"<a id='pgref-60' style='display:inline-block;width:0;height:0;'></a>"
+                f"<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a></td></tr>"
+            )
 
     # Safety tiles + trend charts
     sf = (samsara or {})
