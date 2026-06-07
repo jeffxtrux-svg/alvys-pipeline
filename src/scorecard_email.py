@@ -5697,9 +5697,18 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
                           + tc_cell
                           + _icell(aim_txt, "right")
                           + "</tr>")
+        # NOTE: explicit page-break-inside:auto + overflow:visible on the
+        # inner table so WeasyPrint allows it to split across pages. The
+        # `pdf-data-wrap` class added to the outer <tr> by the PDF
+        # post-processor only loosens the OUTER row — without these inline
+        # overrides the inner table stayed atomic (overflow:hidden was
+        # forcing it to render as a single block), which pushed the whole
+        # 17-row idle ranking to a fresh page and left the tiles +
+        # section header sitting on a mostly-empty p22.
         idle_tbl = (f"<tr><td colspan='4' class='scroll-wide' style='padding:0 6px;'>"
                     f"<table width='100%' cellpadding='0' cellspacing='0' "
-                    f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;overflow:hidden;'>"
+                    f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;"
+                    f"overflow:visible;page-break-inside:auto;break-inside:auto;'>"
                     f"{idle_head}{idle_body}</table></td></tr>")
     else:
         idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
