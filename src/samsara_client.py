@@ -92,6 +92,23 @@ class SamsaraClient:
             log.warning("GET %s → %s — skipping", path, e)
             return []
 
+    def _get_one(self, path: str, params: dict | None = None) -> dict | None:
+        """Single-resource GET. Returns the `data` dict from the response,
+        or None on any HTTP error. Used by detail endpoints (e.g. fetching
+        an individual safety event to pick up coachedBy)."""
+        try:
+            url = f"{BASE_URL}{path}"
+            resp = self._session.get(
+                url, headers=self._headers(), params=(params or {}), timeout=30
+            )
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+            d = payload.get("data")
+            return d if isinstance(d, dict) else None
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     # Reference / roster data (no time filter needed)
     # ------------------------------------------------------------------
@@ -251,40 +268,35 @@ class SamsaraClient:
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events.
 
-        Tries to lazy-expand the coachedBy object via `include=coachedBy`
-        (and `expand=coachedBy` as a belt-and-suspenders fallback) so the
-        scorecard can label coached events with the manager's name. Samsara
-        ignores unknown query params, so this is safe even if `include`
-        isn't a documented option for this endpoint.
+        The list endpoint does NOT include `coachedBy` in its response
+        (confirmed by diagnostic probe — keys are behaviorLabels,
+        coachingState, downloadForwardVideoUrl, downloadInwardVideoUrl,
+        driver, id, location, maxAccelerationGForce, time, vehicle).
+        Callers that want the coach name should follow up with
+        fetch_safety_event_detail(id) per event — see samsara_main's
+        enrichment loop.
         """
         log.info("Fetching safety events %s → %s…", start.date(), end.date())
         # /fleet/safety-events caps page size at 200 (PAGE_LIMIT of 512 -> HTTP 400).
-        params = {
-            "startTime": _iso(start), "endTime": _iso(end), "limit": 200,
-            # See docstring — speculative param probe for coachedBy expansion.
-            "include": "coachedBy,coachedAt",
-            "expand": "coachedBy,coachedAt",
-        }
+        params = {"startTime": _iso(start), "endTime": _iso(end), "limit": 200}
         items = self._safe_get("/fleet/safety-events", params)
         log.info("Total safety events: %d", len(items))
-        # One-time diagnostic: log the keys present on the first event so we
-        # can see whether the include/expand probe surfaced coachedBy. Look
-        # for keys like 'coachedBy', 'coachedAt', 'coachingState' in the
-        # output. Drop after we've confirmed what Samsara returns.
-        if items:
-            log.info("DIAG safety-event keys (first record): %s",
-                     sorted(items[0].keys()))
-            # Also flag any record that does carry coachedBy so we know it
-            # CAN come through, even if rare.
-            with_coach = [i for i, r in enumerate(items)
-                          if isinstance(r, dict) and r.get("coachedBy")]
-            log.info("DIAG safety-events carrying coachedBy: %d / %d",
-                     len(with_coach), len(items))
-            if with_coach:
-                _sample = items[with_coach[0]]
-                log.info("DIAG sample coachedBy payload: %r",
-                         _sample.get("coachedBy"))
         return items
+
+    def fetch_safety_event_detail(self, event_id: str) -> dict | None:
+        """Single safety event detail — picks up `coachedBy` and other
+        fields the list endpoint omits. Tries the v2 path first then the
+        v1 fallback. Returns None on any error so the caller can skip
+        and keep going."""
+        if not event_id:
+            return None
+        # /fleet/safety-events/{id} is the documented v2 detail endpoint.
+        rec = self._get_one(f"/fleet/safety-events/{event_id}")
+        if rec is not None:
+            return rec
+        # v1 fallback in case the v2 detail endpoint isn't enabled for
+        # this tenant — same shape but under /v1/fleet/safety/events.
+        return self._get_one(f"/v1/fleet/safety/events/{event_id}")
 
     def fetch_hos_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """ELD / Hours of Service log entries."""

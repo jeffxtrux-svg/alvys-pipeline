@@ -469,6 +469,43 @@ def main() -> int:
     log.info("=" * 60)
     raw_safety = client.fetch_safety_events(start_safety, now)
 
+    # Enrich coached/dismissed/recognized events with the coachedBy
+    # object. Samsara's list endpoint omits coachedBy (confirmed by
+    # diagnostic probe — see samsara_client.fetch_safety_events
+    # docstring), so the only path to a coach name is per-event detail
+    # fetches. Skip rows where coachingState is needsRecognition (nobody
+    # acted yet) to keep the call count down. With ~75-100 coached
+    # events over 6 months and ~100ms per call, this adds ~10s to the
+    # daily pull. The detail records replace the corresponding raw_safety
+    # entry in place, so the existing flatten step picks up the new
+    # coachedBy.* columns with no other changes needed.
+    _ACTED_STATES = {"coached", "dismissed", "recognized"}
+    _coached_idx = [i for i, r in enumerate(raw_safety)
+                    if isinstance(r, dict)
+                    and str(r.get("coachingState") or "").lower() in _ACTED_STATES]
+    log.info("Enriching coachedBy for %d acted events (%d total)…",
+             len(_coached_idx), len(raw_safety))
+    _enriched_count = 0
+    _coachedby_count = 0
+    for _i in _coached_idx:
+        _ev = raw_safety[_i]
+        _detail = client.fetch_safety_event_detail(str(_ev.get("id") or ""))
+        if _detail:
+            _enriched_count += 1
+            # Merge detail over the list record so any field present in
+            # detail (notably coachedBy / coachedAt) wins.
+            raw_safety[_i] = {**_ev, **_detail}
+            if _detail.get("coachedBy"):
+                _coachedby_count += 1
+    log.info("  enrichment complete: %d/%d details fetched, "
+             "%d carry coachedBy",
+             _enriched_count, len(_coached_idx), _coachedby_count)
+    if _coachedby_count and _coached_idx:
+        _sample = next((raw_safety[i] for i in _coached_idx
+                        if raw_safety[i].get("coachedBy")), None)
+        if _sample:
+            log.info("  sample coachedBy payload: %r", _sample.get("coachedBy"))
+
     log.info("=" * 60)
     log.info("Step 7/10: HOS Logs (30 days)")
     log.info("=" * 60)
