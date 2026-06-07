@@ -4607,6 +4607,66 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'QB amount', 'Alvys amount', 'Difference', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'right', 'right', 'left'], _pd_body + _pd_total)}"
             )
 
+            # Alvys-only orphans — past-due invoices in Alvys (days > 0) with
+            # no matching QB row by invoice or load. Adding them rounds the
+            # Alvys-side total back to the AR PAST DUE · Alvys tile on page 1
+            # (the QB-keyed total above only counts Alvys amounts that have a
+            # QB anchor).
+            _qb_keys = {_norm_inv(r["invoice"]) for r in _pd_rows if r.get("invoice")}
+            _BUCKET_ORDER = {"1&ndash;30": 0, "31&ndash;60": 1, "61&ndash;90": 2, "91+": 3}
+            def _bucket_from_days(d: int) -> str:
+                if d <= 30: return "1&ndash;30"
+                if d <= 60: return "31&ndash;60"
+                if d <= 90: return "61&ndash;90"
+                return "91+"
+            _orphans: list[dict] = []
+            for _a in _al_open:
+                days = int(_a.get("days") or 0)
+                if days <= 0:
+                    continue
+                inv_key = _norm_inv(_a.get("invoice"))
+                load_key = _norm_inv(_a.get("load"))
+                if (inv_key and inv_key in _qb_keys) or (load_key and load_key in _qb_keys):
+                    continue
+                amt = float(_a.get("amount") or 0)
+                if abs(amt) < 1.0:
+                    continue
+                _orphans.append({
+                    "customer": _cell(_a.get("customer")),
+                    "invoice": _cell(_a.get("invoice")) or _cell(_a.get("load")) or "",
+                    "amount": amt,
+                    "days": days,
+                    "bucket": _bucket_from_days(days),
+                })
+            _orphans.sort(key=lambda x: (_BUCKET_ORDER[x["bucket"]], -x["amount"]))
+            if _orphans:
+                _orph_body = ""
+                _g_orph = 0.0
+                for o in _orphans:
+                    _g_orph += o["amount"]
+                    _orph_body += _tr(
+                        [o["customer"], o["invoice"], f"{o['days']}d",
+                         money(o["amount"]), o["bucket"]],
+                        ["left", "left", "right", "right", "left"],
+                        [None, None, None, None, _bkt_kind.get(o["bucket"])],
+                    )
+                _orph_total = (
+                    f"<tr><td colspan='3' style='padding:9px 8px;font-weight:800;color:{INK};"
+                    f"border-top:2px solid {LINE};'>Total Alvys-only past due</td>"
+                    f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
+                    f"border-top:2px solid {LINE};'>{money(_g_orph)}</td>"
+                    f"<td style='border-top:2px solid {LINE};'></td></tr>"
+                )
+                _combined = _g_al + _g_orph
+                _qb_overdue_html += (
+                    f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
+                    f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total)}"
+                    f"<tr><td colspan='4' style='padding:8px 24px 14px;color:{MUTE};font-size:11px;'>"
+                    f"Combined Alvys past due (matched + orphans): "
+                    f"<b style='color:{INK};'>{money(_combined)}</b> &mdash; "
+                    f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1.</td></tr>"
+                )
+
     # Safety tiles + trend charts
     sf = (samsara or {})
     sw = sf.get("windows", {})
@@ -4703,7 +4763,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         # pg=12 for its first page, pg=120 for its last). _pgref resolves
         # to whatever physical PDF page each anchor lands on.
         _recon_pgs = (f" Variance details on {_pgref(13, paren=False)}. "
-                      f"Full AR reconciliation on {_pgref(12, paren=False)} "
+                      f"Full AR Reconciliation by Customer on {_pgref(12, paren=False)} "
                       f"and {_pgref(120, paren=False)}.")
         if recon["kind"] == "good":
             recon_note = ("QuickBooks and Alvys agree on open AR within 1% "
