@@ -4657,14 +4657,20 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                     f"border-top:2px solid {LINE};'>{money(_g_orph)}</td>"
                     f"<td style='border-top:2px solid {LINE};'></td></tr>"
                 )
+                # Combined-reconciliation caption stays inside the table as
+                # its final row — outside the table the stray <tr> rendered
+                # on its own page (the prior version landed PDF p8 alone).
                 _combined = _g_al + _g_orph
-                _qb_overdue_html += (
-                    f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
-                    f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total)}"
-                    f"<tr><td colspan='4' style='padding:8px 24px 14px;color:{MUTE};font-size:11px;'>"
+                _orph_caption = (
+                    f"<tr><td colspan='5' style='padding:8px 8px;color:{MUTE};"
+                    f"font-size:11px;background:#fafafa;border-top:1px solid {LINE};'>"
                     f"Combined Alvys past due (matched + orphans): "
                     f"<b style='color:{INK};'>{money(_combined)}</b> &mdash; "
                     f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1.</td></tr>"
+                )
+                _qb_overdue_html += (
+                    f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
+                    f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total + _orph_caption)}"
                 )
 
     # Safety tiles + trend charts
