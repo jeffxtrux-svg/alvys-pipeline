@@ -1645,6 +1645,18 @@ def _ar_bucket(section: str) -> str | None:
     return None  # Current / 1-30 excluded
 
 
+def _ar_bucket_all(section: str) -> str | None:
+    """Like _ar_bucket but also accepts the 1-30 bucket. Returns None for
+    Current. Used by the page-6 aging table where the goal is to see every
+    invoice past its due date, not just the actionable 31+ slice."""
+    s = str(section).lower()
+    if "current" in s:
+        return None
+    if "1" in s and "30" in s and "31" not in s and "13" not in s:
+        return "1&ndash;30"
+    return _ar_bucket(section)
+
+
 def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
     data = df[df["Row_Type"].astype(str) == "Data"] if "Row_Type" in df.columns else df
     amt_col = _find_col(df, ["open balance", "amount", "balance"]) or df.columns[-1]
@@ -1686,6 +1698,28 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
             "bucket": bucket,
         })
     rows.sort(key=lambda x: ({"31&ndash;60": 0, "61&ndash;90": 1, "91+": 2}[x["bucket"]], -x["amount"]))
+
+    # Same loop as above but using _ar_bucket_all so the page-6 aging table
+    # can show every past-due QB invoice, not just 31+. Sorted bucket-then-
+    # amount-desc so newest aging rows come first within each tier.
+    rows_past_due: list[dict] = []
+    for _, r in data.iterrows():
+        bucket = _ar_bucket_all(r.get("Section", ""))
+        if bucket is None:
+            continue
+        amt = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
+        if not _isnum(amt) or abs(amt) < 1.0:
+            continue
+        rows_past_due.append({
+            "customer": str(r.get(cust_col, "")) if cust_col else "",
+            "invoice": str(r.get(num_col, "")) if num_col else "",
+            "date": str(r.get(date_col, "")) if date_col else "",
+            "due": str(r.get(due_col, "")) if due_col else "",
+            "amount": float(amt),
+            "bucket": bucket,
+        })
+    _BUCKET_ORDER = {"1&ndash;30": 0, "31&ndash;60": 1, "61&ndash;90": 2, "91+": 3}
+    rows_past_due.sort(key=lambda x: (_BUCKET_ORDER[x["bucket"]], -x["amount"]))
     total_ar = pd.to_numeric(data[amt_col], errors="coerce").dropna().sum() if amt_col in data.columns else None
     # Past-due = everything not in Current. Tile shows this so the headline AR
     # number captures the full overdue book, not just 31+. Page 5's detailed
@@ -1715,7 +1749,8 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
             open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
                                   "customer": name, "amount": float(amt)})
 
-    return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
+    return {"rows": rows, "rows_past_due": rows_past_due,
+            "totals": totals, "total31": sum(totals.values()),
             "total_past_due": past_due_total,
             "total_ar": float(total_ar) if _isnum(total_ar) else None,
             "by_customer": by_customer, "open_invoices": open_invoices}
@@ -4507,32 +4542,69 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     if ar_rising:
         ar_insight += " Receivables growing &mdash; watch the 91+ bucket."
 
-    # Top-5 overdue AR customers (31+ days, by total balance) from QB.
-    # Replaces the older "Alvys 61+ spot-check" and "Top 5 customers" tables
-    # with the same 4-tile + overdue-invoice detail visual as page 8.
+    # Full AR aging — every past-due QB invoice (1-30 / 31-60 / 61-90 / 91+),
+    # joined to its Alvys counterpart by _norm_inv (same key the bill recon
+    # uses) so the reader can scan QB ↔ Alvys per row and spot variances in
+    # context. Per-bucket subtotals + a grand total close out the table.
+    # Allowed to wrap to a second page — the print CSS already sets
+    # tr{page-break-inside:avoid} so individual rows stay intact.
     _qb_overdue_html = ""
     if qb_ar:
-        _total31 = qb_ar.get("total31")
-        _ovr_rows = qb_ar.get("rows", []) or []
-        if _total31 or _ovr_rows:
-            _ovr_body = ""
-            for r in _ovr_rows:
-                k = "bad" if r["bucket"] == "91+" else "warn"
-                _ovr_body += _tr(
-                    [r["customer"], r["invoice"], r["date"], r["due"], money(r["amount"]), r["bucket"]],
-                    ["left", "left", "left", "left", "right", "left"],
-                    [None, None, None, None, (k if r["bucket"] == "91+" else None), k],
+        _pd_rows = qb_ar.get("rows_past_due", []) or []
+        if _pd_rows:
+            # Alvys side: one bag of open invoices keyed by _norm_inv. Sum
+            # multiple Alvys rows under the same key so a customer with two
+            # legs against one QB invoice still nets correctly.
+            _al_by: dict[str, float] = {}
+            _al_open = ((alvys_ar or {}).get("open_invoices") or [])
+            for _a in _al_open:
+                for _field in ("invoice", "load"):
+                    _k = _norm_inv(_a.get(_field))
+                    if _k:
+                        _al_by[_k] = _al_by.get(_k, 0.0) + float(_a.get("amount") or 0)
+                        break  # one key per Alvys row
+            _bkt_kind = {"1&ndash;30": None, "31&ndash;60": "warn",
+                         "61&ndash;90": "warn", "91+": "bad"}
+            _pd_body = ""
+            _bk_qb: dict[str, float] = {}
+            _bk_al: dict[str, float] = {}
+            for r in _pd_rows:
+                bk = r["bucket"]
+                qb_amt = float(r["amount"])
+                al_amt = _al_by.get(_norm_inv(r["invoice"]), 0.0)
+                diff = qb_amt - al_amt
+                _bk_qb[bk] = _bk_qb.get(bk, 0.0) + qb_amt
+                _bk_al[bk] = _bk_al.get(bk, 0.0) + al_amt
+                _diff_acc = "bad" if abs(diff) > 1.0 else "good"
+                _pd_body += _tr(
+                    [r["customer"], r["invoice"], r["date"], r["due"],
+                     money(qb_amt),
+                     (money(al_amt) if al_amt else "&mdash;"),
+                     (money(diff) if abs(diff) > 0.5 else "&mdash;"),
+                     bk],
+                    ["left", "left", "left", "left", "right", "right", "right", "left"],
+                    [None, None, None, None, None, None,
+                     (_diff_acc if abs(diff) > 1.0 else None),
+                     _bkt_kind.get(bk)],
                 )
-            _ovr_total = (
+            # Grand totals
+            _g_qb = sum(_bk_qb.values())
+            _g_al = sum(_bk_al.values())
+            _g_diff = _g_qb - _g_al
+            _pd_total = (
                 f"<tr><td colspan='4' style='padding:9px 8px;font-weight:800;color:{INK};"
-                f"border-top:2px solid {LINE};'>Total 31+ days overdue</td>"
+                f"border-top:2px solid {LINE};'>Total past due</td>"
                 f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
-                f"border-top:2px solid {LINE};'>{money(_total31)}</td>"
+                f"border-top:2px solid {LINE};'>{money(_g_qb)}</td>"
+                f"<td align='right' style='padding:9px 8px;font-weight:800;color:{INK};"
+                f"border-top:2px solid {LINE};'>{money(_g_al)}</td>"
+                f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD if abs(_g_diff) > 1.0 else INK};"
+                f"border-top:2px solid {LINE};'>{money(_g_diff)}</td>"
                 f"<td style='border-top:2px solid {LINE};'></td></tr>"
             )
             _qb_overdue_html = (
-                f"{_section('Overdue invoices (31+ days) by customer &middot; X-Trux + X-Linx &middot; as of ' + date_str)}"
-                f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'Amount', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'left'], _ovr_body + _ovr_total)}"
+                f"{_section('AR aging &mdash; past due (all buckets) &middot; QuickBooks vs Alvys &middot; as of ' + date_str)}"
+                f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'QB amount', 'Alvys amount', 'Difference', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'right', 'right', 'left'], _pd_body + _pd_total)}"
             )
 
     # Safety tiles + trend charts
