@@ -327,11 +327,11 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     if _stop_drivers:
         names = "; ".join(f"{n} ({c})" for n, c in _stop_drivers[:5])
         more = f" +{len(_stop_drivers) - 5} more" if len(_stop_drivers) > 5 else ""
-        parts.append(f"STOP-THIS-DRIVER speed escalations (pg 4): {names}{more}.")
+        parts.append(f"STOP-THIS-DRIVER speed escalations (pg 3): {names}{more}.")
     if _sit_drivers:
         names = "; ".join(f"{n} ({c})" for n, c in _sit_drivers[:5])
         more = f" +{len(_sit_drivers) - 5} more" if len(_sit_drivers) > 5 else ""
-        parts.append(f"Sit-down conversations needed on speed (pg 4): {names}{more}.")
+        parts.append(f"Sit-down conversations needed on speed (pg 3): {names}{more}.")
 
     if not parts:
         parts.append(f"{mtd_label} signal currently sparse — "
