@@ -6097,7 +6097,8 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
 
     tiles = (_tile("Monitored drivers", num(samba["monitored"]), _pill("enrolled", "mute"))
              + _tile("License issues", num(n_issue),
-                     _pill("suspended / expired / &le;30d", "bad" if n_issue else "good"))
+                     _pill("suspended / expired / &le;30d",
+                           "bad" if n_issue else "good", nowrap=False))
              + _tile(f"New violations &middot; {samba['window_days']}d", num(n_viol),
                      _pill("MVR alerts", "warn" if n_viol else "good"))
              + _tile("High-risk drivers", num(n_high),
