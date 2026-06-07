@@ -108,6 +108,24 @@ class SamsaraClient:
         log.info("Total drivers: %d", len(items))
         return items
 
+    def fetch_users(self) -> list[dict]:
+        """Organization users (admins/managers/coaches). Used by the
+        scorecard to resolve `coachedBy.id` → coach name on SafetyEvents
+        — Samsara doesn't surface `coachedBy.name` directly in our
+        tenant's response, so we look it up from the user directory.
+
+        Tries `/users` (current) and falls back to `/fleet/users` (older
+        path) before returning empty; either failure is fail-soft so a
+        missing scope can't kill the refresh."""
+        log.info("Fetching users (org admins/coaches)…")
+        for path in ("/users", "/fleet/users"):
+            items = self._safe_get(path)
+            if items:
+                log.info("Total users (%s): %d", path, len(items))
+                return items
+        log.info("Total users: 0 (no /users path returned data)")
+        return []
+
     # ------------------------------------------------------------------
     # Current snapshots
     # ------------------------------------------------------------------

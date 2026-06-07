@@ -443,6 +443,10 @@ def main() -> int:
     log.info("Step 2/9: Drivers")
     log.info("=" * 60)
     raw_drivers = client.fetch_drivers()
+    # Org users (admins/managers) — used by scorecard to resolve
+    # coachedBy.id → coach name on SafetyEvents (Samsara doesn't surface
+    # coachedBy.name in our tenant's response).
+    raw_users = client.fetch_users()
 
     log.info("=" * 60)
     log.info("Step 3/9: Vehicle Stats (odometer, fuel, engine state)")
@@ -647,6 +651,7 @@ def main() -> int:
     sheets: dict[str, pd.DataFrame] = {
         "Vehicles":       flatten(raw_vehicles,  "Vehicles"),
         "Drivers":        flatten(raw_drivers,   "Drivers"),
+        "Users":          flatten(raw_users,     "Users"),
         "VehicleStats":   flatten(raw_stats,     "VehicleStats"),
         "Locations":      flatten(raw_locations, "Locations"),
         "Trips":          flatten(raw_trips,     "Trips"),

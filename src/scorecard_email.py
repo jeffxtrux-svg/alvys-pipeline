@@ -2040,8 +2040,27 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 "coachedat", "coached at", "coachedattime",
                 "coachedby.completedattime", "reviewedat",
             ])
-            log.info("Coaching list cols: status=%s coach=%s coachedAt=%s",
-                     status_col, coach_col, coach_at_col)
+            # Fallback to user-directory lookup when coachedBy.name isn't
+            # in the feed: SafetyEvent rows still carry coachedBy.id, and
+            # the Users sheet (populated by samsara_main from /users) maps
+            # id → name. Empty user_map silently falls back to blank coach.
+            coach_id_col = _find_col(_7d, [
+                "coachedby.id", "coachedbyuser.id", "reviewedby.id",
+            ])
+            users_df = sheets.get("Users")
+            user_map: dict[str, str] = {}
+            if isinstance(users_df, pd.DataFrame) and not users_df.empty:
+                uid_col   = _find_col(users_df, ["id"])
+                uname_col = _find_col(users_df, ["name"])
+                if uid_col and uname_col:
+                    for _, ur in users_df.iterrows():
+                        uid = ur.get(uid_col)
+                        unm = ur.get(uname_col)
+                        if pd.notna(uid) and pd.notna(unm):
+                            user_map[str(uid).strip()] = str(unm).strip()
+            log.info("Coaching list cols: status=%s coach=%s coachedAt=%s "
+                     "coach_id=%s (users known: %d)",
+                     status_col, coach_col, coach_at_col, coach_id_col, len(user_map))
             _COACHED_STATUSES = {"coached", "dismissed", "recognized"}
             agg: dict = {}
             for idx in _7d.index:
@@ -2093,10 +2112,17 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         cand = pd.NaT
                     if pd.notna(cand) and (slot["ack_ts"] is None or cand > slot["ack_ts"]):
                         slot["ack_ts"] = cand
+                    cn = ""
                     if coach_col:
                         cn = str(r.get(coach_col, "") or "").strip()
-                        if cn:
-                            slot["coaches"][cn] = slot["coaches"].get(cn, 0) + 1
+                    # Fallback: resolve coachedBy.id via the Users directory
+                    # when the event itself doesn't carry the coach name.
+                    if not cn and coach_id_col and user_map:
+                        cid = str(r.get(coach_id_col, "") or "").strip()
+                        if cid and cid in user_map:
+                            cn = user_map[cid]
+                    if cn:
+                        slot["coaches"][cn] = slot["coaches"].get(cn, 0) + 1
             out["coaching_list"] = [
                 {
                     "driver": s["driver"], "events": s["events"],
