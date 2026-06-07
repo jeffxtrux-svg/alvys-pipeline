@@ -1669,11 +1669,12 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
         if bucket is None:
             continue
         amt = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
-        # Drop sub-cent rows so QuickBooks rounding artifacts (e.g. the
-        # DAKOTA POTTERS SUPPLY row that displays as "$-0" with no invoice
-        # number) don't clutter the actionable overdue list. Exact-zero
-        # and near-zero values both get filtered here.
-        if not _isnum(amt) or abs(amt) < 0.01:
+        # Drop sub-dollar rows so QuickBooks rounding artifacts (e.g. the
+        # DAKOTA POTTERS SUPPLY row whose true balance is a fraction of a
+        # dollar but renders as "$-0" because money() uses :.0f) don't
+        # clutter the actionable overdue list. Sub-dollar AR isn't worth
+        # chasing and would mislead anyone reading the rendered "$0".
+        if not _isnum(amt) or abs(amt) < 1.0:
             continue
         totals[bucket] += float(amt)
         rows.append({
@@ -1705,12 +1706,14 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
         for _, r in data.iterrows():
             name = str(r.get(cust_col, "")).strip()
             amt = pd.to_numeric(pd.Series([r.get(amt_col)]), errors="coerce").iloc[0]
-            if not _isnum(amt):
+            # Same sub-dollar floor as the overdue-rows loop above — keeps
+            # the customer-level reconciliation in sync so DAKOTA POTTERS
+            # (and any similar rounding artifact) doesn't reappear here.
+            if not _isnum(amt) or abs(amt) < 1.0:
                 continue
             by_customer.setdefault(_norm_name(name), {"name": name, "amount": 0.0})["amount"] += float(amt)
-            if abs(float(amt)) >= 0.01:
-                open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
-                                      "customer": name, "amount": float(amt)})
+            open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
+                                  "customer": name, "amount": float(amt)})
 
     return {"rows": rows, "totals": totals, "total31": sum(totals.values()),
             "total_past_due": past_due_total,
