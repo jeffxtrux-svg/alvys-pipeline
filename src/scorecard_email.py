@@ -4606,11 +4606,12 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             # pgref-60 / pgref-70 are start/end anchors for the AR-aging
             # block — the page-4 AR PAST DUE tile uses them to render
             # "pg X and Y" pointing at this section's actual physical
-            # pages, auto-updating if the layout shifts.
+            # pages, auto-updating if the layout shifts. Anchors are
+            # inlined into existing visible elements (no dedicated rows)
+            # so they consume zero vertical space.
+            _pg60_anchor = "<a id='pgref-60' style='display:inline-block;width:0;height:0;'></a>"
             _qb_overdue_html = (
-                f"<tr><td colspan='4' style='padding:0;'>"
-                f"<a id='pgref-60' style='display:inline-block;width:0;height:0;'></a></td></tr>"
-                f"{_section('AR aging &mdash; past due (all buckets) &middot; QuickBooks vs Alvys &middot; as of ' + date_str)}"
+                f"{_section(_pg60_anchor + 'AR aging &mdash; past due (all buckets) &middot; QuickBooks vs Alvys &middot; as of ' + date_str)}"
                 f"{_table(['Customer', 'Invoice', 'Inv date', 'Due date', 'QB amount', 'Alvys amount', 'Difference', 'Bucket'], ['left', 'left', 'left', 'left', 'right', 'right', 'right', 'left'], _pd_body + _pd_total)}"
             )
 
@@ -4666,29 +4667,36 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 )
                 # Combined-reconciliation caption stays inside the table as
                 # its final row — outside the table the stray <tr> rendered
-                # on its own page (the prior version landed PDF p8 alone).
+                # on its own page. pgref-70 (tail anchor for the page-4
+                # tile reference) is inlined inside this same caption so
+                # it resolves to the orphan section's last physical page
+                # without consuming any extra vertical space.
                 _combined = _g_al + _g_orph
+                _pg70_anchor = "<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a>"
                 _orph_caption = (
                     f"<tr><td colspan='5' style='padding:8px 8px;color:{MUTE};"
                     f"font-size:11px;background:#fafafa;border-top:1px solid {LINE};'>"
-                    f"Combined Alvys past due (matched + orphans): "
+                    f"{_pg70_anchor}Combined Alvys past due (matched + orphans): "
                     f"<b style='color:{INK};'>{money(_combined)}</b> &mdash; "
                     f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1.</td></tr>"
                 )
                 _qb_overdue_html += (
                     f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
                     f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total + _orph_caption)}"
-                    # pgref-70 = tail anchor for the AR-aging block. Lives
-                    # after the orphan caption so it resolves to whichever
-                    # physical page the section ends on (one or two pages).
-                    f"<tr><td colspan='4' style='padding:0;'>"
-                    f"<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a></td></tr>"
+                )
+            else:
+                # No orphans this run — still need a pgref-70 target so the
+                # page-4 tile reference resolves. Inline it on the QB-keyed
+                # table's _section header (same place as pgref-60).
+                _qb_overdue_html = _qb_overdue_html.replace(
+                    "id='pgref-60'",
+                    "id='pgref-60'></a><a id='pgref-70'",
                 )
         # When there's no past-due data at all, still plant the anchors so
-        # the page-4 tile reference doesn't error out with empty "pg ".
+        # the page-4 tile reference doesn't render with empty "pg ".
         if not _qb_overdue_html:
             _qb_overdue_html = (
-                f"<tr><td colspan='4' style='padding:0;'>"
+                f"<tr><td colspan='4' style='padding:0;font-size:0;line-height:0;height:0;'>"
                 f"<a id='pgref-60' style='display:inline-block;width:0;height:0;'></a>"
                 f"<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a></td></tr>"
             )
