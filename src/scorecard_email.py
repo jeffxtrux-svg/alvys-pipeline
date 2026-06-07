@@ -5502,9 +5502,26 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
                 _pill("0&ndash;100, higher better", "mute"))
     )
 
-    # Top 5 MPG (best) — the highlights, plus a bottom-5 table further down.
-    top5_mpg = mpg_rows[:5]
-    bot5_mpg = list(reversed(mpg_rows[-5:])) if len(mpg_rows) >= 5 else []
+    # Re-rank by All-In MPG (drive + idle) rather than drive-only MPG.
+    # Drive-only MPG hides trucks that drive efficiently but idle heavily
+    # (e.g. Benjamin Young — drive 9.56 looks great until you bake in
+    # 50 idle gallons and the all-in drops to 7.54). Sorting by all-in
+    # surfaces the trucks whose idle burn is dragging real efficiency
+    # down. mpg_rows still carries the drive-only sort from samsara_main;
+    # we recompute all-in per row and re-sort here.
+    def _row_all_in_mpg(r):
+        idle_gal = (idle_mtd_by_unit.get(r["unit"], {}).get("idle_gallons_mtd") or 0.0)
+        all_gal = float(r.get("gallons") or 0) + idle_gal
+        if all_gal <= 0 or not _isnum(r.get("miles")):
+            return None
+        return float(r["miles"]) / all_gal
+    _ranked = sorted(
+        ((r, _row_all_in_mpg(r)) for r in mpg_rows),
+        key=lambda t: (t[1] is None, -(t[1] or 0)),
+    )
+    _ranked_rows = [r for r, m in _ranked if m is not None]
+    top5_mpg = _ranked_rows[:5]
+    bot5_mpg = list(reversed(_ranked_rows[-5:])) if len(_ranked_rows) >= 5 else []
     mpg_headers = ["Truck", "Driver", "MPG", "Miles", "Drive Gal",
                    "Idle Gal", "All-in Gal", "All-in MPG"]
     mpg_aligns = ["left", "left", "right", "right", "right",
@@ -5539,9 +5556,9 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
     return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
-            f"{_section('Best MPG &middot; top 5 trucks (MTD &middot; Based on Samsara)')}"
+            f"{_section('Best All-In MPG &middot; top 5 trucks (MTD &middot; ranked drive + idle)')}"
             f"{mpg_top_tbl}"
-            f"{_section('Worst MPG &middot; bottom 5 trucks (MTD &middot; Based on Samsara)')}"
+            f"{_section('Worst All-In MPG &middot; bottom 5 trucks (MTD &middot; ranked drive + idle)')}"
             f"{mpg_bot_tbl}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara Trips (MPG, drive gallons). Idle gallons from "
