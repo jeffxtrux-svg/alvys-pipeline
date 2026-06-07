@@ -3416,7 +3416,7 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
 
 def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     """Equipment Compliance page — renders one fleet type per call.
-    kind='tractors' → page 4; kind='trailers' → page 5."""
+    kind='tractors' → page 5; kind='trailers' → page 6."""
     title = ("Equipment Compliance &mdash; Tractor Inspections" if kind == "tractors"
              else "Equipment Compliance &mdash; Trailer Inspections")
     header = _header(title, pg, date_str, section="SAFETY")
@@ -5706,7 +5706,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
     head = _header("AR Reconciliation by Invoice &mdash; QuickBooks vs Alvys", 13, date_str, section='ACCOUNTING')
     if not b.get("available"):
         msg = ("No open invoices to match this run &mdash; the QuickBooks A/R detail has no invoice "
-               "numbers, or there is no open AR. See page 9 for the customer-level reconciliation.")
+               "numbers, or there is no open AR. See page 12 for the customer-level reconciliation.")
         return (f"{head}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
                 f"{_brief(msg, 'warn')}</table>"
                 f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
@@ -5716,7 +5716,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
         # Neither invoice # nor Load # overlapped QB's Num — show samples to compare formats.
         msg = ("Couldn&rsquo;t match bills: neither the Alvys invoice number nor the Alvys Load # overlaps the "
                "QuickBooks invoice &lsquo;Num&rsquo;. Sample identifiers below &mdash; the two systems appear to "
-               "number invoices differently. Use page 9 (by customer) meanwhile.")
+               "number invoices differently. Use page 12 (by customer) meanwhile.")
         srows = ""
         al_s, qb_s = b.get("alvys_sample", []), b.get("qb_sample", [])
         for i in range(max(len(al_s), len(qb_s))):
@@ -5766,7 +5766,7 @@ def build_page8(qb_ar, alvys_ar, date_str) -> str:
             f"Matched on Alvys {key_label} vs QuickBooks invoice &lsquo;Num&rsquo; (X-Trux + X-Linx, JW excluded). "
             f"&lsquo;Open in Alvys, not in QuickBooks&rsquo; are the bills driving the gap &mdash; most are likely "
             f"paid in QB but not synced back to Alvys. If the match rate is low, the two systems number bills "
-            f"differently and this view is partial &mdash; use page 9. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
+            f"differently and this view is partial &mdash; use page 12. Sources: QuickBooks A/R Aging Detail, Alvys API (Loads).</div>")
 
 
 def build_page9(samba, date_str, alvys_drivers=None) -> str:
