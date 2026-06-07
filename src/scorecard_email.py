@@ -5591,16 +5591,37 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
                       "bad" if worst else "mute"))
     )
 
+    # Tightened padding / font (was 8px/12.5px and 8px/10px) so 13 columns
+    # fit on letter portrait without the right edge clipping the MPG cell.
     def _icell(text, al="right", cur=False, bold=False):
         bg = f"background:{ACCENTBG};" if cur else ""
-        return (f"<td align='{al}' style='padding:8px 8px;font-size:12.5px;color:{INK};"
+        return (f"<td align='{al}' style='padding:6px 5px;font-size:11.5px;color:{INK};"
                 f"font-weight:{'700' if bold else '400'};border-bottom:1px solid {LINE};{bg}'>{text}</td>")
 
     def _ihcell(text, al="right", cur=False):
         bg = ACCENTBG if cur else TILEBG
         fg = ACCENT if cur else MUTE
-        return (f"<td align='{al}' style='padding:8px 8px;font-size:10px;text-transform:uppercase;"
-                f"letter-spacing:.4px;color:{fg};font-weight:700;background:{bg};border-bottom:1px solid {LINE};'>{text}</td>")
+        return (f"<td align='{al}' style='padding:6px 5px;font-size:9.5px;text-transform:uppercase;"
+                f"letter-spacing:.3px;color:{fg};font-weight:700;background:{bg};border-bottom:1px solid {LINE};'>{text}</td>")
+
+    # Per-unit drive-side data for the All-In MPG column. Same source +
+    # formula as page 21 (Fleet Operations): miles ÷ (drive gallons +
+    # idle gallons), all MTD. Returns None when either side is missing
+    # for that truck so the cell falls back to an em-dash.
+    _mpg_lookup = {r.get("unit"): r for r in (fleet.get("mpg") or [])}
+    def _all_in_mpg(row) -> float | None:
+        src = _mpg_lookup.get(row.get("unit"))
+        if not src:
+            return None
+        miles = src.get("miles")
+        drive_gal = src.get("gallons")
+        idle_gal_mtd = row.get("idle_gallons_mtd") or 0.0
+        if not (_isnum(miles) and _isnum(drive_gal)):
+            return None
+        all_gal = float(drive_gal) + float(idle_gal_mtd)
+        if all_gal <= 0:
+            return None
+        return float(miles) / all_gal
 
     if idle_rows:
         idle_head = ("<tr>"
@@ -5609,11 +5630,10 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
                      + "".join(_ihcell(idle_labels[k], "right", cur=(k == cur_idx)) for k in range(n_weeks))
                      + _ihcell("Total", "right")
                      + _ihcell("Avg / wk", "right")
-                     + _ihcell("Avg / wk $", "right")
                      + _ihcell("Idle %", "right")
                      + _ihcell("Idle Gal", "right")
                      + _ihcell("Idle $", "right")
-                     + _ihcell("MPG", "right")
+                     + _ihcell("All-In MPG", "right")
                      + "</tr>")
         idle_body = ""
         for r in idle_rows:
@@ -5624,40 +5644,41 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
                 for k in range(n_weeks))
             pct_txt = f"{r['idle_pct']*100:.0f}%" if r.get("idle_pct") else "n/a"
             pct_style = f"color:{WARN};font-weight:700;"
-            pct_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{pct_style}"
+            pct_cell = (f"<td align='right' style='padding:6px 5px;font-size:11.5px;{pct_style}"
                         f"border-bottom:1px solid {LINE};'>{pct_txt}</td>")
             total_style = f"color:{BAD};font-weight:700;"
-            total_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{total_style}"
+            total_cell = (f"<td align='right' style='padding:6px 5px;font-size:11.5px;{total_style}"
                           f"border-bottom:1px solid {LINE};'>{r['idle_hours']:.1f}</td>")
-            mpg_val = r.get("mpg")
-            mpg_txt = f"{mpg_val:.2f}" if _isnum(mpg_val) else "&ndash;"
+            # All-In MPG replaces the drive-only MPG that was here — same
+            # formula as page 21 (Fleet Operations): MTD miles ÷ (MTD drive
+            # gallons + MTD idle gallons). Drops 0.4-1.5 mpg vs drive-only
+            # depending on the truck's idle burden.
+            aim_val = _all_in_mpg(r)
+            aim_txt = f"{aim_val:.2f}" if _isnum(aim_val) else "&ndash;"
             ig_val = r.get("idle_gallons")
             ig_txt = f"{ig_val:.0f}" if _isnum(ig_val) and ig_val > 0 else "&ndash;"
             ig_style = f"color:{BAD};font-weight:700;" if _isnum(ig_val) and ig_val > 0 else ""
-            ig_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;{ig_style}"
+            ig_cell = (f"<td align='right' style='padding:6px 5px;font-size:11.5px;{ig_style}"
                        f"border-bottom:1px solid {LINE};'>{ig_txt}</td>")
-            # Approx $ cost = idle gallons × fuel price (total across 5 wks, and per week avg)
+            # Approx $ cost = idle gallons × fuel price (total across 5 weeks).
+            # The per-week "Avg/wk $" column was dropped; Idle $ below covers
+            # the monetary readout and we needed the room for the All-In MPG
+            # column to stop clipping at the right edge of the page.
             total_cost_val = (ig_val * _fuel_price) if (_isnum(ig_val) and ig_val > 0) else None
-            wk_gal_val = avg_wk * 0.8 if _isnum(avg_wk) else None
-            wk_cost_val = (wk_gal_val * _fuel_price) if (_isnum(wk_gal_val) and wk_gal_val > 0) else None
             tc_txt = f"${total_cost_val:,.0f}" if _isnum(total_cost_val) else "&ndash;"
-            wc_txt = f"${wk_cost_val:,.0f}" if _isnum(wk_cost_val) else "&ndash;"
             cost_style = f"color:{BAD};font-weight:700;"
-            tc_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;"
+            tc_cell = (f"<td align='right' style='padding:6px 5px;font-size:11.5px;"
                        f"{cost_style if _isnum(total_cost_val) else ''}border-bottom:1px solid {LINE};'>{tc_txt}</td>")
-            wc_cell = (f"<td align='right' style='padding:8px 8px;font-size:12.5px;"
-                       f"{cost_style if _isnum(wk_cost_val) else ''}border-bottom:1px solid {LINE};'>{wc_txt}</td>")
             idle_body += ("<tr>"
                           + _icell(r["unit"], "left")
                           + _icell(r.get("driver") or "&mdash;", "left")
                           + wk_cells
                           + total_cell
                           + _icell(f"{avg_wk:.1f}", "right")
-                          + wc_cell
                           + pct_cell
                           + ig_cell
                           + tc_cell
-                          + _icell(mpg_txt, "right")
+                          + _icell(aim_txt, "right")
                           + "</tr>")
         idle_tbl = (f"<tr><td colspan='4' class='scroll-wide' style='padding:0 6px;'>"
                     f"<table width='100%' cellpadding='0' cellspacing='0' "
@@ -6388,7 +6409,12 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # -- CSA SCORECARD --
             f"{wrap(_strip(10) + build_csa_scorecard_page(csa, date_str))}{pb}"
             # -- ACCOUNTING --
-            f"{wrap(_strip(11) + build_page_ar_accounting(qb_ar, uninvoiced, alvys_ar, date_str))}{pb}"
+            # build_page_ar_accounting (standalone "AR Overdue & Alvys
+            # Accounting" page) was dropped per user — its 31+ overdue
+            # subset is now visible in the full past-due aging table on
+            # PDF p6-7, and the un-invoiced/90+ AR sections are covered
+            # elsewhere. Function is kept defined for compute reuse but
+            # no longer rendered.
             # build_page8 (bill-by-bill matching) used to render here as
             # the very last page; it now renders early, between the two
             # halves of build_page1, so the variance has a forward pointer
