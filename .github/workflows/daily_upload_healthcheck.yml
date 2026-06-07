@@ -1,10 +1,10 @@
-# Daily upload healthcheck — fires at 6:30am Central if the morning
+# Daily upload healthcheck — fires at 6:00am Central if the morning
 # daily MTD upload hasn't been sent yet. Mirrors the scorecard
 # healthcheck so a dropped 5am cron doesn't leave the brief missing
 # until someone notices mid-morning.
 #
 # How it works:
-#   1. Cron fires at 6:30am Central (dual-cron + CT-hour-gate, year-round).
+#   1. Cron fires at 6:00am Central (dual-cron + CT-hour-gate, year-round).
 #   2. Authenticate to Microsoft Graph using the same Azure app as the
 #      daily upload.
 #   3. Check whether the `DailyUpload/sent-{YYYY-MM-DD}.txt` marker exists
@@ -14,25 +14,22 @@
 #      That run fires immediately and sends the brief; src/daily_upload.py
 #      writes the marker on success.
 #
-# Race window: ~3-5 min where the 5am send is still finishing as the
-# 6:30am check fires. The idempotency check at the top of
-# src/daily_upload.py + the workflow_dispatch bypass means a duplicate is
-# very unlikely (dispatched runs DO bypass idempotency, but the 6:30am
-# check itself reads OneDrive directly so the marker race is bounded).
+# No collision: daily_upload.yml only fires at 5am CT (cron 0 10,11
+# gated to hour 5), so the 6am healthcheck slot is exclusive.
 #
 # Required GitHub Secrets (shared with daily_upload.yml):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
 
-name: Daily Upload healthcheck (6:30am CT)
+name: Daily Upload healthcheck (6:00am CT)
 
 on:
   workflow_dispatch:
 
   schedule:
-    # Year-round 6:30am Central. CDT (UTC-5) + CST (UTC-6) crons both
+    # Year-round 6:00am Central. CDT (UTC-5) + CST (UTC-6) crons both
     # armed; the "Gate to 6am CT" step rejects the off-season slot.
-    - cron: '30 11 * * *'   # 6:30am CDT / 5:30am CST (CST: gated)
-    - cron: '30 12 * * *'   # 7:30am CDT (CDT: gated) / 6:30am CST
+    - cron: '0 11 * * *'    # 6:00am CDT / 5:00am CST (CST: gated)
+    - cron: '0 12 * * *'    # 7:00am CDT (CDT: gated) / 6:00am CST
 
 permissions:
   contents: read
@@ -45,7 +42,7 @@ jobs:
 
     steps:
       - name: Gate to 6am CT
-        # Year-round target: 6:30am Central. Skip whichever season's
+        # Year-round target: 6:00am Central. Skip whichever season's
         # cron lands on the wrong wall-clock hour. Manual /
         # workflow_dispatch runs bypass the gate so the healthcheck
         # can be triggered any time on demand.
@@ -190,7 +187,7 @@ jobs:
           to = [e.strip() for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
           run = os.environ.get("RUN_URL", "")
           html = (
-              f"<p>The <b>daily upload healthcheck</b> at 6:30am CT failed — "
+              f"<p>The <b>daily upload healthcheck</b> at 6:00am CT failed — "
               f"this morning's Daily_Upload_*.xlsx may or may not have landed.</p>"
               f"<p>Manually verify by checking jeff@xfreight.net inbox for "
               f"\"XFreight Daily MTD Upload — \" with today's date.</p>"

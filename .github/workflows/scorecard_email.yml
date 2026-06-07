@@ -73,10 +73,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Gate to 5am CT or later
+      - name: Gate to 5am CT or later (skip 6am)
         # Cron is fixed UTC, so the 10 UTC slots map to 5am CDT in summer
         # but only 4am CST in winter. Skip the run when Central time hasn't
         # reached 5am yet — the next 11 UTC slot will pick it up at 5am CST.
+        # ALSO skip 6am CT specifically: the scorecard healthcheck now
+        # fires at 6:00am and would collide with this backup slot,
+        # potentially double-sending the brief on dropped-cron mornings.
         # Manual / workflow_call / push runs bypass the gate so on-demand
         # triggers always work regardless of the time of day.
         id: ct_gate
@@ -87,8 +90,11 @@ jobs:
           if [ "$CT_HOUR" -lt 5 ]; then
             echo "Before 5am CT — skipping this slot."
             echo "skip=1" >> "$GITHUB_OUTPUT"
+          elif [ "$CT_HOUR" -eq 6 ]; then
+            echo "6am CT slot reserved for the healthcheck — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
           else
-            echo "5am CT or later — proceeding."
+            echo "5am CT or 7am+ CT — proceeding."
           fi
 
       - name: Checkout repo

@@ -121,10 +121,10 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `qb_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `sambasafety_refresh.yml` | 2:30am | `30 7,8 * * *` | `{2}` |
 | `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | `30 9,10`, `0 18,19`, `30 22,23 * * *` | `{4, 13, 17}` |
-| `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups through ~6am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5` |
-| `scorecard_healthcheck.yml` (recover dropped runs) | 6:30am — checks OneDrive marker; dispatches scorecard if missing | `30 11,12 * * *` | `{6}` |
+| `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups at 5:15 / 5:30 / 6:30 / 7am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5`, skip `6` |
+| `scorecard_healthcheck.yml` (recover dropped runs) | 6:00am — checks OneDrive marker; dispatches scorecard if missing | `0 11,12 * * *` | `{6}` |
 | `daily_upload.yml` (MTD load report) | 5:00am | `0 10,11 * * *` | `{5}` |
-| `daily_upload_healthcheck.yml` (recover dropped runs) | 6:30am — checks `DailyUpload/sent-*.txt` marker; dispatches daily upload if missing | `30 11,12 * * *` | `{6}` |
+| `daily_upload_healthcheck.yml` (recover dropped runs) | 6:00am — checks `DailyUpload/sent-*.txt` marker; dispatches daily upload if missing | `0 11,12 * * *` | `{6}` |
 | `karpathy_compile.yml` (Karpathy-Wiki librarian) | 7:15am / 1:00pm (each with 30-min backup) | `15,45 12,13`, `0,30 18,19 * * *` | `{7, 13}` |
 
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
