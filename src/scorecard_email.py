@@ -2017,15 +2017,25 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             # from each event's coachingStatus (already in the SafetyEvents
             # sheet under one of the names below).
             status_col = _find_col(_7d, ["status", "reviewed", "coaching"])
-            # Coach name probe — Samsara's json_normalize can surface this
-            # under several shapes; cast a wide net and log what we found
-            # so the column choice is visible if Coach renders blank.
-            coach_col  = _find_col(_7d, [
+            # Coach name probe — Samsara's json_normalize surfaces the coach
+            # under a dot-notation column like `coachedBy.name`. A wider net
+            # with bare candidates ("coach", "coachedby", "reviewedby") was
+            # tried earlier but substring-matched `coachingStatus` and
+            # rendered the status value ("coached"/"dismissed") in the Coach
+            # column. Sticking to .name-suffixed candidates only; if none
+            # match there's no coach name in the feed and Coach stays blank.
+            coach_col = _find_col(_7d, [
                 "coachedby.name", "coached by.name", "coachedbyuser.name",
-                "reviewedby.name", "coach.name",
-                "coachedby", "coached by", "reviewedby", "coach",
-                "coachname", "coach name",
+                "reviewedby.name", "coach.name", "coachname", "coach name",
             ])
+            # Defensive guard: if the coach probe ever lands on the same
+            # column as the status probe (substring collision), drop it so
+            # the Coach cell renders blank rather than echoing status text.
+            if coach_col and coach_col == status_col:
+                log.warning("Coach probe collided with status column %r — "
+                            "dropping coach column (no coach-name field "
+                            "surfaced by Samsara).", coach_col)
+                coach_col = None
             coach_at_col = _find_col(_7d, [
                 "coachedat", "coached at", "coachedattime",
                 "coachedby.completedattime", "reviewedat",
