@@ -2041,6 +2041,47 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             [("driver name", "driver"), ("unit", "vehicle"), ("event type",),
              ("severity",), ("status", "reviewed", "coaching")],
         )
+        # Enrich each detail row with the first name of whoever took the
+        # action (coached / dismissed / recognized). Same coachedBy.name
+        # probe + Users-sheet fallback the coaching-needs aggregation uses
+        # below. Rendered in _safety_detail_tables as "{status} · {first}".
+        _evt_7d = events[ed >= w["7d"]]
+        _dcoach_name = _find_col(_evt_7d, [
+            "coachedby.name", "coached by.name", "coachedbyuser.name",
+            "reviewedby.name", "coach.name", "coachname", "coach name",
+        ])
+        _dstatus_col = _find_col(_evt_7d, ["status", "reviewed", "coaching"])
+        if _dcoach_name and _dcoach_name == _dstatus_col:
+            _dcoach_name = None  # substring collision — same guard as below
+        _dcoach_id = _find_col(_evt_7d, [
+            "coachedby.id", "coachedbyuser.id", "reviewedby.id",
+        ])
+        _dusers = sheets.get("Users")
+        _duser_map: dict[str, str] = {}
+        if isinstance(_dusers, pd.DataFrame) and not _dusers.empty:
+            _uid_c = _find_col(_dusers, ["id"])
+            _un_c  = _find_col(_dusers, ["name"])
+            if _uid_c and _un_c:
+                for _, _ur in _dusers.iterrows():
+                    _uid = _ur.get(_uid_c)
+                    _unm = _ur.get(_un_c)
+                    if pd.notna(_uid) and pd.notna(_unm):
+                        _duser_map[str(_uid).strip()] = str(_unm).strip()
+        _evt_idx = list(_evt_7d.index)
+        for _i, _drow in enumerate(out["detail"]["events"]):
+            if _i >= len(_evt_idx):
+                break
+            _src = _evt_7d.loc[_evt_idx[_i]]
+            _full = ""
+            if _dcoach_name:
+                _v = _src.get(_dcoach_name)
+                if pd.notna(_v):
+                    _full = str(_v).strip()
+            if not _full and _dcoach_id:
+                _v = _src.get(_dcoach_id)
+                if pd.notna(_v):
+                    _full = _duser_map.get(str(_v).strip(), "")
+            _drow["coach_first"] = _full.split()[0] if _full else ""
         # "Coaching needs assigned" list — per-driver aggregation over the
         # last 30 days. Drivers stay on the list until they sign their
         # coaching session (every event status flips to coached/dismissed/
@@ -5032,7 +5073,12 @@ def _safety_detail_tables(samsara) -> str:
     event_rows = "".join(
         _tr(
             [r.get("driver name", ""), r.get("unit", ""), _when(r),
-             r.get("event type", ""), r.get("severity", ""), r.get("status", "")],
+             r.get("event type", ""), r.get("severity", ""),
+             # Append the first name of whoever took the action when the
+             # event has been coached/dismissed/recognized — no name shown
+             # for needsRecognition rows (no one's acted yet).
+             (f"{r.get('status', '')} &middot; {r.get('coach_first')}"
+              if r.get("coach_first") else r.get("status", ""))],
             ["left", "left", "left", "left", "left", "left"],
             [None, None, None, None,
              ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"),
