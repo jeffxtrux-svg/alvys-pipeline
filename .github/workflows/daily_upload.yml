@@ -22,15 +22,6 @@ on:
     # CT-hour-gate step rejects the off-season slot.
     - cron: '0 10 * * *'   # 5:00am CDT primary / 4:00am CST (gated)
     - cron: '0 11 * * *'   # 6:00am CDT (gated) / 5:00am CST primary
-  # Push trigger restricted to one specific marker file so a commit that
-  # touches `.github/oneshot/daily_upload.trigger` fires this workflow.
-  # Used by the assistant to dispatch a one-shot run when GitHub MCP
-  # auth isn't available; the CT-hour gate auto-skips for push events
-  # (its `if` is `event_name == 'schedule'`), so the actual job still
-  # runs regardless of hour.
-  push:
-    paths:
-      - '.github/oneshot/daily_upload.trigger'
 
 permissions:
   contents: read
