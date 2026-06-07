@@ -5697,31 +5697,38 @@ def build_page_idle(samsara, date_str, avg_fuel_price: float | None = None) -> s
                           + tc_cell
                           + _icell(aim_txt, "right")
                           + "</tr>")
-        # NOTE: explicit page-break-inside:auto + overflow:visible on the
-        # inner table so WeasyPrint allows it to split across pages. The
-        # `pdf-data-wrap` class added to the outer <tr> by the PDF
-        # post-processor only loosens the OUTER row — without these inline
-        # overrides the inner table stayed atomic (overflow:hidden was
-        # forcing it to render as a single block), which pushed the whole
-        # 17-row idle ranking to a fresh page and left the tiles +
-        # section header sitting on a mostly-empty p22.
-        idle_tbl = (f"<tr><td colspan='4' class='scroll-wide' style='padding:0 6px;'>"
-                    f"<table width='100%' cellpadding='0' cellspacing='0' "
-                    f"style='border:1px solid {LINE};border-radius:8px;border-collapse:separate;"
-                    f"overflow:visible;page-break-inside:auto;break-inside:auto;'>"
-                    f"{idle_head}{idle_body}</table></td></tr>")
+        # Standalone (NOT nested inside a wrapper <tr>) so WeasyPrint
+        # treats it as a block-level table that can naturally break across
+        # page boundaries. When nested inside the outer page <table> via
+        # the usual <tr><td colspan='4'> wrapper, the whole 17-row idle
+        # ranking landed on one page regardless of pdf-data-wrap / inline
+        # page-break-inside hints — the cell-in-row containing context
+        # was forcing atomicity. Pulling it OUT of the outer table fixes
+        # the bug at the structural level.
+        idle_tbl_html = (f"<table width='100%' cellpadding='0' cellspacing='0' "
+                         f"style='border:1px solid {LINE};border-radius:8px;"
+                         f"border-collapse:separate;overflow:hidden;'>"
+                         f"{idle_head}{idle_body}</table>")
+        idle_block = (f"<div style='padding:0 24px;page-break-inside:auto;"
+                      f"break-inside:auto;'>{idle_tbl_html}</div>")
     else:
-        idle_tbl = f"<tr><td colspan='4' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>"
+        idle_block = (f"<div style='padding:12px 32px;color:{MUTE};"
+                      f"font-size:12.5px;'>(no data)</div>")
 
     _cost_note = (f"Idle cost = idle gallons &times; {_fuel_src} (Alvys Discount PPU 60-day avg). "
                   if (_isnum(avg_fuel_price) and avg_fuel_price > 0)
                   else "Idle cost = idle gallons &times; $4.00/gal placeholder (set Alvys Fuel data for live price). ")
+    # The outer wrapper table is closed BEFORE the idle data block so the
+    # block is a standalone sibling rather than nested in a TR/TD context.
+    # The footer div is a regular block too — it follows the table naturally
+    # after the data rows flow across pages.
     return (f"{_header('Fleet Idle &mdash; All Trucks by Settlement Week', 9, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Idlers &middot; all trucks ranked worst-to-best by avg / wk &middot; current week tinted')}"
-            f"{idle_tbl}"
-            f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
+            f"</table>"
+            f"{idle_block}"
+            f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara engine-state history (idle, last 5 settlement weeks; "
             f"idle gallons = idle_hours &times; 0.8 gph fleet-average heuristic). "
             f"{_cost_note}"
