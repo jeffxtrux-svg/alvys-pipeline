@@ -260,6 +260,25 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
         log.info("Set Empty Dispatch Mileage = %d mi for %d open loads (estimate)",
                  OPEN_EMPTY_ESTIMATE_MI, n_est)
 
+    # Open loads carry a $0 Driver Rate until settlement, which makes the
+    # margin column read as 100% on those rows and overstates MTD margin.
+    # Estimate the rate as total_miles * avg_$/mi using the settled MTD
+    # loads' actual rate per mile. Falls back to TRUCK_PAY_PER_MI when
+    # there are zero settled loads yet (early in the month).
+    total_mi = out["Empty Dispatch Mileage"] + out["Loaded Dispatch Mileage"]
+    settled = (out["Driver Rate"] > 0) & (total_mi > 0)
+    settled_mi  = float(total_mi[settled].sum())
+    settled_pay = float(out.loc[settled, "Driver Rate"].sum())
+    avg_rate = (settled_pay / settled_mi) if settled_mi > 0 else TRUCK_PAY_PER_MI
+    needs_rate = is_open & (out["Driver Rate"] <= 0) & (total_mi > 0)
+    n_rate = int(needs_rate.sum())
+    if n_rate:
+        out.loc[needs_rate, "Driver Rate"] = (total_mi[needs_rate] * avg_rate).round(2)
+        source = "settled MTD avg" if settled_mi > 0 else f"fallback constant TRUCK_PAY_PER_MI"
+        log.info("Estimated Driver Rate for %d open loads at $%.4f/mi (%s; settled: %s mi / $%s pay)",
+                 n_rate, avg_rate, source,
+                 f"{settled_mi:,.0f}", f"{settled_pay:,.0f}")
+
     out["Margin"] = out["Customer Revenue"] - out["Driver Rate"]
     out["Margin %"] = (out["Margin"] / out["Customer Revenue"]).where(out["Customer Revenue"] != 0)
 
