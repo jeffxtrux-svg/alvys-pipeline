@@ -304,7 +304,14 @@ class SamsaraClient:
         """Single safety event detail — picks up `coachedBy` and other
         fields the list endpoint omits. Tries the v2 path first then the
         v1 fallback. Returns None on any error so the caller can skip
-        and keep going."""
+        and keep going.
+
+        NOTE: confirmed dead end on this tenant — both endpoints return
+        HTTP 404 for every event id (composite ids of the form
+        vehicleId-timestamp aren't accepted by either path). Kept in
+        place in case Samsara re-enables it for our account, but the
+        coach-name path runs through fetch_safety_audit_log() instead.
+        """
         if not event_id:
             return None
         # /fleet/safety-events/{id} is the documented v2 detail endpoint.
@@ -314,6 +321,36 @@ class SamsaraClient:
         # v1 fallback in case the v2 detail endpoint isn't enabled for
         # this tenant — same shape but under /v1/fleet/safety/events.
         return self._get_one(f"/v1/fleet/safety/events/{event_id}")
+
+    def fetch_safety_audit_log(self, start_iso: str | None = None) -> list[dict]:
+        """Probe the safety-events audit-log feed — Samsara's documented
+        change-log for safety events. Likely carries the userId/userName
+        that took each action (coached / dismissed / recognized), keyed
+        to the event id. URL:
+            GET /fleet/safety-events/audit-logs/feed?startTime=ISO
+
+        See:
+            https://developers.samsara.com/changelog/get-fleetsafety-eventsaudit-logsfeed-...
+            https://developers.samsara.com/reference/getsafetyactivityeventfeed
+
+        First call uses the documented v2 path; if 404 (endpoint isn't
+        enabled for our tenant), tries the legacy v1 path. Returns the
+        raw list. Diagnostic logging in the caller dumps the first
+        record's keys so we can confirm the response shape before
+        wiring it into the daily flatten.
+        """
+        params = {}
+        if start_iso:
+            params["startTime"] = start_iso
+        items = self._safe_get("/fleet/safety-events/audit-logs/feed", params)
+        if items:
+            log.info("Audit log: %d records from v2 endpoint", len(items))
+            return items
+        # v1 legacy fallback
+        items = self._safe_get("/v1/fleet/safety/events/audit/feed", params)
+        if items:
+            log.info("Audit log: %d records from v1 fallback", len(items))
+        return items
 
     def fetch_hos_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """ELD / Hours of Service log entries."""

@@ -469,42 +469,32 @@ def main() -> int:
     log.info("=" * 60)
     raw_safety = client.fetch_safety_events(start_safety, now)
 
-    # Enrich coached/dismissed/recognized events with the coachedBy
-    # object. Samsara's list endpoint omits coachedBy (confirmed by
-    # diagnostic probe — see samsara_client.fetch_safety_events
-    # docstring), so the only path to a coach name is per-event detail
-    # fetches. Skip rows where coachingState is needsRecognition (nobody
-    # acted yet) to keep the call count down. With ~75-100 coached
-    # events over 6 months and ~100ms per call, this adds ~10s to the
-    # daily pull. The detail records replace the corresponding raw_safety
-    # entry in place, so the existing flatten step picks up the new
-    # coachedBy.* columns with no other changes needed.
-    _ACTED_STATES = {"coached", "dismissed", "recognized"}
-    _coached_idx = [i for i, r in enumerate(raw_safety)
-                    if isinstance(r, dict)
-                    and str(r.get("coachingState") or "").lower() in _ACTED_STATES]
-    log.info("Enriching coachedBy for %d acted events (%d total)…",
-             len(_coached_idx), len(raw_safety))
-    _enriched_count = 0
-    _coachedby_count = 0
-    for _i in _coached_idx:
-        _ev = raw_safety[_i]
-        _detail = client.fetch_safety_event_detail(str(_ev.get("id") or ""))
-        if _detail:
-            _enriched_count += 1
-            # Merge detail over the list record so any field present in
-            # detail (notably coachedBy / coachedAt) wins.
-            raw_safety[_i] = {**_ev, **_detail}
-            if _detail.get("coachedBy"):
-                _coachedby_count += 1
-    log.info("  enrichment complete: %d/%d details fetched, "
-             "%d carry coachedBy",
-             _enriched_count, len(_coached_idx), _coachedby_count)
-    if _coachedby_count and _coached_idx:
-        _sample = next((raw_safety[i] for i in _coached_idx
-                        if raw_safety[i].get("coachedBy")), None)
-        if _sample:
-            log.info("  sample coachedBy payload: %r", _sample.get("coachedBy"))
+    # Per-event detail enrichment is a confirmed dead end on this
+    # tenant — both /fleet/safety-events/{id} and the v1 fallback return
+    # HTTP 404 for every event id (see fetch_safety_event_detail
+    # docstring). Removing the per-event loop reclaims ~10s per pull.
+    # The path to coach attribution now goes through the audit-log feed.
+    #
+    # NEW PROBE: fetch the safety-events audit-log feed once and dump
+    # the response shape so we can see if it carries the actor (user
+    # who took each coaching action). If first-record keys include
+    # userId / userName / actor.* / coachedBy.*, we have a real source.
+    # Once confirmed, the daily run will start indexing these and the
+    # scorecard will merge them onto the SafetyEvents sheet by event id.
+    _audit = client.fetch_safety_audit_log()
+    log.info("DIAG audit-log: %d total records", len(_audit))
+    if _audit:
+        log.info("DIAG audit-log keys (first record): %s",
+                 sorted(_audit[0].keys()))
+        # Surface the full first record so we can see the actual value
+        # shapes — short enough at this point in the day, will trim
+        # once we know what to keep.
+        import json as _json
+        log.info("DIAG audit-log sample[0]: %s",
+                 _json.dumps(_audit[0], default=str)[:1500])
+        if len(_audit) > 1:
+            log.info("DIAG audit-log sample[1]: %s",
+                     _json.dumps(_audit[1], default=str)[:1500])
 
     log.info("=" * 60)
     log.info("Step 7/10: HOS Logs (30 days)")
