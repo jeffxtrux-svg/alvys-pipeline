@@ -5610,7 +5610,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
     qb_tiles = (f"<tr>{_tile('31&ndash;60 days', money(totals.get('31&ndash;60')), _pill('watch', 'warn'))}"
                 f"{_tile('61&ndash;90 days', money(totals.get('61&ndash;90')), _pill('escalate', 'warn'))}"
                 f"{_tile('91+ days', money(totals.get('91+')), _pill('collections', 'bad'))}"
-                f"{_tile('Total 31+', money(total31), _pill('overdue', 'bad'))}</tr>")
+                f"{_tile('Total Overdue', money(total31), _pill('overdue', 'bad'))}</tr>")
 
     # -- Alvys Accounting section --
     u = uninv or {}
