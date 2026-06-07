@@ -481,7 +481,12 @@ def main() -> int:
     # userId / userName / actor.* / coachedBy.*, we have a real source.
     # Once confirmed, the daily run will start indexing these and the
     # scorecard will merge them onto the SafetyEvents sheet by event id.
-    _audit = client.fetch_safety_audit_log()
+    # startTime bounds the feed (it paginates from beginning of time
+    # when omitted — first run hit the job timeout). Match the safety-
+    # events window so audit entries line up with events we already
+    # surface.
+    _audit = client.fetch_safety_audit_log(
+        start_iso=start_safety.strftime("%Y-%m-%dT%H:%M:%SZ"))
     log.info("DIAG audit-log: %d total records", len(_audit))
     if _audit:
         log.info("DIAG audit-log keys (first record): %s",
