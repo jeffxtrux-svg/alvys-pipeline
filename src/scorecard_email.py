@@ -4274,8 +4274,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 f"<div style='font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:{MUTE};"
                 f"font-weight:700;'>AR past due</div>{rows}"
                 f"<div style='font-size:12px;color:{MUTE};'>"
-                f"gap = un-invoiced + or &minus; Net QB &minus; Alvys "
-                f"{_pgref(60, paren=False)} and {_pgref(70, paren=False)}</div></div>")
+                f"gap = un-invoiced + or &minus; (Net QB &minus; Alvys) "
+                f"{_pgref(60, paren=False)}&nbsp;thru&nbsp;{_pgref(70, paren=False)}</div></div>")
 
     recv_left = ("<td class='tile' width='25%' valign='top' style='padding:6px;'>"
                  + _dual_ar_tile()
