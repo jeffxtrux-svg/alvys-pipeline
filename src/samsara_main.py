@@ -698,6 +698,27 @@ def main() -> int:
                 flat_hos_viol.append(_v)
     log.info("  HOS violations exploded: %d wrappers → %d violations",
              len(raw_hos_viol), len(flat_hos_viol))
+    # Log the type distribution so we can see what Samsara's mixing into
+    # the violations stream — driving-rule types belong here, but
+    # missing-certification "violations" go on their own page and need
+    # to be filtered out below.
+    from collections import Counter
+    _type_counts = Counter(str(v.get("type", "?")) for v in flat_hos_viol)
+    log.info("  HOS violation type counts: %s", dict(_type_counts.most_common()))
+    # Drop certification-related "violations" — they're surfaced in the
+    # Missing log certifications section on the scorecard instead. Match
+    # by type code OR by description (case-insensitive, substring) to
+    # cover variants like 'missingDriverCertification',
+    # 'driverMissingCertification', 'uncertifiedRecord', etc.
+    _CERT_FRAGMENTS = ("certif", "uncertif", "unsigned", "missingsig", "missingdriversig")
+    def _is_cert_violation(v: dict) -> bool:
+        t = str(v.get("type", "")).lower().replace("_", "")
+        d = str(v.get("description", "")).lower()
+        return any(f in t for f in _CERT_FRAGMENTS) or any(f in d for f in _CERT_FRAGMENTS)
+    _cert_violations = [v for v in flat_hos_viol if _is_cert_violation(v)]
+    flat_hos_viol = [v for v in flat_hos_viol if not _is_cert_violation(v)]
+    log.info("  HOS violations: filtered %d cert-type rows; %d remain as true HOS violations",
+             len(_cert_violations), len(flat_hos_viol))
     df_hosv = flatten(flat_hos_viol, "HOS_Violations")
     if not df_hosv.empty and len(df_hosv) == len(flat_hos_viol):
         df_hosv["Driver Name"] = [(v.get("driver") or {}).get("name") for v in flat_hos_viol]
