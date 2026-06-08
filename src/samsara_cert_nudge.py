@@ -73,7 +73,26 @@ def _write_marker(tok: str, upn: str, body: str) -> None:
 
 
 def _first_name(full: str) -> str:
-    return (full or "").strip().split()[0] if full else ""
+    """Extract the first name and title-case it so the greeting reads
+    'Hi Lonnie' instead of 'Hi LONNIE' (Samsara stores names ALL-CAPS)."""
+    if not full:
+        return ""
+    first = full.strip().split()[0]
+    return first.title()
+
+
+def _is_placeholder_name(full: str) -> bool:
+    """True if the name looks like a test/placeholder driver. Real drivers
+    in our fleet are 'FIRST LAST' format. Filter out single-token lowercase
+    names like 'tempd' that are clearly stubs — they'd just generate noise
+    if we messaged them. Single-token UPPERCASE names ('EYEIGH') stay in
+    on the assumption they're real driver handles."""
+    s = (full or "").strip()
+    if not s:
+        return True
+    if " " in s:
+        return False
+    return s.lower() == s
 
 
 def _compose_message(first: str, days: int, earliest: str, latest: str) -> str:
@@ -109,7 +128,10 @@ def main() -> int:
         os.environ["AZURE_CLIENT_SECRET"],
     )
 
-    if _marker_exists(graph_tok, upn):
+    force = os.environ.get("CERT_NUDGE_FORCE", "").strip() == "1"
+    if force:
+        log.info("CERT_NUDGE_FORCE=1 — bypassing today's marker check.")
+    elif _marker_exists(graph_tok, upn):
         log.info("Marker present for %s — already nudged today. Skipping.",
                  _today_chi())
         return 0
@@ -125,9 +147,18 @@ def main() -> int:
         _write_marker(graph_tok, upn, "no-daily-logs")
         return 0
 
+    # Today's date in the driver's primary timezone (we treat all our
+    # drivers as Central). Today's log usually isn't certified yet
+    # because the shift hasn't ended — pinging on it is noisy. We only
+    # nudge for days strictly earlier than today.
+    today_str = _today_chi()
+
     # Group uncertified logs by driver id. Driver name lifted from the
-    # nested driver dict on each daily-log record.
+    # nested driver dict on each daily-log record. Skip today's still-
+    # open log and skip placeholder driver names entirely.
     by_driver: dict[str, dict] = {}
+    skipped_today = 0
+    skipped_placeholder = 0
     for rec in raw:
         if not isinstance(rec, dict):
             continue
@@ -138,17 +169,28 @@ def main() -> int:
         did = str(drv.get("id") or "").strip()
         if not did:
             continue
+        name = drv.get("name") or ""
+        if _is_placeholder_name(name):
+            skipped_placeholder += 1
+            continue
         # startTime is the day boundary in the driver's timezone.
         day = (rec.get("startTime") or "")[:10]
+        if not day:
+            continue
+        if day >= today_str:
+            skipped_today += 1
+            continue
         slot = by_driver.setdefault(did, {
-            "name": drv.get("name") or "",
+            "name": name,
             "days": [],
         })
-        if day:
-            slot["days"].append(day)
+        slot["days"].append(day)
+
+    log.info("Skipped %d today-only uncerts and %d placeholder-name rows",
+             skipped_today, skipped_placeholder)
 
     if not by_driver:
-        log.info("All daily logs certified — nothing to nudge.")
+        log.info("All actionable daily logs certified — nothing to nudge.")
         _write_marker(graph_tok, upn, "all-certified")
         return 0
 

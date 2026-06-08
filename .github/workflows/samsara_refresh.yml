@@ -89,9 +89,10 @@ jobs:
       - name: Nudge drivers with uncertified logs
         if: steps.ct_gate.outputs.skip != '1'
         # Posts a Samsara Driver App message to each driver who has
-        # uncertified daily logs in the last 7 days. Marker file in
-        # OneDrive prevents repeat sends within the same Central-time
-        # day, so the 3x/day Samsara pull only nudges once.
+        # uncertified daily logs in the last 7 days, excluding today's
+        # still-open log and placeholder driver accounts. Marker file
+        # in OneDrive prevents repeat sends within the same Central-
+        # time day, so the 3x/day Samsara pull only nudges once.
         #
         # Token requires Write Messages scope (Driver Workflow). If the
         # scope is missing the POST returns 403 and the run carries on
@@ -102,7 +103,6 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          CERT_NUDGE_DRY_RUN: '1'
         run: python -m src.samsara_cert_nudge
 
       - name: Upload output as artifact
