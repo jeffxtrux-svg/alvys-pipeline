@@ -332,27 +332,30 @@ def test_direct_customer_matcher_handles_prefixes_and_slashes():
 
 def test_compute_rpm_trend_splits_and_scopes_to_xtrux():
     today = pd.Timestamp.now().normalize()
+    # Per 629127a — compute_rpm_trend uses billed Loaded + Empty Miles
+    # (not Total Dispatch Mileage) so the trend chart matches the page-1
+    # Revenue/Mile tile. Supplying both columns in the fixture.
     loads = pd.DataFrame([
         # Direct shipper, X-Trux office.
         {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS",
-         "Customer Revenue": 2400, "Total Dispatch Mileage": 1000,
+         "Customer Revenue": 2400, "Loaded Miles": 950, "Empty Miles": 50,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Brokered (slash) under X-Trux — still direct because the shipper segment
         # ("BERRY PLASTICS") is in the allow-list.
         {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS / CH ROBINSON",
-         "Customer Revenue": 1800, "Total Dispatch Mileage": 1000,
+         "Customer Revenue": 1800, "Loaded Miles": 950, "Empty Miles": 50,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Broker-only (no direct shipper anywhere in the name).
         {"Office": "X-Trux, Inc", "Customer": "CH ROBINSON",
-         "Customer Revenue": 1500, "Total Dispatch Mileage": 1000,
+         "Customer Revenue": 1500, "Loaded Miles": 950, "Empty Miles": 50,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Cancelled — excluded.
         {"Office": "X-Trux, Inc", "Customer": "AMCOR PACKAGING",
-         "Customer Revenue": 9999, "Total Dispatch Mileage": 100,
+         "Customer Revenue": 9999, "Loaded Miles": 100, "Empty Miles": 0,
          "Scheduled Pickup": today, "Load Status": "Cancelled"},
         # X-Linx brokerage — must be excluded by the office filter.
         {"Office": "X-Linx, Inc.", "Customer": "ECHO GLOBAL LOGISTICS",
-         "Customer Revenue": 5000, "Total Dispatch Mileage": 100,
+         "Customer Revenue": 5000, "Loaded Miles": 100, "Empty Miles": 0,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
     ])
     out = compute_rpm_trend({"Loads": loads})
@@ -554,9 +557,9 @@ def test_drag_rpm_text_names_lift_to_clear_goal():
         samsara=None,
     )
     # Walmart fleet rpm = $3.00 -> exactly clears the $3.00 goal once
-    # J.B. Hunt is removed
+    # J.B. Hunt is removed. rpm() formats to 3 decimals — match that.
     assert "clears" in d["text"]
-    assert "$3.00 goal" in d["text"]
+    assert "$3.000 goal" in d["text"]
 
 
 # ---------------------------------------------------------------------------
