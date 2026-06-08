@@ -436,6 +436,45 @@ class SamsaraClient:
         log.info("Total HOS log entries: 0")
         return []
 
+    def send_driver_messages(self, driver_ids: list[str], text: str) -> dict | None:
+        """Send a message to one or more drivers' Samsara Driver App inbox.
+
+        Endpoint: POST /v1/fleet/messages
+            https://developers.samsara.com/reference/v1createmessages
+
+        Token requires the **Write Messages** scope (Driver Workflow
+        category in the API token settings). If the scope is missing the
+        call returns 403 and we log + return None so the caller can
+        carry on with the rest of the run.
+
+        Returns the parsed JSON body on success, None on any failure.
+        """
+        if not driver_ids or not text:
+            return None
+        # /v1/ endpoint takes numeric ids; coerce to int where possible
+        # since some downstream code passes them as strings.
+        _ids: list = []
+        for d in driver_ids:
+            try:
+                _ids.append(int(d))
+            except (TypeError, ValueError):
+                _ids.append(d)
+        url = f"{BASE_URL}/v1/fleet/messages"
+        try:
+            resp = self._session.post(
+                url, headers=self._headers(), timeout=30,
+                json={"driverIds": _ids, "text": text},
+            )
+            if resp.status_code >= 400:
+                log.warning("POST /v1/fleet/messages → HTTP %d: %s",
+                            resp.status_code, resp.text[:200])
+                return None
+            log.info("Sent driver message to %d driver(s)", len(_ids))
+            return resp.json() if resp.text else {}
+        except Exception as e:
+            log.warning("POST /v1/fleet/messages → exception: %s", e)
+            return None
+
     def fetch_hos_daily_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Per-driver per-day HOS summaries — surfaces log *certification*
         status (the Samsara dashboard's "Missing Certifications" tab).

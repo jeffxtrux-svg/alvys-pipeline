@@ -86,6 +86,25 @@ jobs:
           ALERT_TO_EMAILS: jeff@xfreight.net,jackson@xfreight.net,dan@xfreight.net
         run: python -m src.samsara_alerts
 
+      - name: Nudge drivers with uncertified logs
+        if: steps.ct_gate.outputs.skip != '1'
+        # Posts a Samsara Driver App message to each driver who has
+        # uncertified daily logs in the last 7 days. Marker file in
+        # OneDrive prevents repeat sends within the same Central-time
+        # day, so the 3x/day Samsara pull only nudges once.
+        #
+        # Token requires Write Messages scope (Driver Workflow). If the
+        # scope is missing the POST returns 403 and the run carries on
+        # silently — set CERT_NUDGE_DRY_RUN=1 to log without sending.
+        env:
+          SAMSARA_API_TOKEN: ${{ secrets.SAMSARA_API_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          CERT_NUDGE_DRY_RUN: '1'
+        run: python -m src.samsara_cert_nudge
+
       - name: Upload output as artifact
         if: always() && steps.ct_gate.outputs.skip != '1'
         uses: actions/upload-artifact@v4
