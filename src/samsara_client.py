@@ -299,13 +299,48 @@ class SamsaraClient:
         params = {"startTime": _iso(start), "endTime": _iso(end), "limit": 200}
         items = self._safe_get("/fleet/safety-events", params)
         log.info("Total safety events: %d", len(items))
-        # One-shot diagnostic: confirm assignedCoach actually shows up
-        # in records. Samsara support said it's available; verify in
-        # the wild before depending on it for the scorecard Coach column.
+        # Diagnostic: confirm assignedCoach shows up. Samsara support
+        # said it's available on the v2 list response; on first probe
+        # the default response returned it on 0/97 events. Try opting
+        # in via include= and dump full keys of a coached event so we
+        # can see what the API actually exposes for this tenant.
         if items:
             _with = sum(1 for r in items if isinstance(r, dict) and r.get("assignedCoach"))
-            log.info("DIAG assignedCoach present on %d / %d safety events",
+            log.info("DIAG assignedCoach present on %d / %d safety events (default response)",
                      _with, len(items))
+            # Dump top-level keys of a coached event (more likely to
+            # carry coach attribution than an un-acted-on event).
+            _coached_ev = next(
+                (r for r in items if isinstance(r, dict)
+                 and str(r.get("coachingState", "")).lower() in ("coached", "dismissed", "recognized")),
+                None,
+            )
+            if _coached_ev:
+                _keys = sorted(_coached_ev.keys())
+                log.info("DIAG coached-event keys (default response): %s", _keys)
+                # Surface any keys mentioning coach/assign/user/actor —
+                # in case Samsara renamed the field.
+                _suspect = [k for k in _keys
+                            if any(t in k.lower() for t in ("coach", "assign", "actor", "user", "review"))]
+                if _suspect:
+                    log.info("DIAG coach-shaped keys on coached event: %s", _suspect)
+                    for k in _suspect:
+                        log.info("DIAG   %s = %r", k, _coached_ev.get(k))
+                _ev_id = _coached_ev.get("id")
+                # Probe 1: opt into assignedCoach via include= param.
+                if _ev_id:
+                    for _inc in ("assignedCoach", "coachedBy", "assignedCoach,coachedBy"):
+                        _probe = self._safe_get(
+                            "/fleet/safety-events",
+                            {"startTime": _iso(start), "endTime": _iso(end),
+                             "limit": 5, "include": _inc},
+                        )
+                        if _probe:
+                            _p = _probe[0]
+                            _has = any(k for k in _p.keys()
+                                       if any(t in k.lower() for t in ("coach", "assign")))
+                            log.info("DIAG include=%s → keys=%s has_coach_key=%s",
+                                     _inc, sorted(_p.keys()), _has)
             if _with:
                 _sample = next((r for r in items if r.get("assignedCoach")), None)
                 if _sample:
