@@ -2297,7 +2297,8 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
     # HOS log certifications — drivers who haven't certified their daily
     # logs. Mirrors the dashboard's Missing Certifications tab. One row
-    # per driver-day where isCertified == False, sorted newest day first.
+    # per DRIVER (not per day) with a count of missing days + date range,
+    # sorted by most-missed first.
     out["detail"]["hos_uncert"] = []
     if hos_daily is not None and not hos_daily.empty:
         cert_col = _find_col(hos_daily, ["iscertified"])
@@ -2307,15 +2308,22 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             uncert_mask = ~hos_daily[cert_col].astype(bool)
             uncert = hos_daily[uncert_mask].copy()
             if not uncert.empty:
-                _d = _to_naive_dt(uncert[date_col])
-                uncert = uncert.assign(_date=_d).sort_values("_date", ascending=False)
+                uncert["_date"] = _to_naive_dt(uncert[date_col])
+                uncert["_driver"] = uncert[drv_col].astype(str).str.strip()
+                uncert = uncert[uncert["_driver"].str.lower().ne("nan") & uncert["_driver"].ne("")]
                 rows: list[dict] = []
-                for _, r in uncert.iterrows():
-                    _ts = r["_date"]
+                for drv, grp in uncert.groupby("_driver"):
+                    days = grp["_date"].dropna()
+                    earliest = days.min().strftime("%Y-%m-%d") if not days.empty else "&mdash;"
+                    latest = days.max().strftime("%Y-%m-%d") if not days.empty else "&mdash;"
+                    span = earliest if earliest == latest else f"{earliest} &ndash; {latest}"
                     rows.append({
-                        "driver": str(r.get(drv_col, "") or "&mdash;"),
-                        "day": _ts.strftime("%Y-%m-%d") if pd.notna(_ts) else "&mdash;",
+                        "driver": drv,
+                        "days_missing": int(len(grp)),
+                        "span": span,
+                        "latest": latest,
                     })
+                rows.sort(key=lambda r: (-r["days_missing"], r["driver"]))
                 out["detail"]["hos_uncert"] = rows[:30]
 
     # --- Fleet Operations metrics (page 4) -----------------------------------
@@ -5212,11 +5220,13 @@ def _safety_detail_tables(samsara) -> str:
         )
 
     # Missing log certifications (Samsara dashboard's "Missing
-    # Certifications" tab). One row per driver-day where the daily log
-    # hasn't been certified — last 7 days, newest first.
+    # Certifications" tab). One row per DRIVER with a count of missing
+    # days + date range, most-missed first. Drivers with multiple
+    # uncertified days appear once.
     uncert_rows = "".join(
-        _tr([r.get("driver", "&mdash;"), r.get("day", "&mdash;"), "Not certified"],
-            ["left", "left", "left"], [None, None, "bad"])
+        _tr([r.get("driver", "&mdash;"), str(r.get("days_missing", "")),
+             r.get("span", "&mdash;"), "Not certified"],
+            ["left", "right", "left", "left"], [None, "bad", None, "bad"])
         for r in detail.get("hos_uncert", []))
 
     return (
@@ -5225,7 +5235,7 @@ def _safety_detail_tables(samsara) -> str:
         f"{_section('HOS violations &mdash; last 7 days')}"
         f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
         f"{_section('Missing log certifications &mdash; last 7 days')}"
-        f"{_table(['Driver', 'Log day', 'Status'], ['left', 'left', 'left'], uncert_rows)}"
+        f"{_table(['Driver', 'Days missing', 'Date range', 'Status'], ['left', 'right', 'left', 'left'], uncert_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"
