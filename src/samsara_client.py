@@ -458,10 +458,20 @@ class SamsaraClient:
             _r0 = items[0]
             if isinstance(_r0, dict):
                 log.info("DIAG HOS daily-log keys: %s", sorted(_r0.keys()))
-                # Surface anything that looks like a certification flag.
                 _cert_keys = {k: _r0.get(k) for k in _r0.keys()
                               if any(t in k.lower() for t in ("cert", "sign", "approve"))}
                 log.info("DIAG HOS daily-log cert-shaped fields: %s", _cert_keys)
+                # Prior probe showed no top-level cert flag; the cert
+                # status is almost certainly inside logMetaData. Dump it
+                # in full so we can wire whatever the actual flag is.
+                _meta = _r0.get("logMetaData")
+                log.info("DIAG HOS daily-log full first record (truncated): %r",
+                         str(_r0)[:1000])
+                if isinstance(_meta, dict):
+                    log.info("DIAG HOS daily-log logMetaData keys: %s",
+                             sorted(_meta.keys()))
+                    log.info("DIAG HOS daily-log logMetaData full: %r",
+                             str(_meta)[:800])
         return items
 
     def fetch_hos_violations(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
@@ -485,13 +495,22 @@ class SamsaraClient:
                 # Diagnostic: dump first record keys + any time-shaped values
                 # so we can confirm the scorecard's date column lookup
                 # (`violationStartTime` / `startTime` / `time`) actually
-                # matches the live response shape.
+                # matches the live response shape. Prior probe showed
+                # top-level is just {"violations": [...]} — so dump the
+                # full record + the first nested violation's keys/values.
                 _r0 = items[0]
                 if isinstance(_r0, dict):
                     log.info("DIAG HOS violation keys: %s", sorted(_r0.keys()))
-                    _time_keys = {k: _r0.get(k) for k in _r0.keys()
-                                  if any(t in k.lower() for t in ("time", "start", "end", "date"))}
-                    log.info("DIAG HOS violation time-shaped fields: %s", _time_keys)
+                    log.info("DIAG HOS violation full record (truncated): %r",
+                             str(_r0)[:800])
+                    _viol_list = _r0.get("violations") or []
+                    if isinstance(_viol_list, list) and _viol_list:
+                        _v0 = _viol_list[0]
+                        if isinstance(_v0, dict):
+                            log.info("DIAG HOS nested violation[0] keys: %s",
+                                     sorted(_v0.keys()))
+                            log.info("DIAG HOS nested violation[0] full: %r",
+                                     str(_v0)[:600])
                 return items
         log.info("Total HOS violations: 0")
         return []
