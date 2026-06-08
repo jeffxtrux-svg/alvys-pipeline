@@ -489,17 +489,27 @@ def main() -> int:
         start_iso=start_safety.strftime("%Y-%m-%dT%H:%M:%SZ"))
     log.info("DIAG audit-log: %d total records", len(_audit))
     if _audit:
-        log.info("DIAG audit-log keys (first record): %s",
-                 sorted(_audit[0].keys()))
-        # Surface the full first record so we can see the actual value
-        # shapes — short enough at this point in the day, will trim
-        # once we know what to keep.
         import json as _json
-        log.info("DIAG audit-log sample[0]: %s",
-                 _json.dumps(_audit[0], default=str)[:1500])
-        if len(_audit) > 1:
-            log.info("DIAG audit-log sample[1]: %s",
-                     _json.dumps(_audit[1], default=str)[:1500])
+        # Histogram of `type` values so we can see what coaching action
+        # types exist. Sample[0]/[1] previously hit only system types
+        # (CreateSafetyEventActivityType, BehaviorLabelActivityType) —
+        # those are auto-generated and have no actor. The interesting
+        # records are coach/dismiss/recognize, which should each carry a
+        # user. Dump one full sample of EACH unique type so we can
+        # confirm whether the actor lives at user.{id,name} or
+        # somewhere else (coachedBy / reviewedBy / actor).
+        from collections import Counter
+        _type_counts = Counter(str(r.get("type") or "?") for r in _audit)
+        log.info("DIAG audit-log type histogram: %s",
+                 dict(sorted(_type_counts.items(), key=lambda kv: -kv[1])))
+        _seen_types = set()
+        for r in _audit:
+            t = str(r.get("type") or "?")
+            if t in _seen_types:
+                continue
+            _seen_types.add(t)
+            log.info("DIAG audit-log sample(%s): %s",
+                     t, _json.dumps(r, default=str)[:1800])
 
     log.info("=" * 60)
     log.info("Step 7/10: HOS Logs (30 days)")
