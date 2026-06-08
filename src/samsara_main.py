@@ -520,6 +520,51 @@ def main() -> int:
     log.info("Merged coachedAtTime onto %d of %d safety events",
              _merge_count, len(raw_safety))
 
+    # NEW (per Samsara support 2026-06-08): /fleet/safety-events DOES
+    # carry `assignedCoach` — the user id of whoever's assigned to coach
+    # the event. They confirmed coachedBy.{id,name} won't be added.
+    # Resolve assignedCoach against the Users sheet (id → name) and set
+    # the result as coachedBy.{id,name} on each raw_safety record. The
+    # scorecard's existing coachedBy.name / coachedBy.id probes will
+    # pick it up automatically — Coach column on the Coaching-needs
+    # table AND the suffix on Safety Events status both light up with
+    # no scorecard code change.
+    _user_id_to_name: dict[str, str] = {}
+    for _u in (raw_users or []):
+        if not isinstance(_u, dict):
+            continue
+        _uid = _u.get("id")
+        _unm = _u.get("name") or _u.get("displayName")
+        if _uid and _unm:
+            _user_id_to_name[str(_uid).strip()] = str(_unm).strip()
+    log.info("User-directory map for coach lookup: %d entries",
+             len(_user_id_to_name))
+    _coach_merge = 0
+    _coach_unresolved = 0
+    for ev in raw_safety:
+        if not isinstance(ev, dict):
+            continue
+        ac = ev.get("assignedCoach")
+        if not ac:
+            continue
+        # assignedCoach may be a plain id string or a nested object.
+        _cid = (ac.get("id") if isinstance(ac, dict) else ac)
+        if _cid is None:
+            continue
+        _cid = str(_cid).strip()
+        _cname = _user_id_to_name.get(_cid, "")
+        # Set coachedBy.{id,name} so the scorecard's existing _find_col
+        # probes (coachedby.name / coachedby.id) light up — no scorecard
+        # changes required. Name falls back to "" when the user id isn't
+        # in the Users sheet; the scorecard then shows the bare id which
+        # is at least actionable.
+        ev["coachedBy"] = {"id": _cid, "name": _cname}
+        _coach_merge += 1
+        if not _cname:
+            _coach_unresolved += 1
+    log.info("Merged coachedBy via assignedCoach onto %d events (%d w/o name match in Users)",
+             _coach_merge, _coach_unresolved)
+
     # One-shot probe of the v2 stream endpoint — last shot at finding a
     # response shape that carries coachedBy. If any path returns data,
     # log the first record's keys + full sample so we know what's in it.

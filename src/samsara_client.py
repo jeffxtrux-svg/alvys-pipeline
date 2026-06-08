@@ -285,19 +285,32 @@ class SamsaraClient:
     def fetch_safety_events(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """Harsh braking, speeding, distraction, and other safety events.
 
-        The list endpoint does NOT include `coachedBy` in its response
-        (confirmed by diagnostic probe — keys are behaviorLabels,
-        coachingState, downloadForwardVideoUrl, downloadInwardVideoUrl,
-        driver, id, location, maxAccelerationGForce, time, vehicle).
-        Callers that want the coach name should follow up with
-        fetch_safety_event_detail(id) per event — see samsara_main's
-        enrichment loop.
+        The list endpoint does NOT include coachedBy.{id,name} in its
+        response (confirmed via Samsara support 2026-06-08). What it
+        DOES carry is `assignedCoach` — the user id of whoever's
+        assigned to coach the event. samsara_main resolves that against
+        the Users sheet to surface the coach name on the scorecard.
+
+        See: https://developers.samsara.com/reference/getsafetyeventsv2
+             docs/knowledge-base/samsara-coaching-attribution.md
         """
         log.info("Fetching safety events %s → %s…", start.date(), end.date())
         # /fleet/safety-events caps page size at 200 (PAGE_LIMIT of 512 -> HTTP 400).
         params = {"startTime": _iso(start), "endTime": _iso(end), "limit": 200}
         items = self._safe_get("/fleet/safety-events", params)
         log.info("Total safety events: %d", len(items))
+        # One-shot diagnostic: confirm assignedCoach actually shows up
+        # in records. Samsara support said it's available; verify in
+        # the wild before depending on it for the scorecard Coach column.
+        if items:
+            _with = sum(1 for r in items if isinstance(r, dict) and r.get("assignedCoach"))
+            log.info("DIAG assignedCoach present on %d / %d safety events",
+                     _with, len(items))
+            if _with:
+                _sample = next((r for r in items if r.get("assignedCoach")), None)
+                if _sample:
+                    log.info("DIAG sample assignedCoach value: %r",
+                             _sample.get("assignedCoach"))
         return items
 
     def fetch_safety_event_detail(self, event_id: str) -> dict | None:

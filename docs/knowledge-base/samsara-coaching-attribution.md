@@ -12,6 +12,27 @@ For every Samsara safety event where a manager has taken action, show
 the manager's first name (or full name) on the scorecard so the reader
 can see *who* is doing the coaching, not just that it happened.
 
+## RESOLUTION (2026-06-08)
+
+Samsara support clarified the field. **`assignedCoach`** is exposed on
+`/fleet/safety-events` ([v2 reference](https://developers.samsara.com/reference/getsafetyeventsv2)) —
+it's the user id of whoever's assigned to coach the event. Samsara
+support confirmed `coachedBy.{id,name}` will NOT be added to the
+response (and `/fleet/safety-events/{id}` will continue to return 404
+— that's intentional platform design, not a bug).
+
+`samsara_main.py` now reads `assignedCoach` per event, looks the user
+id up in the `Users` sheet (id → name), and sets
+`coachedBy.{id,name}` on the raw event record before flatten. The
+scorecard's existing `coachedBy.name` / `coachedBy.id` probes
+(`_find_col` lookups in `compute_samsara` and `_safety_detail_tables`)
+light up automatically — Coach column on the Coaching-needs-assigned
+table AND the suffix on the Safety Events status cell on page 1.
+
+The Coached Events end-of-brief page also picks the name up via the
+same column. Coach attribution is live as of the first Samsara pull
+after this change ships.
+
 ## What we have today
 
 The Samsara `/fleet/safety-events` list endpoint returns these keys per
