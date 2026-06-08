@@ -436,6 +436,34 @@ class SamsaraClient:
         log.info("Total HOS log entries: 0")
         return []
 
+    def fetch_hos_daily_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
+        """Per-driver per-day HOS summaries — surfaces log *certification*
+        status (the Samsara dashboard's "Missing Certifications" tab).
+
+        Endpoint: GET /fleet/hos/daily-logs
+            https://developers.samsara.com/reference/gethosdailylogs
+
+        Each record represents one driver-day with a `certifiedAt` (or
+        equivalent) field; missing means the driver hasn't certified
+        that day's logs yet. Bounded to start/end dates.
+        """
+        log.info("Fetching HOS daily logs %s → %s…", start.date(), end.date())
+        params = {
+            "startDate": start.date().isoformat(),
+            "endDate": end.date().isoformat(),
+        }
+        items = self._safe_get("/fleet/hos/daily-logs", params)
+        log.info("Total HOS daily logs: %d", len(items))
+        if items:
+            _r0 = items[0]
+            if isinstance(_r0, dict):
+                log.info("DIAG HOS daily-log keys: %s", sorted(_r0.keys()))
+                # Surface anything that looks like a certification flag.
+                _cert_keys = {k: _r0.get(k) for k in _r0.keys()
+                              if any(t in k.lower() for t in ("cert", "sign", "approve"))}
+                log.info("DIAG HOS daily-log cert-shaped fields: %s", _cert_keys)
+        return items
+
     def fetch_hos_violations(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """HOS *violations* (driving/shift/break/cycle-limit breaches).
 
@@ -454,6 +482,16 @@ class SamsaraClient:
             items = self._safe_get(path, params)
             if items:
                 log.info("Total HOS violations: %d (from %s)", len(items), path)
+                # Diagnostic: dump first record keys + any time-shaped values
+                # so we can confirm the scorecard's date column lookup
+                # (`violationStartTime` / `startTime` / `time`) actually
+                # matches the live response shape.
+                _r0 = items[0]
+                if isinstance(_r0, dict):
+                    log.info("DIAG HOS violation keys: %s", sorted(_r0.keys()))
+                    _time_keys = {k: _r0.get(k) for k in _r0.keys()
+                                  if any(t in k.lower() for t in ("time", "start", "end", "date"))}
+                    log.info("DIAG HOS violation time-shaped fields: %s", _time_keys)
                 return items
         log.info("Total HOS violations: 0")
         return []

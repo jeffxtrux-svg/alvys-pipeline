@@ -595,6 +595,16 @@ def main() -> int:
     log.info("=" * 60)
     raw_hos_viol = client.fetch_hos_violations(start_safety, now)
 
+    # One-off probe: check what /fleet/hos/daily-logs returns so we can
+    # wire log-certification (Samsara's "Missing Certifications" tab)
+    # onto the scorecard. Bounded to last 7d — same as the dashboard
+    # default view — so it's cheap.
+    try:
+        _dlog_start = now - datetime.timedelta(days=7)
+        client.fetch_hos_daily_logs(_dlog_start, now)
+    except Exception as e:
+        log.warning("HOS daily-logs probe failed: %s", e)
+
     log.info("=" * 60)
     log.info("Step 9/10: DVIRs (%d days)", safety_days_back)
     log.info("=" * 60)
