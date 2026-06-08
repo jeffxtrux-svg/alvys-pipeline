@@ -2022,6 +2022,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     events = sheets.get("SafetyEvents")
     hosv = sheets.get("HOS_Violations")
     defects = sheets.get("DVIR_Defects")
+    hos_daily = sheets.get("HOS_DailyLogs")
     w = _windows()
     out: dict = {"windows": {}, "trend": {}, "detail": {}, "coaching": {"24h": 0, "7d": 0, "mtd": 0},
                  "fleet": {"mpg": [], "idle": [], "speeders": [], "scores_top": [],
@@ -2293,6 +2294,29 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
             opd, opdd,
             [("unit",), ("driver",), ("defect",), ("defect type",), ("resolved",)],
         )
+
+    # HOS log certifications — drivers who haven't certified their daily
+    # logs. Mirrors the dashboard's Missing Certifications tab. One row
+    # per driver-day where isCertified == False, sorted newest day first.
+    out["detail"]["hos_uncert"] = []
+    if hos_daily is not None and not hos_daily.empty:
+        cert_col = _find_col(hos_daily, ["iscertified"])
+        date_col = _find_col(hos_daily, ["log date", "starttime", "start time"])
+        drv_col = _find_col(hos_daily, ["driver name", "driver"])
+        if cert_col and date_col and drv_col:
+            uncert_mask = ~hos_daily[cert_col].astype(bool)
+            uncert = hos_daily[uncert_mask].copy()
+            if not uncert.empty:
+                _d = _to_naive_dt(uncert[date_col])
+                uncert = uncert.assign(_date=_d).sort_values("_date", ascending=False)
+                rows: list[dict] = []
+                for _, r in uncert.iterrows():
+                    _ts = r["_date"]
+                    rows.append({
+                        "driver": str(r.get(drv_col, "") or "&mdash;"),
+                        "day": _ts.strftime("%Y-%m-%d") if pd.notna(_ts) else "&mdash;",
+                    })
+                out["detail"]["hos_uncert"] = rows[:30]
 
     # --- Fleet Operations metrics (page 4) -----------------------------------
     # Speeding-event leaderboard: filter the safety-events stream for Event
@@ -5187,11 +5211,21 @@ def _safety_detail_tables(samsara) -> str:
             [None, None, events_kind, None, action_kind, None, ack_color],
         )
 
+    # Missing log certifications (Samsara dashboard's "Missing
+    # Certifications" tab). One row per driver-day where the daily log
+    # hasn't been certified — last 7 days, newest first.
+    uncert_rows = "".join(
+        _tr([r.get("driver", "&mdash;"), r.get("day", "&mdash;"), "Not certified"],
+            ["left", "left", "left"], [None, None, "bad"])
+        for r in detail.get("hos_uncert", []))
+
     return (
         f"{_section('Safety events &mdash; last 7 days')}"
         f"{_table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], event_rows)}"
         f"{_section('HOS violations &mdash; last 7 days')}"
         f"{_table(['Driver', 'Reported', 'Violation', 'Status'], ['left', 'left', 'left', 'left'], hos_rows)}"
+        f"{_section('Missing log certifications &mdash; last 7 days')}"
+        f"{_table(['Driver', 'Log day', 'Status'], ['left', 'left', 'left'], uncert_rows)}"
         f"{_section('DVIR defects (open) &mdash; all unresolved')}"
         f"{_table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'], ['left', 'left', 'left', 'left', 'left', 'left'], dvir_rows)}"
         f"{_section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')}"

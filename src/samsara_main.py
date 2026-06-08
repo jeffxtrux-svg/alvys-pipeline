@@ -595,15 +595,15 @@ def main() -> int:
     log.info("=" * 60)
     raw_hos_viol = client.fetch_hos_violations(start_safety, now)
 
-    # One-off probe: check what /fleet/hos/daily-logs returns so we can
-    # wire log-certification (Samsara's "Missing Certifications" tab)
-    # onto the scorecard. Bounded to last 7d — same as the dashboard
-    # default view — so it's cheap.
+    # HOS daily logs — per-driver per-day summary with cert status
+    # (Samsara's "Missing Certifications" tab in the dashboard).
+    # Bounded to last 7d, matching the dashboard's default view.
     try:
         _dlog_start = now - datetime.timedelta(days=7)
-        client.fetch_hos_daily_logs(_dlog_start, now)
+        raw_hos_daily = client.fetch_hos_daily_logs(_dlog_start, now)
     except Exception as e:
-        log.warning("HOS daily-logs probe failed: %s", e)
+        log.warning("HOS daily-logs fetch failed: %s", e)
+        raw_hos_daily = []
 
     log.info("=" * 60)
     log.info("Step 9/10: DVIRs (%d days)", safety_days_back)
@@ -685,15 +685,41 @@ def main() -> int:
         df_safety["Driver Name"] = [(r.get("driver") or {}).get("name") for r in raw_safety]
         df_safety["Unit"] = [(r.get("vehicle") or {}).get("name") for r in raw_safety]
 
-    # HOS violations: add clean Driver / Violation Type columns.
-    df_hosv = flatten(raw_hos_viol, "HOS_Violations")
-    if not df_hosv.empty and len(df_hosv) == len(raw_hos_viol):
-        df_hosv["Driver Name"] = [(r.get("driver") or {}).get("name") for r in raw_hos_viol]
-        df_hosv["Violation Type"] = [_hos_violation_type(r) for r in raw_hos_viol]
-        # The /fleet/hos/violations record carries the violation timestamp under
-        # ``violationStartTime`` — json_normalize doesn't always surface nested
-        # fields as columns, so set it explicitly for the scorecard's date logic.
-        df_hosv["violationStartTime"] = [r.get("violationStartTime") for r in raw_hos_viol]
+    # HOS violations: the API groups violations per driver-day, so each
+    # top-level record is {"violations": [...]} with driver/type/time all
+    # nested inside. Explode the inner list so each violation becomes its
+    # own row and the scorecard's date filter actually sees the timestamps.
+    flat_hos_viol: list[dict] = []
+    for _wrap in (raw_hos_viol or []):
+        if not isinstance(_wrap, dict):
+            continue
+        for _v in (_wrap.get("violations") or []):
+            if isinstance(_v, dict):
+                flat_hos_viol.append(_v)
+    log.info("  HOS violations exploded: %d wrappers → %d violations",
+             len(raw_hos_viol), len(flat_hos_viol))
+    df_hosv = flatten(flat_hos_viol, "HOS_Violations")
+    if not df_hosv.empty and len(df_hosv) == len(flat_hos_viol):
+        df_hosv["Driver Name"] = [(v.get("driver") or {}).get("name") for v in flat_hos_viol]
+        # Prefer the human-readable description ("Shift Duty Limit
+        # (USA-14 hours)") and fall back to the machine type code.
+        df_hosv["Violation Type"] = [v.get("description") or _hos_violation_type(v)
+                                     for v in flat_hos_viol]
+        df_hosv["violationStartTime"] = [v.get("violationStartTime") for v in flat_hos_viol]
+
+    # HOS daily logs: one row per driver per day with certification flag.
+    # Surface the nested logMetaData.{isCertified, certifiedAtTime}
+    # plus the driver name + log date so the scorecard can render the
+    # "Missing log certifications" section without spelunking.
+    df_hos_daily = flatten(raw_hos_daily, "HOS_DailyLogs")
+    if not df_hos_daily.empty and len(df_hos_daily) == len(raw_hos_daily):
+        df_hos_daily["Driver Name"] = [(r.get("driver") or {}).get("name")
+                                       for r in raw_hos_daily]
+        df_hos_daily["Log Date"] = [r.get("startTime") for r in raw_hos_daily]
+        df_hos_daily["isCertified"] = [bool((r.get("logMetaData") or {}).get("isCertified"))
+                                       for r in raw_hos_daily]
+        df_hos_daily["certifiedAtTime"] = [(r.get("logMetaData") or {}).get("certifiedAtTime")
+                                           for r in raw_hos_daily]
 
     df_dvir_defects = build_dvir_defects(raw_dvirs)
     log.info("  DVIR_Defects: %d rows (exploded from %d DVIRs)",
@@ -784,6 +810,7 @@ def main() -> int:
         "SafetyEvents":   df_safety,
         "HOS_Logs":       flatten(raw_hos,       "HOS_Logs"),
         "HOS_Violations": df_hosv,
+        "HOS_DailyLogs":  df_hos_daily,
         "DVIRs":          flatten(raw_dvirs,     "DVIRs"),
         "DVIR_Defects":   df_dvir_defects,
         "EngineIdle":     df_idle,
