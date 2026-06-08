@@ -37,14 +37,17 @@ immediately whatever hour/season the Worker fires.
 
 ## Schedule
 
-Two UTC cron slots (`wrangler.toml`) cover ~6:45am Central in both DST seasons,
-firing *after* GitHub's own 5:00–6:00am crons so they get first crack:
+Target: **5:30am Central, year-round.** Cloudflare cron is fixed UTC with no DST
+handling, so `wrangler.toml` arms both seasonal 5:30am slots and the Worker's
+own `America/Chicago` hour-gate (`centralHour()` in `worker.js`) fires only the
+one that actually lands on 5:30am Central:
 
-- `45 11 * * *` → 6:45am CDT / 5:45am CST
-- `45 12 * * *` → 7:45am CDT / 6:45am CST
+- `30 10 * * *` → 5:30am CDT (summer) / 4:30am CST → gated off in winter
+- `30 11 * * *` → 6:30am CDT → gated off in summer / 5:30am CST (winter)
 
-Because the action is idempotent, the off-by-an-hour drift across the DST flip
-is harmless. Drop to a single line if you want fewer confirmatory runs.
+So exactly one fire passes the gate each morning, at 5:30am Central, with no
+manual cron edits at the DST flip. (The manual `fetch` test endpoint ignores the
+gate, so you can trigger it on demand any time.)
 
 ## One-time setup
 

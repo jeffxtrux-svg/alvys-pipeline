@@ -65,6 +65,18 @@ async function dispatch(workflow, token) {
   console.log(`Dispatched ${workflow} (204)`);
 }
 
+// Current hour-of-day in America/Chicago (auto-handles CST vs CDT). Used to
+// gate the two UTC cron slots down to the single one that lands at 5:30am
+// Central in the current season.
+function centralHour() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  return parseInt(parts.find((p) => p.type === "hour").value, 10);
+}
+
 async function dispatchAll(token) {
   const results = await Promise.allSettled(
     WORKFLOWS.map((wf) => dispatch(wf, token)),
@@ -80,9 +92,16 @@ async function dispatchAll(token) {
 }
 
 export default {
-  // Fired by the cron triggers in wrangler.toml.
+  // Fired by the cron triggers in wrangler.toml. Two UTC slots are armed
+  // (one per DST season); the hour-gate lets only the 5:30am-Central one
+  // through and no-ops the off-season slot.
   async scheduled(event, env, ctx) {
     if (!env.GH_TOKEN) throw new Error("GH_TOKEN secret is not set");
+    const h = centralHour();
+    if (h !== 5) {
+      console.log(`Central hour is ${h}, not the 5am slot — skipping.`);
+      return;
+    }
     await dispatchAll(env.GH_TOKEN);
   },
 

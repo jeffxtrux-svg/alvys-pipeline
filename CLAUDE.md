@@ -133,8 +133,9 @@ cron, which is best-effort and silently drops runs under load. On 2026-06-08 it
 dropped the entire morning batch (every scorecard/daily-upload slot **and** both
 healthchecks), so nothing emailed. A small Cloudflare Worker
 (`ops/cron-trigger/worker.js`, runs on Cloudflare's scheduler) is the one layer
-outside GitHub: each morning (~6:45am CT, dual UTC crons for DST) it dispatches
-the two **healthcheck** workflows via the GitHub API. Because the healthchecks
+outside GitHub: each morning (5:30am CT — dual UTC crons + an in-Worker
+America/Chicago hour-gate for DST) it dispatches the two **healthcheck**
+workflows via the GitHub API. Because the healthchecks
 are marker-gated, this is idempotent — it no-ops on normal mornings and recovers
 the send on drop mornings. Setup (a fine-grained PAT scoped to Actions:RW on
 this repo, stored as a Cloudflare secret) is in `ops/cron-trigger/README.md`.
