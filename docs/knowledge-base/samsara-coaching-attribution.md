@@ -12,26 +12,60 @@ For every Samsara safety event where a manager has taken action, show
 the manager's first name (or full name) on the scorecard so the reader
 can see *who* is doing the coaching, not just that it happened.
 
-## RESOLUTION (2026-06-08)
+## RESOLUTION ATTEMPT (2026-06-08) — still blocked
 
-Samsara support clarified the field. **`assignedCoach`** is exposed on
-`/fleet/safety-events` ([v2 reference](https://developers.samsara.com/reference/getsafetyeventsv2)) —
-it's the user id of whoever's assigned to coach the event. Samsara
-support confirmed `coachedBy.{id,name}` will NOT be added to the
-response (and `/fleet/safety-events/{id}` will continue to return 404
-— that's intentional platform design, not a bug).
+Samsara support pointed to **`assignedCoach`** on `/fleet/safety-events`
+([v2 reference](https://developers.samsara.com/reference/getsafetyeventsv2))
+as the user id of whoever's assigned to coach the event. They also
+confirmed `coachedBy.{id,name}` will NOT be added (and
+`/fleet/safety-events/{id}` will continue to return 404 — that's
+intentional platform design).
 
-`samsara_main.py` now reads `assignedCoach` per event, looks the user
-id up in the `Users` sheet (id → name), and sets
-`coachedBy.{id,name}` on the raw event record before flatten. The
-scorecard's existing `coachedBy.name` / `coachedBy.id` probes
-(`_find_col` lookups in `compute_samsara` and `_safety_detail_tables`)
-light up automatically — Coach column on the Coaching-needs-assigned
-table AND the suffix on the Safety Events status cell on page 1.
+We wired it up in `samsara_main.py` (read `assignedCoach` per event, look
+the user id up in the `Users` sheet, set `coachedBy.{id,name}` on the raw
+event) and added a probe in `samsara_client.fetch_safety_events`.
 
-The Coached Events end-of-brief page also picks the name up via the
-same column. Coach attribution is live as of the first Samsara pull
-after this change ships.
+**Result on the production tenant (XFreight, 97 safety events / 190d):**
+
+- `assignedCoach` present on **0 / 97** events in the default response.
+- The complete set of top-level keys on a coached event is exactly:
+  `behaviorLabels, coachingState, downloadForwardVideoUrl,
+  downloadInwardVideoUrl, driver, id, location, maxAccelerationGForce,
+  time, vehicle`. No `assignedCoach`, no `coachedBy`, no `actor`,
+  no `user`, no `review`.
+- Re-fetched with `?include=assignedCoach`, `?include=coachedBy`, and
+  `?include=assignedCoach,coachedBy` — **all three returned the exact
+  same 10-key response shape.** The `include=` parameter is silently
+  ignored by Samsara on this endpoint for our tenant.
+
+So the wiring on our side is correct but it merges `coachedBy` onto 0
+events because the upstream field never appears. Coach attribution is
+**still blocked.**
+
+Likely causes (in decreasing order of probability):
+1. **Pre-assignment never set in the Samsara dashboard.** `assignedCoach`
+   is the *pre-assigned* coach for a safety event, not the person who
+   actually closed it. If no one has been designated in the dashboard,
+   the field is omitted from the response. Coaching-state changes
+   continue to happen via the dashboard's coach-flow buttons (which is
+   why `coachingState` flips to `coached/dismissed/recognized`), but
+   the actor isn't recorded anywhere queryable.
+2. **API token scope.** Our daily-pull token may not include whatever
+   scope exposes the field. Documentation doesn't enumerate scopes.
+3. **Tenant feature flag.** Samsara may gate the field behind a tier
+   our XFreight account doesn't have.
+
+Status of the wiring: the `assignedCoach → coachedBy.{id,name}` merge
+stays in place — it's harmless on 0 events and lights up automatically
+the moment Samsara starts returning the field. The probe in
+`samsara_client.fetch_safety_events` stays too so we can detect the
+moment it flips on.
+
+Next step on the user side: either (a) go back to Samsara support with
+this evidence (`include=` silently ignored; field absent on every
+coached event including ones with explicit coaching activity in the
+audit-log), or (b) assign coaches to events in the Samsara dashboard
+to see whether that populates the field on the next pull.
 
 ## What we have today
 
