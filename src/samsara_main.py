@@ -487,29 +487,58 @@ def main() -> int:
     # surface.
     _audit = client.fetch_safety_audit_log(
         start_iso=start_safety.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    log.info("DIAG audit-log: %d total records", len(_audit))
-    if _audit:
+    log.info("Audit log: %d records (190d window)", len(_audit))
+    # Build event_id → latest CoachingStateActivityType time so the
+    # scorecard can show "when was this event coached". The audit log
+    # confirmed earlier that CoachingStateActivityType records are
+    # what fire on coach/dismiss/recognize — they carry the safetyEvent
+    # id + timestamp but NOT the actor name (no user/coachedBy field
+    # in the response). Take the latest one per event so multiple
+    # state changes converge to the most recent.
+    _coached_at_by_event: dict[str, str] = {}
+    for r in _audit:
+        if str(r.get("type") or "") != "CoachingStateActivityType":
+            continue
+        ev = (r.get("safetyEvent") or {}).get("id")
+        t = r.get("time") or ""
+        if ev and t:
+            _ev = str(ev)
+            if t > _coached_at_by_event.get(_ev, ""):  # ISO 8601 sorts lexically
+                _coached_at_by_event[_ev] = t
+    log.info("Audit log: %d events have coaching activity",
+             len(_coached_at_by_event))
+    # Merge coached-at timestamp onto each safety event record. Becomes
+    # a top-level "coachedAtTime" column after json_normalize.
+    _merge_count = 0
+    for ev in raw_safety:
+        if not isinstance(ev, dict):
+            continue
+        cat = _coached_at_by_event.get(str(ev.get("id") or ""))
+        if cat:
+            ev["coachedAtTime"] = cat
+            _merge_count += 1
+    log.info("Merged coachedAtTime onto %d of %d safety events",
+             _merge_count, len(raw_safety))
+
+    # One-shot probe of the v2 stream endpoint — last shot at finding a
+    # response shape that carries coachedBy. If any path returns data,
+    # log the first record's keys + full sample so we know what's in it.
+    _stream = client.fetch_safety_events_stream(
+        start_iso=start_safety.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    log.info("DIAG stream: %d records", len(_stream))
+    if _stream:
         import json as _json
-        # Histogram of `type` values so we can see what coaching action
-        # types exist. Sample[0]/[1] previously hit only system types
-        # (CreateSafetyEventActivityType, BehaviorLabelActivityType) —
-        # those are auto-generated and have no actor. The interesting
-        # records are coach/dismiss/recognize, which should each carry a
-        # user. Dump one full sample of EACH unique type so we can
-        # confirm whether the actor lives at user.{id,name} or
-        # somewhere else (coachedBy / reviewedBy / actor).
-        from collections import Counter
-        _type_counts = Counter(str(r.get("type") or "?") for r in _audit)
-        log.info("DIAG audit-log type histogram: %s",
-                 dict(sorted(_type_counts.items(), key=lambda kv: -kv[1])))
-        _seen_types = set()
-        for r in _audit:
-            t = str(r.get("type") or "?")
-            if t in _seen_types:
-                continue
-            _seen_types.add(t)
-            log.info("DIAG audit-log sample(%s): %s",
-                     t, _json.dumps(r, default=str)[:1800])
+        log.info("DIAG stream keys (first record): %s",
+                 sorted(_stream[0].keys()))
+        log.info("DIAG stream sample[0]: %s",
+                 _json.dumps(_stream[0], default=str)[:2000])
+        # Count how many carry a coachedBy field (any path)
+        _with_coach = sum(1 for r in _stream
+                          if isinstance(r, dict) and (r.get("coachedBy")
+                                                       or r.get("coachingDetails")
+                                                       or r.get("reviewedBy")))
+        log.info("DIAG stream records carrying coachedBy/coachingDetails/reviewedBy: %d / %d",
+                 _with_coach, len(_stream))
 
     log.info("=" * 60)
     log.info("Step 7/10: HOS Logs (30 days)")

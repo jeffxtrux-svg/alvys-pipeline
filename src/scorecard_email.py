@@ -2083,11 +2083,58 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     _full = _duser_map.get(str(_v).strip(), "")
             _drow["coach_first"] = _full.split()[0] if _full else ""
         # "Coaching needs assigned" list — per-driver aggregation over the
-        # last 30 days. Drivers stay on the list until they sign their
-        # coaching session (every event status flips to coached/dismissed/
-        # recognized), then carry over for 3 more days as a closeout window
-        # before dropping off. Per-row `acked`/`ack_ts`/`coach` are computed
-        # below and consumed at render time in _safety_detail_tables.
+        # ALL coached events list — every event in the 190-day window
+        # whose coachingState is coached / dismissed / recognized. Feeds
+        # the end-of-brief Coached Events audit-trail page. The "Coached
+        # At" column reads coachedAtTime (set by samsara_main from the
+        # audit-log enrichment). Coach name isn't populated — Samsara's
+        # API doesn't expose user attribution for coaching actions; see
+        # docs/knowledge-base/samsara-coaching-attribution.md.
+        _ACTED = {"coached", "dismissed", "recognized"}
+        _coach_status_col = _find_col(events, ["coachingstate", "status",
+                                                "reviewed", "coaching"])
+        if _coach_status_col:
+            _acted_mask = (events[_coach_status_col].astype(str)
+                           .str.strip().str.lower().isin(_ACTED))
+            _acted_df = events[_acted_mask].copy()
+            _acted_dates = ed[_acted_mask]
+            _coached_rows: list[dict] = []
+            _et_c = _find_col(_acted_df, ["event type"])
+            _drv_c = _find_col(_acted_df, ["driver name", "driver"])
+            _unit_c = _find_col(_acted_df, ["unit", "vehicle"])
+            _sev_c = _find_col(_acted_df, ["severity"])
+            _ca_c = _find_col(_acted_df, ["coachedattime", "coached at time",
+                                           "coachedat"])
+            for _idx in _acted_df.index:
+                _r = _acted_df.loc[_idx]
+                _ts = _acted_dates.loc[_idx]
+                _drv = str(_r.get(_drv_c, "") or "").strip() if _drv_c else ""
+                if _is_excluded_driver(_drv):
+                    continue
+                _unit_raw = _r.get(_unit_c, "") if _unit_c else ""
+                _unit = _truck_label(_unit_raw) if _unit_raw else ""
+                _ca_raw = _r.get(_ca_c) if _ca_c else None
+                _coached_rows.append({
+                    "driver":     _drv or "(unknown)",
+                    "unit":       _unit,
+                    "event_date": (_ts.strftime("%Y-%m-%d %H:%M")
+                                   if pd.notna(_ts) else "&mdash;"),
+                    "event_type": str(_r.get(_et_c, "") or "").strip() if _et_c else "",
+                    "severity":   str(_r.get(_sev_c, "") or "").strip() if _sev_c else "",
+                    "state":      str(_r.get(_coach_status_col, "") or "").strip().lower(),
+                    "coached_at": (str(_ca_raw)[:16].replace("T", " ")
+                                   if pd.notna(_ca_raw) and str(_ca_raw).strip()
+                                   else "&mdash;"),
+                })
+            # Newest coaching activity first; rows w/o coached_at sink.
+            _coached_rows.sort(key=lambda r: r.get("coached_at") or "",
+                               reverse=True)
+            out["coached_events"] = _coached_rows
+            log.info("Coached events: %d rows (out of %d safety events)",
+                     len(_coached_rows), len(events))
+        else:
+            out["coached_events"] = []
+
         _7d = events[ed >= w["30d"]]
         _7d_dates = ed[ed >= w["30d"]]
         if not _7d.empty and dcol:
@@ -6290,6 +6337,70 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     )
 
 
+def build_page_coached(samsara, date_str) -> str:
+    """End-of-brief audit trail: every Samsara safety event in the
+    190-day window whose coachingState is coached / dismissed /
+    recognized. The COACH column is intentionally blank ("—") —
+    Samsara's API doesn't expose user attribution for coaching actions
+    on our tenant (see docs/knowledge-base/samsara-coaching-attribution.md
+    for the full investigation: list/detail/audit-log endpoints all
+    confirmed not to carry coachedBy). Page picks up coach names
+    automatically the moment Samsara enables it."""
+    rows = (samsara or {}).get("coached_events") or []
+    head = _header("Coached Events &mdash; all coaching actions, last 190 days",
+                   14, date_str, section='SAFETY')
+    # Tiles: total, by state
+    _by_state: dict[str, int] = {}
+    for r in rows:
+        _by_state[r.get("state", "")] = _by_state.get(r.get("state", ""), 0) + 1
+    tiles = (
+        _tile("Total acted events", num(len(rows)),
+              _pill("190-day window", "mute"))
+        + _tile("Coached", num(_by_state.get("coached", 0)),
+                _pill("manager reviewed", "good" if _by_state.get("coached") else "mute"))
+        + _tile("Dismissed", num(_by_state.get("dismissed", 0)),
+                _pill("no action needed", "mute"))
+        + _tile("Recognized", num(_by_state.get("recognized", 0)),
+                _pill("positive driving", "good" if _by_state.get("recognized") else "mute"))
+    )
+    if not rows:
+        body = (f"<tr><td colspan='7' style='padding:12px 8px;color:{MUTE};"
+                f"font-size:12.5px;'>No coached events in the 190-day window.</td></tr>")
+    else:
+        _state_kind = {"coached": "good", "dismissed": "mute", "recognized": "good"}
+        body = ""
+        for r in rows:
+            body += _tr(
+                [r.get("driver", ""), r.get("unit", ""),
+                 r.get("event_date", ""), r.get("coached_at", ""),
+                 r.get("event_type", ""), r.get("severity", ""),
+                 r.get("state", "")],
+                ["left", "left", "left", "left", "left", "left", "left"],
+                [None, None, None, None, None,
+                 ("bad" if str(r.get("severity", "")).lower() == "high" else None),
+                 _state_kind.get(r.get("state", ""))],
+            )
+    tbl = _table(["Driver", "Unit", "Event date", "Coached at",
+                  "Event type", "Severity", "State"],
+                 ["left", "left", "left", "left", "left", "left", "left"],
+                 body)
+    return (f"{head}"
+            f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+            f"<tr>{tiles}</tr>"
+            f"{_section('Every coach / dismiss / recognize action &middot; 190-day audit trail')}"
+            f"{tbl}"
+            f"</table>"
+            f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
+            f"border-top:1px solid {LINE};margin-top:14px;'>"
+            f"Sources: Samsara SafetyEvents sheet (coachingState column) for the "
+            f"event list + state; Samsara /fleet/safety-events/audit-logs/feed for "
+            f"the Coached at timestamp (latest CoachingStateActivityType record per "
+            f"event). <b>Coach name is not populated</b> — Samsara's API doesn't "
+            f"surface user attribution for coaching actions on our tenant "
+            f"(list / detail / audit endpoints all confirmed). Once Samsara support "
+            f"enables the field this column auto-populates.</div>")
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
@@ -6453,7 +6564,12 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # the very last page; it now renders early, between the two
             # halves of build_page1, so the variance has a forward pointer
             # readers can chase before they finish the executive overview.
-            f"{wrap(_strip(12) + build_page7(qb_ar, alvys_ar, date_str))}"
+            f"{wrap(_strip(12) + build_page7(qb_ar, alvys_ar, date_str))}{pb}"
+            # End-of-brief audit trail: every coached/dismissed/recognized
+            # safety event in the last 190 days, sorted newest-coached
+            # first. Coach name column is a placeholder until Samsara
+            # exposes user attribution — see build_page_coached docstring.
+            f"{wrap(build_page_coached(samsara, date_str))}"
             f"</body></html>")
 
 

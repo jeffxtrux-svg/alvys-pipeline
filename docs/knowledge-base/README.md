@@ -112,6 +112,7 @@ alvys-pipeline/
 | [architecture.md](./architecture.md) | Understand the design decisions and the shared 4-step pattern |
 | [connector-alvys.md](./connector-alvys.md) | Work on the Alvys pull, column mappings, or lookups |
 | [connector-samsara.md](./connector-samsara.md) | Work on Samsara data or the fleet email alerts |
+| [samsara-coaching-attribution.md](./samsara-coaching-attribution.md) | Understand why the Coach column on the Coached Events page is blank — full endpoint investigation of Samsara safety-event coach attribution |
 | [connector-quickbooks.md](./connector-quickbooks.md) | Work on QuickBooks, the 5-company loop, or token rotation |
 | [connector-sambasafety.md](./connector-sambasafety.md) | Work on SambaSafety MVR — the CSV-drop refresh job, the column re-map, or page 2 of the scorecard |
 | [onedrive-and-alerts.md](./onedrive-and-alerts.md) | Understand the OneDrive upload layer and the Azure app registration |

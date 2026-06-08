@@ -352,6 +352,30 @@ class SamsaraClient:
             log.info("Audit log: %d records from v1 fallback", len(items))
         return items
 
+    def fetch_safety_events_stream(self, start_iso: str | None = None) -> list[dict]:
+        """Probe the v2 'Get Safety Events Stream' endpoint — successor
+        to the legacy list endpoint. Stream endpoints typically carry
+        richer payloads than list endpoints, so this might include the
+        coachedBy field that /fleet/safety-events omits.
+
+        See: https://developers.samsara.com/reference/getsafetyeventsv2stream
+
+        Tries several path variants since Samsara isn't consistent across
+        v2 endpoints. Returns the first non-empty response.
+        """
+        params = {}
+        if start_iso:
+            params["startTime"] = start_iso
+        for path in ("/fleet/safety-events/stream",
+                     "/v2/fleet/safety-events",
+                     "/fleet/safety/events/stream"):
+            items = self._safe_get(path, params)
+            if items:
+                log.info("Stream: %d records from %s", len(items), path)
+                return items
+        log.info("Stream: all probe paths returned empty")
+        return []
+
     def fetch_hos_logs(self, start: datetime.datetime, end: datetime.datetime) -> list[dict]:
         """ELD / Hours of Service log entries."""
         log.info("Fetching HOS logs %s → %s…", start.date(), end.date())
