@@ -169,8 +169,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          # Testing window — jeff-only.
-          DAILY_UPLOAD_TO_EMAILS: jeff@xfreight.net
+          DAILY_UPLOAD_TO_EMAILS: jeff@xfreight.net,jb@xfreight.net
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
