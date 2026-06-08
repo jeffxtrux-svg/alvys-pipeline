@@ -5,6 +5,11 @@ name: Refresh Samsara data
 on:
   # Manual trigger from the Actions tab — use this to test
   workflow_dispatch:
+    inputs:
+      force_cert_nudge:
+        description: "Bypass today's cert-nudge marker (resend even if already sent today)"
+        type: boolean
+        default: false
 
   # Reusable so the "Refresh All" workflow can call it.
   workflow_call:
@@ -103,6 +108,7 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
+          CERT_NUDGE_FORCE: ${{ inputs.force_cert_nudge && '1' || '' }}
         run: python -m src.samsara_cert_nudge
 
       - name: Upload output as artifact
