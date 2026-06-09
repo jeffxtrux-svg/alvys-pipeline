@@ -1,0 +1,26 @@
+# Cloudflare Worker config for the off-GitHub morning-email backstop.
+# Deploy with: wrangler deploy   (run from this folder)
+#
+# Free tier covers this comfortably: a handful of cron invocations a day,
+# each making two tiny GitHub API calls.
+
+name = "alvys-scorecard-cron"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Target: 5:30am Central, year-round. Cloudflare cron is fixed UTC with no DST
+# handling, so we arm BOTH seasonal 5:30am slots and let the Worker's own
+# America/Chicago hour-gate (see worker.js) fire only the one that actually
+# lands on 5:30am Central — exactly the dual-cron + CT-gate pattern the GitHub
+# workflows use:
+#
+#   30 10 UTC  ->  5:30am CDT (summer)  /  4:30am CST  (gated off in worker)
+#   30 11 UTC  ->  6:30am CDT (gated)   /  5:30am CST  (winter)
+#
+# So in every season exactly one fire passes the gate, at 5:30am Central.
+[triggers]
+crons = ["30 10 * * *", "30 11 * * *"]
+
+# Cheap observability so a broken backstop doesn't itself go silent.
+[observability]
+enabled = true

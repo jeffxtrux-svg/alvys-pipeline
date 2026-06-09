@@ -127,6 +127,19 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `daily_upload_healthcheck.yml` (recover dropped runs) | 6:00am — checks `DailyUpload/sent-*.txt` marker; dispatches daily upload if missing | `0 11,12 * * *` | `{6}` |
 | `karpathy_compile.yml` (Karpathy-Wiki librarian) | 7:15am / 1:00pm (each with 30-min backup) | `15,45 12,13`, `0,30 18,19 * * *` | `{7, 13}` |
 
+**Off-GitHub backstop (`ops/cron-trigger/`).** All of the above — staggered
+backup crons *and* the 6am healthchecks — are built on GitHub's own `schedule:`
+cron, which is best-effort and silently drops runs under load. On 2026-06-08 it
+dropped the entire morning batch (every scorecard/daily-upload slot **and** both
+healthchecks), so nothing emailed. A small Cloudflare Worker
+(`ops/cron-trigger/worker.js`, runs on Cloudflare's scheduler) is the one layer
+outside GitHub: each morning (5:30am CT — dual UTC crons + an in-Worker
+America/Chicago hour-gate for DST) it dispatches the two **healthcheck**
+workflows via the GitHub API. Because the healthchecks
+are marker-gated, this is idempotent — it no-ops on normal mornings and recovers
+the send on drop mornings. Setup (a fine-grained PAT scoped to Actions:RW on
+this repo, stored as a Cloudflare secret) is in `ops/cron-trigger/README.md`.
+
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
 1. **Overview** — bottom-line + entity P&L + AR/AP trend + AR tiles + **QB-vs-Alvys AR reconciliation** + Alvys 61+ spot-check + safety tiles + 6-month safety trend + **X-Trux rate-per-mile goal** (the "cost-out": live driver-pay/mi from Alvys + shared X-Trux+X-Linx office overhead/mi from QB ÷ a target operating ratio — see `compute_rpm_goal` and `docs/knowledge-base/rate-per-mile-goal.md`). `build_page1` renders in two halves (`part='overview'` then `part='rest'`) so the **bill-by-bill matching page (`build_page8`)** is inserted between the AR reconciliation and the Overdue Invoices table — the variance gets its drill-down on physical PDF p5 rather than at the end of the brief. The `recon_note` carries forward `_pgref` cross-references that auto-resolve to whatever physical pages the targets land on.
