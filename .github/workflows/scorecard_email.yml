@@ -125,10 +125,14 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          # workflow_dispatch can pass `recipients` to override the standing
-          # list for one-shot sends (e.g. preview to one mailbox before
-          # publishing to the team).
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
+          # Recipient policy:
+          #   workflow_dispatch with empty recipients input → jeff only
+          #     (one-shot/manual sends default to a quiet single-mailbox
+          #     test send so they don't fan out to the whole team).
+          #   workflow_dispatch with recipients input set    → that list.
+          #   any other trigger (schedule / push / workflow_call) → the
+          #     standing list (jeff + jb).
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && 'jeff@xfreight.net' || 'jeff@xfreight.net,jb@xfreight.net') }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # idempotency marker so the on-demand resend actually sends.
           # Empty string for cron/dispatch leaves the marker check in force.
@@ -174,10 +178,9 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          # Mirror the send step's recipient override so a one-shot
-          # dispatch to a single mailbox doesn't fan its failure notice
-          # out to the standing list.
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
+          # Mirror the send step's recipient policy so a one-shot dispatch
+          # to a single mailbox doesn't fan its failure notice out.
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && 'jeff@xfreight.net' || 'jeff@xfreight.net,jb@xfreight.net') }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'

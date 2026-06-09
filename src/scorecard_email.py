@@ -2305,7 +2305,18 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         date_col = _find_col(hos_daily, ["log date", "starttime", "start time"])
         drv_col = _find_col(hos_daily, ["driver name", "driver"])
         if cert_col and date_col and drv_col:
-            uncert_mask = ~hos_daily[cert_col].astype(bool)
+            # Cert flag round-trips through Excel as TRUE/FALSE strings, so
+            # plain `astype(bool)` is wrong — bool("FALSE") == True (non-
+            # empty string) and the uncertified mask would be all-False.
+            # Coerce to a strict True set covering bool / int / common
+            # string spellings, then invert.
+            _raw = hos_daily[cert_col]
+            _truthy = _raw.apply(
+                lambda v: (v is True)
+                          or (isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0)
+                          or (isinstance(v, str) and v.strip().lower() in ("true", "1", "yes", "y"))
+            )
+            uncert_mask = ~_truthy
             uncert = hos_daily[uncert_mask].copy()
             if not uncert.empty:
                 uncert["_date"] = _to_naive_dt(uncert[date_col])
