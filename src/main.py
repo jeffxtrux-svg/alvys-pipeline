@@ -369,6 +369,16 @@ def main() -> int:
                 import json as _json
                 full = _json.dumps({k: detail.get(k) for k in insp_like}, default=str)
                 log.info("Trailer detail relevant-field values: %s", full[:600])
+            # Pick a trailer KNOWN to have Inspection Exp. populated (per the
+            # 6/9 export, trailer 2453231 has inspection date 2026-04-30).
+            # Find its Id from the raw list so the probe runs against a row
+            # that actually has the field set in Alvys.
+            target = next((t for t in lookups.raw_trailers
+                           if isinstance(t, dict)
+                           and str(t.get("TrailerNum", "")).strip() == "2453231"),
+                          first)
+            if isinstance(target, dict) and target.get("Id"):
+                client.probe_trailer_field_set(str(target["Id"]))
     if lookups.raw_trucks:
         first = lookups.raw_trucks[0]
         if isinstance(first, dict) and first.get("Id"):

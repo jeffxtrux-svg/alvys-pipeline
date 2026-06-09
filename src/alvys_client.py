@@ -303,6 +303,81 @@ class AlvysClient:
                 log.info("  %s → %s", path, e)
         return None
 
+    def probe_trailer_field_set(self, trailer_id: str) -> None:
+        """Cast-wide probe — Alvys's export tool returns Inspection Exp. for
+        31 of 36 trailers, but our /trailers and /trailers/{id} responses
+        only carry 13 fields and never include inspection/expiration keys.
+        Try every endpoint shape + query-param expansion we can think of so
+        we can compare field counts and confirm whether the richer
+        response is reachable via the public API."""
+        log.info("---- Trailer field-set probe (id=%s) ----", trailer_id)
+        # GET /trailers/{id} with various ?expand= / ?include= variants
+        for qs in ["", "?expand=all", "?expand=*", "?include=all",
+                   "?include=inspection", "?include=inspections",
+                   "?fields=all", "?fields=*", "?detail=full"]:
+            path = f"/trailers/{trailer_id}{qs}"
+            try:
+                resp = self._session.get(f"{BASE_URL}{path}",
+                                          headers=self._headers(), timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, dict) and isinstance(payload.get("Items"), list):
+                        payload = payload["Items"][0] if payload["Items"] else {}
+                    n = len(payload) if isinstance(payload, dict) else 0
+                    insp = [k for k in (payload.keys() if isinstance(payload, dict) else [])
+                            if any(t in k.lower() for t in ("inspect", "expir"))]
+                    log.info("  GET %s → %d keys, inspect/expir keys: %s",
+                             path, n, insp)
+                else:
+                    log.info("  GET %s → HTTP %d", path, resp.status_code)
+            except Exception as e:
+                log.info("  GET %s → %s", path, e)
+        # POST /trailers/search with various body shapes — list endpoint
+        # might return a thinner projection than the search endpoint.
+        for body in [
+            {"status": ["Active"]},
+            {"status": ["Active"], "expand": "all"},
+            {"status": ["Active"], "include": "inspections"},
+            {"status": ["Active"], "fields": "all"},
+            {"status": ["Active"], "detail": True},
+            {"trailerIds": [trailer_id]},
+        ]:
+            try:
+                resp = self._session.post(f"{BASE_URL}/trailers/search",
+                                           headers=self._headers(),
+                                           json={**body, "page": 0, "pageSize": 5},
+                                           timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    items = (payload.get("Items") or payload.get("items") or
+                              payload.get("data") or payload if isinstance(payload, list) else [])
+                    if items and isinstance(items[0], dict):
+                        first = items[0]
+                        n = len(first)
+                        insp = [k for k in first if any(t in k.lower() for t in ("inspect", "expir"))]
+                        log.info("  POST /trailers/search body=%s → %d keys, "
+                                 "inspect/expir keys: %s", body, n, insp)
+                    else:
+                        log.info("  POST /trailers/search body=%s → empty/non-dict items",
+                                 body)
+                else:
+                    log.info("  POST /trailers/search body=%s → HTTP %d",
+                             body, resp.status_code)
+            except Exception as e:
+                log.info("  POST /trailers/search body=%s → %s", body, e)
+        # Last-ditch: maintenance-style endpoints that might be trailer-scoped
+        for path in [f"/trailers/{trailer_id}/maintenance",
+                      f"/trailers/{trailer_id}/inspections",
+                      f"/trailers/{trailer_id}/compliance"]:
+            try:
+                resp = self._session.get(f"{BASE_URL}{path}",
+                                          headers=self._headers(), timeout=60)
+                log.info("  GET %s → HTTP %d (body: %s)", path,
+                         resp.status_code, resp.text[:200] if resp.text else "")
+            except Exception as e:
+                log.info("  GET %s → %s", path, e)
+        log.info("---- end trailer probe ----")
+
     def fetch_truck_detail(self, truck_id: str) -> dict | None:
         """Symmetric probe for trucks — the list endpoint returns 24 keys
         including InspectionExpirationDate, but the values are blank on
