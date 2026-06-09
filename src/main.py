@@ -110,6 +110,28 @@ def _build_equipment_df(records: list[dict], kind: str):
         "found" if found_annual else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
         "found" if found_reg else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
     )
+    # Precise populated counts so we can see the data-availability picture
+    # at a glance instead of just "found / not found". The brief shows
+    # em-dashes for any row where AnnualInspectionDue is null.
+    n_annual = int(df["AnnualInspectionDue"].notna().sum())
+    n_reg = int(df["RegistrationExpires"].notna().sum())
+    log_main.info("  %s populated: AnnualInspectionDue=%d/%d, RegistrationExpires=%d/%d",
+                   kind, n_annual, len(df), n_reg, len(df))
+    # Raw-API-shape probe: how many of the input records carry the
+    # candidate field keys at all? If the list endpoint omits the field
+    # when null (vs returning it as null), the record count and the
+    # populated count will diverge — meaning the list endpoint may be
+    # returning a thin response per-record and we need to hit /trailers/{id}
+    # per trailer to get the full schema.
+    if records:
+        annual_present = sum(1 for r in records
+                              if isinstance(r, dict)
+                              and any(k in r for k in _ANNUAL_KEYS))
+        reg_present = sum(1 for r in records
+                           if isinstance(r, dict)
+                           and any(k in r for k in _REG_KEYS))
+        log_main.info("  %s raw API keys present: any-annual=%d/%d, any-reg=%d/%d",
+                       kind, annual_present, len(records), reg_present, len(records))
     if kind == "Truck":
         found_mi      = any(df["LastMileage"].notna())
         found_oil_dt  = any(df["LastOilChangeDate"].notna())
