@@ -3483,6 +3483,19 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
     trailers_df = sheets.get("Trailers")
     if (trucks_df is None or trucks_df.empty) and (trailers_df is None or trailers_df.empty):
         return None
+    # Diagnostic: confirm how many rows the scorecard actually sees with
+    # AnnualInspectionDue populated. If this diverges from main.py's
+    # populated count after a fresh refresh, OneDrive is serving a stale
+    # copy of Alvys Pipeline.xlsx and we need to bust the read-side cache.
+    for name, df in (("Trucks", trucks_df), ("Trailers", trailers_df)):
+        if df is None or df.empty:
+            log.info("compute_alvys_equipment: %s sheet empty/missing", name)
+            continue
+        n = len(df)
+        n_annual = int(df["AnnualInspectionDue"].notna().sum()) if "AnnualInspectionDue" in df.columns else 0
+        n_reg = int(df["RegistrationExpires"].notna().sum()) if "RegistrationExpires" in df.columns else 0
+        log.info("compute_alvys_equipment: %s sheet has %d rows, AnnualInspectionDue=%d/%d, RegistrationExpires=%d/%d",
+                 name, n, n_annual, n, n_reg, n)
     now = now or pd.Timestamp.now()
 
     def _days_until(val):
