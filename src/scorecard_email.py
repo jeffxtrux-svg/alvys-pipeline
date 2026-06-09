@@ -2299,6 +2299,13 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # logs. Mirrors the dashboard's Missing Certifications tab. One row
     # per DRIVER (not per day) with a count of missing days + date range,
     # sorted by most-missed first.
+    # Diag BEFORE the guard so we can see whether the sheet lookup
+    # itself returned None vs. found-but-empty vs. found-with-rows.
+    log.info("HOS_DailyLogs lookup: sheets.keys()=%s",
+             sorted(sheets.keys()) if sheets else None)
+    log.info("HOS_DailyLogs value: type=%s rows=%s",
+             type(hos_daily).__name__ if hos_daily is not None else "None",
+             (len(hos_daily) if hos_daily is not None else "n/a"))
     out["detail"]["hos_uncert"] = []
     if hos_daily is not None and not hos_daily.empty:
         log.info("HOS_DailyLogs: %d rows; cols=%s",
