@@ -75,8 +75,10 @@ jobs:
       - name: Install dependencies
         if: steps.ct_gate.outputs.skip != '1'
         # Only need msal + requests to call Graph; no WeasyPrint /
-        # pandas etc. needed for a marker-presence check.
-        run: pip install msal requests
+        # pandas etc. needed for a marker-presence check. python-dotenv is
+        # required because src/onedrive_upload.py imports load_dotenv at
+        # module load (same reason daily_upload_healthcheck.yml installs it).
+        run: pip install msal requests python-dotenv
 
       - name: Check today's scorecard marker
         if: steps.ct_gate.outputs.skip != '1'
