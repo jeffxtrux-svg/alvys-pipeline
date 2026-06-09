@@ -197,7 +197,11 @@ def build_fleet_lookup() -> dict[str, dict]:
             num = _try_keys(t, ["TruckNum", "TruckNumber", "Number", "Name"])
             if not num:
                 continue
-            fleet_raw = (_try_keys(t, ["Fleet", "FleetName"]) or "").lower().strip()
+            fleet_val = _try_keys(t, ["Fleet", "FleetName"])
+            if isinstance(fleet_val, dict):
+                fleet_raw = (fleet_val.get("name") or fleet_val.get("Name") or "").lower().strip()
+            else:
+                fleet_raw = str(fleet_val).lower().strip() if fleet_val else ""
             company   = FLEET_TO_COMPANY.get(fleet_raw, "X-Trux")
             lookup[str(num).strip()] = {"company": company, "equipment_type": "Tractor"}
 
