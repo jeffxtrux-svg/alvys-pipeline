@@ -2338,6 +2338,23 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                 uncert["_date"] = _to_naive_dt(uncert[date_col])
                 uncert["_driver"] = uncert[drv_col].astype(str).str.strip()
                 uncert = uncert[uncert["_driver"].str.lower().ne("nan") & uncert["_driver"].ne("")]
+                # Filter today (drivers certify end-of-shift, so today's
+                # row is expected-not-yet-certified — noise, not an
+                # issue). Use Central time since that's the tenant tz.
+                from zoneinfo import ZoneInfo as _ZI
+                _today_chi = pd.Timestamp.now(tz=_ZI("America/Chicago")).normalize().tz_localize(None)
+                uncert = uncert[uncert["_date"] < _today_chi]
+                # Filter placeholder driver accounts — same heuristic as
+                # the cert-nudge module: single-token lowercase names
+                # (e.g. "tempd") are test/stub records, not real drivers.
+                def _looks_like_placeholder(name: str) -> bool:
+                    s = (name or "").strip()
+                    if not s:
+                        return True
+                    if " " in s:
+                        return False
+                    return s.lower() == s
+                uncert = uncert[~uncert["_driver"].apply(_looks_like_placeholder)]
                 rows: list[dict] = []
                 for drv, grp in uncert.groupby("_driver"):
                     days = grp["_date"].dropna()
