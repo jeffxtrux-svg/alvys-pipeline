@@ -2301,9 +2301,17 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # sorted by most-missed first.
     out["detail"]["hos_uncert"] = []
     if hos_daily is not None and not hos_daily.empty:
+        log.info("HOS_DailyLogs: %d rows; cols=%s",
+                 len(hos_daily), list(hos_daily.columns))
         cert_col = _find_col(hos_daily, ["iscertified"])
         date_col = _find_col(hos_daily, ["log date", "starttime", "start time"])
         drv_col = _find_col(hos_daily, ["driver name", "driver"])
+        log.info("HOS_DailyLogs cols matched: cert=%s date=%s drv=%s",
+                 cert_col, date_col, drv_col)
+        if cert_col:
+            _sample = hos_daily[cert_col].head(5).tolist()
+            log.info("HOS_DailyLogs cert sample (first 5): %s — dtype=%s",
+                     _sample, hos_daily[cert_col].dtype)
         if cert_col and date_col and drv_col:
             # Cert flag round-trips through Excel as TRUE/FALSE strings, so
             # plain `astype(bool)` is wrong — bool("FALSE") == True (non-
