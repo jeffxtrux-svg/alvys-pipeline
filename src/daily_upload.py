@@ -87,6 +87,11 @@ OUTPUT_COLS = [
     "Drop City", "Drop State", "Last Drop Status",
     "Empty Dispatch Mileage", "Loaded Dispatch Mileage",
     "Customer Revenue", "Driver Rate", "Margin", "Margin %",
+    # Surfaces Alvys' LoadType so non-revenue / driver-reposition / bobtail
+    # moves are visible at a glance instead of blending in with paying
+    # loads. Appended at the end so the M/N/O/P/Q formula refs above stay
+    # valid without a column-letter shift.
+    "Load Type",
 ]
 
 
@@ -209,6 +214,7 @@ def _resolve_columns(loads: pd.DataFrame) -> dict[str, str | None]:
                                      "Loaded Miles"],
         "Customer Revenue":     ["Customer Revenue", "Revenue", "Total Revenue"],
         "Driver Rate":          ["Driver Rate", "Carrier Rate", "Driver Pay"],
+        "Load Type":            ["Load Type", "LoadType", "Type"],
     }
     resolved = {out: _pick_source_col(loads, candidates) for out, candidates in mapping.items()}
     missing = [k for k, v in resolved.items() if v is None]
@@ -234,6 +240,20 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
         before = len(sub)
         sub = sub[sub["Load Status"].astype(str).str.strip().str.lower() != "cancelled"]
         log.info("Dropped %d Cancelled loads (%d remaining)", before - len(sub), len(sub))
+
+    # Diagnostic: show what LoadType values are in the MTD scope. If the
+    # user expects "Non-Revenue" / "Bobtail" / "Driver Reposition" rows in
+    # the report and they aren't here, the source workbook isn't carrying
+    # them and we need a different feed — substring search ('non' / 'bob'
+    # / 'reposit') so this picks up whatever Alvys actually labels them.
+    if cols.get("Load Type"):
+        type_col = cols["Load Type"]
+        if type_col in sub.columns:
+            counts = sub[type_col].astype(str).str.strip().replace({"": "(blank)", "nan": "(blank)"}).value_counts()
+            log.info("Load Type breakdown in MTD scope: %s", counts.to_dict())
+            nr_mask = sub[type_col].astype(str).str.lower().str.contains(
+                "non.?rev|bobtail|reposit|empty|deadhead", regex=True, na=False)
+            log.info("Non-revenue-style loads in MTD scope: %d", int(nr_mask.sum()))
 
     out = pd.DataFrame()
     for out_col, src_col in cols.items():
@@ -408,6 +428,7 @@ def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
         rec["Customer Revenue"], rec["Driver Rate"],
         f"=O{row}-P{row}",   # Margin = Revenue - Driver Rate
         f"=Q{row}/O{row}",   # Margin % (matches sample's =Q2/O2)
+        rec.get("Load Type") or "",
     ]
     for ci, val in enumerate(values, start=1):
         cell = ws.cell(row=row, column=ci, value=val)
