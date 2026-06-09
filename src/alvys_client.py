@@ -311,6 +311,7 @@ class AlvysClient:
         we can compare field counts and confirm whether the richer
         response is reachable via the public API."""
         log.info("---- Trailer field-set probe (id=%s) ----", trailer_id)
+        first_dump_done = False
         # GET /trailers/{id} with various ?expand= / ?include= variants
         for qs in ["", "?expand=all", "?expand=*", "?include=all",
                    "?include=inspection", "?include=inspections",
@@ -328,6 +329,16 @@ class AlvysClient:
                             if any(t in k.lower() for t in ("inspect", "expir"))]
                     log.info("  GET %s → %d keys, inspect/expir keys: %s",
                              path, n, insp)
+                    # Dump full key list + a values sample on the first
+                    # successful response so we can see what's available
+                    # beyond just inspect/expir-shaped fields.
+                    if isinstance(payload, dict) and not first_dump_done:
+                        first_dump_done = True
+                        log.info("  full keys: %s", sorted(payload.keys()))
+                        # Show values for any *Expires* / *Expiration* field
+                        rel = {k: payload[k] for k in payload
+                               if any(t in k.lower() for t in ("expir", "licen", "regist", "insur"))}
+                        log.info("  expir/licen/regist/insur values: %s", rel)
                 else:
                     log.info("  GET %s → HTTP %d", path, resp.status_code)
             except Exception as e:

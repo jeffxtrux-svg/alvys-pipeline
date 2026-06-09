@@ -40,14 +40,19 @@ def _build_equipment_df(records: list[dict], kind: str):
     # Candidate lists — Alvys may use any of these names.
     _NAME_KEYS  = ["TruckNumber", "TruckNum", "TrailerNumber", "TrailerNum",
                    "UnitNumber", "Number", "Name"]
-    _ANNUAL_KEYS = ["InspectionExpirationDate",  # actual Alvys field name
+    # Trucks expose ...ExpirationDate; trailers expose ...ExpiresAt — same
+    # field, two naming conventions across the two endpoints. Both
+    # variants kept here so _pick() finds whichever the source returns.
+    _ANNUAL_KEYS = ["InspectionExpirationDate",  # trucks endpoint
+                    "InspectionExpiresAt",       # trailers endpoint
                     "AnnualInspectionDate", "AnnualInspectionDueDate",
                     "AnnualDueDate", "NextAnnualDate", "InspectionDueDate",
                     "DOTInspectionDueDate", "DOTInspectionDate",
                     "AnnualInspection", "NextInspectionDate"]
-    _REG_KEYS    = ["LicenseExpirationDate",  # actual Alvys field name (plate/tag)
-                    "RegistrationExpirationDate", "RegistrationExpDate",
-                    "RegistrationExpiration", "RegExpDate",
+    _REG_KEYS    = ["LicenseExpirationDate",     # trucks endpoint (plate/tag)
+                    "LicenseExpiresAt",          # trailers endpoint
+                    "RegistrationExpirationDate", "RegistrationExpiresAt",
+                    "RegistrationExpDate", "RegistrationExpiration", "RegExpDate",
                     "PlateExpirationDate", "PlateExpDate", "PlateExpiration"]
     _VIN_KEYS    = ["VinNumber", "VinNum", "VIN", "Vin"]
     # Trucks only — last known mileage / odometer reading.
