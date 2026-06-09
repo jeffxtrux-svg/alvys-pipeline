@@ -485,11 +485,22 @@ class SamsaraClient:
         Each record represents one driver-day with a `certifiedAt` (or
         equivalent) field; missing means the driver hasn't certified
         that day's logs yet. Bounded to start/end dates.
+
+        Samsara enforces ``endDate <= current date`` evaluated in the
+        tenant's primary timezone. Late-evening runs that pass a UTC
+        ``now`` of tomorrow-already (e.g. 9pm Central = next-day UTC)
+        get HTTP 400. Clamp endDate to today in America/Chicago to
+        match XFreight's tenant timezone and avoid the silent placeholder
+        write that follows when the call comes back empty.
         """
-        log.info("Fetching HOS daily logs %s → %s…", start.date(), end.date())
+        from zoneinfo import ZoneInfo
+        chi_today = datetime.datetime.now(ZoneInfo("America/Chicago")).date()
+        end_date = min(end.date(), chi_today)
+        log.info("Fetching HOS daily logs %s → %s (end clamped from %s)…",
+                 start.date(), end_date, end.date())
         params = {
             "startDate": start.date().isoformat(),
-            "endDate": end.date().isoformat(),
+            "endDate": end_date.isoformat(),
         }
         items = self._safe_get("/fleet/hos/daily-logs", params)
         log.info("Total HOS daily logs: %d", len(items))
