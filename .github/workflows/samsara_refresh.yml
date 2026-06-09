@@ -78,6 +78,24 @@ jobs:
           SAMSARA_OUTPUT_DIR: output/samsara
         run: python -m src.samsara_onedrive_upload
 
+      - name: Detect empty-sheet regressions
+        if: steps.ct_gate.outputs.skip != '1'
+        # Compares per-sheet row counts to the previous run's snapshot
+        # in OneDrive (Samsara/_row_counts.json). Emails the alert list
+        # whenever a sheet that had data yesterday lands empty today —
+        # surfaces silent API regressions (lost scope, drifted date
+        # window, retired field type) that write_samsara_xlsx would
+        # otherwise mask with a placeholder sheet.
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          SAMSARA_OUTPUT_DIR: output/samsara
+          ALERT_FROM_UPN: jeff@xfreight.net
+          ALERT_TO_EMAILS: jeff@xfreight.net,jackson@xfreight.net,dan@xfreight.net
+        run: python -m src.samsara_regression_check
+
       - name: Check diagnostics and send alerts
         if: steps.ct_gate.outputs.skip != '1'
         # Requires Mail.Send Application permission on the Azure app registration.
