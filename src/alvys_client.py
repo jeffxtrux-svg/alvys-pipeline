@@ -273,6 +273,64 @@ class AlvysClient:
         log.info("Total trailers fetched: %d", len(items))
         return items
 
+    def fetch_trailer_detail(self, trailer_id: str) -> dict | None:
+        """One-shot schema probe — the list endpoint /trailers returns a
+        13-field summary that omits InspectionExpirationDate /
+        LicenseExpirationDate (visible in the Alvys UI's Trailers list).
+        Tries a few detail-endpoint shapes and returns the first that
+        works so the discovered field set can be logged."""
+        candidates = [
+            f"/trailers/{trailer_id}",
+            f"/trailer/{trailer_id}",
+            f"/trailers/{trailer_id}/details",
+            f"/trailers/details/{trailer_id}",
+        ]
+        for path in candidates:
+            try:
+                url = f"{BASE_URL}{path}"
+                resp = self._session.get(url, headers=self._headers(), timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    # Some endpoints wrap the record in {"Items": [...]} or similar.
+                    if isinstance(payload, dict) and isinstance(payload.get("Items"), list):
+                        payload = payload["Items"][0] if payload["Items"] else None
+                    log.info("  ✓ trailer detail via %s — %d keys",
+                             path, len(payload) if isinstance(payload, dict) else 0)
+                    return payload
+                else:
+                    log.info("  %s → HTTP %d", path, resp.status_code)
+            except Exception as e:
+                log.info("  %s → %s", path, e)
+        return None
+
+    def fetch_truck_detail(self, truck_id: str) -> dict | None:
+        """Symmetric probe for trucks — the list endpoint returns 24 keys
+        including InspectionExpirationDate, but the values are blank on
+        most records. The detail endpoint may carry richer per-asset
+        compliance data (last-inspection date, etc.)."""
+        candidates = [
+            f"/trucks/{truck_id}",
+            f"/truck/{truck_id}",
+            f"/trucks/{truck_id}/details",
+            f"/trucks/details/{truck_id}",
+        ]
+        for path in candidates:
+            try:
+                url = f"{BASE_URL}{path}"
+                resp = self._session.get(url, headers=self._headers(), timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, dict) and isinstance(payload.get("Items"), list):
+                        payload = payload["Items"][0] if payload["Items"] else None
+                    log.info("  ✓ truck detail via %s — %d keys",
+                             path, len(payload) if isinstance(payload, dict) else 0)
+                    return payload
+                else:
+                    log.info("  %s → HTTP %d", path, resp.status_code)
+            except Exception as e:
+                log.info("  %s → %s", path, e)
+        return None
+
     def fetch_maintenance(self, lookback_days: int = 365) -> list[dict]:
         """Fetch maintenance/inspection records from POST /maintenance/search.
         Returns raw list; field names are logged on first run for schema discovery."""

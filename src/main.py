@@ -344,6 +344,42 @@ def main() -> int:
     trucks_df   = _build_equipment_df(lookups.raw_trucks,   "Truck")
     trailers_df = _build_equipment_df(lookups.raw_trailers, "Trailer")
 
+    # --- Schema discovery: trailer/truck detail endpoint ---
+    # The list endpoint /trailers returns a 13-field summary that omits
+    # InspectionExpirationDate / LicenseExpirationDate even though those
+    # fields are visible in the Alvys UI's Trailers list. Probe the per-
+    # asset detail endpoint to see if it carries the richer compliance
+    # fields. One-shot diagnostic — picks the first trailer + first truck
+    # and logs the discovered key set.
+    log.info("=" * 60)
+    log.info("Schema probe: trailer/truck detail endpoints")
+    log.info("=" * 60)
+    if lookups.raw_trailers:
+        first = lookups.raw_trailers[0]
+        if isinstance(first, dict) and first.get("Id"):
+            detail = client.fetch_trailer_detail(str(first["Id"]))
+            if isinstance(detail, dict):
+                keys = sorted(detail.keys())
+                log.info("Trailer detail keys (%d): %s", len(keys), ", ".join(keys))
+                insp_like = [k for k in keys
+                             if any(t in k.lower() for t in ("inspect", "expir", "registr", "plate", "licen"))]
+                log.info("Trailer detail inspect/expir/licen keys: %s", insp_like)
+                # Dump full record (truncated) so we can see the actual
+                # values for the relevant fields.
+                import json as _json
+                full = _json.dumps({k: detail.get(k) for k in insp_like}, default=str)
+                log.info("Trailer detail relevant-field values: %s", full[:600])
+    if lookups.raw_trucks:
+        first = lookups.raw_trucks[0]
+        if isinstance(first, dict) and first.get("Id"):
+            detail = client.fetch_truck_detail(str(first["Id"]))
+            if isinstance(detail, dict):
+                keys = sorted(detail.keys())
+                log.info("Truck detail keys (%d): %s", len(keys), ", ".join(keys))
+                insp_like = [k for k in keys
+                             if any(t in k.lower() for t in ("inspect", "expir", "registr", "plate", "licen"))]
+                log.info("Truck detail inspect/expir/licen keys: %s", insp_like)
+
     # --- Fetch Maintenance records (inspection events) ---
     # Schema (confirmed from first run):
     #   Category   = {"Id": ..., "Name": "DOT"}  ← nested dict
