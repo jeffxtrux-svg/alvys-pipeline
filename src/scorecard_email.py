@@ -2303,9 +2303,10 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # itself returned None vs. found-but-empty vs. found-with-rows.
     log.info("HOS_DailyLogs lookup: sheets.keys()=%s",
              sorted(sheets.keys()) if sheets else None)
-    log.info("HOS_DailyLogs value: type=%s rows=%s",
+    log.info("HOS_DailyLogs value: type=%s rows=%s cols=%s",
              type(hos_daily).__name__ if hos_daily is not None else "None",
-             (len(hos_daily) if hos_daily is not None else "n/a"))
+             (len(hos_daily) if hos_daily is not None else "n/a"),
+             (list(hos_daily.columns) if hos_daily is not None else "n/a"))
     out["detail"]["hos_uncert"] = []
     if hos_daily is not None and not hos_daily.empty:
         log.info("HOS_DailyLogs: %d rows; cols=%s",
