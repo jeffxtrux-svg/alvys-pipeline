@@ -128,6 +128,55 @@ If either is found, it builds an HTML table and sends mail via **Microsoft Graph
 - If Azure creds are absent, it logs the issues and exits 0 — never blocks the
   data refresh.
 
+## The driver cert-nudge — `samsara_cert_nudge.py`
+
+The only write-back module in this connector. Runs as the final step of
+`samsara_refresh.yml` and posts a Samsara Driver App message to each
+driver who has uncertified daily logs in the last 7 days, mirroring
+the dashboard's **Missing Certifications** tab. The intent is that
+drivers see the nudge in the same app where they take the action
+(My Day → certify).
+
+How it works:
+
+1. **Fetches** `/fleet/hos/daily-logs?startDate=…&endDate=…` for the last
+   7 days. Each record carries `driver.{id,name}`, `startTime` (day
+   boundary in the driver's timezone), and `logMetaData.isCertified`.
+2. **Groups uncertified rows by driver.** Today's still-open log is
+   dropped (drivers certify end-of-shift), and single-token lowercase
+   names (e.g. `tempd`) are skipped as placeholder accounts. Real
+   single-token uppercase names like `EYEIGH` pass through.
+3. **Composes one message per driver** with a title-cased first name
+   ("Hi Lonnie", not "Hi LONNIE"), a count of missing days, and the
+   earliest–latest date span.
+4. **Sends via `POST /v1/fleet/messages`** — payload `{driverIds, text}`
+   — handled by `SamsaraClient.send_driver_messages`.
+5. **Writes a OneDrive marker** `Samsara/cert-nudge-sent-{YYYY-MM-DD}.txt`
+   so the 3x/day Samsara cron only nudges once per Central-time day.
+
+Token scope: **Driver Workflow → Write Messages** must be enabled on the
+API token in the Samsara dashboard. Without it, the POST returns
+`HTTP 401: Token requires Messages write permissions to call this
+endpoint` and the run carries on; the marker is still written.
+
+Env vars:
+
+- `SAMSARA_API_TOKEN`, Azure creds, `ONEDRIVE_USER_UPN` (for the marker)
+- `CERT_NUDGE_DRY_RUN=1` — log what would be sent, skip the POST.
+  Useful when changing the message wording or filter heuristics.
+- `CERT_NUDGE_FORCE=1` — bypass today's marker. Wired to the
+  `force_cert_nudge` boolean input on `workflow_dispatch` so a manual
+  rerun after the marker exists actually does something.
+
+Tuning:
+
+- **Skip more drivers** — edit `_is_placeholder_name` in
+  `samsara_cert_nudge.py`. Current rule: single-token lowercase names.
+- **Reword the message** — `_compose_message`. Keep it under ~150
+  chars; long messages get truncated in the Driver App preview.
+- **Change the lookback window** — the `start = now - 7 days` in
+  `main()`. The dashboard's Missing Certifications tab uses 7d too.
+
 ## Common tasks
 
 - **Pull a longer history** → set `SAMSARA_DAYS_BACK` (trips) and/or
@@ -136,3 +185,6 @@ If either is found, it builds an HTML table and sends mail via **Microsoft Graph
   line `GET … → HTTP 4xx — skipping (check API token scope)` tells you which.
 - **Alerts not arriving** → confirm `Mail.Send` consent and that
   `ALERT_TO_EMAILS` is set as a secret.
+- **Cert nudges silently dropped** → check the log for `Token requires
+  Messages write permissions` — fix by enabling **Driver Workflow →
+  Write Messages** on the API token in Samsara settings.
