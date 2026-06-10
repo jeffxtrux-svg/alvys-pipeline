@@ -597,12 +597,25 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         # customer revenue and $0 driver pay, which inflates margin % during MTD
         # until driver pay lands; excluding them keeps the brief in sync with the
         # Power BI XFreight Report instead of running high mid-month.
-        if "Driver Rate" in rows.columns:
+        #
+        # EXCEPTION — X-Linx (brokerage): matches the Power BI X-Linx Inc tab,
+        # which counts every non-cancelled X-Linx load (no Driver Rate > 0
+        # filter). PBI's June MTD shows 14 loads / $26,008 rev / $21,890 cost
+        # / 15.83% margin — applying the settled filter dropped that to 1-2
+        # loads / $1,277 rev / 98% margin (cosmetically high, factually wrong).
+        # Brokered loads usually carry a carrier rate at book time, so the
+        # "unsettled" gap that justifies the filter on the asset side doesn't
+        # apply here.
+        if ent == "X-Linx":
+            settled = rows
+            n_unsettled = 0
+        elif "Driver Rate" in rows.columns:
             settled_mask = _col(rows, "Driver Rate").fillna(0) > 0
             settled = rows[settled_mask]
+            n_unsettled = len(rows) - len(settled)
         else:
             settled = rows
-        n_unsettled = len(rows) - len(settled)
+            n_unsettled = 0
         if settled.empty:
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": n_unsettled}
