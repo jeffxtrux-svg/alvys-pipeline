@@ -312,16 +312,31 @@ def _mileage_pay_from_trip(trip: dict) -> float:
 
 
 def _driver_rate_via_trip(record: dict):
-    """For Loads: hop to joined trip, return mileage pay (loaded + empty)."""
+    """For Loads: return mileage pay (loaded + empty) from Driver1.RatesV2.
+    Falls back to Carrier.Rate.Amount for brokered X-Linx loads where there
+    is no company driver — the outside carrier rate is the cost equivalent."""
     trip = trip_for_load(record)
     if not trip:
         return 0
-    return _mileage_pay_from_trip(trip)
+    pay = _mileage_pay_from_trip(trip)
+    if pay > 0:
+        return pay
+    carrier_rate = _get_nested(trip, "Carrier.Rate.Amount")
+    if isinstance(carrier_rate, (int, float)) and carrier_rate > 0:
+        return carrier_rate
+    return 0
 
 
 def _driver_rate_from_trip(record: dict):
-    """For Trip records: return mileage pay directly."""
-    return _mileage_pay_from_trip(record)
+    """For Trip records: return mileage pay, falling back to Carrier.Rate.Amount
+    for brokered trips with no company driver."""
+    pay = _mileage_pay_from_trip(record)
+    if pay > 0:
+        return pay
+    carrier_rate = _get_nested(record, "Carrier.Rate.Amount")
+    if isinstance(carrier_rate, (int, float)) and carrier_rate > 0:
+        return carrier_rate
+    return 0
 
 
 # --- Office name resolution -------------------------------------------------
