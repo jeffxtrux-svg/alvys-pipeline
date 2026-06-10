@@ -23,6 +23,15 @@ Total Driver Rate =
 Total Carrier Rate =
     SUM(Loads[Carrier Rate])
 
+// For X-Trux loads, cost = Driver Rate. For X-Linx brokered loads,
+// cost = Carrier Rate (Driver Rate is 0). This measure picks whichever
+// is populated per row so margin math is correct for both entities.
+Total Load Cost =
+    SUMX(
+        Loads,
+        IF(Loads[Driver Rate] > 0, Loads[Driver Rate], Loads[Carrier Rate])
+    )
+
 Total Gross Margin =
     SUM(Loads[Gross Margin])
 
@@ -81,7 +90,7 @@ Avg Loaded RPM =
 
 Driver Rate Per Mile =
     DIVIDE(
-        SUM(Loads[Driver Rate]),
+        [Total Load Cost],
         SUM(Loads[Total Dispatch Mileage]),
         0
     )
