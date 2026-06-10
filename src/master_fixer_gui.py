@@ -159,7 +159,7 @@ def process_and_upload(
             from src.onedrive_upload import get_token, upload_file
             token = get_token(creds["tenant"], creds["client"], creds["secret"])
             log_fn("  Token OK")
-            upload_file(token, creds["upn"], creds["folder"], target_name, tmp)
+            upload_file(token, creds["upn"], creds["folder"], target_name, Path(tmp))
             log_fn(f"✓ Uploaded as '{target_name}'")
     finally:
         try:
