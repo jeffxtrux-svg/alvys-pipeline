@@ -32,13 +32,15 @@ Total Load Cost =
         IF(Loads[Driver Rate] > 0, Loads[Driver Rate], Loads[Carrier Rate])
     )
 
+// Computed from Total Load Cost so X-Linx brokered loads use Carrier Rate
+// (not the pre-calculated Gross Margin column which has Driver Rate = 0 for X-Linx).
 Total Gross Margin =
-    SUM(Loads[Gross Margin])
+    [Total Customer Revenue] - [Total Load Cost]
 
 Gross Margin % =
     DIVIDE(
-        SUM(Loads[Gross Margin]),
-        SUM(Loads[Customer Revenue]),
+        [Total Gross Margin],
+        [Total Customer Revenue],
         0
     )
 

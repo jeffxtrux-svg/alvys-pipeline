@@ -85,13 +85,12 @@ def _from_load(path: str):
 # Computed columns
 # ===========================================================================
 def _gross_margin(record: dict):
-    """Customer Revenue - Trip Value. Works on Load or Trip records."""
+    """Customer Revenue - effective cost (Driver Rate for X-Trux, Carrier Rate for X-Linx)."""
     if "LoadNumber" in record and "Stops" in record and "CustomerRate" in record:
         revenue = _get_nested(record, "CustomerRate.Amount")
-        trip = trip_for_load(record)
-        cost = _get_nested(trip, "TripValue.Amount") if trip else None
+        cost = _driver_rate_via_trip(record)
     else:
-        cost = _get_nested(record, "TripValue.Amount")
+        cost = _driver_rate_from_trip(record)
         load = load_for_trip(record)
         revenue = _get_nested(load, "CustomerRate.Amount") if load else None
     if revenue is None or cost is None:
