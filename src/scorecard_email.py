@@ -683,6 +683,15 @@ def _entities_from_pipeline(pipeline_sheets: dict, window_key: str = "mtd",
             log.info("_entities_from_pipeline[X-Linx]: %d loads | Driver Rate sum $%s + Carrier Rate sum $%s = $%s cost",
                      n_loads, f"{float(rows['trip_driver_rate'].sum()):,.0f}",
                      f"{float(rows['trip_carrier_rate'].sum()):,.0f}", f"{cost:,.0f}")
+            # Per-load dump so we can line each row up against the PBI
+            # X-Linx Inc tab and see exactly where the carrier-rate gap is.
+            rev_col_name = next((c for c in ("Customer Revenue", "Revenue") if c in rows.columns), None)
+            for _, r in rows.iterrows():
+                log.info("  X-Linx load %s | rev $%s | trip Driver $%s | trip Carrier $%s",
+                         str(r.get("__load_id", "?")),
+                         f"{float(r.get(rev_col_name, 0) or 0):,.2f}" if rev_col_name else "?",
+                         f"{float(r['trip_driver_rate']):,.2f}",
+                         f"{float(r['trip_carrier_rate']):,.2f}")
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
