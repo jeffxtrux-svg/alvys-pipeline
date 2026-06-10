@@ -615,9 +615,14 @@ def _entities_from_pipeline(pipeline_sheets: dict, window_key: str = "mtd",
         t["__open"] = t[status_col].astype(str).str.strip().str.lower() == "open"
     else:
         t["__open"] = False
+    # PBI joins Loads → Trips with Table.First — one trip per load, not
+    # a sum across all trips. Match that semantic so multi-trip loads don't
+    # double/triple-count their carrier rate vs PBI's tile. any_trip_open
+    # still aggregates across all trips since the user's spec gates the
+    # load on whether ANY leg is still open.
     agg = t.groupby("__load_id").agg(
-        trip_driver_rate=("__dr", "sum"),
-        trip_carrier_rate=("__cr", "sum"),
+        trip_driver_rate=("__dr", "first"),
+        trip_carrier_rate=("__cr", "first"),
         any_trip_open=("__open", "any"),
     ).reset_index()
 
