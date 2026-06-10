@@ -478,32 +478,38 @@ def main() -> int:
 
     # Overlay DOT inspection dates onto trailers_df AND trucks_df.
     # LastInspectionDate = actual last DOT/Annual inspection (from maintenance records).
-    # AnnualInspectionDue = last + 365 days (federal DOT rule). The scorecard layers
-    # the 120-day company policy on top of LastInspectionDate.
+    # AnnualInspectionDue = API InspectionExpiresAt/InspectionExpirationDate is
+    # authoritative — only fall back to maintenance-derived (last + 365d) when
+    # the API field is empty. The scorecard layers the 120-day company policy
+    # on top of LastInspectionDate.
     if _last_dot and trailers_df is not None and not trailers_df.empty:
         trailers_df["LastInspectionDate"] = trailers_df["Id"].map(
             lambda aid: _last_dot[aid].strftime("%Y-%m-%d") if aid in _last_dot else None
         )
-        trailers_df["AnnualInspectionDue"] = trailers_df["Id"].map(
+        before = int(trailers_df["AnnualInspectionDue"].notna().sum())
+        api_mask = trailers_df["AnnualInspectionDue"].notna()
+        trailers_df.loc[~api_mask, "AnnualInspectionDue"] = trailers_df.loc[~api_mask, "Id"].map(
             lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
             if aid in _last_dot else None
         )
-        n_filled = trailers_df["AnnualInspectionDue"].notna().sum()
-        log.info("Trailers: %d of %d have LastInspectionDate from maintenance records",
-                 n_filled, len(trailers_df))
+        after = int(trailers_df["AnnualInspectionDue"].notna().sum())
+        log.info("Trailers: %d API + %d maintenance-derived = %d of %d AnnualInspectionDue populated",
+                 before, after - before, after, len(trailers_df))
     # Same treatment for tractors so the 120-day company policy applies to the
     # whole fleet (the executive brief calls it out at the bottom-line level).
     if _last_dot and trucks_df is not None and not trucks_df.empty and "Id" in trucks_df.columns:
         trucks_df["LastInspectionDate"] = trucks_df["Id"].map(
             lambda aid: _last_dot[aid].strftime("%Y-%m-%d") if aid in _last_dot else None
         )
-        trucks_df["AnnualInspectionDue"] = trucks_df["Id"].map(
+        before = int(trucks_df["AnnualInspectionDue"].notna().sum())
+        api_mask = trucks_df["AnnualInspectionDue"].notna()
+        trucks_df.loc[~api_mask, "AnnualInspectionDue"] = trucks_df.loc[~api_mask, "Id"].map(
             lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
             if aid in _last_dot else None
         )
-        n_filled = trucks_df["AnnualInspectionDue"].notna().sum()
-        log.info("Trucks: %d of %d have LastInspectionDate from maintenance records",
-                 n_filled, len(trucks_df))
+        after = int(trucks_df["AnnualInspectionDue"].notna().sum())
+        log.info("Trucks: %d API + %d maintenance-derived = %d of %d AnnualInspectionDue populated",
+                 before, after - before, after, len(trucks_df))
 
     maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
 
