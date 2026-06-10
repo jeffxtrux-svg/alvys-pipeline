@@ -585,9 +585,34 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
+    # X-Trux open-trip filter: a load gets dropped from BOTH revenue and
+    # cost if any of its trips is still in 'Open' status. Once every trip
+    # progresses to Covered / In Transit / Delivered / Completed / Invoiced
+    # / Released the load is counted normally. Only X-Trux is filtered this
+    # way — X-Linx is brokerage (no asset-level trip state to wait on).
+    trips_df = sheets.get("Trips")
+    open_xtrux_load_ids: set[str] = set()
+    if trips_df is not None and not trips_df.empty:
+        tlc = _find_col(trips_df, ["load #", "load number", "load num", "load"])
+        tsc = _find_col(trips_df, ["trip status", "status"])
+        if tlc and tsc:
+            open_trips = trips_df[trips_df[tsc].astype(str).str.strip().str.lower() == "open"]
+            open_xtrux_load_ids = set(open_trips[tlc].astype(str).str.strip())
+
     out: dict[str, dict] = {}
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
+        # Apply the open-trip filter ONLY on the X-Trux asset side.
+        if ent == "X-Trux" and open_xtrux_load_ids:
+            load_col = _find_col(rows, ["load #", "load number", "load num", "load"])
+            if load_col:
+                row_load_ids = rows[load_col].astype(str).str.strip()
+                drop_mask = row_load_ids.isin(open_xtrux_load_ids)
+                n_dropped = int(drop_mask.sum())
+                if n_dropped:
+                    rows = rows[~drop_mask]
+                    log.info("compute_alvys_entities[X-Trux]: dropped %d loads with any trip in 'Open' status",
+                             n_dropped)
         if rows.empty:
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": 0}
