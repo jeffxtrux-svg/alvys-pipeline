@@ -592,46 +592,67 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": 0}
             continue
-        # Match Power BI: P&L tiles are computed on **settled** loads only (those
-        # with Driver Rate > 0). Booked-but-not-yet-dispatched loads carry full
-        # customer revenue and $0 driver pay, which inflates margin % during MTD
-        # until driver pay lands; excluding them keeps the brief in sync with the
-        # Power BI XFreight Report instead of running high mid-month.
+        # X-Linx (brokerage) matches Power BI X-Linx Inc tab: every non-
+        # cancelled load counts, no Driver Rate > 0 filter. Brokered carrier
+        # rates land at book time, so the "unsettled" gap that justifies the
+        # filter on the asset side doesn't apply here.
         #
-        # EXCEPTION — X-Linx (brokerage): matches the Power BI X-Linx Inc tab,
-        # which counts every non-cancelled X-Linx load (no Driver Rate > 0
-        # filter). PBI's June MTD shows 14 loads / $26,008 rev / $21,890 cost
-        # / 15.83% margin — applying the settled filter dropped that to 1-2
-        # loads / $1,277 rev / 98% margin (cosmetically high, factually wrong).
-        # Brokered loads usually carry a carrier rate at book time, so the
-        # "unsettled" gap that justifies the filter on the asset side doesn't
-        # apply here.
+        # X-Trux (asset): all non-cancelled loads count for revenue + load
+        # count. Cost is actual Driver Rate for settled loads PLUS an
+        # estimate for in-flight loads (Driver Rate = 0 because the driver
+        # hasn't been paid yet for the open multi-trip load). The estimate
+        # is total_dispatch_miles × avg $/mi from settled MTD loads — same
+        # methodology daily_upload.py uses for the rate-per-mile goal so the
+        # two emails reconcile.
+        rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
+        n_loads = len(rows)
+        estimated_cost = 0.0
+        n_estimated = 0
         if ent == "X-Linx":
-            settled = rows
+            # X-Linx (brokerage) cost = SUM(Driver Rate) + SUM(Carrier Rate).
+            # Brokered loads in Alvys Master 2026.xlsx leave Driver Rate
+            # blank (no driver pay) and put the carrier payout in Carrier
+            # Rate; PBI's "Driver Rate" column at the X-Linx tab combines
+            # the two via the Trips-table join. Reading Driver Rate alone
+            # gave $23 vs PBI's $21,890 for June MTD — wrong column.
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            dr_sum = float(rate_col.sum()) if rate_col is not None else 0.0
+            cr_sum = 0.0
+            for col_name in ("Carrier Rate", "Posted Carrier Rate", "Carrier Pay"):
+                if col_name in rows.columns:
+                    cr_sum = float(_col(rows, col_name).fillna(0).sum())
+                    break
+            cost = dr_sum + cr_sum
             n_unsettled = 0
-        elif "Driver Rate" in rows.columns:
-            settled_mask = _col(rows, "Driver Rate").fillna(0) > 0
-            settled = rows[settled_mask]
-            n_unsettled = len(rows) - len(settled)
+            log.info("compute_alvys_entities[X-Linx]: %d loads | Driver Rate $%s + Carrier Rate $%s = $%s cost",
+                     n_loads, f"{dr_sum:,.0f}", f"{cr_sum:,.0f}", f"{cost:,.0f}")
+        elif rate_col is None:
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            cost = 0.0
+            n_unsettled = 0
         else:
-            settled = rows
-            n_unsettled = 0
-        if settled.empty:
-            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
-                        "loads": 0, "unsettled": n_unsettled}
-            continue
-        revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
-        # Cost = SUM(Loads[Driver Rate]); margin = Customer Revenue - Driver Rate,
-        # matching Power BI. The Loads "Driver Rate" column already holds each load's
-        # full settled payout, so Carrier Rate is not added separately.
-        cost = float(_col(settled, "Driver Rate").fillna(0).sum())
+            miles_col = _col_any(rows, ["Total Dispatch Mileage", "Dispatch Mileage",
+                                          "Total Miles", "Total Mileage"]).fillna(0)
+            settled_mask = rate_col > 0
+            settled_pay = float(rate_col[settled_mask].sum())
+            settled_miles = float(miles_col[settled_mask].sum())
+            avg_per_mile = (settled_pay / settled_miles) if settled_miles > 0 else 0
+            unsettled_rows = rows[~settled_mask]
+            unsettled_miles = float(miles_col[~settled_mask].sum())
+            estimated_cost = unsettled_miles * avg_per_mile
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            cost = settled_pay + estimated_cost
+            n_unsettled = int((~settled_mask).sum())
+            n_estimated = int(((~settled_mask) & (miles_col > 0)).sum())
+            log.info("compute_alvys_entities[%s]: %d loads | settled %d (pay $%s on %s mi, avg $%.4f/mi) "
+                     "| in-flight %d (est cost $%s on %s mi)",
+                     ent, n_loads, int(settled_mask.sum()),
+                     f"{settled_pay:,.0f}", f"{settled_miles:,.0f}", avg_per_mile,
+                     n_estimated, f"{estimated_cost:,.0f}", f"{unsettled_miles:,.0f}")
         margin = revenue - cost
-        # n_loads matches Power BI's Load Count (non-cancelled, settled).
-        n_loads = len(settled)
-        # Margin % matches the Power BI XFreight Report exactly:
-        # Margin ÷ Revenue = (Revenue − Driver Rate) ÷ Revenue. Both
-        # entities use this formula so the scorecard table and Power BI
-        # tile read identically.
+        # Margin % = Margin ÷ Revenue. For X-Trux, in-flight loads now
+        # contribute estimated cost so the margin reads cleaner than the
+        # pure-settled view that ran high mid-month.
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
@@ -639,6 +660,8 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "margin_pct": (margin / revenue) if revenue else None,
             "loads": n_loads,
             "unsettled": n_unsettled,
+            "estimated_cost": estimated_cost,
+            "estimated_loads": n_estimated,
         }
     return out
 
