@@ -122,29 +122,88 @@ def _get_creds() -> dict | None:
             "folder": os.getenv("ONEDRIVE_FOLDER_PATH", "")}
 
 
+def _to_float(val) -> float:
+    """Coerce a cell value to float; return 0.0 on None / blank / non-numeric."""
+    if val is None or val == "" or val == " ":
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def process_and_upload(
-    sheets: dict[str, pd.DataFrame],
+    raw_bytes: bytes,
     target_name: str,
     upload: bool,
     save_path: str | None,
     log_fn,
 ) -> None:
-    log_fn("Applying fix…")
-    fixed  = {}
-    total  = 0
-    for name, df in sheets.items():
-        fixed_df, n = _fix_sheet(df, name, log_fn)
-        fixed[name] = fixed_df
-        total += n
+    """Fix DR/CR/GM cells in-place using openpyxl — preserves all data types."""
+    from openpyxl import load_workbook
 
-    log_fn(f"Fix complete — {total:,} rows corrected across {len(fixed)} sheet(s).")
-    log_fn("Building workbook…")
+    log_fn("Loading workbook (openpyxl)…")
+    wb = load_workbook(io.BytesIO(raw_bytes))
+
+    total_fixed = 0
+    sheets_processed = 0
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        if ws.max_row < 2:
+            continue
+
+        # Build header → 1-based column index map from row 1
+        headers: dict[str, int] = {}
+        for cell in ws[1]:
+            if cell.value is not None:
+                headers[str(cell.value).strip()] = cell.column
+
+        def find_col_idx(candidates: list[str]) -> int | None:
+            hl = {k.lower(): v for k, v in headers.items()}
+            for c in candidates:
+                if c in headers:
+                    return headers[c]
+                if c.lower() in hl:
+                    return hl[c.lower()]
+            return None
+
+        dr_idx  = find_col_idx(["Driver Rate", "DriverRate"])
+        cr_idx  = find_col_idx(["Carrier Rate", "CarrierRate", "Sum of Carrier Rate"])
+        rev_idx = find_col_idx(["Customer Revenue", "Revenue"])
+        gm_idx  = find_col_idx(["Gross Margin", "GrossMargin", "Margin"])
+
+        if not dr_idx or not cr_idx:
+            continue  # no rate columns on this sheet — leave untouched
+
+        n_fixed = 0
+        for row in ws.iter_rows(min_row=2):
+            dr_cell = row[dr_idx - 1]
+            cr_cell = row[cr_idx - 1]
+
+            dr_num = _to_float(dr_cell.value)
+            cr_num = _to_float(cr_cell.value)
+
+            if dr_num == 0 and cr_num > 0:
+                dr_cell.value = cr_num
+                n_fixed += 1
+                if rev_idx and gm_idx:
+                    rev_num = _to_float(row[rev_idx - 1].value)
+                    row[gm_idx - 1].value = rev_num - cr_num
+
+        if n_fixed:
+            log_fn(f"  {sheet_name}: {n_fixed:,} rows — Carrier Rate → Driver Rate + Gross Margin recomputed")
+            total_fixed += n_fixed
+            sheets_processed += 1
+        else:
+            log_fn(f"  {sheet_name}: no rows needed fixing")
+
+    log_fn(f"Fix complete — {total_fixed:,} rows corrected across {sheets_processed} sheet(s).")
+    log_fn("Saving workbook (all data types preserved)…")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False).name
     try:
-        with pd.ExcelWriter(tmp, engine="openpyxl") as writer:
-            for name, df in fixed.items():
-                df.to_excel(writer, sheet_name=name, index=False)
+        wb.save(tmp)
 
         if save_path:
             shutil.copy(tmp, save_path)
@@ -177,6 +236,7 @@ class FileZone(tk.Frame):
         super().__init__(parent, bg=CARD, highlightbackground=BORDER,
                          highlightthickness=1, **kw)
         self._sheets: dict[str, pd.DataFrame] | None = None
+        self._raw_bytes: bytes | None = None
 
         tk.Label(self, text="① TMS Export",
                  font=("SF Pro", 13, "bold"), bg=CARD, fg=TEXT).pack(
@@ -223,6 +283,10 @@ class FileZone(tk.Frame):
     def sheets(self):
         return self._sheets
 
+    @property
+    def raw_bytes(self):
+        return self._raw_bytes
+
     def _set_status(self, msg, colour=MUTED):
         self._status.config(text=msg, fg=colour)
 
@@ -244,6 +308,7 @@ class FileZone(tk.Frame):
 
         def worker():
             try:
+                self._raw_bytes = Path(path).read_bytes()
                 sheets = _read_sheets(path)
                 self._sheets = sheets
                 names = list(sheets.keys())
@@ -286,6 +351,7 @@ class FileZone(tk.Frame):
                 fname  = "Alvys Master2026.xlsx"
                 fpath  = f"{folder}/{fname}" if folder else fname
                 raw    = download_file(token, creds["upn"], fpath)
+                self._raw_bytes = raw
                 sheets = _read_sheets(raw)
                 self._sheets = sheets
                 names  = list(sheets.keys())
@@ -428,15 +494,15 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
     # ── actions ───────────────────────────────────────────────────────────────
 
     def _do_upload(self):
-        sheets = self._zone.sheets
-        if not sheets:
+        raw = self._zone.raw_bytes
+        if not raw:
             return
         name = self._name_var.get().strip() or "Alvys Master2026.xlsx"
         self._set_busy(True)
 
         def worker():
             try:
-                process_and_upload(sheets, name,
+                process_and_upload(raw, name,
                                    upload=True, save_path=None,
                                    log_fn=lambda m: self.after(0, self._log_msg, m))
                 self.after(0, self._on_done, name, True)
@@ -448,8 +514,8 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _do_save(self):
-        sheets = self._zone.sheets
-        if not sheets:
+        raw = self._zone.raw_bytes
+        if not raw:
             return
         name = self._name_var.get().strip() or "Alvys Master2026.xlsx"
         path = filedialog.asksaveasfilename(
@@ -461,7 +527,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
 
         def worker():
             try:
-                process_and_upload(sheets, name,
+                process_and_upload(raw, name,
                                    upload=False, save_path=path,
                                    log_fn=lambda m: self.after(0, self._log_msg, m))
                 self.after(0, self._on_done, path, False)
@@ -478,6 +544,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
 
     def _reset(self):
         self._zone._sheets = None
+        self._zone._raw_bytes = None
         self._zone._set_status("No file", MUTED)
         self._upload_btn.config(state="disabled")
         self._save_btn.config(state="disabled")
