@@ -617,14 +617,29 @@ def _entities_from_pipeline(pipeline_sheets: dict, window_key: str = "mtd",
         t["__open"] = False
     # PBI joins Loads → Trips with Table.First — one trip per load, not
     # a sum across all trips. Match that semantic so multi-trip loads don't
-    # double/triple-count their carrier rate vs PBI's tile. any_trip_open
-    # still aggregates across all trips since the user's spec gates the
-    # load on whether ANY leg is still open.
-    agg = t.groupby("__load_id").agg(
+    # double/triple-count their carrier rate vs PBI's tile. Skip cancelled
+    # trips before picking "first" (PBI's join effectively does this since
+    # the API returns active trips first), and sort by Trip # so the choice
+    # is deterministic across runs. any_trip_open still aggregates across
+    # ALL trips since the user's spec gates on ANY leg being still open.
+    open_flags = t.groupby("__load_id")["__open"].any().rename("any_trip_open")
+    t_active = t
+    if status_col:
+        t_active = t[t[status_col].astype(str).str.strip().str.lower() != "cancelled"]
+    sort_cols = ["__load_id"]
+    if "Trip #" in t_active.columns:
+        t_active = t_active.copy()
+        t_active["__trip_sort"] = pd.to_numeric(t_active["Trip #"], errors="coerce").fillna(10**9)
+        sort_cols.append("__trip_sort")
+    t_active = t_active.sort_values(sort_cols)
+    rate_agg = t_active.groupby("__load_id").agg(
         trip_driver_rate=("__dr", "first"),
         trip_carrier_rate=("__cr", "first"),
-        any_trip_open=("__open", "any"),
-    ).reset_index()
+    )
+    agg = rate_agg.join(open_flags, how="outer").reset_index()
+    agg["trip_driver_rate"] = agg["trip_driver_rate"].fillna(0)
+    agg["trip_carrier_rate"] = agg["trip_carrier_rate"].fillna(0)
+    agg["any_trip_open"] = agg["any_trip_open"].fillna(False)
 
     merged = sub_loads.merge(agg, on="__load_id", how="left")
     merged["any_trip_open"] = merged["any_trip_open"].fillna(False)
