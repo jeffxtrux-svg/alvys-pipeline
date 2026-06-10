@@ -545,7 +545,7 @@ class App(tk.Tk if not _DND else TkinterDnD.Tk):   # type: ignore[misc]
         opts.pack(padx=20, fill="x")
         tk.Label(opts, text="Output filename:",
                  font=("SF Pro", 11), bg=BG, fg=TEXT).pack(side="left")
-        self._name_var = tk.StringVar(value="Alvys Master 2026.xlsx")
+        self._name_var = tk.StringVar(value="Alvys Master2026.xlsx")
         tk.Entry(opts, textvariable=self._name_var,
                  font=("SF Pro", 11), bg=PANEL, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
@@ -666,7 +666,7 @@ class App(tk.Tk if not _DND else TkinterDnD.Tk):   # type: ignore[misc]
         api   = self._api_zone.sheets
         loads = self._man_loads_zone.sheets
         trips = self._man_trips_zone.sheets
-        name  = self._name_var.get().strip() or "Alvys Master 2026.xlsx"
+        name  = self._name_var.get().strip() or "Alvys Master2026.xlsx"
 
         if not api or not loads:
             messagebox.showwarning("Not ready", "Load API data and Loads export first.")
