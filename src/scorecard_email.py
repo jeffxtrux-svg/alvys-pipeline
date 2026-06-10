@@ -548,14 +548,148 @@ def _entity_group(office) -> str | None:
     return None
 
 
+def _entities_from_pipeline(pipeline_sheets: dict, window_key: str = "mtd",
+                             start=None, end=None) -> dict:
+    """Pipeline-Trips source path (matches the Power BI computation exactly).
+
+    PBI reports compute Driver Rate and Customer Revenue at the **trip**
+    level then aggregate up to the load via a Load # join. The Loads sheet
+    of the manual `Alvys Master 2026.xlsx` carries load-level snapshots that
+    drift from the trip-level truth (Carrier Rate quoted vs invoiced,
+    Driver Rate not populated on brokered loads, etc.). Reading
+    `Alvys Pipeline.xlsx` Trips → aggregating by Load # gives us the same
+    figures PBI shows.
+
+    Returns the same shape as compute_alvys_entities so callers can swap.
+    """
+    if not pipeline_sheets:
+        return {}
+    loads = pipeline_sheets.get("Loads")
+    trips = pipeline_sheets.get("Trips")
+    if loads is None or loads.empty or trips is None or trips.empty:
+        return {}
+    if "Load #" not in trips.columns:
+        # Older pipeline output didn't expose Load # on Trips — fall back
+        # to the Master-Loads path so we don't silently zero out the table.
+        log.warning("compute_alvys_entities: Pipeline Trips sheet missing 'Load #' column — "
+                    "falling back to Master Loads sheet. Refresh Alvys to pick up the new column.")
+        return None
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return {}
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    mask = pd.Series(True, index=loads.index)
+    if "Load Status" in loads.columns:
+        mask &= loads["Load Status"].astype(str).str.lower() != "cancelled"
+    if start is None and window_key == "mtd":
+        mtd_start = _windows()["mtd"]
+        _rev_mtd = _col_any(loads[dates >= mtd_start], ["Customer Revenue", "Revenue"]).fillna(0)
+        rollover, lm_start, lm_end, _ = _rollover_state(int((_rev_mtd > 0).sum()))
+        if rollover:
+            start, end = lm_start, lm_end
+    if start is None:
+        start = _windows()[window_key]
+    mask &= dates >= start
+    if end is not None:
+        mask &= dates < end if end < _windows()["now"] else dates <= end
+    sub_loads = loads[mask].copy()
+    if "Load #" not in sub_loads.columns:
+        return {}
+    sub_loads["__load_id"] = sub_loads["Load #"].astype(str).str.strip()
+    sub_loads["__entity"] = sub_loads[office_col].map(_entity_group)
+
+    # Aggregate trips by Load #: sum Driver Rate + Carrier Rate per load,
+    # track whether any trip is still in 'Open' status.
+    t = trips.copy()
+    t["__load_id"] = t["Load #"].astype(str).str.strip()
+    rate_col_dr = _col(t, "Driver Rate").fillna(0) if "Driver Rate" in t.columns else pd.Series(0.0, index=t.index)
+    rate_col_cr = pd.Series(0.0, index=t.index)
+    for cname in ("Carrier Rate", "Posted Carrier Rate"):
+        if cname in t.columns:
+            rate_col_cr = _col(t, cname).fillna(0)
+            break
+    t["__dr"] = rate_col_dr
+    t["__cr"] = rate_col_cr
+    status_col = "Trip Status" if "Trip Status" in t.columns else _find_col(t, ["trip status", "status"])
+    if status_col:
+        t["__open"] = t[status_col].astype(str).str.strip().str.lower() == "open"
+    else:
+        t["__open"] = False
+    agg = t.groupby("__load_id").agg(
+        trip_driver_rate=("__dr", "sum"),
+        trip_carrier_rate=("__cr", "sum"),
+        any_trip_open=("__open", "any"),
+    ).reset_index()
+
+    merged = sub_loads.merge(agg, on="__load_id", how="left")
+    merged["any_trip_open"] = merged["any_trip_open"].fillna(False)
+    merged["trip_driver_rate"] = merged["trip_driver_rate"].fillna(0)
+    merged["trip_carrier_rate"] = merged["trip_carrier_rate"].fillna(0)
+
+    out: dict[str, dict] = {}
+    for ent in ENTITY_ORDER:
+        rows = merged[merged["__entity"] == ent]
+        if rows.empty:
+            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                        "loads": 0, "unsettled": 0,
+                        "estimated_cost": 0.0, "estimated_loads": 0}
+            continue
+        if ent == "X-Trux":
+            n_dropped = int(rows["any_trip_open"].sum())
+            rows = rows[~rows["any_trip_open"]]
+            if n_dropped:
+                log.info("_entities_from_pipeline[X-Trux]: dropped %d loads with any trip in 'Open' status",
+                         n_dropped)
+            if rows.empty:
+                out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                            "loads": 0, "unsettled": 0,
+                            "estimated_cost": 0.0, "estimated_loads": 0}
+                continue
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            # X-Trux: trip-level Driver Rate IS the asset cost. Carrier Rate
+            # on asset trips is typically 0.
+            cost = float(rows["trip_driver_rate"].sum())
+            n_loads = len(rows)
+            n_unsettled = int((rows["trip_driver_rate"] <= 0).sum())
+            log.info("_entities_from_pipeline[X-Trux]: %d loads | cost (trip Driver Rate sum) $%s",
+                     n_loads, f"{cost:,.0f}")
+        else:  # X-Linx
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            # X-Linx: brokered, cost = trip Carrier Rate (Driver Rate ≈ 0).
+            # Sum both to be safe — they're mutually exclusive in practice.
+            cost = float(rows["trip_driver_rate"].sum() + rows["trip_carrier_rate"].sum())
+            n_loads = len(rows)
+            n_unsettled = 0
+            log.info("_entities_from_pipeline[X-Linx]: %d loads | Driver Rate sum $%s + Carrier Rate sum $%s = $%s cost",
+                     n_loads, f"{float(rows['trip_driver_rate'].sum()):,.0f}",
+                     f"{float(rows['trip_carrier_rate'].sum()):,.0f}", f"{cost:,.0f}")
+        margin = revenue - cost
+        out[ent] = {
+            "revenue": revenue or None,
+            "cost": cost or None,
+            "margin": margin if revenue else None,
+            "margin_pct": (margin / revenue) if revenue else None,
+            "loads": n_loads,
+            "unsettled": n_unsettled,
+            "estimated_cost": 0.0,
+            "estimated_loads": 0,
+        }
+    return out
+
+
 def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: str = "mtd",
-                           start=None, end=None) -> dict:
+                           start=None, end=None,
+                           pipeline_sheets: dict[str, pd.DataFrame] | None = None) -> dict:
     """Revenue / cost / margin by entity (X-Trux incl. XFreight, X-Linx).
 
-    Defaults to the open-ended window starting at `window_key`. Pass explicit
-    `start`/`end` (Timestamps) to bound a closed period — used by the parity
-    check and tests to compare a single finished month against Power BI.
+    Prefers `pipeline_sheets` (Alvys Pipeline.xlsx — API-fresh Trips + Loads
+    joined the way Power BI does) when provided. Falls back to the
+    Master-Loads sheet path for backwards compat (tests, single-file callers).
     """
+    if pipeline_sheets:
+        result = _entities_from_pipeline(pipeline_sheets, window_key, start, end)
+        if result is not None:
+            return result
     if not sheets:
         return {}
     loads = sheets.get("Loads")
@@ -6742,7 +6876,9 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                  alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None,
                  dso_hist_sheets=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
-    alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
+    alvys_entities = compute_alvys_entities(
+        alvys_sheets, pipeline_sheets=alvys_pipeline_sheets
+    ) if (alvys_sheets or alvys_pipeline_sheets) else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
     qb_ar = compute_qb_ar_detail(next(iter(ar_sheets.values()))) if ar_sheets else {}
     ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR", _AR_COMPANIES) if ar_hist_sheets else ([], [])

@@ -780,6 +780,7 @@ TRIPS_COLUMNS = [
     ("Pickup Market",                       _from_load("PickupMarket")),
     ("Dropoff Market",                      _from_load("DropoffMarket")),
     ("Trip #",                              "TripNumber"),
+    ("Load #",                              "LoadNumber"),
     ("Order #",                             "OrderNumber"),
     ("Customer Revenue",                    _from_load("CustomerRate.Amount")),
     ("Driver Rate",                         _driver_rate_from_trip),
