@@ -184,20 +184,20 @@ def _overlay_driver_rate(
     log_fn(f"  {label} manual: {len(lookup):,} rows with Driver Rate > 0")
 
     out = api_df.copy()
-    out["_k"]    = _norm_id(out[api_id])
-    out["_a_dr"] = pd.to_numeric(out[api_dr], errors="coerce").fillna(0)
-    out["_m_dr"] = out["_k"].map(lookup).fillna(0)
+    out.loc[:, "_k"]    = _norm_id(out[api_id])
+    out.loc[:, "_a_dr"] = pd.to_numeric(out[api_dr], errors="coerce").fillna(0)
+    out.loc[:, "_m_dr"] = out["_k"].map(lookup).fillna(0)
 
     mask       = out["_m_dr"] > 0
     n_patched  = int(mask.sum())
     n_api_only = int((~mask).sum())
 
-    out[api_dr] = out["_m_dr"].where(mask, out["_a_dr"])
+    out.loc[:, api_dr] = out["_m_dr"].where(mask, out["_a_dr"])
 
     if api_gm and api_rev:
         rev = pd.to_numeric(out[api_rev], errors="coerce").fillna(0)
         dr  = pd.to_numeric(out[api_dr],  errors="coerce").fillna(0)
-        out[api_gm] = rev - dr
+        out.loc[:, api_gm] = rev - dr
 
     out.drop(columns=["_k", "_a_dr", "_m_dr"], inplace=True)
     return out, n_patched, n_api_only
