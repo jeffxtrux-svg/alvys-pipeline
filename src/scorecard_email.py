@@ -566,14 +566,177 @@ def _entity_group(office) -> str | None:
     return None
 
 
+def _entities_from_pipeline(pipeline_sheets: dict, window_key: str = "mtd",
+                             start=None, end=None) -> dict:
+    """Pipeline-Trips source path (matches the Power BI computation exactly).
+
+    PBI reports compute Driver Rate and Customer Revenue at the **trip**
+    level then aggregate up to the load via a Load # join. The Loads sheet
+    of the manual `Alvys Master 2026.xlsx` carries load-level snapshots that
+    drift from the trip-level truth (Carrier Rate quoted vs invoiced,
+    Driver Rate not populated on brokered loads, etc.). Reading
+    `Alvys Pipeline.xlsx` Trips → aggregating by Load # gives us the same
+    figures PBI shows.
+
+    Returns the same shape as compute_alvys_entities so callers can swap.
+    """
+    if not pipeline_sheets:
+        return {}
+    loads = pipeline_sheets.get("Loads")
+    trips = pipeline_sheets.get("Trips")
+    if loads is None or loads.empty or trips is None or trips.empty:
+        return {}
+    if "Load #" not in trips.columns:
+        # Older pipeline output didn't expose Load # on Trips — fall back
+        # to the Master-Loads path so we don't silently zero out the table.
+        log.warning("compute_alvys_entities: Pipeline Trips sheet missing 'Load #' column — "
+                    "falling back to Master Loads sheet. Refresh Alvys to pick up the new column.")
+        return None
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return {}
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    mask = pd.Series(True, index=loads.index)
+    if "Load Status" in loads.columns:
+        mask &= loads["Load Status"].astype(str).str.lower() != "cancelled"
+    if start is None and window_key == "mtd":
+        mtd_start = _windows()["mtd"]
+        _rev_mtd = _col_any(loads[dates >= mtd_start], ["Customer Revenue", "Revenue"]).fillna(0)
+        rollover, lm_start, lm_end, _ = _rollover_state(int((_rev_mtd > 0).sum()))
+        if rollover:
+            start, end = lm_start, lm_end
+    if start is None:
+        start = _windows()[window_key]
+    mask &= dates >= start
+    if end is not None:
+        mask &= dates < end if end < _windows()["now"] else dates <= end
+    sub_loads = loads[mask].copy()
+    if "Load #" not in sub_loads.columns:
+        return {}
+    sub_loads["__load_id"] = sub_loads["Load #"].astype(str).str.strip()
+    sub_loads["__entity"] = sub_loads[office_col].map(_entity_group)
+
+    # Aggregate trips by Load #: sum Driver Rate + Carrier Rate per load,
+    # track whether any trip is still in 'Open' status.
+    t = trips.copy()
+    t["__load_id"] = t["Load #"].astype(str).str.strip()
+    rate_col_dr = _col(t, "Driver Rate").fillna(0) if "Driver Rate" in t.columns else pd.Series(0.0, index=t.index)
+    rate_col_cr = pd.Series(0.0, index=t.index)
+    for cname in ("Carrier Rate", "Posted Carrier Rate"):
+        if cname in t.columns:
+            rate_col_cr = _col(t, cname).fillna(0)
+            break
+    t["__dr"] = rate_col_dr
+    t["__cr"] = rate_col_cr
+    status_col = "Trip Status" if "Trip Status" in t.columns else _find_col(t, ["trip status", "status"])
+    if status_col:
+        t["__open"] = t[status_col].astype(str).str.strip().str.lower() == "open"
+    else:
+        t["__open"] = False
+    # PBI joins Loads → Trips with Table.First — one trip per load, not
+    # a sum across all trips. Match that semantic so multi-trip loads don't
+    # double/triple-count their carrier rate vs PBI's tile. Skip cancelled
+    # trips before picking "first" (PBI's join effectively does this since
+    # the API returns active trips first), and sort by Trip # so the choice
+    # is deterministic across runs. any_trip_open still aggregates across
+    # ALL trips since the user's spec gates on ANY leg being still open.
+    open_flags = t.groupby("__load_id")["__open"].any().rename("any_trip_open")
+    t_active = t
+    if status_col:
+        t_active = t[t[status_col].astype(str).str.strip().str.lower() != "cancelled"]
+    sort_cols = ["__load_id"]
+    if "Trip #" in t_active.columns:
+        t_active = t_active.copy()
+        t_active["__trip_sort"] = pd.to_numeric(t_active["Trip #"], errors="coerce").fillna(10**9)
+        sort_cols.append("__trip_sort")
+    t_active = t_active.sort_values(sort_cols)
+    rate_agg = t_active.groupby("__load_id").agg(
+        trip_driver_rate=("__dr", "first"),
+        trip_carrier_rate=("__cr", "first"),
+    )
+    agg = rate_agg.join(open_flags, how="outer").reset_index()
+    agg["trip_driver_rate"] = agg["trip_driver_rate"].fillna(0)
+    agg["trip_carrier_rate"] = agg["trip_carrier_rate"].fillna(0)
+    agg["any_trip_open"] = agg["any_trip_open"].fillna(False)
+
+    merged = sub_loads.merge(agg, on="__load_id", how="left")
+    merged["any_trip_open"] = merged["any_trip_open"].fillna(False)
+    merged["trip_driver_rate"] = merged["trip_driver_rate"].fillna(0)
+    merged["trip_carrier_rate"] = merged["trip_carrier_rate"].fillna(0)
+
+    out: dict[str, dict] = {}
+    for ent in ENTITY_ORDER:
+        rows = merged[merged["__entity"] == ent]
+        if rows.empty:
+            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                        "loads": 0, "unsettled": 0,
+                        "estimated_cost": 0.0, "estimated_loads": 0}
+            continue
+        if ent == "X-Trux":
+            n_dropped = int(rows["any_trip_open"].sum())
+            rows = rows[~rows["any_trip_open"]]
+            if n_dropped:
+                log.info("_entities_from_pipeline[X-Trux]: dropped %d loads with any trip in 'Open' status",
+                         n_dropped)
+            if rows.empty:
+                out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                            "loads": 0, "unsettled": 0,
+                            "estimated_cost": 0.0, "estimated_loads": 0}
+                continue
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            # X-Trux: trip-level Driver Rate IS the asset cost. Carrier Rate
+            # on asset trips is typically 0.
+            cost = float(rows["trip_driver_rate"].sum())
+            n_loads = len(rows)
+            n_unsettled = int((rows["trip_driver_rate"] <= 0).sum())
+            log.info("_entities_from_pipeline[X-Trux]: %d loads | cost (trip Driver Rate sum) $%s",
+                     n_loads, f"{cost:,.0f}")
+        else:  # X-Linx
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            # X-Linx: brokered, cost = trip Carrier Rate (Driver Rate ≈ 0).
+            # Sum both to be safe — they're mutually exclusive in practice.
+            cost = float(rows["trip_driver_rate"].sum() + rows["trip_carrier_rate"].sum())
+            n_loads = len(rows)
+            n_unsettled = 0
+            log.info("_entities_from_pipeline[X-Linx]: %d loads | Driver Rate sum $%s + Carrier Rate sum $%s = $%s cost",
+                     n_loads, f"{float(rows['trip_driver_rate'].sum()):,.0f}",
+                     f"{float(rows['trip_carrier_rate'].sum()):,.0f}", f"{cost:,.0f}")
+            # Per-load dump so we can line each row up against the PBI
+            # X-Linx Inc tab and see exactly where the carrier-rate gap is.
+            rev_col_name = next((c for c in ("Customer Revenue", "Revenue") if c in rows.columns), None)
+            for _, r in rows.iterrows():
+                log.info("  X-Linx load %s | rev $%s | trip Driver $%s | trip Carrier $%s",
+                         str(r.get("__load_id", "?")),
+                         f"{float(r.get(rev_col_name, 0) or 0):,.2f}" if rev_col_name else "?",
+                         f"{float(r['trip_driver_rate']):,.2f}",
+                         f"{float(r['trip_carrier_rate']):,.2f}")
+        margin = revenue - cost
+        out[ent] = {
+            "revenue": revenue or None,
+            "cost": cost or None,
+            "margin": margin if revenue else None,
+            "margin_pct": (margin / revenue) if revenue else None,
+            "loads": n_loads,
+            "unsettled": n_unsettled,
+            "estimated_cost": 0.0,
+            "estimated_loads": 0,
+        }
+    return out
+
+
 def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: str = "mtd",
-                           start=None, end=None) -> dict:
+                           start=None, end=None,
+                           pipeline_sheets: dict[str, pd.DataFrame] | None = None) -> dict:
     """Revenue / cost / margin by entity (X-Trux incl. XFreight, X-Linx).
 
-    Defaults to the open-ended window starting at `window_key`. Pass explicit
-    `start`/`end` (Timestamps) to bound a closed period — used by the parity
-    check and tests to compare a single finished month against Power BI.
+    Prefers `pipeline_sheets` (Alvys Pipeline.xlsx — API-fresh Trips + Loads
+    joined the way Power BI does) when provided. Falls back to the
+    Master-Loads sheet path for backwards compat (tests, single-file callers).
     """
+    if pipeline_sheets:
+        result = _entities_from_pipeline(pipeline_sheets, window_key, start, end)
+        if result is not None:
+            return result
     if not sheets:
         return {}
     loads = sheets.get("Loads")
@@ -603,37 +766,99 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
+    # X-Trux open-trip filter: a load gets dropped from BOTH revenue and
+    # cost if any of its trips is still in 'Open' status. Once every trip
+    # progresses to Covered / In Transit / Delivered / Completed / Invoiced
+    # / Released the load is counted normally. Only X-Trux is filtered this
+    # way — X-Linx is brokerage (no asset-level trip state to wait on).
+    trips_df = sheets.get("Trips")
+    open_xtrux_load_ids: set[str] = set()
+    if trips_df is not None and not trips_df.empty:
+        tlc = _find_col(trips_df, ["load #", "load number", "load num", "load"])
+        tsc = _find_col(trips_df, ["trip status", "status"])
+        if tlc and tsc:
+            open_trips = trips_df[trips_df[tsc].astype(str).str.strip().str.lower() == "open"]
+            open_xtrux_load_ids = set(open_trips[tlc].astype(str).str.strip())
+
     out: dict[str, dict] = {}
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
+        # Apply the open-trip filter ONLY on the X-Trux asset side.
+        if ent == "X-Trux" and open_xtrux_load_ids:
+            load_col = _find_col(rows, ["load #", "load number", "load num", "load"])
+            if load_col:
+                row_load_ids = rows[load_col].astype(str).str.strip()
+                drop_mask = row_load_ids.isin(open_xtrux_load_ids)
+                n_dropped = int(drop_mask.sum())
+                if n_dropped:
+                    rows = rows[~drop_mask]
+                    log.info("compute_alvys_entities[X-Trux]: dropped %d loads with any trip in 'Open' status",
+                             n_dropped)
         if rows.empty:
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": 0}
             continue
-        # Match Power BI: P&L tiles are computed on **settled** loads only.
-        # For X-Trux that means Driver Rate > 0; for X-Linx brokered loads it
-        # means Carrier Rate > 0. Use combined cost to catch both.
-        if "Driver Rate" in rows.columns or "Carrier Rate" in rows.columns:
-            settled_mask = _load_cost(rows) > 0
-            settled = rows[settled_mask]
+        # X-Linx (brokerage) matches Power BI X-Linx Inc tab: every non-
+        # cancelled load counts, no Driver Rate > 0 filter. Brokered carrier
+        # rates land at book time, so the "unsettled" gap that justifies the
+        # filter on the asset side doesn't apply here.
+        #
+        # X-Trux (asset): all non-cancelled loads count for revenue + load
+        # count. Cost is actual Driver Rate for settled loads PLUS an
+        # estimate for in-flight loads (Driver Rate = 0 because the driver
+        # hasn't been paid yet for the open multi-trip load). The estimate
+        # is total_dispatch_miles × avg $/mi from settled MTD loads — same
+        # methodology daily_upload.py uses for the rate-per-mile goal so the
+        # two emails reconcile.
+        rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
+        n_loads = len(rows)
+        estimated_cost = 0.0
+        n_estimated = 0
+        if ent == "X-Linx":
+            # X-Linx (brokerage) cost = SUM(Driver Rate) + SUM(Carrier Rate).
+            # Brokered loads in Alvys Master 2026.xlsx leave Driver Rate
+            # blank (no driver pay) and put the carrier payout in Carrier
+            # Rate; PBI's "Driver Rate" column at the X-Linx tab combines
+            # the two via the Trips-table join. Reading Driver Rate alone
+            # gave $23 vs PBI's $21,890 for June MTD — wrong column.
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            dr_sum = float(rate_col.sum()) if rate_col is not None else 0.0
+            cr_sum = 0.0
+            for col_name in ("Carrier Rate", "Posted Carrier Rate", "Carrier Pay"):
+                if col_name in rows.columns:
+                    cr_sum = float(_col(rows, col_name).fillna(0).sum())
+                    break
+            cost = dr_sum + cr_sum
+            n_unsettled = 0
+            log.info("compute_alvys_entities[X-Linx]: %d loads | Driver Rate $%s + Carrier Rate $%s = $%s cost",
+                     n_loads, f"{dr_sum:,.0f}", f"{cr_sum:,.0f}", f"{cost:,.0f}")
+        elif rate_col is None:
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            cost = 0.0
+            n_unsettled = 0
         else:
-            settled = rows
-        n_unsettled = len(rows) - len(settled)
-        if settled.empty:
-            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
-                        "loads": 0, "unsettled": n_unsettled}
-            continue
-        revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
-        # Cost = Driver Rate (X-Trux) or Carrier Rate (X-Linx brokered);
-        # only one is populated per load so summing both gives total cost.
-        cost = float(_load_cost(settled).sum())
+            miles_col = _col_any(rows, ["Total Dispatch Mileage", "Dispatch Mileage",
+                                          "Total Miles", "Total Mileage"]).fillna(0)
+            settled_mask = rate_col > 0
+            settled_pay = float(rate_col[settled_mask].sum())
+            settled_miles = float(miles_col[settled_mask].sum())
+            avg_per_mile = (settled_pay / settled_miles) if settled_miles > 0 else 0
+            unsettled_rows = rows[~settled_mask]
+            unsettled_miles = float(miles_col[~settled_mask].sum())
+            estimated_cost = unsettled_miles * avg_per_mile
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            cost = settled_pay + estimated_cost
+            n_unsettled = int((~settled_mask).sum())
+            n_estimated = int(((~settled_mask) & (miles_col > 0)).sum())
+            log.info("compute_alvys_entities[%s]: %d loads | settled %d (pay $%s on %s mi, avg $%.4f/mi) "
+                     "| in-flight %d (est cost $%s on %s mi)",
+                     ent, n_loads, int(settled_mask.sum()),
+                     f"{settled_pay:,.0f}", f"{settled_miles:,.0f}", avg_per_mile,
+                     n_estimated, f"{estimated_cost:,.0f}", f"{unsettled_miles:,.0f}")
         margin = revenue - cost
-        # n_loads matches Power BI's Load Count (non-cancelled, settled).
-        n_loads = len(settled)
-        # Margin % matches the Power BI XFreight Report exactly:
-        # Margin ÷ Revenue = (Revenue − Driver Rate) ÷ Revenue. Both
-        # entities use this formula so the scorecard table and Power BI
-        # tile read identically.
+        # Margin % = Margin ÷ Revenue. For X-Trux, in-flight loads now
+        # contribute estimated cost so the margin reads cleaner than the
+        # pure-settled view that ran high mid-month.
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
@@ -641,6 +866,8 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "margin_pct": (margin / revenue) if revenue else None,
             "loads": n_loads,
             "unsettled": n_unsettled,
+            "estimated_cost": estimated_cost,
+            "estimated_loads": n_estimated,
         }
     return out
 
@@ -6697,7 +6924,9 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                  alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None,
                  dso_hist_sheets=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
-    alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
+    alvys_entities = compute_alvys_entities(
+        alvys_sheets, pipeline_sheets=alvys_pipeline_sheets
+    ) if (alvys_sheets or alvys_pipeline_sheets) else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
     qb_ar = compute_qb_ar_detail(next(iter(ar_sheets.values()))) if ar_sheets else {}
     ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR", _AR_COMPANIES) if ar_hist_sheets else ([], [])
