@@ -1,6 +1,6 @@
 # Daily upload healthcheck — fires at 6:00am Central if the morning
 # daily MTD upload hasn't been sent yet. Mirrors the scorecard
-# healthcheck so a dropped 5am cron doesn't leave the brief missing
+# healthcheck so a dropped 4:30am cron doesn't leave the upload missing
 # until someone notices mid-morning.
 #
 # How it works:
@@ -14,8 +14,8 @@
 #      That run fires immediately and sends the brief; src/daily_upload.py
 #      writes the marker on success.
 #
-# No collision: daily_upload.yml only fires at 5am CT (cron 0 10,11
-# gated to hour 5), so the 6am healthcheck slot is exclusive.
+# No collision: daily_upload.yml fires at 4:30am CT (cron 30 9,10
+# gated to hour 4), so the 6am healthcheck slot is exclusive.
 #
 # Required GitHub Secrets (shared with daily_upload.yml):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
