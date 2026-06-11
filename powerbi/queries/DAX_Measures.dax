@@ -23,25 +23,23 @@ Total Driver Rate =
 Total Carrier Rate =
     SUM(Loads[Carrier Rate])
 
-// Effective cost per load = Driver Rate + OUTSIDE-CARRIER Carrier Rate.
-//  • X-Linx brokered loads: cost is the Carrier Rate paid to the outside
-//    carrier, PLUS any small driver pay on the same load (e.g. DR $59.69
-//    + CR $1,765.58 — both are real cost, so they sum).
-//  • X-Trux asset loads: the "carrier" is our own fleet (X-TRUX Asset /
-//    Truk-Way), and the Carrier Rate column holds the internal revenue
-//    allocation, NOT a cost — counting it would double the cost and turn
-//    asset margins negative. Only Driver Rate is cost on those loads.
+// Effective cost per load, keyed off the load's Office (entity):
+//  • X-Linx (brokerage) loads: Driver Rate + Carrier Rate. The carrier
+//    payout is the real cost, and some brokered loads ALSO carry a small
+//    driver pay (e.g. DR $59.69 + CR $1,765.58) — both sum.
+//  • X-Trux / XFreight (asset) loads: Driver Rate ONLY. The Carrier Rate
+//    column on asset loads holds internal revenue allocation (own fleet /
+//    owner-ops), not a cost — counting it overstates cost and flips asset
+//    margins negative. Carrier-name matching is unreliable here (owner-op
+//    and blank carrier labels), so the rule keys off Office.
 Total Load Cost =
     SUMX(
         Loads,
         Loads[Driver Rate]
             + IF(
-                CONTAINSSTRING(Loads[Carrier], "X-TRUX")
-                    || CONTAINSSTRING(Loads[Carrier], "XTRUX")
-                    || CONTAINSSTRING(Loads[Carrier], "TRUK-WAY")
-                    || CONTAINSSTRING(Loads[Carrier], "XFREIGHT"),
-                0,
-                Loads[Carrier Rate]
+                CONTAINSSTRING(Loads[Office], "LINX"),
+                Loads[Carrier Rate],
+                0
             )
     )
 
