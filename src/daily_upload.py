@@ -83,6 +83,10 @@ GOAL_RPM            = 2.93
 MARGIN_GOAL_MONTHLY = 160_000
 NUM_TRUCKS          = 17
 
+# X-Linx brokerage runs on Margin %, not rate-per-mile — its tab is built
+# around this goal instead of the RPM goal the asset tabs use.
+XLINX_MARGIN_GOAL = 0.175
+
 OUTPUT_COLS = [
     "Count", "Customer Sales Agent", "Load #", "Load Status", "Carrier",
     "Customer", "Pick City", "Pick State", "First Pick Status",
@@ -254,17 +258,24 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
               "Customer Revenue", "Driver Rate", "Carrier Rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
-    # Effective load cost = Driver Rate + Carrier Rate, summed. X-Linx
+    # Effective load cost = Driver Rate + EXTERNAL Carrier Rate. X-Linx
     # brokered loads carry their cost in Carrier Rate (DR usually 0), and
     # some brokered loads have BOTH a small driver pay and a carrier rate —
-    # both are real cost. Folding the sum into the "Driver Rate" column
-    # keeps the workbook layout/formulas unchanged while making Margin
-    # correct for every entity (matches the master workbook's "Combine
-    # carrier rate and driver rate" rule and the Power BI Total Load Cost).
-    n_cr = int((out["Carrier Rate"] > 0).sum())
-    out["Driver Rate"] = out["Driver Rate"] + out["Carrier Rate"]
+    # both are real cost, so they sum. BUT on X-Trux asset loads the
+    # "carrier" is our own fleet (X-TRUX Asset / Truk-Way) and the Carrier
+    # Rate column holds the internal revenue allocation, not a cost —
+    # counting it would double the cost and flip asset margins negative.
+    # So Carrier Rate only counts when the carrier is an outside company.
+    carrier_lower = out["Carrier"].astype(str).str.lower()
+    is_internal_carrier = carrier_lower.str.contains(
+        "x-trux|xtrux|truk-way|trukway|xfreight", regex=True, na=False)
+    ext_cr = out["Carrier Rate"].where(~is_internal_carrier, 0.0)
+    n_cr = int((ext_cr > 0).sum())
+    out["Driver Rate"] = out["Driver Rate"] + ext_cr
     if n_cr:
-        log.info("Folded Carrier Rate into load cost on %d rows (cost = DR + CR)", n_cr)
+        log.info("Folded external Carrier Rate into load cost on %d rows "
+                 "(cost = DR + outside-carrier CR; %d internal-carrier rows excluded)",
+                 n_cr, int((is_internal_carrier & (out["Carrier Rate"] > 0)).sum()))
 
     # The estimators below model COMPANY-DRIVER pay per mile, so they only
     # apply to X-Trux/XFreight asset loads. X-Linx brokered loads price per
@@ -442,7 +453,8 @@ def _write_data_row(ws, row: int, count: int, rec: dict) -> int:
 
 
 def _write_agent_subtotal(ws, row: int, agent: str,
-                            data_first: int, data_last: int) -> tuple[int, int]:
+                            data_first: int, data_last: int,
+                            margin_centric: bool = False) -> tuple[int, int]:
     """Per-agent subtotal block. Sum row uses plain SUM over the agent's
     data range — open-load filtering happens at generation time (rows are
     dropped from the DataFrame before write), so no in-workbook toggle is
@@ -465,20 +477,32 @@ def _write_agent_subtotal(ws, row: int, agent: str,
     first = (agent or "").split()[0] if agent else ""
     label = f"{first} Totals" if first else "Totals"
     ws.cell(row=row, column=13, value=label).font = _BOLD
-    ws.cell(row=row, column=14, value="RPM")
-    # IFERROR wrapper retained on RPM-style calcs to avoid #DIV/0! cascade
-    # when an agent has zero miles (sample has the data so the error doesn't
-    # surface there — but defensive).
-    ws.cell(row=row, column=15,
-             value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)").number_format = _FMT_MARGIN
-    row += 1
-
-    formulas = (
-        ("Total Miles",                f"=M{sum_row}+N{sum_row}",                                _FMT_NUMBER),
-        ("DH %",                       f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_PCT_TENTHS),
-        ("Average Truck Pay per Mile", f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_MARGIN),
-        ("Average Margin Per Mile",    f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_MARGIN),
-    )
+    if margin_centric:
+        # X-Linx brokerage: the headline per-agent number is Margin %.
+        ws.cell(row=row, column=14, value="Margin %")
+        ws.cell(row=row, column=15,
+                 value=f"=IFERROR(Q{sum_row}/O{sum_row},0)").number_format = _FMT_MARGIN_PCT
+        row += 1
+        formulas = (
+            ("Revenue",            f"=O{sum_row}",                                          _FMT_ACCOUNTING),
+            ("Carrier Pay",        f"=P{sum_row}",                                          _FMT_ACCOUNTING),
+            ("Margin",             f"=Q{sum_row}",                                          _FMT_MARGIN),
+            ("vs 17.5% Goal",      f"=IFERROR(Q{sum_row}/O{sum_row},0)-{XLINX_MARGIN_GOAL}", _FMT_MARGIN_PCT),
+        )
+    else:
+        ws.cell(row=row, column=14, value="RPM")
+        # IFERROR wrapper retained on RPM-style calcs to avoid #DIV/0! cascade
+        # when an agent has zero miles (sample has the data so the error doesn't
+        # surface there — but defensive).
+        ws.cell(row=row, column=15,
+                 value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)").number_format = _FMT_MARGIN
+        row += 1
+        formulas = (
+            ("Total Miles",                f"=M{sum_row}+N{sum_row}",                                _FMT_NUMBER),
+            ("DH %",                       f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_PCT_TENTHS),
+            ("Average Truck Pay per Mile", f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_MARGIN),
+            ("Average Margin Per Mile",    f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",        _FMT_MARGIN),
+        )
     for lbl, formula, fmt in formulas:
         ws.cell(row=row, column=14, value=lbl)
         ws.cell(row=row, column=15, value=formula).number_format = fmt
@@ -491,7 +515,7 @@ def _write_agent_subtotal(ws, row: int, agent: str,
 def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, int]],
                         data_first: int, data_last: int, total_loads: int,
                         today_chi: pd.Timestamp, include_goal_block: bool,
-                        goal_rpm: float) -> int:
+                        goal_rpm: float, margin_centric: bool = False) -> int:
     """Grand-total + per-agent % table + (All Loads only) goal projection.
 
     Sum rows are plain SUM-of-agent-sum-cells; per-agent counts are static
@@ -517,33 +541,53 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
         ws.cell(row=sum_row, column=c).font = _BOLD
     row += 2
 
-    # Per-agent percentage table (cols I/J/K) + RPM/Goal block (cols N/O).
+    # Per-agent percentage table (cols I/J/K) + headline/goal block (cols N/O).
     ws.cell(row=row, column=9,  value="% of Loads Booked").font = _BOLD
     ws.cell(row=row, column=10, value="% of Revenue").font = _BOLD
     ws.cell(row=row, column=11, value="% of Margin").font = _BOLD
-    ws.cell(row=row, column=14, value="RPM")
-    rpm_cell = ws.cell(row=row, column=15,
-                        value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)")
-    rpm_cell.number_format = _FMT_ACCOUNTING
+    if margin_centric:
+        # X-Linx brokerage: headline number is Margin %, goal block is
+        # built on the 17.5% margin goal — no rate-per-mile math.
+        ws.cell(row=row, column=14, value="Margin %").font = _BOLD
+        pct_cell = ws.cell(row=row, column=15,
+                            value=f"=IFERROR(Q{sum_row}/O{sum_row},0)")
+        pct_cell.number_format = _FMT_MARGIN_PCT
+        pct_cell.font = _BOLD
+    else:
+        ws.cell(row=row, column=14, value="RPM")
+        rpm_cell = ws.cell(row=row, column=15,
+                            value=f"=IFERROR(O{sum_row}/(M{sum_row}+N{sum_row}),0)")
+        rpm_cell.number_format = _FMT_ACCOUNTING
     row += 1
 
-    # Goal-block rows. Per sample these use the accounting-dollar format
-    # consistently (no yellow fill on Goal RPM here — the yellow on
-    # tunables only shows in the "We are at" projection block below).
-    goal_block_lines = [
-        # (label, value_formula, fmt)
-        ("Goal RPM",                       f"={goal_rpm}",                                                                  _FMT_ACCOUNTING),
-        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",                                _FMT_ACCOUNTING),
-        ("% of Difference from Goal",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})/{goal_rpm}",                   _FMT_PCT_TENTHS),
-        ("Total Miles",                    f"=M{sum_row}+N{sum_row}",                                                        _FMT_NUMBER),
-        ("DH %",                           f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_PCT),
-        ("Average Truck Pay per Mile",     f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_ACCOUNTING),
-        ("Average Margin Per Mile",        f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_ACCOUNTING),
-        ("Goal Margin Per Mile",           f"={goal_rpm}-{TRUCK_PAY_PER_MI}",                                                _FMT_ACCOUNTING),
-        ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",                                _FMT_ACCOUNTING),
-        ("Revenue Missed Opportunity",     f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})",      _FMT_ACCOUNTING),
-        ("Margin Missed Opportunity",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})",      _FMT_ACCOUNTING),
-    ]
+    if margin_centric:
+        goal_block_lines = [
+            ("Goal Margin %",              f"={XLINX_MARGIN_GOAL}",                                  _FMT_MARGIN_PCT),
+            ("Difference from Goal",       f"=IFERROR(Q{sum_row}/O{sum_row},0)-{XLINX_MARGIN_GOAL}", _FMT_MARGIN_PCT),
+            ("Total Revenue",              f"=O{sum_row}",                                           _FMT_ACCOUNTING),
+            ("Total Carrier Pay",          f"=P{sum_row}",                                           _FMT_ACCOUNTING),
+            ("Total Margin",               f"=Q{sum_row}",                                           _FMT_MARGIN),
+            ("Margin at Goal",             f"=O{sum_row}*{XLINX_MARGIN_GOAL}",                       _FMT_ACCOUNTING),
+            ("Margin Missed Opportunity",  f"=Q{sum_row}-O{sum_row}*{XLINX_MARGIN_GOAL}",            _FMT_ACCOUNTING),
+        ]
+    else:
+        # Goal-block rows. Per sample these use the accounting-dollar format
+        # consistently (no yellow fill on Goal RPM here — the yellow on
+        # tunables only shows in the "We are at" projection block below).
+        goal_block_lines = [
+            # (label, value_formula, fmt)
+            ("Goal RPM",                       f"={goal_rpm}",                                                                  _FMT_ACCOUNTING),
+            ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",                                _FMT_ACCOUNTING),
+            ("% of Difference from Goal",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})/{goal_rpm}",                   _FMT_PCT_TENTHS),
+            ("Total Miles",                    f"=M{sum_row}+N{sum_row}",                                                        _FMT_NUMBER),
+            ("DH %",                           f"=IFERROR(M{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_PCT),
+            ("Average Truck Pay per Mile",     f"=IFERROR(P{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_ACCOUNTING),
+            ("Average Margin Per Mile",        f"=IFERROR(Q{sum_row}/(M{sum_row}+N{sum_row}),0)",                                _FMT_ACCOUNTING),
+            ("Goal Margin Per Mile",           f"={goal_rpm}-{TRUCK_PAY_PER_MI}",                                                _FMT_ACCOUNTING),
+            ("Difference from Goal",           f"=O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm}",                                _FMT_ACCOUNTING),
+            ("Revenue Missed Opportunity",     f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})",      _FMT_ACCOUNTING),
+            ("Margin Missed Opportunity",      f"=(O{sum_row}/(M{sum_row}+N{sum_row})-{goal_rpm})*(M{sum_row}+N{sum_row})",      _FMT_ACCOUNTING),
+        ]
 
     n_rows = max(len(agent_sum_rows) + 1, len(goal_block_lines))
     for i in range(n_rows):
@@ -844,7 +888,8 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
             row = _write_data_row(ws, row, count, rec.to_dict())
         data_last = row - 1
         overall_data_last = max(overall_data_last, data_last)
-        row, sum_row = _write_agent_subtotal(ws, row, agent, data_first, data_last)
+        row, sum_row = _write_agent_subtotal(ws, row, agent, data_first, data_last,
+                                              margin_centric=brokerage_analysis)
         agent_sum_rows.append((agent, data_first, data_last, sum_row))
 
     row = _write_grand_total(ws, row, agent_sum_rows,
@@ -853,7 +898,8 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
                               total_loads=len(df),
                               today_chi=today_chi,
                               include_goal_block=include_goal_block,
-                              goal_rpm=goal_rpm)
+                              goal_rpm=goal_rpm,
+                              margin_centric=brokerage_analysis)
     if brokerage_analysis:
         row = _write_brokerage_analysis(ws, row + 2, df)
     _autosize_columns(ws)
@@ -905,9 +951,10 @@ def _summary_html(tabs: dict[str, pd.DataFrame], file_label: str) -> str:
         )
     parts.append("</table>")
     parts.append('<p style="margin:0;color:#6b6b6b;font-size:12px">'
+                  f"X-Linx goal: {XLINX_MARGIN_GOAL*100:.1f}% margin. "
                   f"Open loads with no empty mileage on file get a "
                   f"{OPEN_EMPTY_ESTIMATE_MI}-mi estimate. Source: "
-                  "<i>Alvys Master 2026.xlsx</i> in OneDrive.</p>")
+                  "<i>Alvys Master2026.xlsx</i> in OneDrive.</p>")
     parts.append("</div>")
     return "".join(parts)
 
@@ -976,23 +1023,34 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     rev_col    = _pick_source_col(sub, ["Customer Revenue", "Revenue"])
     rate_col   = _pick_source_col(sub, ["Driver Rate"])
     carr_col   = _pick_source_col(sub, ["Carrier Rate"])
+    carrier_name_col = _pick_source_col(sub, ["Carrier", "Carrier Name"])
 
     def _sum(df, col):
         if not col or col not in df.columns:
             return 0
         return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
 
-    def _cost(df):
-        """Effective load cost = Driver Rate + Carrier Rate (summed)."""
-        return _sum(df, rate_col) + _sum(df, carr_col)
+    def _cost_series(df):
+        """Effective cost = Driver Rate + outside-carrier Carrier Rate
+        (internal asset carriers' CR is a revenue allocation, not a cost)."""
+        dr = (pd.to_numeric(df[rate_col], errors="coerce").fillna(0)
+              if rate_col and rate_col in df.columns
+              else pd.Series(0.0, index=df.index))
+        cr = (pd.to_numeric(df[carr_col], errors="coerce").fillna(0)
+              if carr_col and carr_col in df.columns
+              else pd.Series(0.0, index=df.index))
+        if carrier_name_col and carrier_name_col in df.columns:
+            internal = df[carrier_name_col].astype(str).str.lower().str.contains(
+                "x-trux|xtrux|truk-way|trukway|xfreight", regex=True, na=False)
+            cr = cr.where(~internal, 0.0)
+        return dr + cr
 
-    # PBI standard view: settled only — effective cost (DR + CR) > 0
+    def _cost(df):
+        return float(_cost_series(df).sum())
+
+    # PBI standard view: settled only — effective cost > 0
     if rate_col or carr_col:
-        cost_series = sum(
-            pd.to_numeric(sub[c], errors="coerce").fillna(0)
-            for c in (rate_col, carr_col) if c and c in sub.columns
-        )
-        settled = sub[cost_series > 0]
+        settled = sub[_cost_series(sub) > 0]
     else:
         settled = sub.iloc[0:0]
     # PBI with open loads: drop the settled filter

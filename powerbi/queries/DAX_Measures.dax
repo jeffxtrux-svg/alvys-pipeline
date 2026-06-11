@@ -23,17 +23,26 @@ Total Driver Rate =
 Total Carrier Rate =
     SUM(Loads[Carrier Rate])
 
-// Effective cost per load = Driver Rate + Carrier Rate, ALWAYS SUMMED.
-// X-Trux company-driver loads: DR > 0, CR = 0. X-Linx brokered loads:
-// CR > 0, DR usually 0 — but some brokered loads ALSO carry a small
-// driver pay (e.g. DR $59.69 + CR $1,765.58); both are real cost, so an
-// IF(DR>0, DR, CR) pick-one drops the carrier rate on those loads and
-// overstates margin. Summing matches the master workbook's
-// "Combine carrier rate and driver rate" rule.
+// Effective cost per load = Driver Rate + OUTSIDE-CARRIER Carrier Rate.
+//  • X-Linx brokered loads: cost is the Carrier Rate paid to the outside
+//    carrier, PLUS any small driver pay on the same load (e.g. DR $59.69
+//    + CR $1,765.58 — both are real cost, so they sum).
+//  • X-Trux asset loads: the "carrier" is our own fleet (X-TRUX Asset /
+//    Truk-Way), and the Carrier Rate column holds the internal revenue
+//    allocation, NOT a cost — counting it would double the cost and turn
+//    asset margins negative. Only Driver Rate is cost on those loads.
 Total Load Cost =
     SUMX(
         Loads,
-        Loads[Driver Rate] + Loads[Carrier Rate]
+        Loads[Driver Rate]
+            + IF(
+                CONTAINSSTRING(Loads[Carrier], "X-TRUX")
+                    || CONTAINSSTRING(Loads[Carrier], "XTRUX")
+                    || CONTAINSSTRING(Loads[Carrier], "TRUK-WAY")
+                    || CONTAINSSTRING(Loads[Carrier], "XFREIGHT"),
+                0,
+                Loads[Carrier Rate]
+            )
     )
 
 // Computed from Total Load Cost so brokered loads include Carrier Rate
