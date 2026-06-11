@@ -254,17 +254,24 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
               "Customer Revenue", "Driver Rate", "Carrier Rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
-    # Effective load cost = Driver Rate + Carrier Rate, summed. X-Linx
+    # Effective load cost = Driver Rate + EXTERNAL Carrier Rate. X-Linx
     # brokered loads carry their cost in Carrier Rate (DR usually 0), and
     # some brokered loads have BOTH a small driver pay and a carrier rate —
-    # both are real cost. Folding the sum into the "Driver Rate" column
-    # keeps the workbook layout/formulas unchanged while making Margin
-    # correct for every entity (matches the master workbook's "Combine
-    # carrier rate and driver rate" rule and the Power BI Total Load Cost).
-    n_cr = int((out["Carrier Rate"] > 0).sum())
-    out["Driver Rate"] = out["Driver Rate"] + out["Carrier Rate"]
+    # both are real cost, so they sum. BUT on X-Trux asset loads the
+    # "carrier" is our own fleet (X-TRUX Asset / Truk-Way) and the Carrier
+    # Rate column holds the internal revenue allocation, not a cost —
+    # counting it would double the cost and flip asset margins negative.
+    # So Carrier Rate only counts when the carrier is an outside company.
+    carrier_lower = out["Carrier"].astype(str).str.lower()
+    is_internal_carrier = carrier_lower.str.contains(
+        "x-trux|xtrux|truk-way|trukway|xfreight", regex=True, na=False)
+    ext_cr = out["Carrier Rate"].where(~is_internal_carrier, 0.0)
+    n_cr = int((ext_cr > 0).sum())
+    out["Driver Rate"] = out["Driver Rate"] + ext_cr
     if n_cr:
-        log.info("Folded Carrier Rate into load cost on %d rows (cost = DR + CR)", n_cr)
+        log.info("Folded external Carrier Rate into load cost on %d rows "
+                 "(cost = DR + outside-carrier CR; %d internal-carrier rows excluded)",
+                 n_cr, int((is_internal_carrier & (out["Carrier Rate"] > 0)).sum()))
 
     # The estimators below model COMPANY-DRIVER pay per mile, so they only
     # apply to X-Trux/XFreight asset loads. X-Linx brokered loads price per
@@ -976,23 +983,34 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     rev_col    = _pick_source_col(sub, ["Customer Revenue", "Revenue"])
     rate_col   = _pick_source_col(sub, ["Driver Rate"])
     carr_col   = _pick_source_col(sub, ["Carrier Rate"])
+    carrier_name_col = _pick_source_col(sub, ["Carrier", "Carrier Name"])
 
     def _sum(df, col):
         if not col or col not in df.columns:
             return 0
         return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
 
-    def _cost(df):
-        """Effective load cost = Driver Rate + Carrier Rate (summed)."""
-        return _sum(df, rate_col) + _sum(df, carr_col)
+    def _cost_series(df):
+        """Effective cost = Driver Rate + outside-carrier Carrier Rate
+        (internal asset carriers' CR is a revenue allocation, not a cost)."""
+        dr = (pd.to_numeric(df[rate_col], errors="coerce").fillna(0)
+              if rate_col and rate_col in df.columns
+              else pd.Series(0.0, index=df.index))
+        cr = (pd.to_numeric(df[carr_col], errors="coerce").fillna(0)
+              if carr_col and carr_col in df.columns
+              else pd.Series(0.0, index=df.index))
+        if carrier_name_col and carrier_name_col in df.columns:
+            internal = df[carrier_name_col].astype(str).str.lower().str.contains(
+                "x-trux|xtrux|truk-way|trukway|xfreight", regex=True, na=False)
+            cr = cr.where(~internal, 0.0)
+        return dr + cr
 
-    # PBI standard view: settled only — effective cost (DR + CR) > 0
+    def _cost(df):
+        return float(_cost_series(df).sum())
+
+    # PBI standard view: settled only — effective cost > 0
     if rate_col or carr_col:
-        cost_series = sum(
-            pd.to_numeric(sub[c], errors="coerce").fillna(0)
-            for c in (rate_col, carr_col) if c and c in sub.columns
-        )
-        settled = sub[cost_series > 0]
+        settled = sub[_cost_series(sub) > 0]
     else:
         settled = sub.iloc[0:0]
     # PBI with open loads: drop the settled filter

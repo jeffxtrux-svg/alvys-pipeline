@@ -729,17 +729,20 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
                            pipeline_sheets: dict[str, pd.DataFrame] | None = None) -> dict:
     """Revenue / cost / margin by entity (X-Trux incl. XFreight, X-Linx).
 
-    Prefers `pipeline_sheets` (Alvys Pipeline.xlsx — API-fresh Trips + Loads
-    joined the way Power BI does) when provided. Falls back to the
-    Master-Loads sheet path for backwards compat (tests, single-file callers).
+    The Alvys Master workbook (`sheets`) is the canonical source — it is the
+    exact file the Power BI XFreight Report reads, so the brief's entity
+    table matches the report by construction. The API pipeline join
+    (`pipeline_sheets`) is only a FALLBACK when the master isn't readable:
+    its trip join lags new loads and drops dual-cost rates (e.g. it showed
+    14 X-Linx June loads / $22,282 cost vs the master's 17 / $27,034).
     """
-    if pipeline_sheets:
+    loads = (sheets or {}).get("Loads")
+    if (loads is None or loads.empty) and pipeline_sheets:
         result = _entities_from_pipeline(pipeline_sheets, window_key, start, end)
         if result is not None:
             return result
     if not sheets:
         return {}
-    loads = sheets.get("Loads")
     if loads is None or loads.empty:
         return {}
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
