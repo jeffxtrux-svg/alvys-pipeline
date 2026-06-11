@@ -224,7 +224,8 @@ def _resolve_columns(loads: pd.DataFrame) -> dict[str, str | None]:
     return resolved
 
 
-def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFrame:
+def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp,
+                       trips_df: pd.DataFrame | None = None) -> pd.DataFrame:
     cols = _resolve_columns(loads)
     date_col = _find_col(loads, ["scheduled pickup", "pickup date"])
     if not date_col:
@@ -303,11 +304,45 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
     settled_mi  = float(total_mi[settled].sum())
     settled_pay = float(out.loc[settled, "Driver Rate"].sum())
     avg_rate = (settled_pay / settled_mi) if settled_mi > 0 else TRUCK_PAY_PER_MI
-    needs_rate = is_asset & is_open & (out["Driver Rate"] <= 0) & (total_mi > 0)
+    # For open loads: sum ALL trip-leg dispatch miles from the Trips sheet
+    # (one row per leg) rather than the Loads-row total, which can be 0 or
+    # partial mid-trip.  Fall back to the Loads-row total when no Trips entry
+    # is found for that load.
+    _trip_mi_for_est: pd.Series = total_mi.copy()
+    if trips_df is not None and not trips_df.empty:
+        _tlc = _find_col(trips_df, ["load #", "load number", "load num"])
+        _tl  = _find_col(trips_df, ["loaded dispatch mileage", "loaded mileage", "loaded miles"])
+        _te  = _find_col(trips_df, ["empty dispatch mileage", "empty mileage", "empty miles"])
+        _tsc = _find_col(trips_df, ["trip status", "status"])
+        _lnc = next((c for c in out.columns if str(c).strip() == "Load #"), None)
+        if _tlc and _lnc:
+            _t = trips_df.copy()
+            if _tsc:
+                _t = _t[_t[_tsc].astype(str).str.strip().str.lower() != "cancelled"]
+            _t["_lid"]   = _t[_tlc].astype(str).str.strip()
+            _t["_lmi"]   = pd.to_numeric(_t[_tl], errors="coerce").fillna(0) if _tl else 0
+            _t["_emi"]   = pd.to_numeric(_t[_te], errors="coerce").fillna(0) if _te else 0
+            _t["_total"] = _t["_lmi"] + _t["_emi"]
+            _trip_sum  = _t.groupby("_lid")["_total"].sum()
+            _load_ids  = out[_lnc].astype(str).str.strip()
+            _mapped    = _load_ids.map(_trip_sum)
+            # Only override open loads that have a Trips entry with >0 miles.
+            _override  = is_open & _mapped.notna() & (_mapped > 0)
+            _trip_mi_for_est = total_mi.copy()
+            _trip_mi_for_est[_override] = _mapped[_override]
+            n_trip_ov = int(_override.sum())
+            if n_trip_ov:
+                log.info("Trip-leg miles: %d open loads overridden "
+                         "(avg loads-row %.0f mi → avg trip-sum %.0f mi)",
+                         n_trip_ov,
+                         float(total_mi[_override].mean()),
+                         float(_trip_mi_for_est[_override].mean()))
+
+    needs_rate = is_asset & is_open & (out["Driver Rate"] <= 0) & (_trip_mi_for_est > 0)
     n_rate = int(needs_rate.sum())
     if n_rate:
-        out.loc[needs_rate, "Driver Rate"] = (total_mi[needs_rate] * avg_rate).round(2)
-        source = "settled MTD avg" if settled_mi > 0 else f"fallback constant TRUCK_PAY_PER_MI"
+        out.loc[needs_rate, "Driver Rate"] = (_trip_mi_for_est[needs_rate] * avg_rate).round(2)
+        source = "settled MTD avg" if settled_mi > 0 else "fallback constant TRUCK_PAY_PER_MI"
         log.info("Estimated Driver Rate for %d open loads at $%.4f/mi (%s; settled: %s mi / $%s pay)",
                  n_rate, avg_rate, source,
                  f"{settled_mi:,.0f}", f"{settled_pay:,.0f}")
@@ -1136,8 +1171,15 @@ def main() -> int:
     loads = sheets[loads_key]
     log.info("Loads sheet: %d rows, %d cols", len(loads), loads.shape[1])
 
+    trips_key = next((k for k in sheets if k.strip().lower() == "trips"), None)
+    trips_df  = sheets[trips_key] if trips_key else None
+    if trips_df is not None:
+        log.info("Trips sheet: %d rows, %d cols", len(trips_df), trips_df.shape[1])
+    else:
+        log.info("No Trips sheet found — open-load miles will use Loads-row totals.")
+
     today_chi = pd.Timestamp.now(tz=CHI_TZ).normalize()
-    normalized = _build_normalized(loads, today_chi)
+    normalized = _build_normalized(loads, today_chi, trips_df)
     tabs = _split_tabs(normalized)
 
     # Power-BI parity smoke test — confirms the daily upload's All Loads
