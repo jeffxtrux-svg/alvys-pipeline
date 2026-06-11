@@ -796,8 +796,10 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         # No open-load estimation here; estimates live in daily_upload.py only.
         rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
         n_loads = len(rows)
-        revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
         if ent == "X-Linx":
+            # X-Linx: all loads — carrier rate is entered at booking so every
+            # load is "settled" from a cost perspective. Matches PBI X-Linx tab.
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
             dr_sum = float(rate_col.sum()) if rate_col is not None else 0.0
             cr_sum = 0.0
             for col_name in ("Carrier Rate", "Posted Carrier Rate", "Carrier Pay"):
@@ -809,11 +811,18 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f + CR $%.2f = $%.2f cost",
                      n_loads, dr_sum, cr_sum, cost)
         else:
-            cost = float(rate_col.sum()) if rate_col is not None else 0.0
-            n_unsettled = int((rate_col <= 0).sum()) if rate_col is not None else 0
-            log.info("compute_alvys_entities[%s]: %d loads (%d open/unsettled) | "
+            # X-Trux: settled loads only (Driver Rate > 0) — PBI excludes open
+            # loads implicitly because they have no DR yet; to match to the penny
+            # we apply the same filter on both revenue and cost.
+            settled_mask = (rate_col > 0) if rate_col is not None else pd.Series(False, index=rows.index)
+            settled = rows[settled_mask]
+            revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
+            cost = float(rate_col[settled_mask].sum()) if rate_col is not None else 0.0
+            n_unsettled = int((~settled_mask).sum())
+            log.info("compute_alvys_entities[%s]: %d loads (%d settled, %d open excluded) | "
                      "revenue $%.2f | cost (DR) $%.2f",
-                     ent, n_loads, n_unsettled, float(revenue), cost)
+                     ent, n_loads, int(settled_mask.sum()), n_unsettled,
+                     float(revenue), cost)
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
