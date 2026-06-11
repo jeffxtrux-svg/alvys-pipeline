@@ -1,5 +1,5 @@
 # XFreight KPI → Google Sheets refresh
-# Pulls from Alvys, QuickBooks, and Samsara and writes all tabs to the KPI Dashboard sheet.
+# Runs every 2 hours from 4am to 6pm CT (matching all other pulls), writes all tabs to the KPI Dashboard sheet.
 
 name: Refresh Google Sheets KPI Dashboard
 
@@ -7,16 +7,15 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Year-round 4:30am / 1:00pm / 5:30pm Central. CDT (UTC-5) and CST
-    # (UTC-6) crons both armed; the "Gate to allowed CT hours" step
-    # accepts hours {4, 13, 17} so each season's correct slot runs and
-    # the off-season twin is skipped.
-    - cron: '30 9 * * *'    # 4:30am CDT / 3:30am CST (CST: gated)
-    - cron: '30 10 * * *'   # 5:30am CDT (CDT: gated) / 4:30am CST
-    - cron: '0 18 * * *'    # 1:00pm CDT / 12:00pm CST (CST: gated)
-    - cron: '0 19 * * *'    # 2:00pm CDT (CDT: gated) / 1:00pm CST
-    - cron: '30 22 * * *'   # 5:30pm CDT / 4:30pm CST (CST: gated)
-    - cron: '30 23 * * *'   # 6:30pm CDT (CDT: gated) / 5:30pm CST
+    # Year-round every 2h from 4am to 6pm Central, matching all other pulls.
+    # CDT (UTC-5) and CST (UTC-6) slots both armed; the "Gate to allowed CT
+    # hours" step passes only {4, 6, 8, 10, 12, 14, 16, 18} so each run fires
+    # exactly 8× per day regardless of DST.
+    # CDT (UTC-5): 4am→9, 6am→11, 8am→13, 10am→15, 12pm→17,
+    #              2pm→19, 4pm→21, 6pm→23
+    # CST (UTC-6): 4am→10, 6am→12, 8am→14, 10am→16, 12pm→18,
+    #              2pm→20, 4pm→22, 6pm→0 (next day)
+    - cron: '0 0,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 * * *'
 
 jobs:
   refresh:
@@ -25,16 +24,15 @@ jobs:
 
     steps:
       - name: Gate to allowed CT hours
-        # Year-round targets: 4:30am, 1:00pm, 5:30pm Central.
-        # Cron minute already enforces the :30/:00 part; this gate just
-        # checks the hour. Manual / workflow_call / push runs bypass.
+        # Year-round targets: every 2h from 4am to 6pm Central.
+        # Manual / workflow_call / push runs bypass.
         id: ct_gate
         if: github.event_name == 'schedule'
         run: |
           CT_HOUR=$(TZ=America/Chicago date +%-H)
           echo "Central-time hour: $CT_HOUR"
           case "$CT_HOUR" in
-            4|13|17) echo "Target slot — proceeding." ;;
+            4|6|8|10|12|14|16|18) echo "Target slot — proceeding." ;;
             *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
           esac
 
