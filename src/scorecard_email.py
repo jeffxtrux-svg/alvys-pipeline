@@ -1546,12 +1546,23 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     combined_t_rev = combined_t_cost = 0.0
     combined_settled_margin = 0.0
 
+    dr_col = "Driver Rate" if "Driver Rate" in loads.columns else None
+
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
-        t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        t_cost = float(_load_cost(loads[trail_mask & ent_mask]).sum())
-        s_rev = float(_col_any(loads[settled_mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        s_cost = float(_load_cost(loads[settled_mtd_mask & ent_mask]).sum())
+        trail_sub = loads[trail_mask & ent_mask]
+        settled_sub = loads[settled_mtd_mask & ent_mask]
+        t_rev = float(_col_any(trail_sub, ["Customer Revenue", "Revenue"]).sum())
+        s_rev = float(_col_any(settled_sub, ["Customer Revenue", "Revenue"]).sum())
+        # Match compute_alvys_entities: X-Trux cost = Driver Rate only;
+        # X-Linx cost = Driver Rate + Carrier Rate. XFreight loads (grouped
+        # into X-Trux) carry Carrier Rate which must NOT count as X-Trux cost.
+        if ent == "X-Trux":
+            t_cost = float(_col(trail_sub, "Driver Rate").fillna(0).sum()) if dr_col else 0.0
+            s_cost = float(_col(settled_sub, "Driver Rate").fillna(0).sum()) if dr_col else 0.0
+        else:
+            t_cost = float(_load_cost(trail_sub).sum())
+            s_cost = float(_load_cost(settled_sub).sum())
         settled_margin = s_rev - s_cost
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
         daily_run_rate = (t_rev / days) if days else 0.0
