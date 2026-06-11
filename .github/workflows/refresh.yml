@@ -77,9 +77,11 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
           ONEDRIVE_FOLDER_PATH: ""
-          # Distinct name — must NOT collide with the hand-maintained
-          # "Alvys Master 2026.xlsx" that the Power BI report reads, or the
-          # pipeline's computed data would overwrite the manual workbook.
+          # Uploads as "Alvys Pipeline.xlsx" — the API-data half of the
+          # hybrid merge. The desktop "Alvys Master Fixer" tool downloads
+          # this, overlays X-Trux Driver Rate from the manual TMS export
+          # (the one field the API can't provide accurately), and uploads
+          # the merged result as "Alvys Master 2026.xlsx" for Power BI.
           ONEDRIVE_TARGET_FILENAME: "Alvys Pipeline.xlsx"
           OUTPUT_DIR: output
         run: python -m src.onedrive_upload

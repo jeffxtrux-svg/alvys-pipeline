@@ -132,6 +132,16 @@ SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk categ
 VIOLATION_WINDOW_DAYS = 90        # MVR violations: surface the last 90d so the tile/page reflect recent risk, not the full year of historical record
                                   # alerts — a year matches how SambaSafety surfaces them
 
+# Canonical Alvys Master workbook — the exact OneDrive file the Power BI
+# XFreight Report reads ("Alvys Master2026.xlsx", no space before 2026).
+# Both the scorecard and the daily upload default to this sharing URL so all
+# reporting surfaces read the same data. Override via SCORECARD_ALVYS_SHARE_URL
+# / DAILY_UPLOAD_ALVYS_SHARE_URL if the file ever moves.
+ALVYS_MASTER_SHARE_URL = (
+    "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/"
+    "IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+)
+
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
     "Scheduled Pickup", "Dispatched Date", "Invoiced Date", "Delivered",
@@ -199,6 +209,15 @@ def _col_any(df: pd.DataFrame, names: list[str]) -> pd.Series:
         if n in df.columns:
             return pd.to_numeric(df[n], errors="coerce")
     return pd.Series([float("nan")] * len(df), index=df.index)
+
+
+def _load_cost(df: pd.DataFrame) -> pd.Series:
+    """Effective cost per load = Driver Rate + Carrier Rate.
+    For X-Trux company-driver loads, Driver Rate > 0 and Carrier Rate = 0.
+    For X-Linx brokered loads, Driver Rate = 0 and Carrier Rate > 0.
+    Only one is populated per load in the Alvys TMS export, so summing them
+    gives the correct total cost without double-counting."""
+    return _col(df, "Driver Rate").fillna(0) + _col(df, "Carrier Rate").fillna(0)
 
 
 def _find_col(df: pd.DataFrame, needles: list[str]) -> str | None:
@@ -363,9 +382,10 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     loaded = _col_any(sub, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).sum()
     empty = _col_any(sub, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).sum()
     total = loaded + empty
-    # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
-    # NOT added: the Driver Rate column is the full payout per load already.
-    cost = float(_col(sub, "Driver Rate").fillna(0).sum())
+    # Margin = Customer Revenue - cost. For X-Trux loads the cost is Driver Rate
+    # (company driver mileage pay); for X-Linx brokered loads the cost is Carrier
+    # Rate. Only one is populated per load in the TMS export, so we sum both.
+    cost = float(_load_cost(sub).sum())
     margin = revenue - cost
     return {
         "loads": len(sub),
@@ -397,17 +417,15 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         _n_excl = _n_before - len(loads)
         if _n_excl:
             log.info("Excluded %d Cancelled loads to match Power BI view", _n_excl)
-    # Power BI's monthly table only sums loads with Driver Rate > 0 (settled).
-    # Pre-booked / unsettled loads carry Loaded Miles but no Empty Miles and no
-    # Driver Rate, which is why our June trend showed 55 loads / 43,475 loaded
-    # while PBI shows 36 / 22,596. Filter to settled here so all asset metrics
-    # (tile + trend + entity P&L) operate on the same set as PBI.
-    if "Driver Rate" in loads.columns:
+    # Power BI's monthly table only sums settled loads. For X-Trux loads
+    # "settled" means Driver Rate > 0; for X-Linx brokered loads it means
+    # Carrier Rate > 0. We use the combined cost to catch both cases.
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         _n_before = len(loads)
-        loads = loads[_col(loads, "Driver Rate").fillna(0) > 0]
+        loads = loads[_load_cost(loads) > 0]
         _n_excl = _n_before - len(loads)
         if _n_excl:
-            log.info("Excluded %d unsettled loads (Driver Rate = 0) — matches Power BI view",
+            log.info("Excluded %d unsettled loads (Driver Rate + Carrier Rate = 0) — matches Power BI view",
                      _n_excl)
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     _date_col_used = next(
@@ -870,10 +888,10 @@ def _alvys_health(sheets: dict[str, pd.DataFrame] | None) -> list[str]:
     cols = set(loads.columns)
     if not ({"Customer Revenue", "Revenue"} & cols):
         warns.append("Loads tab has no Customer Revenue column — revenue and margin will be blank.")
-    if "Driver Rate" not in cols:
-        warns.append("Loads tab has no 'Driver Rate' column — driver cost reads $0 and margin is overstated.")
-    elif float(_col(loads, "Driver Rate").fillna(0).abs().sum()) == 0:
-        warns.append("Loads 'Driver Rate' column is entirely empty — driver cost reads $0 and margin is overstated.")
+    if "Driver Rate" not in cols and "Carrier Rate" not in cols:
+        warns.append("Loads tab has no Driver Rate or Carrier Rate column — load cost reads $0 and margin is overstated.")
+    elif float(_load_cost(loads).abs().sum()) == 0:
+        warns.append("Loads Driver Rate and Carrier Rate columns are both entirely empty — load cost reads $0 and margin is overstated.")
     if not _find_col(loads, OFFICE_COL_NEEDLES):
         warns.append("Loads tab has no Office / Invoice As column — the X-Trux vs X-Linx split is unavailable.")
     if not (set(ALVYS_DATE_CANDIDATES) & cols):
@@ -1141,10 +1159,10 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     _status_col = _find_col(loads, ["load status", "status"])
     if _status_col:
         loads = loads[loads[_status_col].astype(str).str.strip().str.lower() != "cancelled"]
-    # Match PBI's monthly view: settled loads only (Driver Rate > 0). Same
-    # filter as compute_alvys / compute_alvys_entities. See compute_alvys.
-    if "Driver Rate" in loads.columns:
-        loads = loads[_col(loads, "Driver Rate").fillna(0) > 0]
+    # Match PBI's monthly view: settled loads only. Same filter as
+    # compute_alvys / compute_alvys_entities — see compute_alvys for rationale.
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
+        loads = loads[_load_cost(loads) > 0]
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
@@ -1525,12 +1543,12 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     # the t90 blend) the estimate should never read below what we've actually
     # earned.
     settled_mtd_mask = mtd_mask.copy()
-    if "Driver Rate" in loads.columns:
-        settled_mtd_mask = settled_mtd_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
+        settled_mtd_mask = settled_mtd_mask & (_load_cost(loads) > 0)
     trail_start = now - pd.Timedelta(days=days)
     trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
-    if "Driver Rate" in loads.columns:
-        trail_mask = trail_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
+        trail_mask = trail_mask & (_load_cost(loads) > 0)
 
     out: dict = {"days_in_month": dim, "day_of_month": dom, "trailing_days": days}
     combined_booked = combined_t_rev = combined_t_cost = 0.0
@@ -1540,11 +1558,11 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         ent_mask = groups_all == ent
         booked = float(_col_any(loads[mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        t_cost = float(_col(loads[trail_mask & ent_mask], "Driver Rate").fillna(0).sum())
+        t_cost = float(_load_cost(loads[trail_mask & ent_mask]).sum())
         # Actual settled MTD margin for this entity — used as a floor on the
         # forward estimate so it never reports below what's already earned.
         s_rev = float(_col_any(loads[settled_mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        s_cost = float(_col(loads[settled_mtd_mask & ent_mask], "Driver Rate").fillna(0).sum())
+        s_cost = float(_load_cost(loads[settled_mtd_mask & ent_mask]).sum())
         settled_margin = s_rev - s_cost
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
         daily_run_rate = (t_rev / days) if days else 0.0
@@ -5265,14 +5283,15 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
-    # MTD P&L tiles include only settled loads (Driver Rate > 0) to match the
-    # Power BI XFreight Report. Surface the count of booked-but-not-yet-settled
-    # loads so the deferred work isn't invisible.
+    # MTD P&L tiles include only settled loads (cost = Driver Rate + Carrier
+    # Rate > 0) to match the Power BI XFreight Report. Surface the count of
+    # booked-but-not-yet-settled loads so the deferred work isn't invisible.
     _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
     _mtd_msg = ("MTD revenue / cost / margin tiles include only settled loads "
-                "(driver pay entered), matching the Power BI report.")
+                "(driver pay or carrier pay entered); cost = Driver Rate + Carrier Rate, "
+                "matching the Power BI report.")
     if _unsettled:
-        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver pay and will appear once settled."
+        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver/carrier pay and will appear once settled."
     mtd_note = _brief(_mtd_msg, "mute")
     asof = ""
     if data_asof is not None:
@@ -7268,10 +7287,12 @@ def main() -> int:
     from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
-    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
-    # If set, read the Alvys workbook from this exact OneDrive sharing URL instead of
-    # by name — avoids reading the wrong file when a duplicate of the same name exists.
-    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", "").strip()
+    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master2026.xlsx")
+    # Read the Alvys workbook from this exact OneDrive sharing URL instead of by
+    # name — avoids reading the wrong file when a duplicate of the same name
+    # exists. Default is the canonical "Alvys Master2026.xlsx" the Power BI
+    # XFreight Report reads, so brief and report always see the same data.
+    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", ALVYS_MASTER_SHARE_URL).strip()
     alvys_pipeline_path = os.environ.get("SCORECARD_ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")

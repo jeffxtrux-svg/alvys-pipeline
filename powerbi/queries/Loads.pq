@@ -144,8 +144,17 @@ let
         if row[_trip_rec] = null then null
         else Record.FieldOrDefault(row[_trip_rec], col, null),
 
+    // For X-Trux loads, cost = Driver Rate (company driver mileage pay).
+    // For X-Linx brokered loads, Driver Rate = 0 and cost = Carrier Rate.
+    // Use whichever is non-zero so margin math is correct for both entities.
     WithDriverRate   = Table.AddColumn(WithTripFirst, "Driver Rate",
-        each let v = TripField(_, "Driver Rate") in if v = null then 0 else v, type number),
+        each
+            let dr = TripField(_, "Driver Rate"),
+                cr = TripField(_, "Carrier Rate"),
+                drv = if dr = null then 0 else dr,
+                car = if cr = null then 0 else cr
+            in if drv > 0 then drv else car,
+        type number),
     WithLoadedMi     = Table.AddColumn(WithDriverRate, "Loaded Dispatch Mileage",
         each TripField(_, "Loaded Dispatch Mileage"), type number),
     WithEmptyMi      = Table.AddColumn(WithLoadedMi, "Empty Dispatch Mileage",
@@ -169,7 +178,9 @@ let
     WithTrailer      = Table.AddColumn(WithTruck, "Trailer",
         each TripField(_, "Trailer"), type text),
 
-    // -- Gross Margin (Customer Revenue - Driver Rate) ---------------------
+    // -- Gross Margin (Customer Revenue - effective cost) -----------------
+    // Driver Rate already holds the effective cost (Carrier Rate for X-Linx,
+    // Driver Rate for X-Trux) after the fallback logic above.
     WithGrossMargin  = Table.AddColumn(WithTrailer, "Gross Margin",
         each [Customer Revenue] - [Driver Rate], type number),
 

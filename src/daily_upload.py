@@ -57,7 +57,9 @@ from openpyxl.utils import get_column_letter
 from src.onedrive_upload import (
     download_file, download_shared_file, ensure_folder, get_token, upload_file,
 )
-from src.scorecard_email import compute_qb_pnl, compute_rpm_goal, send_email
+from src.scorecard_email import (
+    ALVYS_MASTER_SHARE_URL, compute_qb_pnl, compute_rpm_goal, send_email,
+)
 
 log = logging.getLogger("daily_upload")
 logging.basicConfig(level=logging.INFO,
@@ -208,7 +210,8 @@ def _resolve_columns(loads: pd.DataFrame) -> dict[str, str | None]:
         "Loaded Dispatch Mileage": ["Loaded Dispatch Mileage", "Loaded Mileage",
                                      "Loaded Miles"],
         "Customer Revenue":     ["Customer Revenue", "Revenue", "Total Revenue"],
-        "Driver Rate":          ["Driver Rate", "Carrier Rate", "Driver Pay"],
+        "Driver Rate":          ["Driver Rate", "Driver Pay"],
+        "Carrier Rate":         ["Carrier Rate"],
     }
     resolved = {out: _pick_source_col(loads, candidates) for out, candidates in mapping.items()}
     missing = [k for k, v in resolved.items() if v is None]
@@ -248,12 +251,30 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
                     "X-Trux scoping cannot be applied.")
 
     for c in ("Empty Dispatch Mileage", "Loaded Dispatch Mileage",
-              "Customer Revenue", "Driver Rate"):
+              "Customer Revenue", "Driver Rate", "Carrier Rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+
+    # Effective load cost = Driver Rate + Carrier Rate, summed. X-Linx
+    # brokered loads carry their cost in Carrier Rate (DR usually 0), and
+    # some brokered loads have BOTH a small driver pay and a carrier rate —
+    # both are real cost. Folding the sum into the "Driver Rate" column
+    # keeps the workbook layout/formulas unchanged while making Margin
+    # correct for every entity (matches the master workbook's "Combine
+    # carrier rate and driver rate" rule and the Power BI Total Load Cost).
+    n_cr = int((out["Carrier Rate"] > 0).sum())
+    out["Driver Rate"] = out["Driver Rate"] + out["Carrier Rate"]
+    if n_cr:
+        log.info("Folded Carrier Rate into load cost on %d rows (cost = DR + CR)", n_cr)
+
+    # The estimators below model COMPANY-DRIVER pay per mile, so they only
+    # apply to X-Trux/XFreight asset loads. X-Linx brokered loads price per
+    # load (carrier rate), not per mile — estimating their cost from the
+    # asset fleet's $/mi both skews the average and invents wrong costs.
+    is_asset = out["__Office"].apply(_is_xtrux_office)
 
     status_lower = out["Load Status"].astype(str).str.strip().str.lower()
     is_open = ~status_lower.isin(SETTLED_STATUSES)
-    needs_est = is_open & (out["Empty Dispatch Mileage"] <= 0)
+    needs_est = is_asset & is_open & (out["Empty Dispatch Mileage"] <= 0)
     n_est = int(needs_est.sum())
     out.loc[needs_est, "Empty Dispatch Mileage"] = OPEN_EMPTY_ESTIMATE_MI
     if n_est:
@@ -266,11 +287,13 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
     # loads' actual rate per mile. Falls back to TRUCK_PAY_PER_MI when
     # there are zero settled loads yet (early in the month).
     total_mi = out["Empty Dispatch Mileage"] + out["Loaded Dispatch Mileage"]
-    settled = (out["Driver Rate"] > 0) & (total_mi > 0)
+    # avg $/mi from settled ASSET loads only — brokered carrier pay isn't
+    # per-mile economics and would inflate the estimate.
+    settled = is_asset & (out["Driver Rate"] > 0) & (total_mi > 0)
     settled_mi  = float(total_mi[settled].sum())
     settled_pay = float(out.loc[settled, "Driver Rate"].sum())
     avg_rate = (settled_pay / settled_mi) if settled_mi > 0 else TRUCK_PAY_PER_MI
-    needs_rate = is_open & (out["Driver Rate"] <= 0) & (total_mi > 0)
+    needs_rate = is_asset & is_open & (out["Driver Rate"] <= 0) & (total_mi > 0)
     n_rate = int(needs_rate.sum())
     if n_rate:
         out.loc[needs_rate, "Driver Rate"] = (total_mi[needs_rate] * avg_rate).round(2)
@@ -291,7 +314,8 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
     # the per-row margin on these as a planning estimate, not actuals.
     drop_status = out["Last Drop Status"].astype(str).str.strip().str.lower()
     is_drop_open = drop_status.str.contains("open", na=False)
-    needs_inflight = is_drop_open & (out["Driver Rate"] > 0) & (out["Driver Rate"] < 200)
+    needs_inflight = (is_asset & is_drop_open
+                      & (out["Driver Rate"] > 0) & (out["Driver Rate"] < 200))
     n_inflight = int(needs_inflight.sum())
     if n_inflight:
         out.loc[needs_inflight, "Empty Dispatch Mileage"] = (
@@ -951,15 +975,24 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     empty_col  = _pick_source_col(sub, ["Empty Miles", "Empty Mileage"])
     rev_col    = _pick_source_col(sub, ["Customer Revenue", "Revenue"])
     rate_col   = _pick_source_col(sub, ["Driver Rate"])
+    carr_col   = _pick_source_col(sub, ["Carrier Rate"])
 
     def _sum(df, col):
         if not col or col not in df.columns:
             return 0
         return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
 
-    # PBI standard view: Driver Rate > 0 (settled only)
-    if rate_col:
-        settled = sub[pd.to_numeric(sub[rate_col], errors="coerce").fillna(0) > 0]
+    def _cost(df):
+        """Effective load cost = Driver Rate + Carrier Rate (summed)."""
+        return _sum(df, rate_col) + _sum(df, carr_col)
+
+    # PBI standard view: settled only — effective cost (DR + CR) > 0
+    if rate_col or carr_col:
+        cost_series = sum(
+            pd.to_numeric(sub[c], errors="coerce").fillna(0)
+            for c in (rate_col, carr_col) if c and c in sub.columns
+        )
+        settled = sub[cost_series > 0]
     else:
         settled = sub.iloc[0:0]
     # PBI with open loads: drop the settled filter
@@ -970,7 +1003,7 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
         empty  = _sum(df, empty_col)
         total  = loaded + empty
         rev    = _sum(df, rev_col)
-        pay    = _sum(df, rate_col)
+        pay    = _cost(df)
         rpm    = (rev / total) if total else 0
         return {
             "label": label, "loads": len(df),
@@ -1019,7 +1052,9 @@ def main() -> int:
     client = os.environ["AZURE_CLIENT_ID"]
     secret = os.environ["AZURE_CLIENT_SECRET"]
     upn    = os.environ.get("ONEDRIVE_USER_UPN", "jeff@xfreight.net")
-    share  = os.environ.get("DAILY_UPLOAD_ALVYS_SHARE_URL", "").strip()
+    # Default to the canonical Alvys Master share URL (the exact file Power BI
+    # reads) so the daily upload, scorecard, and report all see the same data.
+    share  = os.environ.get("DAILY_UPLOAD_ALVYS_SHARE_URL", "").strip() or ALVYS_MASTER_SHARE_URL
     if not share:
         raise SystemExit("DAILY_UPLOAD_ALVYS_SHARE_URL is required.")
     out_folder = os.environ.get("DAILY_UPLOAD_FOLDER", "").strip("/")

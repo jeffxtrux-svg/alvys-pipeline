@@ -163,8 +163,12 @@ def upload_file(
             cresp = requests.put(upload_url, headers=chunk_headers,
                                   data=chunk, timeout=120)
             if cresp.status_code not in (200, 201, 202):
-                log.error("Chunk upload failed [%s]: %s",
-                          cresp.status_code, cresp.text[:500])
+                if cresp.status_code == 423:
+                    log.error("Upload blocked (423 Locked): the file is open in Excel or "
+                              "another app. Close the file on OneDrive/SharePoint and retry.")
+                else:
+                    log.error("Chunk upload failed [%s]: %s",
+                              cresp.status_code, cresp.text[:500])
                 cresp.raise_for_status()
             uploaded += len(chunk)
             pct = uploaded / file_size * 100
