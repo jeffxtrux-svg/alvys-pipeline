@@ -1440,33 +1440,76 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
             "combined": (c_labels, c_values)}
 
 
-def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 90) -> dict:
-    """Estimate full-month settled margin per entity.
+def _us_holidays(year: int) -> set:
+    """Observed US major holiday dates for the given year."""
+    import calendar as _cal
+
+    def _nth(yr, mo, wd, n):
+        d = _dt.date(yr, mo, 1)
+        d += _dt.timedelta(days=(wd - d.weekday()) % 7)
+        return d + _dt.timedelta(weeks=n - 1)
+
+    def _last_mon(yr, mo):
+        _, last = _cal.monthrange(yr, mo)
+        d = _dt.date(yr, mo, last)
+        d -= _dt.timedelta(days=d.weekday())  # back to Monday
+        return d
+
+    def _obs(d):
+        if d.weekday() == 5:
+            return d - _dt.timedelta(days=1)
+        if d.weekday() == 6:
+            return d + _dt.timedelta(days=1)
+        return d
+
+    return {
+        _obs(_dt.date(year, 1, 1)),   # New Year's Day
+        _last_mon(year, 5),            # Memorial Day (last Mon in May)
+        _obs(_dt.date(year, 7, 4)),    # Independence Day
+        _nth(year, 9, 0, 1),           # Labor Day (1st Mon in Sep)
+        _nth(year, 11, 3, 4),          # Thanksgiving (4th Thu in Nov)
+        _obs(_dt.date(year, 12, 25)),  # Christmas Day
+    }
+
+
+def _working_days_back(n: int, from_date=None) -> pd.Timestamp:
+    """Date that is exactly n working days (Mon-Fri, excl. US holidays) before from_date."""
+    d = (from_date.date() if hasattr(from_date, "date") else
+         (from_date or _dt.date.today()))
+    holidays = _us_holidays(d.year) | _us_holidays(d.year - 1)
+    count = 0
+    while count < n:
+        d -= _dt.timedelta(days=1)
+        if d.weekday() < 5 and d not in holidays:
+            count += 1
+    return pd.Timestamp(d)
+
+
+def _working_days_in_month(year: int, month: int) -> int:
+    """Count Mon-Fri working days in month, excluding major US holidays."""
+    import calendar as _cal
+    holidays = _us_holidays(year)
+    _, days_in = _cal.monthrange(year, month)
+    return sum(
+        1 for day in range(1, days_in + 1)
+        if _dt.date(year, month, day).weekday() < 5
+        and _dt.date(year, month, day) not in holidays
+    )
+
+
+def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 80) -> dict:
+    """Estimate full-month settled margin per entity using a working-day run-rate.
 
     Formula per entity:
-        days_remaining    = days_in_month - day_of_month
-        daily_run_rate    = trailing_{days}_revenue / {days}
-        projected_revenue = booked MTD revenue + daily_run_rate * days_remaining
-        projected_margin  = projected_revenue * trailing_{days}_margin_pct
+        trail_start           = date that is `days` working days before today
+        daily_run_rate        = trailing_revenue_over_{days}_wd / {days}
+        working_days_in_month = Mon-Fri days in current month excl. US holidays
+        projected_revenue     = daily_run_rate * working_days_in_month
+        projected_margin      = projected_revenue * trailing_margin_pct
 
-    The projection is "actuals booked so far + the recent daily pace applied to
-    the rest of the month", which replaces the older naive month-pace
-    extrapolation (booked * days_in_month / day_of_month). That naive form
-    multiplied a single day's bookings by ~30 on day 1 and swung wildly early
-    in the month; the run-rate form is anchored to the trailing daily revenue,
-    so early-month estimates track reality. On the last day days_remaining is 0
-    (and under month-rollover dom is forced to dim), so it collapses to pure
-    actuals — the settled-margin floor below still applies. It is exactly the
-    elapsed-fraction blend of month-pace and trailing run-rate.
-
-    Booked MTD revenue = all non-cancelled loads with Scheduled Pickup in the
-    current month — includes loads that haven't yet had driver pay entered, so
-    the forward estimate captures activity the settled-only MTD tile excludes.
-
-    Trailing margin % = settled loads only (Driver Rate > 0), non-cancelled,
-    Scheduled Pickup within the last ``days`` days. Combined = X-Trux + X-Linx,
-    using the combined trailing revenue/cost (revenue-weighted blend), not a
-    simple average of the per-entity rates.
+    Working days exclude weekends and six US federal holidays: New Year's Day,
+    Memorial Day, Independence Day, Labor Day, Thanksgiving, Christmas Day.
+    The floor ensures the estimate never reads below already-settled margin.
     """
     if not sheets:
         return {}
@@ -1483,92 +1526,62 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
                      if "Load Status" in loads.columns else pd.Series(True, index=loads.index))
 
     now = pd.Timestamp.now()
-    dim, dom = now.days_in_month, now.day
-    factor = (dim / dom) if dom else None
 
-    mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
-    # Month-rollover resilience: on day 1-3 with no revenue-bearing loads yet,
-    # the "EST. MARGIN" tile is meaningless (nothing to project from). Pivot
-    # to last completed month until the first revenue load lands.
-    _mtd_rev = _col_any(loads[mtd_mask], ["Customer Revenue", "Revenue"]).fillna(0)
-    mtd_revenue_loads = int((_mtd_rev > 0).sum())
-    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_revenue_loads)
-    if rollover:
-        mtd_mask = (dates >= lm_start) & (dates <= lm_end) & not_cancelled
-        dim = (lm_end.day)   # last completed month had this many days
-        dom = dim            # treat it as "complete" so days_remaining = 0
-        factor = 1.0
-    # Days left in the (current or rolled-over) month — the run-rate projection
-    # fills these remaining days at the recent daily pace. Under rollover dom
-    # was forced to dim, so this is 0 and the projection equals booked actuals.
-    days_remaining = max(dim - dom, 0)
-    # Settled MTD mask: this month (or last month under rollover), non-cancelled,
-    # with driver rate entered. Used to floor the projection at actual settled
-    # margin — at month-end (or any time this month's actual margin% exceeds
-    # the t90 blend) the estimate should never read below what we've actually
-    # earned.
-    settled_mtd_mask = mtd_mask.copy()
-    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
-        settled_mtd_mask = settled_mtd_mask & (_load_cost(loads) > 0)
-    trail_start = now - pd.Timedelta(days=days)
+    # Trailing window: last `days` working days of settled loads
+    trail_start = _working_days_back(days, now)
     trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
     if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         trail_mask = trail_mask & (_load_cost(loads) > 0)
 
-    out: dict = {"days_in_month": dim, "day_of_month": dom, "trailing_days": days}
-    combined_booked = combined_t_rev = combined_t_cost = 0.0
+    # Working days in the current month — the projection multiplier
+    wdim = _working_days_in_month(now.year, now.month)
+
+    # Settled MTD floor: never project below what's already earned this month
+    mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
+    settled_mtd_mask = mtd_mask.copy()
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
+        settled_mtd_mask = settled_mtd_mask & (_load_cost(loads) > 0)
+
+    out: dict = {"working_days_in_month": wdim, "trailing_days": days}
+    combined_t_rev = combined_t_cost = 0.0
     combined_settled_margin = 0.0
 
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
-        booked = float(_col_any(loads[mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_cost = float(_load_cost(loads[trail_mask & ent_mask]).sum())
-        # Actual settled MTD margin for this entity — used as a floor on the
-        # forward estimate so it never reports below what's already earned.
         s_rev = float(_col_any(loads[settled_mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         s_cost = float(_load_cost(loads[settled_mtd_mask & ent_mask]).sum())
         settled_margin = s_rev - s_cost
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
         daily_run_rate = (t_rev / days) if days else 0.0
-        proj_rev = booked + daily_run_rate * days_remaining
-        proj_rev = proj_rev if proj_rev > 0 else None
-        t90_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
-        # Floor at actual settled — handles the end-of-month case (factor=1.0)
-        # where t90 underestimates a hot-running month, and is also correct
-        # mid-month since you can't project less than you've already booked.
-        if t90_margin is not None and settled_margin > t90_margin:
-            proj_margin = settled_margin
-        else:
-            proj_margin = t90_margin
+        proj_rev = (daily_run_rate * wdim) if daily_run_rate else None
+        proj_margin_t = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
+        proj_margin = (settled_margin
+                       if (proj_margin_t is not None and settled_margin > proj_margin_t)
+                       else proj_margin_t)
         out[ent] = {
-            "booked_mtd": booked or None,
             "settled_mtd_margin": settled_margin or None,
             "trailing_margin_pct": m_pct,
             "projected_revenue": proj_rev,
             "projected_margin": proj_margin,
         }
-        combined_booked += booked
         combined_t_rev += t_rev
         combined_t_cost += t_cost
         combined_settled_margin += settled_margin
 
     c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
-    c_daily_run_rate = (combined_t_rev / days) if days else 0.0
-    c_proj_rev = combined_booked + c_daily_run_rate * days_remaining
-    c_proj_rev = c_proj_rev if c_proj_rev > 0 else None
-    _c_t90 = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
-    c_proj_margin = (_c_t90 if (_c_t90 is not None and combined_settled_margin <= _c_t90)
-                     else (combined_settled_margin or _c_t90))
+    c_daily = (combined_t_rev / days) if days else 0.0
+    c_proj_rev = (c_daily * wdim) if c_daily else None
+    _c_t = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
+    c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
+                     else (combined_settled_margin or _c_t))
     out["combined"] = {
-        "booked_mtd": combined_booked or None,
         "settled_mtd_margin": combined_settled_margin or None,
         "trailing_margin_pct": c_pct,
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
-    out["rollover"] = rollover
-    out["mtd_label"] = mtd_label
     return out
 
 
@@ -4745,26 +4758,19 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     # Row 2: loads + estimated month-end margin per entity. The projection
     # equation comes from compute_margin_projection():
-    #   projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
-    #   projected_margin  = projected_revenue * trailing-90 settled margin %
-    # Pill shows the day ratio and trailing margin % so the basis is visible.
+    #   daily_run_rate    = trailing-80-working-day revenue / 80
+    #   projected_revenue = daily_run_rate * working_days_in_month
+    #   projected_margin  = projected_revenue * trailing-80wd margin %
+    # Pill shows working days in month and trailing window so the basis is visible.
     _mp = margin_projection or {}
-    _dim = _mp.get("days_in_month", 0)
-    _de = _mp.get("day_of_month", 0)
-    _td = _mp.get("trailing_days", 90)
+    _wdim = _mp.get("working_days_in_month", 0)
+    _td = _mp.get("trailing_days", 80)
     _month_lbl = pd.Timestamp.now().strftime("%B")
-    # Under month-rollover, the "estimate" is just last completed month's
-    # actual settled margin — relabel so the tile doesn't read "Est. June"
-    # while showing May's final number.
-    _est_prefix = "May" if False else "Est."  # placeholder, set below
-    if _mp.get("rollover"):
-        _tile_label = f"{_mp.get('mtd_label', 'Prior month')} margin &middot; final"
-    else:
-        _tile_label = f"Est. {_month_lbl} margin"
+    _tile_label = f"Est. {_month_lbl} margin"
     def _proj_tile(ent_key, pill_text):
         ent = _mp.get(ent_key) or {}
         sub = (_pill(pill_text, "mute")
-               + f" &middot; {_de}/{_dim}d &middot; t{_td} {pct(ent.get('trailing_margin_pct'))}")
+               + f" &middot; {_wdim}wd &middot; w{_td} {pct(ent.get('trailing_margin_pct'))}")
         return _tile(_tile_label, money(ent.get("projected_margin")), sub)
     # Order: Combined projection in the leftmost slot (visually anchors the
     # row's lead number), per-entity projections in the middle, and the plain
