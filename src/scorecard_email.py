@@ -847,7 +847,40 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             settled_miles = float(miles_col[settled_mask].sum())
             avg_per_mile = (settled_pay / settled_miles) if settled_miles > 0 else 0
             unsettled_rows = rows[~settled_mask]
-            unsettled_miles = float(miles_col[~settled_mask].sum())
+            # For unsettled loads, use the sum of ALL trip-leg dispatch miles
+            # (from the Trips sheet, one row per leg) rather than the Loads-row
+            # total, which can be 0 or partial mid-trip.  Cancelled trip legs
+            # are excluded.  Fall back to the Loads-row total per load when no
+            # Trips entry is found.
+            if trips_df is not None and not trips_df.empty and not unsettled_rows.empty:
+                _tlc = _find_col(trips_df, ["load #", "load number", "load num", "load"])
+                _tl  = _find_col(trips_df, ["loaded dispatch mileage", "loaded mileage", "loaded miles"])
+                _te  = _find_col(trips_df, ["empty dispatch mileage", "empty mileage", "empty miles"])
+                _tsc = _find_col(trips_df, ["trip status", "status"])
+                _lnc = _find_col(rows, ["load #", "load number", "load num", "load"])
+                if _tlc and _lnc:
+                    _t = trips_df.copy()
+                    if _tsc:
+                        _t = _t[_t[_tsc].astype(str).str.strip().str.lower() != "cancelled"]
+                    _t["_lid"]   = _t[_tlc].astype(str).str.strip()
+                    _t["_lmi"]   = pd.to_numeric(_t[_tl], errors="coerce").fillna(0) if _tl else 0
+                    _t["_emi"]   = pd.to_numeric(_t[_te], errors="coerce").fillna(0) if _te else 0
+                    _t["_total"] = _t["_lmi"] + _t["_emi"]
+                    _trip_sum  = _t.groupby("_lid")["_total"].sum()
+                    _uload_ids = unsettled_rows[_lnc].astype(str).str.strip()
+                    _trip_mi   = _uload_ids.map(_trip_sum).fillna(0)
+                    # Fall back to Loads-row miles for loads with no Trips entry
+                    _fallback  = _trip_mi <= 0
+                    _trip_mi[_fallback] = miles_col.loc[unsettled_rows.index][_fallback]
+                    unsettled_miles = float(_trip_mi.sum())
+                    log.info("compute_alvys_entities[%s]: unsettled miles from Trips "
+                             "(%d/%d loads had trip entries): %s mi",
+                             ent, int((~_fallback).sum()), len(unsettled_rows),
+                             f"{unsettled_miles:,.0f}")
+                else:
+                    unsettled_miles = float(miles_col[~settled_mask].sum())
+            else:
+                unsettled_miles = float(miles_col[~settled_mask].sum())
             estimated_cost = unsettled_miles * avg_per_mile
             revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
             cost = settled_pay + estimated_cost
