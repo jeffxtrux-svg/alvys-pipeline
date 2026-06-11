@@ -258,24 +258,23 @@ def _build_normalized(loads: pd.DataFrame, today_chi: pd.Timestamp) -> pd.DataFr
               "Customer Revenue", "Driver Rate", "Carrier Rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
-    # Effective load cost = Driver Rate + EXTERNAL Carrier Rate. X-Linx
-    # brokered loads carry their cost in Carrier Rate (DR usually 0), and
-    # some brokered loads have BOTH a small driver pay and a carrier rate —
-    # both are real cost, so they sum. BUT on X-Trux asset loads the
-    # "carrier" is our own fleet (X-TRUX Asset / Truk-Way) and the Carrier
-    # Rate column holds the internal revenue allocation, not a cost —
-    # counting it would double the cost and flip asset margins negative.
-    # So Carrier Rate only counts when the carrier is an outside company.
-    carrier_lower = out["Carrier"].astype(str).str.lower()
-    is_internal_carrier = carrier_lower.str.contains(
-        "x-trux|xtrux|truk-way|trukway|xfreight", regex=True, na=False)
-    ext_cr = out["Carrier Rate"].where(~is_internal_carrier, 0.0)
-    n_cr = int((ext_cr > 0).sum())
-    out["Driver Rate"] = out["Driver Rate"] + ext_cr
+    # Effective load cost, by entity (matches the Power BI Total Load Cost):
+    #   • X-Linx (brokerage) loads: Driver Rate + Carrier Rate. The carrier
+    #     payout is the real cost, and some brokered loads ALSO carry a
+    #     small driver pay — both sum.
+    #   • X-Trux / XFreight (asset) loads: Driver Rate ONLY. The Carrier
+    #     Rate column on asset loads holds internal revenue allocation
+    #     (own fleet, owner-ops) — counting it overstates cost and flips
+    #     asset margins negative. Carrier-name matching is NOT reliable
+    #     here (owner-op and blank carrier labels), so the rule keys off
+    #     the load's Office.
+    is_xlinx_row = out["__Office"].apply(_is_xlinx_office)
+    xlinx_cr = out["Carrier Rate"].where(is_xlinx_row, 0.0)
+    n_cr = int((xlinx_cr > 0).sum())
+    out["Driver Rate"] = out["Driver Rate"] + xlinx_cr
     if n_cr:
-        log.info("Folded external Carrier Rate into load cost on %d rows "
-                 "(cost = DR + outside-carrier CR; %d internal-carrier rows excluded)",
-                 n_cr, int((is_internal_carrier & (out["Carrier Rate"] > 0)).sum()))
+        log.info("Folded Carrier Rate into load cost on %d X-Linx rows "
+                 "(asset loads cost Driver Rate only)", n_cr)
 
     # The estimators below model COMPANY-DRIVER pay per mile, so they only
     # apply to X-Trux/XFreight asset loads. X-Linx brokered loads price per
@@ -1022,35 +1021,20 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     empty_col  = _pick_source_col(sub, ["Empty Miles", "Empty Mileage"])
     rev_col    = _pick_source_col(sub, ["Customer Revenue", "Revenue"])
     rate_col   = _pick_source_col(sub, ["Driver Rate"])
-    carr_col   = _pick_source_col(sub, ["Carrier Rate"])
-    carrier_name_col = _pick_source_col(sub, ["Carrier", "Carrier Name"])
 
     def _sum(df, col):
         if not col or col not in df.columns:
             return 0
         return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
 
-    def _cost_series(df):
-        """Effective cost = Driver Rate + outside-carrier Carrier Rate
-        (internal asset carriers' CR is a revenue allocation, not a cost)."""
-        dr = (pd.to_numeric(df[rate_col], errors="coerce").fillna(0)
-              if rate_col and rate_col in df.columns
-              else pd.Series(0.0, index=df.index))
-        cr = (pd.to_numeric(df[carr_col], errors="coerce").fillna(0)
-              if carr_col and carr_col in df.columns
-              else pd.Series(0.0, index=df.index))
-        if carrier_name_col and carrier_name_col in df.columns:
-            internal = df[carrier_name_col].astype(str).str.lower().str.contains(
-                "x-trux|xtrux|truk-way|trukway|xfreight", regex=True, na=False)
-            cr = cr.where(~internal, 0.0)
-        return dr + cr
-
     def _cost(df):
-        return float(_cost_series(df).sum())
+        """This block is X-Trux/XFreight scoped, where cost = Driver Rate
+        only (Carrier Rate on asset loads is internal allocation)."""
+        return _sum(df, rate_col)
 
-    # PBI standard view: settled only — effective cost > 0
-    if rate_col or carr_col:
-        settled = sub[_cost_series(sub) > 0]
+    # PBI standard view: settled only — Driver Rate > 0 (asset scope)
+    if rate_col:
+        settled = sub[pd.to_numeric(sub[rate_col], errors="coerce").fillna(0) > 0]
     else:
         settled = sub.iloc[0:0]
     # PBI with open loads: drop the settled filter
