@@ -1,12 +1,16 @@
 """
 Alvys Master Fixer — desktop GUI tool.
 
-Fixes the X-Linx Driver Rate issue in your Alvys TMS export:
-  • Alvys changed their export format — X-Linx carrier costs now land in
-    "Carrier Rate" instead of "Driver Rate", causing ~100% margin in Power BI.
-  • This tool loads your TMS export, copies Carrier Rate → Driver Rate for
-    any row where Driver Rate = 0, recomputes Gross Margin, and uploads the
-    corrected file to OneDrive as Alvys Master2026.xlsx.
+Keeps the Alvys Master workbook's Gross Margin column correct:
+  • The rule everywhere (Power BI, scorecard, daily upload) is
+    Cost = Driver Rate + Carrier Rate, SUMMED. X-Trux loads carry cost in
+    Driver Rate, X-Linx brokered loads in Carrier Rate, and some brokered
+    loads have BOTH (small driver pay + carrier rate) — both are real cost.
+  • This tool loads your TMS export, recomputes
+    Gross Margin = Customer Revenue − (Driver Rate + Carrier Rate)
+    on every row, and uploads to OneDrive as Alvys Master2026.xlsx.
+  • Driver Rate and Carrier Rate are NEVER modified — they stay exactly as
+    Alvys exported them, so nothing is double-counted downstream.
   • Same file structure, same tabs, same column names — Power BI unchanged.
 
 Workflow:
@@ -80,35 +84,22 @@ def _read_sheets(src: str | Path | bytes) -> dict[str, pd.DataFrame]:
     return pd.read_excel(path, sheet_name=None, engine="openpyxl")
 
 
-def _fix_sheet(df: pd.DataFrame, label: str, log_fn) -> tuple[pd.DataFrame, int]:
-    """Copy Carrier Rate → Driver Rate where DR = 0, recompute Gross Margin.
-    Returns (fixed_df, n_rows_fixed)."""
-    dr_col  = _find_col(df, ["Driver Rate", "DriverRate"])
-    cr_col  = _find_col(df, ["Carrier Rate", "CarrierRate", "Sum of Carrier Rate"])
-    rev_col = _find_col(df, ["Customer Revenue", "Revenue"])
-    gm_col  = _find_col(df, ["Gross Margin", "GrossMargin", "Margin"])
-
-    if not dr_col or not cr_col:
-        return df, 0   # sheet has no rate columns — pass through unchanged
-
-    df  = df.copy()
-    dr  = pd.to_numeric(df[dr_col], errors="coerce").fillna(0)
-    cr  = pd.to_numeric(df[cr_col], errors="coerce").fillna(0)
-    mask = (dr == 0) & (cr > 0)
-    n   = int(mask.sum())
-
-    if n:
-        df.loc[mask, dr_col] = cr[mask]
-        log_fn(f"  {label}: {n:,} rows — Carrier Rate → Driver Rate")
-        if rev_col and gm_col:
-            rev    = pd.to_numeric(df[rev_col], errors="coerce").fillna(0)
-            dr_new = pd.to_numeric(df[dr_col],  errors="coerce").fillna(0)
-            df.loc[:, gm_col] = rev - dr_new
-            log_fn(f"  {label}: Gross Margin recomputed")
-    else:
-        log_fn(f"  {label}: no rows needed fixing")
-
-    return df, n
+def _count_fixable(sheets: dict[str, pd.DataFrame]) -> int:
+    """Rows whose Gross Margin column disagrees with Revenue − (DR + CR)."""
+    n = 0
+    for df in sheets.values():
+        dr_col  = _find_col(df, ["Driver Rate", "DriverRate"])
+        cr_col  = _find_col(df, ["Carrier Rate", "CarrierRate", "Sum of Carrier Rate"])
+        rev_col = _find_col(df, ["Customer Revenue", "Revenue"])
+        gm_col  = _find_col(df, ["Gross Margin", "GrossMargin", "Margin"])
+        if not (dr_col or cr_col) or not rev_col or not gm_col:
+            continue
+        dr  = pd.to_numeric(df[dr_col], errors="coerce").fillna(0) if dr_col else 0
+        cr  = pd.to_numeric(df[cr_col], errors="coerce").fillna(0) if cr_col else 0
+        rev = pd.to_numeric(df[rev_col], errors="coerce").fillna(0)
+        gm  = pd.to_numeric(df[gm_col], errors="coerce").fillna(0)
+        n  += int(((rev - (dr + cr)) - gm).abs().gt(0.005).sum())
+    return n
 
 
 def _get_creds() -> dict | None:
@@ -139,7 +130,9 @@ def process_and_upload(
     save_path: str | None,
     log_fn,
 ) -> None:
-    """Fix DR/CR/GM cells in-place using openpyxl — preserves all data types."""
+    """Recompute Gross Margin = Revenue − (Driver Rate + Carrier Rate) in-place
+    using openpyxl. DR/CR are never modified; all other cells and data types
+    are preserved exactly (no pandas round-trip)."""
     from openpyxl import load_workbook
 
     log_fn("Loading workbook (openpyxl)…")
@@ -173,32 +166,30 @@ def process_and_upload(
         rev_idx = find_col_idx(["Customer Revenue", "Revenue"])
         gm_idx  = find_col_idx(["Gross Margin", "GrossMargin", "Margin"])
 
-        if not dr_idx or not cr_idx:
-            continue  # no rate columns on this sheet — leave untouched
+        if not (dr_idx or cr_idx) or not rev_idx or not gm_idx:
+            continue  # sheet lacks the needed columns — leave untouched
 
         n_fixed = 0
         for row in ws.iter_rows(min_row=2):
-            dr_cell = row[dr_idx - 1]
-            cr_cell = row[cr_idx - 1]
+            dr_num  = _to_float(row[dr_idx - 1].value) if dr_idx else 0.0
+            cr_num  = _to_float(row[cr_idx - 1].value) if cr_idx else 0.0
+            rev_num = _to_float(row[rev_idx - 1].value)
+            gm_cell = row[gm_idx - 1]
 
-            dr_num = _to_float(dr_cell.value)
-            cr_num = _to_float(cr_cell.value)
-
-            if dr_num == 0 and cr_num > 0:
-                dr_cell.value = cr_num
+            expected = round(rev_num - (dr_num + cr_num), 2)
+            if abs(_to_float(gm_cell.value) - expected) > 0.005:
+                gm_cell.value = expected
                 n_fixed += 1
-                if rev_idx and gm_idx:
-                    rev_num = _to_float(row[rev_idx - 1].value)
-                    row[gm_idx - 1].value = rev_num - cr_num
 
         if n_fixed:
-            log_fn(f"  {sheet_name}: {n_fixed:,} rows — Carrier Rate → Driver Rate + Gross Margin recomputed")
+            log_fn(f"  {sheet_name}: {n_fixed:,} rows — Gross Margin = Revenue − (DR + CR)")
             total_fixed += n_fixed
             sheets_processed += 1
         else:
-            log_fn(f"  {sheet_name}: no rows needed fixing")
+            log_fn(f"  {sheet_name}: Gross Margin already correct")
 
-    log_fn(f"Fix complete — {total_fixed:,} rows corrected across {sheets_processed} sheet(s).")
+    log_fn(f"Fix complete — {total_fixed:,} Gross Margin cells corrected "
+           f"across {sheets_processed} sheet(s). Driver/Carrier Rates untouched.")
     log_fn("Saving workbook (all data types preserved)…")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False).name
@@ -313,19 +304,11 @@ class FileZone(tk.Frame):
                 self._sheets = sheets
                 names = list(sheets.keys())
                 total = sum(len(d) for d in sheets.values())
-                dr_rows = 0
-                for df in sheets.values():
-                    dr = _find_col(df, ["Driver Rate", "DriverRate"])
-                    cr = _find_col(df, ["Carrier Rate", "CarrierRate",
-                                        "Sum of Carrier Rate"])
-                    if dr and cr:
-                        d  = pd.to_numeric(df[dr], errors="coerce").fillna(0)
-                        c  = pd.to_numeric(df[cr], errors="coerce").fillna(0)
-                        dr_rows += int(((d == 0) & (c > 0)).sum())
+                dr_rows = _count_fixable(sheets)
                 desc = (f"✓ {Path(path).name}\n"
                         f"[{', '.join(names)}]  {total:,} rows"
-                        + (f"  ·  {dr_rows:,} rows need fixing" if dr_rows else
-                           "  ·  no rows need fixing"))
+                        + (f"  ·  {dr_rows:,} margin cells need fixing" if dr_rows else
+                           "  ·  margins already correct"))
                 col = SUCCESS if dr_rows else WARNING
                 self.after(0, self._set_status, desc, col)
                 self.after(0, self.event_generate, "<<FileLoaded>>")
@@ -356,19 +339,11 @@ class FileZone(tk.Frame):
                 self._sheets = sheets
                 names  = list(sheets.keys())
                 total  = sum(len(d) for d in sheets.values())
-                dr_rows = 0
-                for df in sheets.values():
-                    dr = _find_col(df, ["Driver Rate", "DriverRate"])
-                    cr = _find_col(df, ["Carrier Rate", "CarrierRate",
-                                        "Sum of Carrier Rate"])
-                    if dr and cr:
-                        d  = pd.to_numeric(df[dr], errors="coerce").fillna(0)
-                        c  = pd.to_numeric(df[cr], errors="coerce").fillna(0)
-                        dr_rows += int(((d == 0) & (c > 0)).sum())
+                dr_rows = _count_fixable(sheets)
                 desc = (f"✓ {fname} (OneDrive)\n"
                         f"[{', '.join(names)}]  {total:,} rows"
-                        + (f"  ·  {dr_rows:,} rows need fixing" if dr_rows else
-                           "  ·  no rows need fixing"))
+                        + (f"  ·  {dr_rows:,} margin cells need fixing" if dr_rows else
+                           "  ·  margins already correct"))
                 col = SUCCESS if dr_rows else WARNING
                 self.after(0, self._set_status, desc, col)
                 self.after(0, self.event_generate, "<<FileLoaded>>")
@@ -402,7 +377,7 @@ class App(TkinterDnD.Tk if _DND else tk.Tk):
                  font=("SF Pro", 16, "bold"), bg=PANEL, fg=TEXT).pack(
             side="left", padx=20, pady=14)
         tk.Label(hdr,
-                 text="Fix X-Linx Driver Rate  →  Upload to OneDrive",
+                 text="Recompute Gross Margin = Rev − (DR + CR)  →  Upload to OneDrive",
                  font=("SF Pro", 10), bg=PANEL, fg=MUTED).pack(
             side="left", padx=(0, 20), pady=14)
 

@@ -132,6 +132,16 @@ SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk categ
 VIOLATION_WINDOW_DAYS = 90        # MVR violations: surface the last 90d so the tile/page reflect recent risk, not the full year of historical record
                                   # alerts — a year matches how SambaSafety surfaces them
 
+# Canonical Alvys Master workbook — the exact OneDrive file the Power BI
+# XFreight Report reads ("Alvys Master2026.xlsx", no space before 2026).
+# Both the scorecard and the daily upload default to this sharing URL so all
+# reporting surfaces read the same data. Override via SCORECARD_ALVYS_SHARE_URL
+# / DAILY_UPLOAD_ALVYS_SHARE_URL if the file ever moves.
+ALVYS_MASTER_SHARE_URL = (
+    "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/"
+    "IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+)
+
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
     "Scheduled Pickup", "Dispatched Date", "Invoiced Date", "Delivered",
@@ -5046,14 +5056,15 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
-    # MTD P&L tiles include only settled loads (Driver Rate > 0) to match the
-    # Power BI XFreight Report. Surface the count of booked-but-not-yet-settled
-    # loads so the deferred work isn't invisible.
+    # MTD P&L tiles include only settled loads (cost = Driver Rate + Carrier
+    # Rate > 0) to match the Power BI XFreight Report. Surface the count of
+    # booked-but-not-yet-settled loads so the deferred work isn't invisible.
     _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
     _mtd_msg = ("MTD revenue / cost / margin tiles include only settled loads "
-                "(driver pay entered), matching the Power BI report.")
+                "(driver pay or carrier pay entered); cost = Driver Rate + Carrier Rate, "
+                "matching the Power BI report.")
     if _unsettled:
-        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver pay and will appear once settled."
+        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver/carrier pay and will appear once settled."
     mtd_note = _brief(_mtd_msg, "mute")
     asof = ""
     if data_asof is not None:
@@ -7047,10 +7058,12 @@ def main() -> int:
     from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
-    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
-    # If set, read the Alvys workbook from this exact OneDrive sharing URL instead of
-    # by name — avoids reading the wrong file when a duplicate of the same name exists.
-    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", "").strip()
+    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master2026.xlsx")
+    # Read the Alvys workbook from this exact OneDrive sharing URL instead of by
+    # name — avoids reading the wrong file when a duplicate of the same name
+    # exists. Default is the canonical "Alvys Master2026.xlsx" the Power BI
+    # XFreight Report reads, so brief and report always see the same data.
+    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", ALVYS_MASTER_SHARE_URL).strip()
     alvys_pipeline_path = os.environ.get("SCORECARD_ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")

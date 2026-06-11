@@ -23,17 +23,21 @@ Total Driver Rate =
 Total Carrier Rate =
     SUM(Loads[Carrier Rate])
 
-// For X-Trux loads, cost = Driver Rate. For X-Linx brokered loads,
-// cost = Carrier Rate (Driver Rate is 0). This measure picks whichever
-// is populated per row so margin math is correct for both entities.
+// Effective cost per load = Driver Rate + Carrier Rate, ALWAYS SUMMED.
+// X-Trux company-driver loads: DR > 0, CR = 0. X-Linx brokered loads:
+// CR > 0, DR usually 0 — but some brokered loads ALSO carry a small
+// driver pay (e.g. DR $59.69 + CR $1,765.58); both are real cost, so an
+// IF(DR>0, DR, CR) pick-one drops the carrier rate on those loads and
+// overstates margin. Summing matches the master workbook's
+// "Combine carrier rate and driver rate" rule.
 Total Load Cost =
     SUMX(
         Loads,
-        IF(Loads[Driver Rate] > 0, Loads[Driver Rate], Loads[Carrier Rate])
+        Loads[Driver Rate] + Loads[Carrier Rate]
     )
 
-// Computed from Total Load Cost so X-Linx brokered loads use Carrier Rate
-// (not the pre-calculated Gross Margin column which has Driver Rate = 0 for X-Linx).
+// Computed from Total Load Cost so brokered loads include Carrier Rate
+// (not the pre-calculated Gross Margin column, which may be stale).
 Total Gross Margin =
     [Total Customer Revenue] - [Total Load Cost]
 
