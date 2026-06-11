@@ -165,6 +165,11 @@ def money(x) -> str:
     return f"${x:,.0f}" if _isnum(x) else "n/a"
 
 
+def money2(x) -> str:
+    """Like money() but shows cents — for tables that must match PBI to the penny."""
+    return f"${x:,.2f}" if _isnum(x) else "n/a"
+
+
 def money_m(x) -> str:
     if not _isnum(x):
         return "n/a"
@@ -763,40 +768,19 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             start, end = lm_start, lm_end
     if start is None:
         start = _windows()[window_key]
+    # Cap MTD at end-of-current-month so the entity table uses the same load
+    # universe as PBI's monthly slicer (6/1 → 6/30 → exact penny match).
+    if end is None and window_key == "mtd":
+        end = (start + pd.offsets.MonthEnd(1)).replace(hour=23, minute=59, second=59)
     mask &= dates >= start
     if end is not None:
         mask &= dates < end if end < _windows()["now"] else dates <= end
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
-    # X-Trux open-trip filter: a load gets dropped from BOTH revenue and
-    # cost if any of its trips is still in 'Open' status. Once every trip
-    # progresses to Covered / In Transit / Delivered / Completed / Invoiced
-    # / Released the load is counted normally. Only X-Trux is filtered this
-    # way — X-Linx is brokerage (no asset-level trip state to wait on).
-    trips_df = sheets.get("Trips")
-    open_xtrux_load_ids: set[str] = set()
-    if trips_df is not None and not trips_df.empty:
-        tlc = _find_col(trips_df, ["load #", "load number", "load num", "load"])
-        tsc = _find_col(trips_df, ["trip status", "status"])
-        if tlc and tsc:
-            open_trips = trips_df[trips_df[tsc].astype(str).str.strip().str.lower() == "open"]
-            open_xtrux_load_ids = set(open_trips[tlc].astype(str).str.strip())
-
     out: dict[str, dict] = {}
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
-        # Apply the open-trip filter ONLY on the X-Trux asset side.
-        if ent == "X-Trux" and open_xtrux_load_ids:
-            load_col = _find_col(rows, ["load #", "load number", "load num", "load"])
-            if load_col:
-                row_load_ids = rows[load_col].astype(str).str.strip()
-                drop_mask = row_load_ids.isin(open_xtrux_load_ids)
-                n_dropped = int(drop_mask.sum())
-                if n_dropped:
-                    rows = rows[~drop_mask]
-                    log.info("compute_alvys_entities[X-Trux]: dropped %d loads with any trip in 'Open' status",
-                             n_dropped)
         if rows.empty:
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": 0}
@@ -806,25 +790,14 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         # rates land at book time, so the "unsettled" gap that justifies the
         # filter on the asset side doesn't apply here.
         #
-        # X-Trux (asset): all non-cancelled loads count for revenue + load
-        # count. Cost is actual Driver Rate for settled loads PLUS an
-        # estimate for in-flight loads (Driver Rate = 0 because the driver
-        # hasn't been paid yet for the open multi-trip load). The estimate
-        # is total_dispatch_miles × avg $/mi from settled MTD loads — same
-        # methodology daily_upload.py uses for the rate-per-mile goal so the
-        # two emails reconcile.
+        # Actuals only — mirrors the Power BI Total Load Cost DAX measure exactly:
+        #   X-Trux cost = SUM(Driver Rate)          — open loads contribute $0 until settled
+        #   X-Linx cost = SUM(Driver Rate + Carrier Rate)
+        # No open-load estimation here; estimates live in daily_upload.py only.
         rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
         n_loads = len(rows)
-        estimated_cost = 0.0
-        n_estimated = 0
+        revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
         if ent == "X-Linx":
-            # X-Linx (brokerage) cost = SUM(Driver Rate) + SUM(Carrier Rate).
-            # Brokered loads in Alvys Master 2026.xlsx leave Driver Rate
-            # blank (no driver pay) and put the carrier payout in Carrier
-            # Rate; PBI's "Driver Rate" column at the X-Linx tab combines
-            # the two via the Trips-table join. Reading Driver Rate alone
-            # gave $23 vs PBI's $21,890 for June MTD — wrong column.
-            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
             dr_sum = float(rate_col.sum()) if rate_col is not None else 0.0
             cr_sum = 0.0
             for col_name in ("Carrier Rate", "Posted Carrier Rate", "Carrier Pay"):
@@ -833,68 +806,15 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
                     break
             cost = dr_sum + cr_sum
             n_unsettled = 0
-            log.info("compute_alvys_entities[X-Linx]: %d loads | Driver Rate $%s + Carrier Rate $%s = $%s cost",
-                     n_loads, f"{dr_sum:,.0f}", f"{cr_sum:,.0f}", f"{cost:,.0f}")
-        elif rate_col is None:
-            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
-            cost = 0.0
-            n_unsettled = 0
+            log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f + CR $%.2f = $%.2f cost",
+                     n_loads, dr_sum, cr_sum, cost)
         else:
-            miles_col = _col_any(rows, ["Total Dispatch Mileage", "Dispatch Mileage",
-                                          "Total Miles", "Total Mileage"]).fillna(0)
-            settled_mask = rate_col > 0
-            settled_pay = float(rate_col[settled_mask].sum())
-            settled_miles = float(miles_col[settled_mask].sum())
-            avg_per_mile = (settled_pay / settled_miles) if settled_miles > 0 else 0
-            unsettled_rows = rows[~settled_mask]
-            # For unsettled loads, use the sum of ALL trip-leg dispatch miles
-            # (from the Trips sheet, one row per leg) rather than the Loads-row
-            # total, which can be 0 or partial mid-trip.  Cancelled trip legs
-            # are excluded.  Fall back to the Loads-row total per load when no
-            # Trips entry is found.
-            if trips_df is not None and not trips_df.empty and not unsettled_rows.empty:
-                _tlc = _find_col(trips_df, ["load #", "load number", "load num", "load"])
-                _tl  = _find_col(trips_df, ["loaded dispatch mileage", "loaded mileage", "loaded miles"])
-                _te  = _find_col(trips_df, ["empty dispatch mileage", "empty mileage", "empty miles"])
-                _tsc = _find_col(trips_df, ["trip status", "status"])
-                _lnc = _find_col(rows, ["load #", "load number", "load num", "load"])
-                if _tlc and _lnc:
-                    _t = trips_df.copy()
-                    if _tsc:
-                        _t = _t[_t[_tsc].astype(str).str.strip().str.lower() != "cancelled"]
-                    _t["_lid"]   = _t[_tlc].astype(str).str.strip()
-                    _t["_lmi"]   = pd.to_numeric(_t[_tl], errors="coerce").fillna(0) if _tl else 0
-                    _t["_emi"]   = pd.to_numeric(_t[_te], errors="coerce").fillna(0) if _te else 0
-                    _t["_total"] = _t["_lmi"] + _t["_emi"]
-                    _trip_sum  = _t.groupby("_lid")["_total"].sum()
-                    _uload_ids = unsettled_rows[_lnc].astype(str).str.strip()
-                    _trip_mi   = _uload_ids.map(_trip_sum).fillna(0)
-                    # Fall back to Loads-row miles for loads with no Trips entry
-                    _fallback  = _trip_mi <= 0
-                    _trip_mi[_fallback] = miles_col.loc[unsettled_rows.index][_fallback]
-                    unsettled_miles = float(_trip_mi.sum())
-                    log.info("compute_alvys_entities[%s]: unsettled miles from Trips "
-                             "(%d/%d loads had trip entries): %s mi",
-                             ent, int((~_fallback).sum()), len(unsettled_rows),
-                             f"{unsettled_miles:,.0f}")
-                else:
-                    unsettled_miles = float(miles_col[~settled_mask].sum())
-            else:
-                unsettled_miles = float(miles_col[~settled_mask].sum())
-            estimated_cost = unsettled_miles * avg_per_mile
-            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
-            cost = settled_pay + estimated_cost
-            n_unsettled = int((~settled_mask).sum())
-            n_estimated = int(((~settled_mask) & (miles_col > 0)).sum())
-            log.info("compute_alvys_entities[%s]: %d loads | settled %d (pay $%s on %s mi, avg $%.4f/mi) "
-                     "| in-flight %d (est cost $%s on %s mi)",
-                     ent, n_loads, int(settled_mask.sum()),
-                     f"{settled_pay:,.0f}", f"{settled_miles:,.0f}", avg_per_mile,
-                     n_estimated, f"{estimated_cost:,.0f}", f"{unsettled_miles:,.0f}")
+            cost = float(rate_col.sum()) if rate_col is not None else 0.0
+            n_unsettled = int((rate_col <= 0).sum()) if rate_col is not None else 0
+            log.info("compute_alvys_entities[%s]: %d loads (%d open/unsettled) | "
+                     "revenue $%.2f | cost (DR) $%.2f",
+                     ent, n_loads, n_unsettled, float(revenue), cost)
         margin = revenue - cost
-        # Margin % = Margin ÷ Revenue. For X-Trux, in-flight loads now
-        # contribute estimated cost so the margin reads cleaner than the
-        # pure-settled view that ran high mid-month.
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
@@ -902,8 +822,8 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "margin_pct": (margin / revenue) if revenue else None,
             "loads": n_loads,
             "unsettled": n_unsettled,
-            "estimated_cost": estimated_cost,
-            "estimated_loads": n_estimated,
+            "estimated_cost": 0.0,
+            "estimated_loads": 0,
         }
     return out
 
@@ -5183,6 +5103,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                      + _fleet_score_tile)
 
     # Revenue / cost / margin by entity (Alvys 2026, MTD). XFreight folded into X-Trux.
+    # Actuals only — same scope and formula as PBI so these figures match to the penny.
     entity_rows = ""
     tot_rev = tot_cost = tot_marg = 0.0
     for ent in ENTITY_ORDER:
@@ -5190,7 +5111,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         mk = e.get("margin")
         label = ent + (" (incl. XFreight)" if ent == "X-Trux" else " (brokerage)")
         entity_rows += _tr(
-            [label, money(e.get("revenue")), money(e.get("cost")), money(mk), pct(e.get("margin_pct"))],
+            [label, money2(e.get("revenue")), money2(e.get("cost")), money2(mk), pct(e.get("margin_pct"))],
             ["left", "right", "right", "right", "right"],
             [None, None, None, ("bad" if (_isnum(mk) and mk < 0) else "good"), None])
         if _isnum(e.get("revenue")):
@@ -5202,9 +5123,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     total_pct = (tot_marg / tot_rev) if tot_rev else None
     entity_total = (
         f"<tr><td style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>Total</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_rev or None)}</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_cost or None)}</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money2(tot_rev or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money2(tot_cost or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money2(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
     # Alvys AR aging tiles — 5 buckets wrapped in a nested 5-column table.
@@ -5319,15 +5240,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
-    # MTD P&L tiles include only settled loads (cost = Driver Rate + Carrier
-    # Rate > 0) to match the Power BI XFreight Report. Surface the count of
-    # booked-but-not-yet-settled loads so the deferred work isn't invisible.
+    # Entity P&L actuals: same scope and formula as the Power BI XFreight Report
+    # (all non-cancelled loads for the current month; cost = Driver Rate for
+    # X-Trux, Driver Rate + Carrier Rate for X-Linx; open loads show $0 cost
+    # until driver pay is entered — identical to PBI). Figures shown to the penny.
     _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
-    _mtd_msg = ("MTD revenue / cost / margin tiles include only settled loads "
-                "(driver pay or carrier pay entered); cost = Driver Rate + Carrier Rate, "
-                "matching the Power BI report.")
+    _mtd_msg = ("MTD revenue / cost / margin &mdash; actuals matching the Power BI XFreight Report "
+                "to the penny. Cost = Driver Rate (X-Trux) + Driver Rate + Carrier Rate (X-Linx). "
+                "Open loads show $0.00 cost until driver pay is entered.")
     if _unsettled:
-        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver/carrier pay and will appear once settled."
+        _mtd_msg += f" {_unsettled} load{'s' if _unsettled != 1 else ''} currently open (awaiting driver pay)."
     mtd_note = _brief(_mtd_msg, "mute")
     asof = ""
     if data_asof is not None:
