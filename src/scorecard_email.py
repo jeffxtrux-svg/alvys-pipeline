@@ -3440,12 +3440,17 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     if not sheets:
         return None
     now = now or pd.Timestamp.now()
-    drivers_df = viol_df = None
+    drivers_df = viol_df = invalid_df = None
     for name, df in sheets.items():
         if df is None or df.empty:
             continue
         ln = str(name).lower()
-        if viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
+        # "Invalid Licenses" must be claimed before the drivers-sheet check
+        # below — its name contains "license" and would be mistaken for the
+        # driver roster otherwise.
+        if invalid_df is None and ("invalid" in ln or "disqualif" in ln):
+            invalid_df = df
+        elif viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
             viol_df = df
         elif drivers_df is None and any(k in ln for k in ("driver", "license", "monitor", "roster", "risk")):
             drivers_df = df
@@ -3453,6 +3458,44 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         drivers_df = next((df for df in sheets.values() if df is not None and not df.empty), None)
     if drivers_df is None or drivers_df.empty:
         return None
+
+    # --- Invalid License Report (DISQUALIFIED / SUSPENDED etc.) ----------
+    # Parsed first so the driver loop below can re-stamp matching rosters
+    # rows — the Risk Index export keeps reporting VALID after SambaSafety
+    # has flagged the driver, so the invalid report wins.
+    def _norm_lic(num) -> str:
+        return re.sub(r"[^A-Z0-9]", "", str(num or "").upper()).lstrip("0")
+
+    invalid_licenses = []
+    if invalid_df is not None and not invalid_df.empty:
+        iname_c = _find_col(invalid_df, ["driver name", "driver", "name"])
+        istat_c = _find_col(invalid_df, ["license status", "status"])
+        iact_c = _find_col(invalid_df, ["latest action", "action"])
+        iactd_c = _find_col(invalid_df, ["latest action date", "action date"])
+        imvrd_c = _find_col(invalid_df, ["mvr date"])
+        ilic_c = _find_col(invalid_df, ["license number", "license #"])
+        istate_c = _find_col(invalid_df, ["license state", "state"])
+        itype_c = _find_col(invalid_df, ["license type", "type"])
+        iscore_c = _find_col(invalid_df, ["mvr score", "score"])
+        inote_c = _find_col(invalid_df, ["note", "latest note"])
+        for _, r in invalid_df.iterrows():
+            nm = str(r[iname_c]).strip() if iname_c and pd.notna(r[iname_c]) else ""
+            if not nm or nm.lower() == "nan" or _is_excluded_driver(nm):
+                continue
+            invalid_licenses.append({
+                "name": nm,
+                "status": (str(r[istat_c]).strip().upper() if istat_c and pd.notna(r[istat_c]) else "INVALID"),
+                "action": (str(r[iact_c]).strip() if iact_c and pd.notna(r[iact_c]) else ""),
+                "action_date": (pd.to_datetime(r[iactd_c], errors="coerce") if iactd_c else pd.NaT),
+                "mvr_date": (pd.to_datetime(r[imvrd_c], errors="coerce") if imvrd_c else pd.NaT),
+                "license": (str(r[ilic_c]).strip() if ilic_c and pd.notna(r[ilic_c]) else ""),
+                "state": (str(r[istate_c]).strip() if istate_c and pd.notna(r[istate_c]) else ""),
+                "type": (str(r[itype_c]).strip() if itype_c and pd.notna(r[itype_c]) else ""),
+                "score": (pd.to_numeric(r[iscore_c], errors="coerce") if iscore_c else float("nan")),
+                "note": (str(r[inote_c]).strip() if inote_c and pd.notna(r[inote_c]) else ""),
+            })
+    invalid_by_lic = {_norm_lic(d["license"]): d for d in invalid_licenses if _norm_lic(d["license"])}
+    invalid_by_name = {d["name"].lower(): d for d in invalid_licenses}
 
     name_c = _find_col(drivers_df, ["driver name", "driver", "employee", "name"])
     status_c = _find_col(drivers_df, ["license status", "licensestatus", "cdl status", "status"])
@@ -3477,7 +3520,13 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         lic = (str(r[lic_c]).strip() if lic_c and pd.notna(r[lic_c]) else "")
         score = pd.to_numeric(r[score_c], errors="coerce") if score_c else float("nan")
         cat = (str(r[cat_c]).strip() if cat_c and pd.notna(r[cat_c]) else "")
-        ok = status.lower() in _LICENSE_OK
+        # Invalid License Report overrides the roster status (the Risk
+        # Index export lags — it can still say VALID after a DISQUALIFIED
+        # action). Belt-and-suspenders with the combine-time overlay.
+        inv = invalid_by_lic.get(_norm_lic(lic)) or invalid_by_name.get(name.lower())
+        if inv:
+            status = inv["status"]
+        ok = status.lower() in _LICENSE_OK and not inv
         days_to_exp = int((exp.normalize() - now.normalize()).days) if pd.notna(exp) else None
         expiring = days_to_exp is not None and 0 <= days_to_exp <= LICENSE_EXPIRY_WARN_DAYS
         expired_by_date = days_to_exp is not None and days_to_exp < 0
@@ -3489,6 +3538,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
             "license": lic, "exp": exp, "days_to_exp": days_to_exp,
             "score": float(score) if pd.notna(score) else None, "category": cat,
             "ok": ok, "expiring": expiring, "expired": (not ok) or expired_by_date, "high": high,
+            "invalid": bool(inv),
         })
 
     license_issues = [d for d in drivers if (not d["ok"]) or d["expiring"]]
@@ -3524,6 +3574,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         "monitored": len(drivers),
         "drivers": drivers,
         "license_issues": license_issues,
+        "invalid_licenses": invalid_licenses,
         "high_risk": high_risk,
         "ranked": ranked,
         "avg_score": (sum(scores) / len(scores)) if scores else None,
@@ -6544,6 +6595,29 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
                      (f"avg score {avg:.0f} " if avg is not None else "")
                      + _pill("elevated", "bad" if n_high else "good")))
 
+    invalid = samba.get("invalid_licenses") or []
+    if invalid:
+        irows = ""
+        for d in invalid:
+            irows += _tr(
+                [d["name"], d.get("type") or "&mdash;", d["status"],
+                 d.get("action") or "&mdash;", _md(d.get("action_date")),
+                 _md(d.get("mvr_date")),
+                 (d.get("state") or "&mdash;") + " " + _mask_license(d.get("license"))],
+                ["left", "left", "left", "left", "left", "left", "left"],
+                [None, None, "bad", "bad", "bad", None, None])
+        invalid_block = (
+            _section('Invalid / disqualified licenses &middot; pull from dispatch')
+            + _table(["Driver", "Type", "Status", "Latest action", "Action date",
+                      "MVR date", "License"],
+                     ["left", "left", "left", "left", "left", "left", "left"], irows)
+            + _brief("Per SambaSafety's Invalid License Report &mdash; these drivers "
+                     "cannot legally operate until the state clears the action. "
+                     "The Risk Index export may still show VALID; the invalid "
+                     "report is the authoritative signal.", "bad"))
+    else:
+        invalid_block = ""
+
     if issues:
         lrows = ""
         for d in issues:
@@ -6593,6 +6667,7 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
 
     return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
+            f"{invalid_block}"
             f"{_section('License status &middot; action needed')}{license_block}"
             + _alvys_medical_block(alvys_drivers)
             + f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"

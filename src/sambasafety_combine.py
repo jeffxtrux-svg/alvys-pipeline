@@ -30,6 +30,17 @@ Mappings:
                                                        red/yellow coloring keys
                                                        off this)
 
+  InvalidLicenseReport.csv ->  Invalid Licenses sheet (optional)
+    First Name + Last Name      ->  Driver Name
+    License Status              ->  License Status   (DISQUALIFIED / SUSPENDED…)
+    Latest Action (+ Date)      ->  Latest Action / Latest Action Date
+    MVR Date / License # / State / Type / MVR Score / Group / Latest Note
+                                ->  carried through verbatim
+    The invalid statuses are ALSO overlaid onto the Drivers sheet (matched by
+    license number, then by name) because the Risk Index export keeps showing
+    VALID for a driver SambaSafety has already disqualified — without the
+    overlay, page 2's license-issue detection would miss the disqualification.
+
 Run locally:
     python -m src.sambasafety_combine \\
         --risk-index path/to/risk_index_report.csv \\
@@ -239,11 +250,89 @@ def _build_violations(viol_df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("Violation Date", ascending=False, na_position="last").reset_index(drop=True)
 
 
+_INVALID_COLS = [
+    "Driver Name", "License Type", "License Status", "Latest Action",
+    "Latest Action Date", "MVR Date", "License Number", "License State",
+    "MVR Score", "Group", "Note",
+]
+
+
+def _norm_license(num) -> str:
+    """Normalize a license number for matching: uppercase, alnum only,
+    leading zeros stripped (risk index pads SD numbers — '01234676' vs
+    the invalid report's '1234676')."""
+    s = re.sub(r"[^A-Z0-9]", "", str(num or "").upper())
+    return s.lstrip("0")
+
+
+def _build_invalid_licenses(inv_df: pd.DataFrame) -> pd.DataFrame:
+    """One row per driver flagged by the Invalid License Report."""
+    if inv_df is None or inv_df.empty:
+        return pd.DataFrame(columns=_INVALID_COLS)
+
+    def _col(name, default=""):
+        return inv_df[name] if name in inv_df.columns else pd.Series(
+            [default] * len(inv_df), index=inv_df.index)
+
+    out = pd.DataFrame({
+        "Driver Name": [
+            _driver_name(f, l)
+            for f, l in zip(_col("First Name"), _col("Last Name"))
+        ],
+        "License Type": _col("License Type").astype(str).str.strip(),
+        "License Status": _col("License Status").astype(str).str.strip(),
+        "Latest Action": _col("Latest Action").astype(str).str.strip(),
+        "Latest Action Date": pd.to_datetime(
+            _col("Latest Action Date"), errors="coerce"),
+        "MVR Date": pd.to_datetime(_col("MVR Date"), errors="coerce"),
+        "License Number": _col("License Number").astype(str).str.strip(),
+        "License State": _col("License State").astype(str).str.strip(),
+        "MVR Score": pd.to_numeric(_col("MVR Score"), errors="coerce"),
+        "Group": _col("Group").astype(str).str.strip(),
+        "Note": _col("Latest Note").astype(str).str.strip(),
+    })
+    out = out[out["Driver Name"].astype(str).str.strip() != ""]
+    return out.reset_index(drop=True)
+
+
+def _overlay_invalid_status(drivers: pd.DataFrame,
+                            invalid: pd.DataFrame) -> pd.DataFrame:
+    """Stamp the Invalid License Report's status onto matching Drivers rows.
+
+    The Risk Index export can keep reporting VALID after SambaSafety has
+    disqualified the driver (the invalid report is the fresher signal), so
+    the invalid status wins. Match by normalized license number first,
+    falling back to case-insensitive full name."""
+    if drivers.empty or invalid.empty:
+        return drivers
+    by_license = {
+        _norm_license(r["License Number"]): str(r["License Status"]).strip()
+        for _, r in invalid.iterrows() if _norm_license(r["License Number"])
+    }
+    by_name = {
+        str(r["Driver Name"]).strip().lower(): str(r["License Status"]).strip()
+        for _, r in invalid.iterrows() if str(r["Driver Name"]).strip()
+    }
+    n_hit = 0
+    for idx, row in drivers.iterrows():
+        status = (by_license.get(_norm_license(row.get("License Number")))
+                  or by_name.get(str(row.get("Driver Name", "")).strip().lower()))
+        if status and status.upper() != str(row.get("License Status", "")).strip().upper():
+            drivers.at[idx, "License Status"] = status
+            n_hit += 1
+    if n_hit:
+        log.info("Invalid-license overlay: %d driver(s) re-stamped on Drivers sheet", n_hit)
+    return drivers
+
+
 def combine_to_workbook(risk_csv: bytes | str | Path, violations_csv: bytes | str | Path,
-                        csa_csv: bytes | str | Path | None = None) -> bytes:
+                        csa_csv: bytes | str | Path | None = None,
+                        invalid_csv: bytes | str | Path | None = None) -> bytes:
     """Read SambaSafety CSVs and return the merged XLSX as bytes.
     Inputs may be paths or raw CSV bytes.
-    When csa_csv is provided, a third 'CSA Scorecard' sheet is added."""
+    When csa_csv is provided, a 'CSA Scorecard' sheet is added.
+    When invalid_csv is provided, an 'Invalid Licenses' sheet is added and
+    the invalid statuses are overlaid onto the Drivers sheet."""
     def _read(src):
         if isinstance(src, (bytes, bytearray)):
             return pd.read_csv(io.BytesIO(src))
@@ -256,13 +345,22 @@ def combine_to_workbook(risk_csv: bytes | str | Path, violations_csv: bytes | st
     drivers = _build_drivers(risk_df)
     violations = _build_violations(viol_df)
     csa = _build_csa_scorecard(csa_csv) if csa_csv is not None else pd.DataFrame()
-    log.info("SambaSafety combine: %d drivers, %d violations, %d CSA BASIC rows",
-             len(drivers), len(violations), len(csa))
+    invalid = pd.DataFrame(columns=_INVALID_COLS)
+    if invalid_csv is not None:
+        try:
+            invalid = _build_invalid_licenses(_read(invalid_csv))
+        except Exception as e:
+            log.warning("Invalid License Report parse error (%s) — sheet omitted", e)
+    drivers = _overlay_invalid_status(drivers, invalid)
+    log.info("SambaSafety combine: %d drivers, %d violations, %d CSA BASIC rows, "
+             "%d invalid license(s)",
+             len(drivers), len(violations), len(csa), len(invalid))
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         drivers.to_excel(writer, sheet_name="Drivers", index=False)
         violations.to_excel(writer, sheet_name="Violations", index=False)
+        invalid.to_excel(writer, sheet_name="Invalid Licenses", index=False)
         if not csa.empty:
             csa.to_excel(writer, sheet_name="CSA Scorecard", index=False)
     return buf.getvalue()
@@ -275,11 +373,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--risk-index", required=True, help="Path to risk_index_report.csv")
     ap.add_argument("--violations", required=True, help="Path to violationsReport.csv")
+    ap.add_argument("--invalid", default=None,
+                    help="Path to InvalidLicenseReport.csv (optional)")
     ap.add_argument("--out", default="output/sambasafety/SambaSafety_Master.xlsx",
                     help="Output XLSX path")
     args = ap.parse_args()
 
-    out_bytes = combine_to_workbook(args.risk_index, args.violations)
+    out_bytes = combine_to_workbook(args.risk_index, args.violations,
+                                    invalid_csv=args.invalid)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(out_bytes)
