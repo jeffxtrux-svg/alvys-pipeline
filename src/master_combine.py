@@ -103,6 +103,41 @@ def _recompute_gm(df: pd.DataFrame, sheet: str) -> pd.DataFrame:
     return df
 
 
+# Columns where the API output is known-incomplete at the VALUE level: the
+# column exists in both files, but the API reads 0/blank on rows where the
+# manually maintained master has a real figure. For these, a per-row overlay
+# fills API zeros/blanks from the master (API value wins when it's non-zero).
+# Carrier Rate: the API maps the trip's Carrier.Rate.Amount, which is only
+# populated on ~15% of brokered loads — the master carries the real carrier
+# cost for the rest (June 2026 audit: master had CR on 112 loads, API on 15).
+_VALUE_FILL_COLS = ["Carrier Rate"]
+
+
+def _value_fill(sheet: str, api_df: pd.DataFrame, master_df: pd.DataFrame,
+                api_key: str, mstr_key: str) -> pd.DataFrame:
+    """Fill API zero/blank cells from the master for _VALUE_FILL_COLS."""
+    for col in _VALUE_FILL_COLS:
+        m_col = _find_col(master_df, [col])
+        a_col = _find_col(api_df, [col])
+        if not (m_col and a_col):
+            continue
+        m = master_df[[mstr_key, m_col]].copy()
+        m["__k"] = m[mstr_key].astype(str).str.strip()
+        m = m.drop_duplicates(subset="__k")
+        m_vals = pd.to_numeric(m.set_index("__k")[m_col], errors="coerce")
+        keys = api_df[api_key].astype(str).str.strip()
+        api_vals = pd.to_numeric(api_df[a_col], errors="coerce").fillna(0)
+        master_for_row = keys.map(m_vals).fillna(0)
+        needs_fill = (api_vals == 0) & (master_for_row != 0)
+        if needs_fill.any():
+            api_df = api_df.copy()
+            api_df.loc[needs_fill, a_col] = master_for_row[needs_fill]
+            log.info("  %-20s  value-filled %s on %d row(s) from Master "
+                     "(API read 0/blank, Master had a figure)",
+                     sheet, col, int(needs_fill.sum()))
+    return api_df
+
+
 def _merge_sheet(
     sheet: str,
     api_df: pd.DataFrame,
@@ -130,6 +165,7 @@ def _merge_sheet(
                      sheet, len(gap_cols), gap_cols)
         else:
             log.info("  %-20s  API covers all Master cols — no gaps", sheet)
+        api_df = _value_fill(sheet, api_df, master_df, api_key, mstr_key)
     else:
         log.info("  %-20s  no Load # column — skipping gap-fill", sheet)
 
