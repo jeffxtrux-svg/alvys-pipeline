@@ -1449,14 +1449,14 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
             "combined": (c_labels, c_values)}
 
 
-def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 90) -> dict:
+def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None,
+                              trail_working_days: int = 80) -> dict:
     """Estimate full-month settled margin per entity.
 
     Formula per entity:
-        days_remaining    = working days left in month (Mon–Fri)
-        daily_run_rate    = trailing_{days}_revenue / working days in trailing window
-        projected_revenue = booked MTD revenue + daily_run_rate * days_remaining
-        projected_margin  = projected_revenue * trailing_{days}_margin_pct
+        daily_run_rate    = trailing_80_working_day_revenue / 80
+        projected_revenue = daily_run_rate × working_days_in_month
+        projected_margin  = projected_revenue × trailing_margin_pct
 
     The projection is "actuals booked so far + the recent daily pace applied to
     the rest of the month", which replaces the older naive month-pace
@@ -1521,74 +1521,55 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         wdom = wdim   # treat as complete — days_remaining = 0
         dim, dom = lm_end.day, lm_end.day
         factor = 1.0
-    # Working days left in the month — projection fills these at the recent daily pace.
-    days_remaining = max(wdim - wdom, 0)
-    # Settled MTD mask: this month (or last month under rollover), non-cancelled,
-    # with driver rate entered. Used to floor the projection at actual settled
-    # margin — at month-end (or any time this month's actual margin% exceeds
-    # the t90 blend) the estimate should never read below what we've actually
-    # earned.
+    # Trailing window: exactly trail_working_days Mon–Fri days back from today
+    trail_start_date = np.busday_offset(now.date(), -trail_working_days, roll='forward')
+    trail_start = pd.Timestamp(trail_start_date)
+
     settled_mtd_mask = mtd_mask.copy()
     if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         settled_mtd_mask = settled_mtd_mask & (_load_cost(loads) > 0)
-    trail_start = now - pd.Timedelta(days=days)
     trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
     if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         trail_mask = trail_mask & (_load_cost(loads) > 0)
 
-    # Working days in the trailing window (denominator for daily run rate)
-    trail_working_days = max(_working_days(trail_start.normalize(), now.normalize()), 1)
     out: dict = {
         "days_in_month": wdim, "day_of_month": wdom,
         "days_in_month_cal": dim, "day_of_month_cal": dom,
-        "trailing_days": days,
+        "trailing_days": trail_working_days,
     }
-    combined_booked = combined_t_rev = combined_t_cost = 0.0
+    combined_t_rev = combined_t_cost = 0.0
     combined_settled_margin = 0.0
 
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
-        booked = float(_col_any(loads[mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         t_cost = float(_load_cost(loads[trail_mask & ent_mask]).sum())
-        # Actual settled MTD margin for this entity — used as a floor on the
-        # forward estimate so it never reports below what's already earned.
         s_rev = float(_col_any(loads[settled_mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
         s_cost = float(_load_cost(loads[settled_mtd_mask & ent_mask]).sum())
         settled_margin = s_rev - s_cost
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
-        daily_run_rate = (t_rev / trail_working_days) if trail_working_days else 0.0
-        proj_rev = booked + daily_run_rate * days_remaining
-        proj_rev = proj_rev if proj_rev > 0 else None
-        t90_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
-        # Floor at actual settled — handles the end-of-month case (factor=1.0)
-        # where t90 underestimates a hot-running month, and is also correct
-        # mid-month since you can't project less than you've already booked.
-        if t90_margin is not None and settled_margin > t90_margin:
-            proj_margin = settled_margin
-        else:
-            proj_margin = t90_margin
+        # Pure whole-month projection: daily run rate × working days in month
+        proj_rev = (t_rev / trail_working_days) * wdim if trail_working_days else None
+        proj_rev = proj_rev if proj_rev and proj_rev > 0 else None
+        t_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
+        # Floor at actual settled so it never reads below what's already earned
+        proj_margin = t_margin if (t_margin is None or t_margin >= settled_margin) else settled_margin
         out[ent] = {
-            "booked_mtd": booked or None,
             "settled_mtd_margin": settled_margin or None,
             "trailing_margin_pct": m_pct,
             "projected_revenue": proj_rev,
             "projected_margin": proj_margin,
         }
-        combined_booked += booked
         combined_t_rev += t_rev
         combined_t_cost += t_cost
         combined_settled_margin += settled_margin
 
     c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
-    c_daily_run_rate = (combined_t_rev / trail_working_days) if trail_working_days else 0.0
-    c_proj_rev = combined_booked + c_daily_run_rate * days_remaining
-    c_proj_rev = c_proj_rev if c_proj_rev > 0 else None
-    _c_t90 = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
-    c_proj_margin = (_c_t90 if (_c_t90 is not None and combined_settled_margin <= _c_t90)
-                     else (combined_settled_margin or _c_t90))
+    c_proj_rev = (combined_t_rev / trail_working_days) * wdim if trail_working_days else None
+    c_proj_rev = c_proj_rev if c_proj_rev and c_proj_rev > 0 else None
+    _c_t = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
+    c_proj_margin = _c_t if (_c_t is None or _c_t >= combined_settled_margin) else combined_settled_margin
     out["combined"] = {
-        "booked_mtd": combined_booked or None,
         "settled_mtd_margin": combined_settled_margin or None,
         "trailing_margin_pct": c_pct,
         "projected_revenue": c_proj_rev,
