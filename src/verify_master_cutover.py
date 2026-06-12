@@ -102,8 +102,9 @@ def _level2_loads_diff(mdf: pd.DataFrame, cdf: pd.DataFrame) -> None:
             worst = delta.abs().sort_values(ascending=False).head(10)
             log.info("    worst mismatches (load #: master -> combined, delta):")
             for k in worst.index:
-                log.info("      %-12s $%12,.2f -> $%12,.2f   (Δ $%s)",
-                         k, mv.loc[k], cv.loc[k], f"{delta.loc[k]:,.2f}")
+                log.info("      %-12s $%s -> $%s   (Δ $%s)",
+                         k, f"{mv.loc[k]:,.2f}", f"{cv.loc[k]:,.2f}",
+                         f"{delta.loc[k]:,.2f}")
 
     # Carrier Rate population comparison — how many loads have CR > 0 in each
     m_cr, c_cr = _num(mi, "Carrier Rate"), _num(ci, "Carrier Rate")
