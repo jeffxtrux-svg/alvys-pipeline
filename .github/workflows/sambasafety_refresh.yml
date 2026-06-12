@@ -1,11 +1,21 @@
-# SambaSafety data refresh — runs daily, reads the two raw CSV exports
-# from OneDrive/SambaSafety/, merges them via src.sambasafety_combine, and
-# uploads SambaSafety_Master.xlsx back to OneDrive so the scorecard's page 9
-# stays current.
+# SambaSafety data refresh — reads the raw CSV exports that drop into
+# OneDrive/SambaSafety/ multiple times a day (Power Automate / manual drop),
+# merges them via src.sambasafety_combine, and uploads SambaSafety_Master.xlsx
+# back to OneDrive so the scorecard's driver-compliance page stays current.
 #
-# Until SambaSafety's API is wired up, the two source CSVs land in OneDrive
-# via Power Automate (or manual drop). See docs/knowledge-base/operations.md
-# for the setup steps.
+# API mode is RETIRED (2026-06-12): the SambaSafety API token expired
+# 2026-06-02 and the API returned "Forbidden" on every run after that; the
+# CSV drops are the production source now. SAMBASAFETY_API_TOKEN is
+# deliberately NOT passed below — src.sambasafety_main runs CSV-drop mode
+# whenever the token is absent. (The API client code remains in the repo
+# if it's ever wanted again.)
+#
+# Scheduling note: there is NO Central-hour gate here, unlike the other
+# workflows. GitHub delivered this workflow's crons 2-5 hours late every
+# night of 2026-06-05 → 06-12, so an exact-hour gate skipped every run
+# while showing green. The merge is idempotent (full rewrite, upload with
+# replace) and takes ~1 minute, so extra/late runs are harmless — multiple
+# crons, no gate, every fired run executes.
 #
 # Required GitHub Secrets (shared with the rest of the pipeline):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
@@ -16,12 +26,14 @@ on:
   workflow_dispatch:
   workflow_call:
   schedule:
-    # Year-round 2:30am Central. CDT (UTC-5) and CST (UTC-6) crons both
-    # armed; the "Gate to 2am CT" step rejects the season's wrong slot
-    # so the merge happens exactly once per day, well ahead of the
-    # scorecard's 5am CT primary.
-    - cron: '30 7 * * *'    # 2:30am CDT / 1:30am CST (CST: gated)
-    - cron: '30 8 * * *'    # 3:30am CDT (CDT: gated) / 2:30am CST
+    # Several slots across the day (UTC). The 06:00/08:00 pair exists so
+    # the pre-scorecard refresh lands before the 5am CT brief even when
+    # GitHub fires hours late; the 16:00/22:00 slots track the midday and
+    # evening CSV drops (11am / 5pm CT in summer).
+    - cron: '0 6 * * *'     # 1am CDT / 12am CST
+    - cron: '0 8 * * *'     # 3am CDT /  2am CST
+    - cron: '0 16 * * *'    # 11am CDT / 10am CST
+    - cron: '0 22 * * *'    # 5pm CDT /  4pm CST
 
 jobs:
   refresh:
@@ -29,65 +41,23 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Gate to 2am CT
-        id: ct_gate
-        if: github.event_name == 'schedule'
-        run: |
-          CT_HOUR=$(TZ=America/Chicago date +%-H)
-          echo "Central-time hour: $CT_HOUR"
-          if [ "$CT_HOUR" -ne 2 ]; then
-            echo "Off-target — skipping."
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "2am CT slot — proceeding."
-          fi
-
       - name: Checkout repo
-        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/checkout@v4
 
       - name: Set up Python
-        if: steps.ct_gate.outputs.skip != '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: Install dependencies
-        if: steps.ct_gate.outputs.skip != '1'
         run: pip install -r requirements.txt
 
-      - name: Refresh SambaSafety_Master.xlsx
-        if: steps.ct_gate.outputs.skip != '1'
+      - name: Refresh SambaSafety_Master.xlsx (CSV-drop mode)
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: jeff@xfreight.net
-          # API mode (preferred, zero-cost) — set SAMBASAFETY_API_TOKEN to
-          # enable. When unset, the script falls back to the CSV-drop
-          # path that reads risk_index_report.csv + violationsReport.csv
-          # from OneDrive (existing behavior).
-          SAMBASAFETY_API_TOKEN: ${{ secrets.SAMBASAFETY_API_TOKEN }}
-          # Defaults to https://api.sambasafety.io. Override to
-          # https://api-demo.sambasafety.io to point at SambaSafety's
-          # demo environment.
-          SAMBASAFETY_API_BASE_URL: ${{ vars.SAMBASAFETY_API_BASE_URL }}
-          # Default 'bearer' (JWT-style token, Authorization: Bearer).
-          # Set to 'apikey' if SambaSafety gave you a non-JWT key sent
-          # via X-Api-Key header.
-          SAMBASAFETY_AUTH_SCHEME: ${{ vars.SAMBASAFETY_AUTH_SCHEME }}
-          # Optional — when SambaSafety has multiple groups, set this to
-          # the X-Trux group name (substring match, case-insensitive) so
-          # only those drivers land in the scorecard.
-          SAMBASAFETY_GROUP_NAME: ${{ vars.SAMBASAFETY_GROUP_NAME }}
           SAMBASAFETY_OUTPUT_DIR: output/sambasafety
         run: python -m src.sambasafety_main
-
-      - name: Upload output as artifact
-        if: always() && steps.ct_gate.outputs.skip != '1'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sambasafety-master-${{ github.run_number }}
-          path: output/sambasafety/
-          retention-days: 7
