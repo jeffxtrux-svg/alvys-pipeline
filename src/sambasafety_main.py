@@ -382,7 +382,12 @@ def main() -> int:
                     "  3. The token hasn't expired (SambaSafety bearer "
                     "tokens live ~1 hour from /oauth2/v1/token; envelope "
                     "tokens may be longer-lived).", err)
-            raise
+            # A dead/expired token shouldn't kill the refresh while the
+            # CSV drops are sitting in OneDrive — fall back to CSV mode
+            # (the API endpoints return 401/403, or 404 "Forbidden" for
+            # retired accounts) and let the workbook build from those.
+            log.warning("API mode failed (%s) — falling back to CSV-drop mode.", err)
+            xlsx_bytes = _build_from_csv(od_token, user_upn, folder)
     else:
         xlsx_bytes = _build_from_csv(od_token, user_upn, folder)
 
