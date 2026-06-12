@@ -110,6 +110,14 @@ RPM_GOAL_OVERHEAD_ALLOC = 1.0
 # surcharge is zeroed so it doesn't double-count.  Re-enable if you ever
 # decouple insurance from overhead again.
 RPM_GOAL_INSURANCE_SURCHARGE = 0.0
+# Driver pay floor: the known contract rate ($/mi). The 10-day blended average
+# can land below the actual contract rate when recent loads skew toward high-
+# mileage deadhead runs or when the load mix is thin. Set this to the current
+# O/O contract rate so load-mix noise can't understate the cost. The computed
+# average is still logged so drift is visible; the floor just stops it from
+# moving the goal below what the contract actually costs.
+# Override with RPM_GOAL_DRIVER_PAY_FLOOR env var (set to 0 to disable floor).
+RPM_GOAL_DRIVER_PAY_FLOOR = 1.76
 # Office overhead per mile is pinned to a hand-set value while the costing
 # algorithm is being validated against the books. Set to None (or empty the
 # RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
@@ -1668,8 +1676,17 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         pay_window_fallback = True
     pay_loads = int(recent.sum())
     pay_miles = float(miles[recent].sum())
-    pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
+    pay_per_mile_raw = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
     actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
+
+    # Apply driver-pay floor (current O/O contract rate). The blended average
+    # can land below the actual rate when recent loads skew toward deadhead or
+    # high-mileage runs. The raw value is preserved for logging/display.
+    driver_pay_floor = _env_float("RPM_GOAL_DRIVER_PAY_FLOOR", RPM_GOAL_DRIVER_PAY_FLOOR)
+    pay_per_mile_floored = (driver_pay_floor > 0
+                            and pay_per_mile_raw is not None
+                            and pay_per_mile_raw < driver_pay_floor)
+    pay_per_mile = (driver_pay_floor if pay_per_mile_floored else pay_per_mile_raw)
 
     # Fiscal-YTD X-Trux miles, to match QuickBooks' "This Fiscal Year" P&L window.
     ytd = dates >= now.normalize().replace(month=1, day=1)
@@ -1718,6 +1735,9 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
 
     return {
         "pay_per_mile": pay_per_mile,
+        "pay_per_mile_raw": pay_per_mile_raw,
+        "pay_per_mile_floored": pay_per_mile_floored,
+        "driver_pay_floor": driver_pay_floor or None,
         "overhead_per_mile": overhead_per_mile,
         "overhead_per_mile_live": overhead_per_mile_live,
         "overhead_pin": overhead_pin or None,
@@ -1756,6 +1776,13 @@ def _rpm_goal_health(goal: dict | None) -> list[str]:
             f"Rate-per-mile: only {goal.get('pay_loads', 0)} settled X-Trux load(s) in the "
             f"last {goal.get('pay_window_days')}d &mdash; widened the pay window to "
             f"{goal.get('pay_window_used')}d for a stable read.")
+    if goal.get("pay_per_mile_floored"):
+        _raw = goal.get("pay_per_mile_raw")
+        _floor = goal.get("driver_pay_floor")
+        out.append(
+            f"Rate-per-mile: 10d blended driver pay {rpm(_raw)}/mi is below the "
+            f"{rpm(_floor)}/mi contract floor &mdash; using floor for costing. "
+            f"Check Alvys loads for low-rate or high-deadhead runs in the window.")
     if goal.get("cost_plausible") is False:
         lo, hi = RPM_GOAL_PLAUSIBLE_BAND
         out.append(
@@ -4842,7 +4869,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _win = g.get("pay_window_used") or g.get("pay_window_days")
         parts = []
         if _isnum(_pp):
-            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
+            _pp_raw = g.get("pay_per_mile_raw")
+            _floored = g.get("pay_per_mile_floored")
+            if _floored and _isnum(_pp_raw):
+                parts.append(
+                    f"driver/owner-op pay {rpm(_pp)}/mi (contract floor; "
+                    f"10d blended avg {rpm(_pp_raw)}/mi)")
+            else:
+                parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
         if _isnum(_oh):
             _pin = g.get("overhead_pin")
             _live = g.get("overhead_per_mile_live")
