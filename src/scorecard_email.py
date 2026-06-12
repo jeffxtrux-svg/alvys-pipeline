@@ -1636,16 +1636,23 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         overhead_companies = ([c.strip() for c in env_co.split(",") if c.strip()]
                               if env_co else list(RPM_GOAL_OVERHEAD_COMPANIES))
 
-    # X-Trux asset fleet only (fold XFreight in, drop X-Linx brokerage and cancellations).
+    # X-Trux asset fleet: includes X-Trux Inc + XFreight for revenue/mileage
+    # reporting, but driver pay is scoped to X-Trux Inc owner-ops only.
+    # XFreight drivers may have a different pay structure; mixing them into the
+    # pay average pulls it below the X-Trux O/O contract rate.
     sub = loads.copy()
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
     sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
     if sub.empty:
         return None
+    # Owner-op pay uses X-Trux Inc loads only (all X-Trux O/Os on same contract rate)
+    xtrux_only = sub[sub[office_col].astype(str).str.upper().str.contains("TRUX")]
     dates = _dates(sub, ALVYS_DATE_CANDIDATES)
-    pay = _col(sub, "Driver Rate").fillna(0)
+    dates_xt = _dates(xtrux_only, ALVYS_DATE_CANDIDATES)
+    pay = _col(xtrux_only, "Driver Rate").fillna(0)
     miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    miles_xt = _col_any(xtrux_only, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
 
     now = pd.Timestamp.now()
@@ -1659,25 +1666,31 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     # Try the configured window first, then widen through the fallback windows until
     # there are enough settled loads + miles; if none qualify, use the widest as a
     # best-effort read and flag it (pay_window_fallback) so the brief can warn.
+    # Pay window uses X-Trux Inc only; fallback thresholds check those miles
     def _window_mask(days):
-        return (dates >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+        return (dates_xt >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+    # Revenue/actual-RPM uses X-Trux Inc only to match the pay-window scope
+    def _rev_mask(days):
+        return dates_xt >= (now.normalize() - pd.Timedelta(days=days))
     candidate_windows = [pay_window_days] + [w for w in RPM_GOAL_FALLBACK_WINDOWS if w > pay_window_days]
     pay_window_used, recent, pay_window_fallback = pay_window_days, _window_mask(pay_window_days), False
     for w in candidate_windows:
         m = _window_mask(w)
-        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
+        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles_xt[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
             pay_window_used, recent = w, m
             pay_window_fallback = (w != pay_window_days)
             break
     else:
-        # Nothing met the threshold — widen to the largest window we tried.
         pay_window_used = candidate_windows[-1]
         recent = _window_mask(pay_window_used)
         pay_window_fallback = True
+    rev_recent = _rev_mask(pay_window_used)
+    rev_xt = _col_any(xtrux_only, ["Customer Revenue", "Revenue"]).fillna(0)
     pay_loads = int(recent.sum())
-    pay_miles = float(miles[recent].sum())
+    pay_miles = float(miles_xt[recent].sum())
     pay_per_mile_raw = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
-    actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
+    rev_miles = float(miles_xt[rev_recent].sum())
+    actual_rpm = (float(rev_xt[rev_recent].sum()) / rev_miles) if rev_miles else None
 
     # Apply driver-pay floor (current O/O contract rate). The blended average
     # can land below the actual rate when recent loads skew toward deadhead or
@@ -1688,9 +1701,9 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
                             and pay_per_mile_raw < driver_pay_floor)
     pay_per_mile = (driver_pay_floor if pay_per_mile_floored else pay_per_mile_raw)
 
-    # Fiscal-YTD X-Trux miles, to match QuickBooks' "This Fiscal Year" P&L window.
-    ytd = dates >= now.normalize().replace(month=1, day=1)
-    ytd_miles = float(miles[ytd].sum())
+    # Fiscal-YTD X-Trux Inc miles for the overhead/mi denominator.
+    ytd_xt = dates_xt >= now.normalize().replace(month=1, day=1)
+    ytd_miles = float(miles_xt[ytd_xt].sum())
 
     # Shared office overhead from QuickBooks (X-Trux + X-Linx Total Expenses).
     # The allocation factor is the fraction of that combined pool the X-Trux miles
