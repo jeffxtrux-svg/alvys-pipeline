@@ -1,0 +1,62 @@
+# Upload-status digest email — fires 45 min after each 2-hour refresh batch
+# (4:45am / 11:45am / 5:45pm CT) and reports pass/fail for Alvys, Samsara,
+# QuickBooks, and SambaSafety runs from the last 3 hours.
+
+name: Upload status email
+
+on:
+  workflow_dispatch:
+
+  # DST-proof: arm both CDT (UTC-5) and CST (UTC-6) offsets; the
+  # "Gate to allowed CT hours" step rejects the off-season half.
+  schedule:
+    - cron: '45 9 * * *'   # CDT 4:45am  / CST 3:45am  (CST: gated)
+    - cron: '45 16 * * *'  # CDT 11:45am / CST 10:45am (CST: gated)
+    - cron: '45 22 * * *'  # CDT 5:45pm  / CST 4:45pm  (CST: gated)
+    - cron: '45 10 * * *'  # CDT 5:45am  / CST 4:45am  (CDT: gated)
+    - cron: '45 17 * * *'  # CDT 12:45pm / CST 11:45am (CDT: gated)
+    - cron: '45 23 * * *'  # CDT 6:45pm  / CST 5:45pm  (CDT: gated)
+
+jobs:
+  send-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Gate to allowed CT hours
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          case "$CT_HOUR" in
+            4|11|17) echo "Target slot — proceeding." ;;
+            *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Send upload status email
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          STATUS_EMAIL_TO: jeff@xfreight.net
+        run: python -m src.upload_status_email
