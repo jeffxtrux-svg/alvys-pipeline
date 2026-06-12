@@ -86,14 +86,3 @@ jobs:
           OUTPUT_DIR: output
         run: python -m src.onedrive_upload
 
-      # Belt-and-suspenders: also upload as a workflow artifact, so the file
-      # is downloadable from the Actions tab even if OneDrive upload had issues.
-      # Includes _debug/ folder with sample JSON records and rate-type
-      # inventory — useful for diagnosing column-mapping issues.
-      - name: Upload output folder as artifact
-        if: always() && steps.ct_gate.outputs.skip != '1'
-        uses: actions/upload-artifact@v4
-        with:
-          name: alvys-master-${{ github.run_number }}
-          path: output/
-          retention-days: 7
