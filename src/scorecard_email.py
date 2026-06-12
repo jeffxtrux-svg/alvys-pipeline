@@ -42,6 +42,7 @@ import sys
 import datetime as _dt
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -1452,8 +1453,8 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     """Estimate full-month settled margin per entity.
 
     Formula per entity:
-        days_remaining    = days_in_month - day_of_month
-        daily_run_rate    = trailing_{days}_revenue / {days}
+        days_remaining    = working days left in month (Mon–Fri)
+        daily_run_rate    = trailing_{days}_revenue / working days in trailing window
         projected_revenue = booked MTD revenue + daily_run_rate * days_remaining
         projected_margin  = projected_revenue * trailing_{days}_margin_pct
 
@@ -1491,8 +1492,20 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
                      if "Load Status" in loads.columns else pd.Series(True, index=loads.index))
 
     now = pd.Timestamp.now()
+
+    def _working_days(start: pd.Timestamp, end: pd.Timestamp) -> int:
+        """Count Mon–Fri days in [start, end] inclusive."""
+        if start > end:
+            return 0
+        return int(np.busday_count(start.date(), (end + pd.Timedelta(days=1)).date()))
+
+    month_start = now.normalize().replace(day=1)
+    month_end_dt = now + pd.offsets.MonthEnd(1)
+    wdim = _working_days(month_start, month_end_dt)   # working days in full month
+    wdom = _working_days(month_start, now.normalize()) # working days elapsed (incl. today)
+    # Keep calendar dim/dom for rollover logic; working-day equivalents drive projection
     dim, dom = now.days_in_month, now.day
-    factor = (dim / dom) if dom else None
+    factor = (wdim / wdom) if wdom else None
 
     mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
     # Month-rollover resilience: on day 1-3 with no revenue-bearing loads yet,
@@ -1503,13 +1516,13 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_revenue_loads)
     if rollover:
         mtd_mask = (dates >= lm_start) & (dates <= lm_end) & not_cancelled
-        dim = (lm_end.day)   # last completed month had this many days
-        dom = dim            # treat it as "complete" so days_remaining = 0
+        lm_start_norm = lm_start.normalize().replace(day=1)
+        wdim = _working_days(lm_start_norm, lm_end)
+        wdom = wdim   # treat as complete — days_remaining = 0
+        dim, dom = lm_end.day, lm_end.day
         factor = 1.0
-    # Days left in the (current or rolled-over) month — the run-rate projection
-    # fills these remaining days at the recent daily pace. Under rollover dom
-    # was forced to dim, so this is 0 and the projection equals booked actuals.
-    days_remaining = max(dim - dom, 0)
+    # Working days left in the month — projection fills these at the recent daily pace.
+    days_remaining = max(wdim - wdom, 0)
     # Settled MTD mask: this month (or last month under rollover), non-cancelled,
     # with driver rate entered. Used to floor the projection at actual settled
     # margin — at month-end (or any time this month's actual margin% exceeds
@@ -1523,7 +1536,13 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         trail_mask = trail_mask & (_load_cost(loads) > 0)
 
-    out: dict = {"days_in_month": dim, "day_of_month": dom, "trailing_days": days}
+    # Working days in the trailing window (denominator for daily run rate)
+    trail_working_days = max(_working_days(trail_start.normalize(), now.normalize()), 1)
+    out: dict = {
+        "days_in_month": wdim, "day_of_month": wdom,
+        "days_in_month_cal": dim, "day_of_month_cal": dom,
+        "trailing_days": days,
+    }
     combined_booked = combined_t_rev = combined_t_cost = 0.0
     combined_settled_margin = 0.0
 
@@ -1538,7 +1557,7 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         s_cost = float(_load_cost(loads[settled_mtd_mask & ent_mask]).sum())
         settled_margin = s_rev - s_cost
         m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
-        daily_run_rate = (t_rev / days) if days else 0.0
+        daily_run_rate = (t_rev / trail_working_days) if trail_working_days else 0.0
         proj_rev = booked + daily_run_rate * days_remaining
         proj_rev = proj_rev if proj_rev > 0 else None
         t90_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
@@ -1562,7 +1581,7 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         combined_settled_margin += settled_margin
 
     c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
-    c_daily_run_rate = (combined_t_rev / days) if days else 0.0
+    c_daily_run_rate = (combined_t_rev / trail_working_days) if trail_working_days else 0.0
     c_proj_rev = combined_booked + c_daily_run_rate * days_remaining
     c_proj_rev = c_proj_rev if c_proj_rev > 0 else None
     _c_t90 = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
@@ -4785,9 +4804,10 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     # Row 2: loads + estimated month-end margin per entity. The projection
     # equation comes from compute_margin_projection():
-    #   projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
+    #   daily_run_rate    = trailing-90 working-day revenue / working days in window
+    #   projected_revenue = booked MTD revenue + daily_run_rate * working days remaining
     #   projected_margin  = projected_revenue * trailing-90 settled margin %
-    # Pill shows the day ratio and trailing margin % so the basis is visible.
+    # Pill shows working-day elapsed/total and trailing margin % so the basis is visible.
     _mp = margin_projection or {}
     _dim = _mp.get("days_in_month", 0)
     _de = _mp.get("day_of_month", 0)
