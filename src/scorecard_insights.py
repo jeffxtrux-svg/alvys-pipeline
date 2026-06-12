@@ -303,25 +303,24 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
 
     # Equipment compliance — surface overdue inspections at the executive
     # level so they don't get buried on the Equipment Compliance pages.
-    # Both tractors and trailers use the 120-day company DOT policy (fires
-    # before the federal 365-day annual rule). Requires LastInspectionDate
-    # to be populated by src/main.py.
+    # Keyed on the federal 365-day annual inspection (the 120-day company
+    # policy was dropped from the brief per Jeff, 2026-06).
     if equipment:
         od_tractors = [t for t in (equipment.get("tractors") or [])
-                       if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < 0]
         if od_tractors:
             units = ", ".join(str(t.get("unit") or "?") for t in od_tractors[:8])
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
             parts.append(
-                f"Tractors overdue on 120-day company DOT policy: "
+                f"Tractors overdue on annual DOT inspection: "
                 f"{units}{more} {_pgref(5)}.")
         od_trailers = [t for t in (equipment.get("trailers") or [])
-                       if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < 0]
         if od_trailers:
             units = ", ".join(str(t.get("unit") or "?") for t in od_trailers[:8])
             more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""
             parts.append(
-                f"Trailers overdue on 120-day company DOT policy: "
+                f"Trailers overdue on annual DOT inspection: "
                 f"{units}{more} {_pgref(6)}.")
 
     # Speed-over-limit escalations — name the drivers whose page-4

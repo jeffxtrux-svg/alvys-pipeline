@@ -263,16 +263,16 @@ gate; categories that don't match anything fall through to `80`.
 #### Failing soft
 
 - **CSA CSV missing from OneDrive.** `sambasafety_main._build_from_csv`
-  catches the download exception and skips the CSA sheet. The page-10
-  builder sees `csa = None` and renders a `WARN` callout asking the user
-  to place `CSA2010 Preview Scorecard.csv` in `OneDrive/SambaSafety/`.
+  catches the download exception and skips the CSA sheet. `build_html`
+  sees `csa = None` and **skips the CSA page entirely** — no placeholder
+  page ships (per Jeff, 2026-06-12). The page re-appears automatically
+  once `CSA2010 Preview Scorecard.csv` is back in `OneDrive/SambaSafety/`.
 - **Header rename in the CSV.** Add the new spelling to the `_find_col`
   candidate list in `compute_csa_scorecard` (around line ~2894). All
   fields except `Category` are optional — a missing column degrades to an
   em-dash in that cell, not a crash.
 - **Empty / single-row file.** If no row has a `Category` value the
-  function returns `None` and the page renders the same "data unavailable"
-  callout.
+  function returns `None` and the page is skipped the same way.
 
 ## Getting the source CSVs into OneDrive
 
