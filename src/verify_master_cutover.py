@@ -106,6 +106,28 @@ def _level2_loads_diff(mdf: pd.DataFrame, cdf: pd.DataFrame) -> None:
                          k, f"{mv.loc[k]:,.2f}", f"{cv.loc[k]:,.2f}",
                          f"{delta.loc[k]:,.2f}")
 
+    # Revenue delta breakdown: open vs closed loads (uses Any Trip Open flag in XFreight Master)
+    if "Any Trip Open" in ci.columns:
+        mv_rev = _num(mi, "Customer Revenue")
+        cv_rev = _num(ci, "Customer Revenue")
+        delta_rev = (cv_rev - mv_rev).round(2)
+        diff_keys = delta_rev[delta_rev.abs() > 0.01].index
+        if len(diff_keys):
+            open_flags = ci["Any Trip Open"].reindex(diff_keys).fillna(False).astype(bool)
+            n_open = int(open_flags.sum())
+            n_closed = int((~open_flags).sum())
+            open_delta = (cv_rev.reindex(diff_keys)[open_flags] - mv_rev.reindex(diff_keys)[open_flags]).sum()
+            closed_delta = (cv_rev.reindex(diff_keys)[~open_flags] - mv_rev.reindex(diff_keys)[~open_flags]).sum()
+            log.info("")
+            log.info("--- Customer Revenue delta breakdown (open vs closed legs):")
+            log.info("    CLOSED loads (%d diffs): delta $%s  ← invoiced loads missing from manual file",
+                     n_closed, f"{closed_delta:,.2f}")
+            log.info("    OPEN loads   (%d diffs): delta $%s  ← in-progress, revenue not yet confirmed",
+                     n_open, f"{open_delta:,.2f}")
+            if n_open:
+                open_loads = sorted(diff_keys[open_flags])[:15]
+                log.info("    open load #s: %s", open_loads)
+
     # Carrier Rate population comparison — how many loads have CR > 0 in each
     m_cr, c_cr = _num(mi, "Carrier Rate"), _num(ci, "Carrier Rate")
     log.info("")
