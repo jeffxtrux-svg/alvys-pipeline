@@ -74,7 +74,10 @@ def _build_csa_scorecard(csa_csv) -> pd.DataFrame:
     second-to-last; first numeric is segment violations.
     """
     def _read_raw(src):
-        kw = dict(header=None, dtype=str)
+        # engine='python' handles rows with inconsistent field counts
+        # (the C engine infers column count from row 1 and crashes on row N
+        # if the new CSV export adds an extra column mid-file)
+        kw = dict(header=None, dtype=str, engine="python", on_bad_lines="skip")
         if isinstance(src, (bytes, bytearray)):
             return pd.read_csv(io.BytesIO(src), **kw)
         if isinstance(src, str) and "\n" in src:
