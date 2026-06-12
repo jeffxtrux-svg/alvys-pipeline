@@ -1,15 +1,17 @@
 """Verify XFreight Master.xlsx is a safe drop-in replacement for Alvys Master2026.xlsx.
 
-Downloads both workbooks from OneDrive and checks, per shared sheet:
-  1. Every tab in Master 2026 exists in XFreight Master (Power BI navigation)
-  2. Every column in Master 2026 exists in the same tab of XFreight Master,
-     with the exact same name (Power Query steps reference columns by name)
-  3. Row counts are in the same ballpark (sanity)
-  4. Key numeric totals (Customer Revenue, Driver Rate, Carrier Rate) compared
-     so any value drift is visible up front
-  5. New columns in XFreight Master are listed (additive — safe for Power BI)
+Two levels of comparison:
 
-Exit 0 = safe to cut over. Exit 1 = something would break; see log.
+LEVEL 1 — structure (tabs / column names / row counts / whole-file sums):
+  catches anything that would break a Power BI query pointed at the new file.
+
+LEVEL 2 — like-for-like June 2026 load-level diff on the Loads sheet:
+  restricts both files to loads whose Load # appears in BOTH, compares
+  Customer Revenue / Driver Rate / Carrier Rate / Gross Margin per load,
+  and prints the worst mismatches so the source of any drift is obvious.
+  Also reports loads present in only one file (date-coverage difference).
+
+Exit 0 = structure safe. Value drift is reported but doesn't fail the run.
 
 Run in CI (needs AZURE_* secrets):
     python -m src.verify_master_cutover
@@ -35,6 +37,85 @@ _MASTER_2026_SHARE_URL = (
 
 _NUMERIC_CHECK_COLS = ["Customer Revenue", "Driver Rate", "Carrier Rate",
                        "Sum of Customer Revenue", "Gross Margin"]
+
+_DIFF_COLS = ["Customer Revenue", "Driver Rate", "Carrier Rate", "Gross Margin"]
+
+
+def _num(df: pd.DataFrame, col: str) -> pd.Series:
+    if col in df.columns:
+        return pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return pd.Series(0.0, index=df.index)
+
+
+def _month_window(df: pd.DataFrame) -> pd.Series:
+    """True for rows whose Scheduled Pickup falls in June 2026."""
+    for c in ("Scheduled Pickup", "Scheduled Pickup Date", "Pickup Date"):
+        if c in df.columns:
+            d = pd.to_datetime(df[c], errors="coerce")
+            return (d >= "2026-06-01") & (d < "2026-07-01")
+    return pd.Series(False, index=df.index)
+
+
+def _level2_loads_diff(mdf: pd.DataFrame, cdf: pd.DataFrame) -> None:
+    log.info("")
+    log.info("=" * 60)
+    log.info("LEVEL 2 — June 2026 load-level diff (Loads sheet)")
+    log.info("=" * 60)
+
+    if "Load #" not in mdf.columns or "Load #" not in cdf.columns:
+        log.warning("Load # column missing — cannot diff by load")
+        return
+
+    m = mdf[_month_window(mdf)].copy()
+    c = cdf[_month_window(cdf)].copy()
+    m["__key"] = m["Load #"].astype(str).str.strip()
+    c["__key"] = c["Load #"].astype(str).str.strip()
+    m = m.drop_duplicates(subset="__key")
+    c = c.drop_duplicates(subset="__key")
+
+    m_keys, c_keys = set(m["__key"]), set(c["__key"])
+    both = m_keys & c_keys
+    only_m = m_keys - c_keys
+    only_c = c_keys - m_keys
+
+    log.info("June 2026 loads: Master=%d | Combined=%d | in both=%d",
+             len(m_keys), len(c_keys), len(both))
+    if only_m:
+        log.info("  only in Master 2026 (%d): %s", len(only_m),
+                 sorted(only_m)[:15])
+    if only_c:
+        log.info("  only in XFreight Master (%d): %s", len(only_c),
+                 sorted(only_c)[:15])
+
+    mi = m.set_index("__key").loc[sorted(both)]
+    ci = c.set_index("__key").loc[sorted(both)]
+
+    for col in _DIFF_COLS:
+        mv, cv = _num(mi, col), _num(ci, col)
+        delta = (cv - mv).round(2)
+        n_diff = int((delta.abs() > 0.01).sum())
+        log.info("")
+        log.info("--- %s: %d/%d loads differ | Master total $%s | Combined total $%s | delta $%s",
+                 col, n_diff, len(both),
+                 f"{mv.sum():,.2f}", f"{cv.sum():,.2f}", f"{(cv.sum()-mv.sum()):,.2f}")
+        if n_diff:
+            worst = delta.abs().sort_values(ascending=False).head(10)
+            log.info("    worst mismatches (load #: master -> combined, delta):")
+            for k in worst.index:
+                log.info("      %-12s $%12,.2f -> $%12,.2f   (Δ $%s)",
+                         k, mv.loc[k], cv.loc[k], f"{delta.loc[k]:,.2f}")
+
+    # Carrier Rate population comparison — how many loads have CR > 0 in each
+    m_cr, c_cr = _num(mi, "Carrier Rate"), _num(ci, "Carrier Rate")
+    log.info("")
+    log.info("--- Carrier Rate population: Master has CR>0 on %d loads, Combined on %d loads",
+             int((m_cr > 0).sum()), int((c_cr > 0).sum()))
+    gained = sorted(k for k in both if m_cr.loc[k] == 0 and c_cr.loc[k] > 0)[:10]
+    lost = sorted(k for k in both if m_cr.loc[k] > 0 and c_cr.loc[k] == 0)[:10]
+    if lost:
+        log.info("    loads where Master has CR but Combined reads $0 (first 10): %s", lost)
+    if gained:
+        log.info("    loads where Combined has CR but Master reads $0 (first 10): %s", gained)
 
 
 def main() -> int:
@@ -96,6 +177,10 @@ def main() -> int:
                 log.info("  %s %-22s Master $%s | Combined $%s | delta $%s",
                          flag, col, f"{m_sum:,.2f}", f"{c_sum:,.2f}", f"{delta:,.2f}")
 
+    # Level 2: like-for-like June 2026 load diff
+    if "Loads" in master and "Loads" in combined:
+        _level2_loads_diff(master["Loads"], combined["Loads"])
+
     log.info("")
     log.info("=" * 60)
     if problems:
@@ -103,9 +188,9 @@ def main() -> int:
         for p in problems:
             log.error("  • %s", p)
         return 1
-    log.info("CUTOVER SAFE — every Master 2026 tab and column exists in")
-    log.info("XFreight Master with identical names. Numeric deltas above are")
-    log.info("informational (API values supersede manual ones by design).")
+    log.info("STRUCTURE SAFE — every Master 2026 tab and column exists in")
+    log.info("XFreight Master with identical names. Review the Level 2 value")
+    log.info("diff above before trusting the numbers in Power BI.")
     return 0
 
 
