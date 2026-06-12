@@ -1,0 +1,37 @@
+# One-shot verification: is XFreight Master.xlsx a safe drop-in replacement
+# for Alvys Master2026.xlsx in Power BI? Compares tabs, column names, row
+# counts, and key numeric totals. Manual trigger only — not scheduled.
+
+name: Verify Master cutover
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install pandas openpyxl msal requests python-dotenv
+
+      - name: Compare workbooks
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+        run: python -m src.verify_master_cutover

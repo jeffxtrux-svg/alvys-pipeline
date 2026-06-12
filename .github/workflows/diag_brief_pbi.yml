@@ -1,0 +1,37 @@
+# One-shot diagnostic: why do the executive brief and Power BI disagree on
+# MTD revenue/cost/margin? Computes both styles from the same Master 2026
+# file. Manual trigger only — not scheduled.
+
+name: Diagnose brief vs Power BI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install pandas openpyxl msal requests python-dotenv
+
+      - name: Compare computations
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: jeff@xfreight.net
+        run: python -m src.diag_brief_vs_pbi

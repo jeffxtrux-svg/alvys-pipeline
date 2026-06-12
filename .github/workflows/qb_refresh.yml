@@ -18,17 +18,15 @@ on:
   workflow_dispatch:
   workflow_call:
   schedule:
-    # Year-round 4am / 11am / 5pm Central (concurrent with Alvys + Samsara).
-    # CDT crons (UTC-5) + CST crons (UTC-6); the "Gate to allowed CT hours"
-    # step gates whichever season's slots are off-target so each pull fires
-    # exactly 3× per day. The QB token rotation is idempotent — if a gated
-    # run skips, the next on-target one rotates as usual.
-    - cron: '0 9 * * *'    # CDT 4am  / CST 3am  (CST: gated)
-    - cron: '0 16 * * *'   # CDT 11am / CST 10am (CST: gated)
-    - cron: '0 22 * * *'   # CDT 5pm  / CST 4pm  (CST: gated)
-    - cron: '0 10 * * *'   # CDT 5am  / CST 4am  (CDT: gated)
-    - cron: '0 17 * * *'   # CDT 12pm / CST 11am (CDT: gated)
-    - cron: '0 23 * * *'   # CDT 6pm  / CST 5pm  (CDT: gated)
+    # Year-round every 2h from 4am to 6pm Central (concurrent with Alvys + Samsara).
+    # CDT (UTC-5) and CST (UTC-6) slots both armed; the "Gate to allowed CT hours"
+    # step passes only the 8 on-target hours so each pull fires exactly 8× per day.
+    # QB token rotation is idempotent — gated runs skip, the next on-target run rotates.
+    # CDT (UTC-5): 4am→9, 6am→11, 8am→13, 10am→15, 12pm→17,
+    #              2pm→19, 4pm→21, 6pm→23
+    # CST (UTC-6): 4am→10, 6am→12, 8am→14, 10am→16, 12pm→18,
+    #              2pm→20, 4pm→22, 6pm→0 (next day)
+    - cron: '0 0,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 * * *'
 
 jobs:
   refresh:
@@ -43,7 +41,7 @@ jobs:
           CT_HOUR=$(TZ=America/Chicago date +%-H)
           echo "Central-time hour: $CT_HOUR"
           case "$CT_HOUR" in
-            4|11|17) echo "Target slot — proceeding." ;;
+            4|6|8|10|12|14|16|18) echo "Target slot — proceeding." ;;
             *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
           esac
 

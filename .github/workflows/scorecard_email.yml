@@ -44,25 +44,20 @@ on:
     # Defense in depth against GitHub Actions schedule drops — GitHub's cron
     # is documented as best-effort, and during high load runs are silently
     # dropped (e.g. 2026-06-02 lost both the 11:30 and 11:45 UTC triggers).
-    # We arm five staggered attempts; the scorecard script itself checks a
-    # "sent today" marker in OneDrive at startup and exits clean if today's
-    # brief already landed, so only the first cron that fires actually
-    # emails — the rest exit in seconds. Manual workflow_dispatch bypasses
-    # the marker check.
+    # We arm staggered attempts; the scorecard script checks a "sent today"
+    # marker in OneDrive at startup and exits clean if today's brief already
+    # landed, so only the first slot that fires actually emails.
     #
-    # GitHub cron is fixed UTC and ignores DST. Target: 5:00am Central
-    # year-round, in both CDT (mid-Mar → early Nov) and CST (early Nov →
-    # mid-Mar). We arm both the CDT 5am slot (10 UTC) and the CST 5am slot
-    # (11 UTC), plus ~1h of backup retries in each. The "Gate to 5am CT or
-    # later" step at the top of the job rejects the slots that map to
-    # BEFORE 5am Central in the current season (so the CDT-shaped slots
-    # don't send an hour early in winter), and the script's same-day
-    # idempotency marker makes sure only the first un-gated slot emails.
-    - cron: '0 10 * * *'    # 5:00am CDT  primary  / 4:00am CST  (skipped by gate)
-    - cron: '15 10 * * *'   # 5:15am CDT  backup 1 / 4:15am CST  (skipped by gate)
-    - cron: '30 10 * * *'   # 5:30am CDT  backup 2 / 4:30am CST  (skipped by gate)
-    - cron: '0 11 * * *'    # 6:00am CDT  backup 3 / 5:00am CST  primary
-    - cron: '30 11 * * *'   # 6:30am CDT  last     / 5:30am CST  backup 1
+    # Target: 4:45am Central year-round — 45 min after the 4am data pull,
+    # giving Alvys/Samsara/QB time to complete before the brief reads them.
+    # Gate uses total-minutes since midnight (285 = 4h45m) so it works at
+    # sub-hour precision for both CDT and CST.
+    - cron: '45 9 * * *'    # 4:45am CDT  primary  / 3:45am CST  (gated)
+    - cron: '0 10 * * *'    # 5:00am CDT  backup 1 / 4:00am CST  (gated)
+    - cron: '15 10 * * *'   # 5:15am CDT  backup 2 / 4:15am CST  (gated)
+    - cron: '45 10 * * *'   # 5:45am CDT  backup 3 / 4:45am CST  primary
+    - cron: '15 11 * * *'   # 6:15am CDT  backup 4 / 5:15am CST  backup 1
+    - cron: '45 11 * * *'   # 6:45am CDT  last     / 5:45am CST  backup 2
     - cron: '0 12 * * *'    # 7:00am CDT  (none)   / 6:00am CST  last resort
 
 permissions:
@@ -73,28 +68,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Gate to 5am CT or later (skip 6am)
-        # Cron is fixed UTC, so the 10 UTC slots map to 5am CDT in summer
-        # but only 4am CST in winter. Skip the run when Central time hasn't
-        # reached 5am yet — the next 11 UTC slot will pick it up at 5am CST.
-        # ALSO skip 6am CT specifically: the scorecard healthcheck now
-        # fires at 6:00am and would collide with this backup slot,
-        # potentially double-sending the brief on dropped-cron mornings.
-        # Manual / workflow_call / push runs bypass the gate so on-demand
-        # triggers always work regardless of the time of day.
+      - name: Gate to 4:45am CT or later (skip 6am)
+        # Uses total-minutes since midnight for sub-hour precision.
+        # 285 = 4*60+45 = 4:45am. Skip before 4:45am (CDT-shaped crons that
+        # fire at 3:45am–4:30am CST are gated here). Also skip 6am CT: the
+        # scorecard healthcheck fires then and would collide on drop mornings.
+        # Manual / workflow_call / push runs bypass so on-demand triggers
+        # always work regardless of time.
         id: ct_gate
         if: github.event_name == 'schedule'
         run: |
           CT_HOUR=$(TZ=America/Chicago date +%-H)
-          echo "Central-time hour: $CT_HOUR"
-          if [ "$CT_HOUR" -lt 5 ]; then
-            echo "Before 5am CT — skipping this slot."
+          CT_MIN=$(TZ=America/Chicago date +%-M)
+          CT_TOTAL=$(( CT_HOUR * 60 + CT_MIN ))
+          echo "Central time: ${CT_HOUR}:$(printf '%02d' $CT_MIN) (${CT_TOTAL} mins)"
+          if [ "$CT_TOTAL" -lt 285 ]; then
+            echo "Before 4:45am CT — skipping this slot."
             echo "skip=1" >> "$GITHUB_OUTPUT"
           elif [ "$CT_HOUR" -eq 6 ]; then
-            echo "6am CT slot reserved for the healthcheck — skipping."
+            echo "6am CT reserved for healthcheck — skipping."
             echo "skip=1" >> "$GITHUB_OUTPUT"
           else
-            echo "5am CT or 7am+ CT — proceeding."
+            echo "4:45am CT or later — proceeding."
           fi
 
       - name: Checkout repo

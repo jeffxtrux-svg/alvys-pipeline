@@ -359,6 +359,29 @@ def main() -> int:
     fuel_df = transform_records(raw_fuel, FUEL_COLUMNS)
     report_blank_columns(fuel_df, "Fuel")
 
+    # --- Any Trip Open flag ---
+    # TRUE when any trip leg for a load is in Open or Quoted status.
+    # Allows Power BI to exclude partially-settled multi-leg X-Trux loads
+    # from margin calculations until all legs have driver pay entered.
+    if ("Load #" in loads_df.columns and "Load #" in trips_df.columns
+            and "Trip Status" in trips_df.columns and not trips_df.empty):
+        _t = trips_df[["Load #", "Trip Status"]].copy()
+        _t["__load_key"] = _t["Load #"].astype(str).str.strip()
+        _t["__open"] = _t["Trip Status"].astype(str).str.strip().str.lower().isin(
+            {"open", "quoted"}
+        )
+        _open_flags = _t.groupby("__load_key")["__open"].any().rename("Any Trip Open")
+        loads_df["__load_key"] = loads_df["Load #"].astype(str).str.strip()
+        loads_df = loads_df.merge(_open_flags, left_on="__load_key",
+                                  right_index=True, how="left")
+        loads_df["Any Trip Open"] = loads_df["Any Trip Open"].fillna(False)
+        loads_df = loads_df.drop(columns=["__load_key"])
+        n_open = int(loads_df["Any Trip Open"].sum())
+        log.info("Any Trip Open: %d of %d loads have at least one open/quoted leg",
+                 n_open, len(loads_df))
+    else:
+        log.info("Any Trip Open: skipped (Trip Status column absent or no trip data)")
+
     # --- Build Drivers sheet from cached driver records ---
     drivers_df = _build_drivers_df(lookups.raw_drivers)
     log.info("Drivers: %d records → %d active",

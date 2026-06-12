@@ -289,11 +289,16 @@ hands-on you want to be:
    attachment to `OneDrive/SambaSafety/`. Set up once, hands-free
    forever. The two CSV filenames stay consistent because the same
    SambaSafety report always emits the same filename.
-3. **SambaSafety API (live).** Set `SAMBASAFETY_API_TOKEN` and the
-   refresh job switches automatically to API mode — no CSV step, no
-   OneDrive intermediate. See **"API mode"** below.
+3. **SambaSafety API (RETIRED 2026-06-12).** Setting
+   `SAMBASAFETY_API_TOKEN` switches the refresh job to API mode — but
+   the token expired 2026-06-02 (every call returned
+   `HTTP 404 … "Forbidden"`), silently freezing `SambaSafety_Master.xlsx`
+   at June 2 data, and the owner chose to retire API mode rather than
+   re-issue the token. The workflow intentionally no longer passes the
+   secret, so the job always runs the CSV-drop path. The client code and
+   the docs below are kept for reference should API mode ever return.
 
-## API mode (zero-cost replacement of the CSV bridge)
+## API mode (RETIRED — kept for reference)
 
 When `SAMBASAFETY_API_TOKEN` is present in the workflow secrets,
 `sambasafety_main.py` uses `src.sambasafety_client.SambaSafetyClient`
