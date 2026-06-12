@@ -4017,7 +4017,13 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         if any(r.get("year") or r.get("make") for r in rows):
             head_cols.append(th.format(t="Year/Make"))
         if show_annual:
-            head_cols.append(th.format(t="Annual Insp Due"))
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"120 Day Insp Due"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>Company Policy</div></th>"
+            )
             head_cols.append(th.format(t="Days"))
         if show_reg:
             head_cols.append(th.format(t="Reg Expires"))
