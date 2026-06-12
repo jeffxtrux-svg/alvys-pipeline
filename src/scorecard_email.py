@@ -6986,8 +6986,13 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
             f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
             f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
-            # -- CSA SCORECARD --
-            f"{wrap(_strip(10) + build_csa_scorecard_page(csa, date_str))}{pb}"
+            # -- CSA SCORECARD -- Skipped entirely when the CSA2010 Preview
+            # Scorecard CSV is absent (per Jeff 2026-06-12: don't ship a
+            # "data unavailable" placeholder page). The page re-appears
+            # automatically once the CSV lands in OneDrive/SambaSafety/.
+            + ((wrap(_strip(10) + build_csa_scorecard_page(csa, date_str)) + pb)
+               if (csa and csa.get("basics")) else "")
+            +
             # -- ACCOUNTING --
             # build_page_ar_accounting (standalone "AR Overdue & Alvys
             # Accounting" page) was dropped per user — its 31+ overdue
