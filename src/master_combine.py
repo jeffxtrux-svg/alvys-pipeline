@@ -272,7 +272,23 @@ def main() -> int:
     log.info("Wrote %s (%d sheets, %s bytes)",
              out_path.name, len(combined), f"{out_path.stat().st_size:,}")
 
-    upload_file(token, upn, combined_folder, combined_name, out_path)
+    # OneDrive returns 423 Locked while the target file is open in Excel /
+    # the web viewer. The lock usually clears within a couple of minutes of
+    # the viewer closing, so retry with a backoff before giving up.
+    attempts, wait = 5, 60
+    for i in range(1, attempts + 1):
+        try:
+            upload_file(token, upn, combined_folder, combined_name, out_path)
+            break
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            if code == 423 and i < attempts:
+                log.warning("Upload attempt %d/%d blocked (423 Locked — file "
+                            "open in Excel). Retrying in %ds…", i, attempts, wait)
+                import time
+                time.sleep(wait)
+                continue
+            raise
 
     log.info("=" * 60)
     log.info("SUCCESS — %s is live on OneDrive", combined_name)
