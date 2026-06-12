@@ -4105,7 +4105,8 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     sort_note = "Sort: soonest annual inspection first."
     body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
              f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
-             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note}</div>")
+             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note} "
+             f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
