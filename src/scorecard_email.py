@@ -6953,7 +6953,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
     rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
-    margin_projection = compute_margin_projection(alvys_sheets) if alvys_sheets else None
+    margin_projection = compute_margin_projection(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     warnings += _rpm_goal_health(rpm_goal)
     for w in warnings:
