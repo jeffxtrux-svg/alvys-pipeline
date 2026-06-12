@@ -110,6 +110,14 @@ RPM_GOAL_OVERHEAD_ALLOC = 1.0
 # surcharge is zeroed so it doesn't double-count.  Re-enable if you ever
 # decouple insurance from overhead again.
 RPM_GOAL_INSURANCE_SURCHARGE = 0.0
+# Driver pay floor: the known contract rate ($/mi). The 10-day blended average
+# can land below the actual contract rate when recent loads skew toward high-
+# mileage deadhead runs or when the load mix is thin. Set this to the current
+# O/O contract rate so load-mix noise can't understate the cost. The computed
+# average is still logged so drift is visible; the floor just stops it from
+# moving the goal below what the contract actually costs.
+# Override with RPM_GOAL_DRIVER_PAY_FLOOR env var (set to 0 to disable floor).
+RPM_GOAL_DRIVER_PAY_FLOOR = 1.76
 # Office overhead per mile is pinned to a hand-set value while the costing
 # algorithm is being validated against the books. Set to None (or empty the
 # RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
@@ -1652,16 +1660,23 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         overhead_companies = ([c.strip() for c in env_co.split(",") if c.strip()]
                               if env_co else list(RPM_GOAL_OVERHEAD_COMPANIES))
 
-    # X-Trux asset fleet only (fold XFreight in, drop X-Linx brokerage and cancellations).
+    # X-Trux asset fleet: includes X-Trux Inc + XFreight for revenue/mileage
+    # reporting, but driver pay is scoped to X-Trux Inc owner-ops only.
+    # XFreight drivers may have a different pay structure; mixing them into the
+    # pay average pulls it below the X-Trux O/O contract rate.
     sub = loads.copy()
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
     sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
     if sub.empty:
         return None
+    # Owner-op pay uses X-Trux Inc loads only (all X-Trux O/Os on same contract rate)
+    xtrux_only = sub[sub[office_col].astype(str).str.upper().str.contains("TRUX")]
     dates = _dates(sub, ALVYS_DATE_CANDIDATES)
-    pay = _col(sub, "Driver Rate").fillna(0)
+    dates_xt = _dates(xtrux_only, ALVYS_DATE_CANDIDATES)
+    pay = _col(xtrux_only, "Driver Rate").fillna(0)
     miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    miles_xt = _col_any(xtrux_only, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
 
     now = pd.Timestamp.now()
@@ -1675,29 +1690,44 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     # Try the configured window first, then widen through the fallback windows until
     # there are enough settled loads + miles; if none qualify, use the widest as a
     # best-effort read and flag it (pay_window_fallback) so the brief can warn.
+    # Pay window uses X-Trux Inc only; fallback thresholds check those miles
     def _window_mask(days):
-        return (dates >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+        return (dates_xt >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+    # Revenue/actual-RPM uses X-Trux Inc only to match the pay-window scope
+    def _rev_mask(days):
+        return dates_xt >= (now.normalize() - pd.Timedelta(days=days))
     candidate_windows = [pay_window_days] + [w for w in RPM_GOAL_FALLBACK_WINDOWS if w > pay_window_days]
     pay_window_used, recent, pay_window_fallback = pay_window_days, _window_mask(pay_window_days), False
     for w in candidate_windows:
         m = _window_mask(w)
-        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
+        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles_xt[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
             pay_window_used, recent = w, m
             pay_window_fallback = (w != pay_window_days)
             break
     else:
-        # Nothing met the threshold — widen to the largest window we tried.
         pay_window_used = candidate_windows[-1]
         recent = _window_mask(pay_window_used)
         pay_window_fallback = True
+    rev_recent = _rev_mask(pay_window_used)
+    rev_xt = _col_any(xtrux_only, ["Customer Revenue", "Revenue"]).fillna(0)
     pay_loads = int(recent.sum())
-    pay_miles = float(miles[recent].sum())
-    pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
-    actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
+    pay_miles = float(miles_xt[recent].sum())
+    pay_per_mile_raw = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
+    rev_miles = float(miles_xt[rev_recent].sum())
+    actual_rpm = (float(rev_xt[rev_recent].sum()) / rev_miles) if rev_miles else None
 
-    # Fiscal-YTD X-Trux miles, to match QuickBooks' "This Fiscal Year" P&L window.
-    ytd = dates >= now.normalize().replace(month=1, day=1)
-    ytd_miles = float(miles[ytd].sum())
+    # Apply driver-pay floor (current O/O contract rate). The blended average
+    # can land below the actual rate when recent loads skew toward deadhead or
+    # high-mileage runs. The raw value is preserved for logging/display.
+    driver_pay_floor = _env_float("RPM_GOAL_DRIVER_PAY_FLOOR", RPM_GOAL_DRIVER_PAY_FLOOR)
+    pay_per_mile_floored = (driver_pay_floor > 0
+                            and pay_per_mile_raw is not None
+                            and pay_per_mile_raw < driver_pay_floor)
+    pay_per_mile = (driver_pay_floor if pay_per_mile_floored else pay_per_mile_raw)
+
+    # Fiscal-YTD X-Trux Inc miles for the overhead/mi denominator.
+    ytd_xt = dates_xt >= now.normalize().replace(month=1, day=1)
+    ytd_miles = float(miles_xt[ytd_xt].sum())
 
     # Shared office overhead from QuickBooks (X-Trux + X-Linx Total Expenses).
     # The allocation factor is the fraction of that combined pool the X-Trux miles
@@ -1742,6 +1772,9 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
 
     return {
         "pay_per_mile": pay_per_mile,
+        "pay_per_mile_raw": pay_per_mile_raw,
+        "pay_per_mile_floored": pay_per_mile_floored,
+        "driver_pay_floor": driver_pay_floor or None,
         "overhead_per_mile": overhead_per_mile,
         "overhead_per_mile_live": overhead_per_mile_live,
         "overhead_pin": overhead_pin or None,
@@ -1780,6 +1813,13 @@ def _rpm_goal_health(goal: dict | None) -> list[str]:
             f"Rate-per-mile: only {goal.get('pay_loads', 0)} settled X-Trux load(s) in the "
             f"last {goal.get('pay_window_days')}d &mdash; widened the pay window to "
             f"{goal.get('pay_window_used')}d for a stable read.")
+    if goal.get("pay_per_mile_floored"):
+        _raw = goal.get("pay_per_mile_raw")
+        _floor = goal.get("driver_pay_floor")
+        out.append(
+            f"Rate-per-mile: 10d blended driver pay {rpm(_raw)}/mi is below the "
+            f"{rpm(_floor)}/mi contract floor &mdash; using floor for costing. "
+            f"Check Alvys loads for low-rate or high-deadhead runs in the window.")
     if goal.get("cost_plausible") is False:
         lo, hi = RPM_GOAL_PLAUSIBLE_BAND
         out.append(
@@ -3424,12 +3464,17 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     if not sheets:
         return None
     now = now or pd.Timestamp.now()
-    drivers_df = viol_df = None
+    drivers_df = viol_df = invalid_df = None
     for name, df in sheets.items():
         if df is None or df.empty:
             continue
         ln = str(name).lower()
-        if viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
+        # "Invalid Licenses" must be claimed before the drivers-sheet check
+        # below — its name contains "license" and would be mistaken for the
+        # driver roster otherwise.
+        if invalid_df is None and ("invalid" in ln or "disqualif" in ln):
+            invalid_df = df
+        elif viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
             viol_df = df
         elif drivers_df is None and any(k in ln for k in ("driver", "license", "monitor", "roster", "risk")):
             drivers_df = df
@@ -3437,6 +3482,44 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         drivers_df = next((df for df in sheets.values() if df is not None and not df.empty), None)
     if drivers_df is None or drivers_df.empty:
         return None
+
+    # --- Invalid License Report (DISQUALIFIED / SUSPENDED etc.) ----------
+    # Parsed first so the driver loop below can re-stamp matching rosters
+    # rows — the Risk Index export keeps reporting VALID after SambaSafety
+    # has flagged the driver, so the invalid report wins.
+    def _norm_lic(num) -> str:
+        return re.sub(r"[^A-Z0-9]", "", str(num or "").upper()).lstrip("0")
+
+    invalid_licenses = []
+    if invalid_df is not None and not invalid_df.empty:
+        iname_c = _find_col(invalid_df, ["driver name", "driver", "name"])
+        istat_c = _find_col(invalid_df, ["license status", "status"])
+        iact_c = _find_col(invalid_df, ["latest action", "action"])
+        iactd_c = _find_col(invalid_df, ["latest action date", "action date"])
+        imvrd_c = _find_col(invalid_df, ["mvr date"])
+        ilic_c = _find_col(invalid_df, ["license number", "license #"])
+        istate_c = _find_col(invalid_df, ["license state", "state"])
+        itype_c = _find_col(invalid_df, ["license type", "type"])
+        iscore_c = _find_col(invalid_df, ["mvr score", "score"])
+        inote_c = _find_col(invalid_df, ["note", "latest note"])
+        for _, r in invalid_df.iterrows():
+            nm = str(r[iname_c]).strip() if iname_c and pd.notna(r[iname_c]) else ""
+            if not nm or nm.lower() == "nan" or _is_excluded_driver(nm):
+                continue
+            invalid_licenses.append({
+                "name": nm,
+                "status": (str(r[istat_c]).strip().upper() if istat_c and pd.notna(r[istat_c]) else "INVALID"),
+                "action": (str(r[iact_c]).strip() if iact_c and pd.notna(r[iact_c]) else ""),
+                "action_date": (pd.to_datetime(r[iactd_c], errors="coerce") if iactd_c else pd.NaT),
+                "mvr_date": (pd.to_datetime(r[imvrd_c], errors="coerce") if imvrd_c else pd.NaT),
+                "license": (str(r[ilic_c]).strip() if ilic_c and pd.notna(r[ilic_c]) else ""),
+                "state": (str(r[istate_c]).strip() if istate_c and pd.notna(r[istate_c]) else ""),
+                "type": (str(r[itype_c]).strip() if itype_c and pd.notna(r[itype_c]) else ""),
+                "score": (pd.to_numeric(r[iscore_c], errors="coerce") if iscore_c else float("nan")),
+                "note": (str(r[inote_c]).strip() if inote_c and pd.notna(r[inote_c]) else ""),
+            })
+    invalid_by_lic = {_norm_lic(d["license"]): d for d in invalid_licenses if _norm_lic(d["license"])}
+    invalid_by_name = {d["name"].lower(): d for d in invalid_licenses}
 
     name_c = _find_col(drivers_df, ["driver name", "driver", "employee", "name"])
     status_c = _find_col(drivers_df, ["license status", "licensestatus", "cdl status", "status"])
@@ -3461,7 +3544,13 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         lic = (str(r[lic_c]).strip() if lic_c and pd.notna(r[lic_c]) else "")
         score = pd.to_numeric(r[score_c], errors="coerce") if score_c else float("nan")
         cat = (str(r[cat_c]).strip() if cat_c and pd.notna(r[cat_c]) else "")
-        ok = status.lower() in _LICENSE_OK
+        # Invalid License Report overrides the roster status (the Risk
+        # Index export lags — it can still say VALID after a DISQUALIFIED
+        # action). Belt-and-suspenders with the combine-time overlay.
+        inv = invalid_by_lic.get(_norm_lic(lic)) or invalid_by_name.get(name.lower())
+        if inv:
+            status = inv["status"]
+        ok = status.lower() in _LICENSE_OK and not inv
         days_to_exp = int((exp.normalize() - now.normalize()).days) if pd.notna(exp) else None
         expiring = days_to_exp is not None and 0 <= days_to_exp <= LICENSE_EXPIRY_WARN_DAYS
         expired_by_date = days_to_exp is not None and days_to_exp < 0
@@ -3473,6 +3562,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
             "license": lic, "exp": exp, "days_to_exp": days_to_exp,
             "score": float(score) if pd.notna(score) else None, "category": cat,
             "ok": ok, "expiring": expiring, "expired": (not ok) or expired_by_date, "high": high,
+            "invalid": bool(inv),
         })
 
     license_issues = [d for d in drivers if (not d["ok"]) or d["expiring"]]
@@ -3508,6 +3598,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         "monitored": len(drivers),
         "drivers": drivers,
         "license_issues": license_issues,
+        "invalid_licenses": invalid_licenses,
         "high_risk": high_risk,
         "ranked": ranked,
         "avg_score": (sum(scores) / len(scores)) if scores else None,
@@ -4859,7 +4950,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _win = g.get("pay_window_used") or g.get("pay_window_days")
         parts = []
         if _isnum(_pp):
-            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
+            _pp_raw = g.get("pay_per_mile_raw")
+            _floored = g.get("pay_per_mile_floored")
+            if _floored and _isnum(_pp_raw):
+                parts.append(
+                    f"driver/owner-op pay {rpm(_pp)}/mi (contract floor; "
+                    f"10d blended avg {rpm(_pp_raw)}/mi)")
+            else:
+                parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
         if _isnum(_oh):
             _pin = g.get("overhead_pin")
             _live = g.get("overhead_per_mile_live")
@@ -6513,6 +6611,29 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
                      (f"avg score {avg:.0f} " if avg is not None else "")
                      + _pill("elevated", "bad" if n_high else "good")))
 
+    invalid = samba.get("invalid_licenses") or []
+    if invalid:
+        irows = ""
+        for d in invalid:
+            irows += _tr(
+                [d["name"], d.get("type") or "&mdash;", d["status"],
+                 d.get("action") or "&mdash;", _md(d.get("action_date")),
+                 _md(d.get("mvr_date")),
+                 (d.get("state") or "&mdash;") + " " + _mask_license(d.get("license"))],
+                ["left", "left", "left", "left", "left", "left", "left"],
+                [None, None, "bad", "bad", "bad", None, None])
+        invalid_block = (
+            _section('Invalid / disqualified licenses &middot; pull from dispatch')
+            + _table(["Driver", "Type", "Status", "Latest action", "Action date",
+                      "MVR date", "License"],
+                     ["left", "left", "left", "left", "left", "left", "left"], irows)
+            + _brief("Per SambaSafety's Invalid License Report &mdash; these drivers "
+                     "cannot legally operate until the state clears the action. "
+                     "The Risk Index export may still show VALID; the invalid "
+                     "report is the authoritative signal.", "bad"))
+    else:
+        invalid_block = ""
+
     if issues:
         lrows = ""
         for d in issues:
@@ -6562,6 +6683,7 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
 
     return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
+            f"{invalid_block}"
             f"{_section('License status &middot; action needed')}{license_block}"
             + _alvys_medical_block(alvys_drivers)
             + f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
@@ -6922,7 +7044,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
     rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
-    margin_projection = compute_margin_projection(alvys_sheets) if alvys_sheets else None
+    margin_projection = compute_margin_projection(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     warnings += _rpm_goal_health(rpm_goal)
     for w in warnings:

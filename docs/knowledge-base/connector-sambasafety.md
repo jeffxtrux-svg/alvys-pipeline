@@ -62,14 +62,37 @@ of the brief when present):
 |--------------------|-----------------|---------|
 | **Overview → Risk Index Report** | one row per monitored driver: name, license #, license status, expiration, state, current risk index score, score bucket (Clean / Activity / Exception) | `risk_index_report.csv` → `Drivers` sheet |
 | **MVR Activity → Violations** | one row per violation: driver, date, violation type, points/score, severity | `violationsReport.csv` → `Violations` sheet |
+| **Invalid License Report** (optional) | one row per driver whose license SambaSafety has flagged invalid: status (DISQUALIFIED / SUSPENDED…), latest state action + date, MVR date, license #/state/type | `InvalidLicenseReport.csv` → `Invalid Licenses` sheet **+ status overlay onto the Drivers sheet** |
 | **CSA2010 Preview Scorecard** (optional) | one row per FMCSA BASIC category for X-Trux's DOT: percentile rank, BASIC measure, segment violations, relevant inspections, snapshot date | `CSA2010 Preview Scorecard.csv` → `CSA Scorecard` sheet |
 
 Filenames are configurable via env (`SAMBASAFETY_RISK_INDEX_FILE`,
-`SAMBASAFETY_VIOLATIONS_FILE`, `SAMBASAFETY_CSA_FILE`) but defaults match
-what SambaSafety's report exporter writes by default. The CSA file is
-**fail-soft**: if the download 404s, `sambasafety_main` logs a warning
-and writes the workbook without a `CSA Scorecard` sheet — the scorecard
-brief still renders, just with a "data unavailable" page 10.
+`SAMBASAFETY_VIOLATIONS_FILE`, `SAMBASAFETY_INVALID_FILE`,
+`SAMBASAFETY_CSA_FILE`) but defaults match
+what SambaSafety's report exporter writes by default. The CSA and
+Invalid License files are **fail-soft**: if the download 404s,
+`sambasafety_main` logs a warning and writes the workbook without that
+sheet — the scorecard brief still renders, just with a "data
+unavailable" page 10 (CSA) or no invalid-license section (Invalid).
+
+### Why the Invalid License Report gets a status overlay
+
+The Risk Index export **lags state actions** — observed 2026-06: a driver
+DISQUALIFIED on 05/22 still showed `License Status = VALID` in
+`risk_index_report.csv` three weeks later, while `InvalidLicenseReport.csv`
+carried the DISQUALIFICATION. So `combine_to_workbook` stamps the invalid
+report's status onto matching `Drivers` rows (matched by normalized
+license number — leading zeros stripped — falling back to full name).
+`compute_sambasafety` applies the same override at read time as
+belt-and-suspenders. An invalid license:
+
+- forces the driver into page 2's **License status · action needed** table,
+- renders a dedicated red **Invalid / disqualified licenses** table at the
+  top of page 2 with the state action and dates,
+- fires a `bad` **CDL DISQUALIFIED · NAME** action card on page 1 (these
+  drivers are excluded from the generic CDL EXPIRED card so the wording
+  stays accurate),
+- adds an URGENT per-driver sentence to the page-1 bottom line, and
+- prepends an `N license(s) INVALID/DISQUALIFIED` bit to the page-2 strip.
 
 ## The column re-mapping (`src/sambasafety_combine.py`)
 

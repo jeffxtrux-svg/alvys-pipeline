@@ -87,10 +87,3 @@ jobs:
           QB_OUTPUT_DIR: output/quickbooks
         run: python -m src.qb_onedrive_upload
 
-      - name: Upload output as artifact
-        if: always() && steps.ct_gate.outputs.skip != '1'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qb-data-${{ github.run_number }}
-          path: output/quickbooks/
-          retention-days: 7

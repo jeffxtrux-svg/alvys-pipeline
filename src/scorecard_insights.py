@@ -229,6 +229,22 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     if samba:
         n_high = len(samba.get("high_risk") or [])
         lic_issues = samba.get("license_issues") or []
+        # Invalid License Report — a disqualified/suspended CDL grounds the
+        # driver immediately; name each one with the state action and date.
+        for d in samba.get("invalid_licenses") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            status = str(d.get("status", "INVALID")).upper()
+            act_date = d.get("action_date")
+            try:
+                # NaT raises on strftime — the except keeps the sentence dateless.
+                when = (f" effective {act_date.strftime('%b %d, %Y')}"
+                        if act_date is not None else "")
+            except Exception:
+                when = ""
+            parts.append(
+                f"URGENT: {name}'s license is {status} per SambaSafety's "
+                f"Invalid License Report{when} — pull from dispatch until "
+                f"cleared {_pgref(2)}.")
         if n_high:
             parts.append(
                 f"Driver compliance: {n_high} driver"
@@ -459,7 +475,28 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
     # 'warn' for the 30-day horizon.
     if samba:
         lic_issues = samba.get("license_issues") or []
-        expired = [d for d in lic_issues if d.get("expired")]
+        # Invalid License Report — disqualification/suspension is the most
+        # severe license state; it gets its own card, and those drivers are
+        # excluded from the generic CDL EXPIRED card so the wording stays
+        # accurate (a DISQUALIFIED license isn't "expired").
+        for d in samba.get("invalid_licenses") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            status = str(d.get("status", "INVALID")).upper()
+            action = str(d.get("action", "")).strip()
+            act_date = d.get("action_date")
+            try:
+                when = (f" {act_date.strftime('%m/%d/%y')}"
+                        if act_date is not None else "")
+            except Exception:
+                when = ""
+            detail = (f"State action: {action}{when}. " if action else "")
+            items.append((
+                "bad",
+                f"CDL {status} · {name.upper()}",
+                f"{detail}Driver cannot legally operate — pull from "
+                f"dispatch until cleared. See {_pgref(2, paren=False)}."))
+        expired = [d for d in lic_issues
+                   if d.get("expired") and not d.get("invalid")]
         soon_7 = [d for d in lic_issues
                   if isinstance(d.get("days_to_exp"), int)
                   and 0 <= d["days_to_exp"] <= 7]
@@ -605,6 +642,10 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
     # Page 2 — SambaSafety (MVR + license)
     if samba and samba.get("monitored"):
         bits = [f"{int(samba['monitored'])} drivers monitored"]
+        n_invalid = len(samba.get("invalid_licenses") or [])
+        if n_invalid:
+            bits.append(f"{n_invalid} license{'s' if n_invalid != 1 else ''} "
+                        f"INVALID/DISQUALIFIED")
         n_lic = len(samba.get("license_issues") or [])
         if n_lic:
             bits.append(f"{n_lic} license issue{'s' if n_lic != 1 else ''}")
