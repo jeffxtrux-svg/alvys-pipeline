@@ -35,7 +35,16 @@ on:
   # source refreshes succeed. The script bypasses its "sent today" marker
   # whenever GITHUB_EVENT_NAME is workflow_dispatch, including when called
   # via workflow_call from a manual Refresh All run.
+  # `recipients` MUST be declared here too: the job env references
+  # inputs.recipients, and a reusable workflow is invalid (startup failure when
+  # called) if it references an input not declared under workflow_call.
   workflow_call:
+    inputs:
+      recipients:
+        description: 'Comma-separated recipient override; empty = on-demand default (jeff only).'
+        required: false
+        type: string
+        default: ''
   # Editing this file fires the workflow on push — handy for triggering a
   # run from mobile when the Actions UI's "Run workflow" button isn't
   # reachable. The job step below sets SCORECARD_SKIP_IDEMPOTENCY=1 for
