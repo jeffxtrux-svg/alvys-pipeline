@@ -28,24 +28,30 @@ def test_compute_refresh_status_shape_and_freshness():
         "SambaSafety/SambaSafety_Master.xlsx":  None,                        # no file
     }
     orig_fm, orig_sm = se.get_file_modified, se.get_shared_modified
-    gh_saved = os.environ.pop("GH_TOKEN", None)
+    saved = {k: os.environ.pop(k, None) for k in ("GH_TOKEN", "PBI_WORKSPACE_ID", "PBI_DATASET_ID")}
     se.get_shared_modified = lambda token, url: _NOW - timedelta(hours=10)    # Alvys 10h -> fresh
     se.get_file_modified = lambda token, upn, path: fakes.get(path)
     try:
-        rows = compute_refresh_status("tok", "upn@x", alvys_share="https://share", now=_NOW)
+        rows = compute_refresh_status("tok", "upn@x", alvys_share="https://share",
+                                      wiki_dir="/nonexistent-wiki", now=_NOW)
     finally:
         se.get_file_modified, se.get_shared_modified = orig_fm, orig_sm
-        if gh_saved is not None:
-            os.environ["GH_TOKEN"] = gh_saved
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
 
     by = {r["label"]: r for r in rows}
-    assert set(by) == {"Alvys", "QuickBooks", "Samsara", "SambaSafety", "Google Sheets KPI"}
+    assert set(by) == {"Alvys", "QuickBooks", "Samsara", "SambaSafety", "Google Sheets KPI",
+                       "Knowledge Base Wiki", "Upload Health Check", "Scorecard Health Check",
+                       "Power BI XFreight Report"}
     assert by["Alvys"]["fresh"] is True              # 10h <= 30h
     assert by["QuickBooks"]["fresh"] is False        # 20h  > 8h
     assert by["Samsara"]["fresh"] is True            # 5h  <= 30h
-    assert by["SambaSafety"]["modified"] is None     # no file -> fresh unknown
-    assert by["SambaSafety"]["fresh"] is None
-    assert by["Google Sheets KPI"]["max_h"] is None  # run-status only (no OneDrive file)
+    assert by["SambaSafety"]["modified"] is None and by["SambaSafety"]["fresh"] is None
+    # Power BI unconfigured -> "not configured", never crashes / hits network.
+    assert by["Power BI XFreight Report"]["run_detail"] == "not configured"
+    # Knowledge base: nonexistent dir -> no size; GH_TOKEN unset -> no run time.
+    assert by["Knowledge Base Wiki"]["measure"] is None
     # GH_TOKEN unset -> Actions leg skipped, run cells left blank.
     assert by["Alvys"]["run_detail"] == "&mdash;"
 
@@ -53,21 +59,22 @@ def test_compute_refresh_status_shape_and_freshness():
 def test_build_refresh_status_page_renders_all_sources():
     status = [
         {"label": "Alvys", "modified": _NOW - timedelta(hours=16), "stale_h": 16,
-         "fresh": True, "max_h": 30, "run_icon": "OK", "run_detail": "success"},
-        {"label": "QuickBooks", "modified": _NOW - timedelta(hours=2), "stale_h": 2,
-         "fresh": True, "max_h": 8, "run_icon": "OK", "run_detail": "success"},
+         "fresh": True, "max_h": 30, "run_icon": "OK", "run_detail": "success", "measure": None},
         {"label": "SambaSafety", "modified": _NOW - timedelta(hours=80), "stale_h": 80,
-         "fresh": False, "max_h": 60, "run_icon": "X", "run_detail": "failure"},
-        {"label": "Google Sheets KPI", "modified": None, "stale_h": None,
-         "fresh": None, "max_h": None, "run_icon": "OK", "run_detail": "success"},
+         "fresh": False, "max_h": 60, "run_icon": "X", "run_detail": "failure", "measure": None},
+        {"label": "Knowledge Base Wiki", "modified": _NOW - timedelta(hours=3), "stale_h": 3,
+         "fresh": True, "max_h": 48, "run_icon": "OK", "run_detail": "success",
+         "measure": {"total": 80, "wiki": 32, "raw": 42}},
+        {"label": "Power BI XFreight Report", "modified": None, "stale_h": None,
+         "fresh": None, "max_h": 30, "run_icon": "&mdash;", "run_detail": "not configured", "measure": None},
     ]
     html = build_refresh_status_page(status, "Saturday, June 13, 2026")
-    for label in ("Alvys", "QuickBooks", "SambaSafety", "Google Sheets KPI"):
+    for label in ("Alvys", "SambaSafety", "Knowledge Base Wiki", "Power BI XFreight Report"):
         assert label in html
     assert "Data refresh status" in html
-    assert "Fresh" in html                 # fresh badge present
-    assert "Stale" in html                 # stale badge present
-    assert "run-status only" in html       # Google Sheets KPI badge
+    assert "Fresh" in html and "Stale" in html
+    assert "32 wiki / 42 raw files" in html    # knowledge-base size measurement
+    assert "not configured" in html            # Power BI row before setup
 
 
 def test_build_refresh_status_page_handles_empty():

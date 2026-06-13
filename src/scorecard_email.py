@@ -6935,23 +6935,101 @@ def build_page_coached(samsara, date_str) -> str:
 # pure renderer.
 # ----------------------------------------------------------------------
 REFRESH_SOURCES = [
-    # label, refresh workflow file (for the Actions run status), and the
-    # expected-fresh window in hours (None = run-status only, no staleness flag).
-    {"label": "Alvys",             "wf": "refresh.yml",             "max_h": 30},
-    {"label": "QuickBooks",        "wf": "qb_refresh.yml",          "max_h": 8},
-    {"label": "Samsara",           "wf": "samsara_refresh.yml",     "max_h": 30},
-    {"label": "SambaSafety",       "wf": "sambasafety_refresh.yml", "max_h": 60},
-    {"label": "Google Sheets KPI", "wf": "sheets_refresh.yml",      "max_h": None},
+    # label, refresh workflow file (for the Actions run status), kind, and the
+    # expected-fresh window in hours (None = no staleness flag).
+    #   kind: share = Alvys (read by sharing URL); file = OneDrive file mtime;
+    #         run = workflow run only; wiki = run + knowledge-base file count;
+    #         pbi = Power BI dataset last refresh (Power BI REST API).
+    {"label": "Alvys",                    "wf": "refresh.yml",                  "kind": "share", "max_h": 30},
+    {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8},
+    {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30},
+    {"label": "SambaSafety",              "wf": "sambasafety_refresh.yml",      "kind": "file",  "max_h": 60},
+    {"label": "Google Sheets KPI",        "wf": "sheets_refresh.yml",           "kind": "run",   "max_h": 30},
+    {"label": "Knowledge Base Wiki",      "wf": "karpathy_compile.yml",         "kind": "wiki",  "max_h": 48},
+    {"label": "Upload Health Check",      "wf": "daily_upload_healthcheck.yml", "kind": "run",   "max_h": 30},
+    {"label": "Scorecard Health Check",   "wf": "scorecard_healthcheck.yml",    "kind": "run",   "max_h": 30},
+    {"label": "Power BI XFreight Report", "wf": None,                           "kind": "pbi",   "max_h": 30},
 ]
+
+
+def _wiki_file_count(wiki_dir="Karpathy-Wiki"):
+    """Knowledge-base size from the repo checkout: {total, wiki, raw} file counts,
+    or None if the dir is absent. The brief runs from the repo root in CI."""
+    import glob as _glob
+    try:
+        files = [f for f in _glob.glob(f"{wiki_dir}/**/*", recursive=True) if os.path.isfile(f)]
+        if not files:
+            return None
+        norm = [f.replace(os.sep, "/") for f in files]
+        return {"total": len(files),
+                "wiki": sum(1 for f in norm if "/wiki/" in f),
+                "raw":  sum(1 for f in norm if "/raw/" in f)}
+    except Exception:
+        return None
+
+
+def _pbi_token():
+    """Azure AD client-credentials token for the Power BI REST API (different
+    resource scope than Graph). Reuses the scorecard's Azure app creds. None on
+    any failure."""
+    import requests as _rq
+    tenant = os.environ.get("AZURE_TENANT_ID")
+    client = os.environ.get("AZURE_CLIENT_ID")
+    secret = os.environ.get("AZURE_CLIENT_SECRET")
+    if not (tenant and client and secret):
+        return None
+    try:
+        r = _rq.post(
+            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+            data={"grant_type": "client_credentials", "client_id": client,
+                  "client_secret": secret,
+                  "scope": "https://analysis.windows.net/powerbi/api/.default"},
+            timeout=20)
+        r.raise_for_status()
+        return r.json().get("access_token")
+    except Exception:
+        return None
+
+
+def _pbi_last_refresh():
+    """(endTime_datetime, status) of the configured Power BI dataset's last
+    refresh, or None. Requires PBI_WORKSPACE_ID + PBI_DATASET_ID and the Azure app
+    granted Power BI API access (service principal added to the workspace).
+    Fail-soft — returns None when unconfigured or the call fails."""
+    from datetime import datetime
+    import requests as _rq
+    ws = os.environ.get("PBI_WORKSPACE_ID")
+    ds = os.environ.get("PBI_DATASET_ID")
+    if not (ws and ds):
+        return None
+    try:
+        tok = _pbi_token()
+        if not tok:
+            return None
+        r = _rq.get(
+            f"https://api.powerbi.com/v1.0/myorg/groups/{ws}/datasets/{ds}/refreshes?$top=1",
+            headers={"Authorization": f"Bearer {tok}"}, timeout=20)
+        r.raise_for_status()
+        items = r.json().get("value", [])
+        if not items:
+            return None
+        it = items[0]
+        end = it.get("endTime") or it.get("startTime")
+        dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else None
+        return (dt, it.get("status"))
+    except Exception:
+        return None
 
 
 def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
                            samsara_path="Samsara/Samsara Master.xlsx",
-                           samba_path="SambaSafety/SambaSafety_Master.xlsx", now=None):
-    """Gather per-source freshness for the brief's final page: each source's
-    OneDrive file last-modified time (the "when") plus its latest refresh
-    workflow run from the GitHub Actions API (the "did it work"). Fail-soft — a
-    missing token, file, or GH_TOKEN just leaves that cell blank.
+                           samba_path="SambaSafety/SambaSafety_Master.xlsx",
+                           wiki_dir="Karpathy-Wiki", now=None):
+    """Gather per-source freshness for the brief's final page: each source's "when"
+    (OneDrive file mtime, workflow run time, or Power BI refresh time) plus a
+    fresh/stale flag and the latest refresh-workflow run from the GitHub Actions
+    API. Fail-soft throughout — a missing token, file, GH_TOKEN, or Power BI
+    config just leaves that cell blank.
     """
     from datetime import datetime, timezone, timedelta
     now = now or datetime.now(timezone.utc)
@@ -6962,6 +7040,31 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
     except Exception:
         _recent_runs = _status_icon = None
 
+    def _latest_run(wf):
+        if not (_recent_runs and gh_token and wf):
+            return None
+        try:
+            runs = _recent_runs(repo, wf, now - timedelta(hours=72))
+            return runs[0] if runs else None
+        except Exception:
+            return None
+
+    def _run_cells(run):
+        # returns (icon, detail, run_datetime)
+        if run is None:
+            return (("&mdash;", "&mdash;", None) if not gh_token
+                    else ("&#10067;", "no run in 72h", None))
+        icon = "&mdash;"
+        if _status_icon:
+            icon, _ = _status_icon(run.get("conclusion"), run.get("status"))
+        concl = (run.get("conclusion") or run.get("status") or "unknown").replace("_", " ")
+        started = (run.get("created_at") or "")[:16].replace("T", " ")
+        try:
+            rdt = datetime.fromisoformat((run.get("created_at") or "").replace("Z", "+00:00"))
+        except Exception:
+            rdt = None
+        return (icon, concl + (f" &middot; {started} UTC" if started else ""), rdt)
+
     paths = {
         "QuickBooks":  f"{qb_dir.strip('/')}/QB_ProfitAndLoss.xlsx",
         "Samsara":     samsara_path,
@@ -6969,40 +7072,43 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
     }
     out = []
     for src in REFRESH_SOURCES:
-        label = src["label"]
-        modified = None
-        try:
-            if label == "Alvys" and alvys_share:
-                modified = get_shared_modified(token, alvys_share)
-            elif paths.get(label):
-                modified = get_file_modified(token, upn, paths[label])
-        except Exception:
-            modified = None
+        label, kind = src["label"], src.get("kind")
+        run_icon, run_detail, run_dt = _run_cells(_latest_run(src.get("wf")))
+        when = measure = None
+        if kind == "share" and alvys_share:
+            try: when = get_shared_modified(token, alvys_share)
+            except Exception: when = None
+        elif kind == "file" and paths.get(label):
+            try: when = get_file_modified(token, upn, paths[label])
+            except Exception: when = None
+        elif kind in ("run", "wiki"):
+            when = run_dt   # the workflow run is the refresh event
+            if kind == "wiki":
+                measure = _wiki_file_count(wiki_dir)
+        elif kind == "pbi":
+            pbi = _pbi_last_refresh()
+            if pbi:
+                when, status = pbi
+                s = (status or "").lower()
+                if s == "completed":
+                    run_icon, run_detail = "&#9989;", "completed &middot; Power BI API"
+                elif s in ("failed", "disabled"):
+                    run_icon, run_detail = "&#10060;", f"{status} &middot; Power BI API"
+                else:
+                    run_icon, run_detail = "&#10067;", f"{status or 'unknown'} &middot; Power BI API"
+            else:
+                run_icon, run_detail = "&mdash;", "not configured"
         stale_h = fresh = None
-        if modified is not None:
+        if when is not None:
             try:
-                stale_h = (now - modified).total_seconds() / 3600.0
+                stale_h = (now - when).total_seconds() / 3600.0
                 if src.get("max_h") is not None:
                     fresh = stale_h <= src["max_h"]
             except Exception:
                 pass
-        run_icon, run_detail = "&mdash;", "&mdash;"
-        if _recent_runs and gh_token:
-            try:
-                runs = _recent_runs(repo, src["wf"], now - timedelta(hours=48))
-                if runs:
-                    r = runs[0]
-                    run_icon, _ = _status_icon(r.get("conclusion"), r.get("status"))
-                    concl = (r.get("conclusion") or r.get("status") or "unknown").replace("_", " ")
-                    started = (r.get("created_at") or "")[:16].replace("T", " ")
-                    run_detail = concl + (f" &middot; {started} UTC" if started else "")
-                else:
-                    run_icon, run_detail = "&#10067;", "no run in 48h"
-            except Exception:
-                pass
-        out.append({"label": label, "modified": modified, "stale_h": stale_h,
-                    "fresh": fresh, "max_h": src.get("max_h"),
-                    "run_icon": run_icon, "run_detail": run_detail})
+        out.append({"label": label, "modified": when, "stale_h": stale_h, "fresh": fresh,
+                    "max_h": src.get("max_h"), "run_icon": run_icon, "run_detail": run_detail,
+                    "measure": measure})
     return out
 
 
@@ -7028,6 +7134,11 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
                 when += (" &middot; &lt;1h ago" if ago < 1 else f" &middot; {int(ago)}h ago")
         else:
             when = "&mdash;"
+        # Knowledge-base size measurement (wiki/raw file counts) shown inline.
+        measure = s.get("measure")
+        if measure:
+            mstr = f"{measure.get('wiki', 0)} wiki / {measure.get('raw', 0)} raw files"
+            when = mstr if when == "&mdash;" else f"{when} &middot; {mstr}"
         if max_h is None:
             badge = _pill("run-status only", "mute")
         elif s.get("fresh") is True:
@@ -7047,10 +7158,13 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
     table = _table(["Source", "Last refreshed", "Fresh?", "Latest refresh run"],
                    ["left", "left", "left", "left"], rows_html)
     note = _brief(
-        "Last-refreshed is read from each source's OneDrive file; the run column is the "
-        "latest refresh workflow's outcome from GitHub Actions (last 48h). Google Sheets "
-        "KPI writes to Google Sheets (no OneDrive file), so it shows run status only. "
-        "Stale = the file is older than its expected refresh cadence.", "mute")
+        "Last refreshed: OneDrive file time for Alvys/QuickBooks/Samsara/SambaSafety; "
+        "the workflow run time for Google Sheets KPI, the knowledge-base wiki, and the "
+        "health checks; and the dataset refresh time for Power BI. The run column is the "
+        "latest workflow outcome from GitHub Actions (last 72h). Knowledge Base Wiki also "
+        "shows its size (compiled wiki pages + raw inbox files). Stale = older than the "
+        "source's expected cadence. Power BI shows 'not configured' until its workspace + "
+        "dataset IDs and Power BI API access are set up.", "mute")
     return head + _section("Data refresh status &middot; as of " + date_str) + table + note
 
 

@@ -160,6 +160,13 @@ jobs:
           # Reuses the GH_PAT already used by the upload-status digest. Fail-soft:
           # if absent, the run column just shows blanks.
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          # Power BI XFreight Report last-refresh row on that page. Needs the Azure
+          # app granted Power BI API access (service principal added to the
+          # workspace) plus these IDs. Until both secrets are set, the row reads
+          # "not configured" and everything else is unaffected. Uses the AZURE_*
+          # creds above for the Power BI token.
+          PBI_WORKSPACE_ID: ${{ secrets.PBI_WORKSPACE_ID }}
+          PBI_DATASET_ID: ${{ secrets.PBI_DATASET_ID }}
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive
