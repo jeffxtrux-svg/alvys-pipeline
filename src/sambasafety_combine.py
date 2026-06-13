@@ -360,7 +360,8 @@ def combine_to_workbook(risk_csv: bytes | str | Path, violations_csv: bytes | st
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         drivers.to_excel(writer, sheet_name="Drivers", index=False)
         violations.to_excel(writer, sheet_name="Violations", index=False)
-        invalid.to_excel(writer, sheet_name="Invalid Licenses", index=False)
+        if not invalid.empty:
+            invalid.to_excel(writer, sheet_name="Invalid Licenses", index=False)
         if not csa.empty:
             csa.to_excel(writer, sheet_name="CSA Scorecard", index=False)
     return buf.getvalue()
