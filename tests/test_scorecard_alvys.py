@@ -145,7 +145,7 @@ def test_xtrux_awaiting_driver_pay_excluded():
 
 def test_xtrux_holdout_margin_threshold():
     """X-Trux loads with Corrected Margin % ((Revenue - Driver Rate) / Revenue)
-    at or above the 80% hold-out threshold are held out of P&L (driver pay too
+    at or above the 74% hold-out threshold are held out of P&L (driver pay too
     low for the revenue — e.g. brokered to a carrier whose cost isn't in Driver
     Rate). Loads below the threshold count normally. X-Trux only."""
     pk = pd.Timestamp(2026, 4, 14)
@@ -156,14 +156,14 @@ def test_xtrux_holdout_margin_threshold():
                        "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 0,
                        "Scheduled Pickup": pk, "Load Status": "In Transit"})
     rows = [
-        xt(4000, 80),    # 98.0% margin -> held out
-        xt(1000, 200),   # 80.0% margin -> held out (threshold is inclusive)
-        xt(1000, 250),   # 75.0% margin -> counts
+        xt(1000, 50),    # 95% margin -> held out
+        xt(1000, 260),   # 74% margin -> held out (threshold is inclusive)
+        xt(1000, 400),   # 60% margin -> counts
     ]
     e = compute_alvys_entities({"Loads": pd.DataFrame(rows)}, start=APR_START, end=APR_END)
     xt_out = e["X-Trux"]
-    # Only the 75%-margin load is in P&L: revenue 1000, cost 250.
-    assert round(xt_out["revenue"]) == 1000 and round(xt_out["cost"]) == 250
+    # Only the 60%-margin load is in P&L: revenue 1000, cost 400.
+    assert round(xt_out["revenue"]) == 1000 and round(xt_out["cost"]) == 400
     assert xt_out["loads"] == 1 and xt_out["unsettled"] == 2
 
 

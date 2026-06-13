@@ -12,6 +12,8 @@
 # SafetyEvents, BL speed key, RPM chart/tile parity, MTD idle gallons, etc.).
 # trigger: 2026-06-13 — one-shot to Jeff after the X-Trux Corrected Margin %
 # (>= 80%) hold-out rule; X-Trux should read ~$225,078.85.
+# trigger: 2026-06-13 — re-fire after lowering the X-Trux hold-out to >= 74%
+# (catches Valley Play at 75.51%); X-Trux should read ~$222,915.89.
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.

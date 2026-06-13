@@ -595,7 +595,7 @@ ALVYS_OPEN_STATUSES = {"open"}
 # Such loads are held out of BOTH revenue and cost until they settle, surfaced as
 # `unsettled`. X-Trux ONLY — X-Linx brokerage legitimately runs thin and is
 # exempt. Override at runtime via ALVYS_XTRUX_HOLDOUT_MARGIN.
-ALVYS_XTRUX_HOLDOUT_MARGIN = 0.80
+ALVYS_XTRUX_HOLDOUT_MARGIN = 0.74
 
 
 def _entity_group(office) -> str | None:
