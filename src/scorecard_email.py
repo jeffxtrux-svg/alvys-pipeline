@@ -1717,6 +1717,22 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         return None
     # Owner-op pay uses X-Trux Inc loads only (all X-Trux O/Os on same contract rate)
     xtrux_only = sub[sub[office_col].astype(str).str.upper().str.contains("TRUX")]
+    # Flag loads brokered out to a carrier so the driver-pay/mi reflects only loads
+    # actually DRIVEN BY an X-Trux driver. A brokered load carries a placeholder
+    # Driver Rate (the real cost is the Carrier Rate), so its big mileage with tiny
+    # driver pay would drag the blended $/mi below the contract floor. Same hold-out
+    # as the entity P&L: Corrected Margin % ((Revenue - Driver Rate)/Revenue) >= the
+    # threshold marks a brokered/under-costed load. Excluded from the pay window
+    # (numerator and denominator) below — but NOT from YTD miles, since a genuinely
+    # unsettled own-driver load (pay pending) still operated those truck miles.
+    # (Lifts the 10d blend from ~$1.72 to ~$1.81/mi — above the floor.)
+    _xo_rev = _col_any(xtrux_only, ["Customer Revenue", "Revenue"]).fillna(0)
+    _xo_dr = _col(xtrux_only, "Driver Rate").fillna(0)
+    _xo_margin = pd.Series(0.0, index=xtrux_only.index)
+    _xo_pos = _xo_rev > 0
+    _xo_margin[_xo_pos] = (_xo_rev[_xo_pos] - _xo_dr[_xo_pos]) / _xo_rev[_xo_pos]
+    _xo_holdout = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
+    brokered_mask = _xo_pos & (_xo_margin >= _xo_holdout)
     dates = _dates(sub, ALVYS_DATE_CANDIDATES)
     dates_xt = _dates(xtrux_only, ALVYS_DATE_CANDIDATES)
     pay = _col(xtrux_only, "Driver Rate").fillna(0)
@@ -1735,9 +1751,12 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     # Try the configured window first, then widen through the fallback windows until
     # there are enough settled loads + miles; if none qualify, use the widest as a
     # best-effort read and flag it (pay_window_fallback) so the brief can warn.
-    # Pay window uses X-Trux Inc only; fallback thresholds check those miles
+    # Pay window uses X-Trux Inc driver loads only (brokered loads excluded so the
+    # blended driver pay reflects actual X-Trux drivers); fallback thresholds check
+    # those miles.
     def _window_mask(days):
-        return (dates_xt >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+        return ((dates_xt >= (now.normalize() - pd.Timedelta(days=days)))
+                & (pay > 0) & (~brokered_mask))
     # Revenue/actual-RPM uses X-Trux Inc only to match the pay-window scope
     def _rev_mask(days):
         return dates_xt >= (now.normalize() - pd.Timedelta(days=days))

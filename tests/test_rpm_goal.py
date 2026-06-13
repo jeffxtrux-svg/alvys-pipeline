@@ -146,6 +146,27 @@ def test_pay_leg_uses_settled_loads_only():
     assert abs(g["overhead_per_mile"] - (_OVERHEAD / (_MILES + 700))) < 1e-9
 
 
+def test_pay_per_mile_excludes_brokered_loads():
+    """Blended driver pay/mi reflects actual X-Trux drivers only. A load brokered
+    out to a carrier (tiny placeholder Driver Rate, high Corrected Margin %) has
+    big miles but ~no driver pay; including it drags the blend below the contract
+    floor. It's excluded from the pay window (rate AND miles), but its truck miles
+    still count toward the YTD overhead denominator."""
+    rows = [dict(Office="X-Trux, Inc", **{"Customer Revenue": 2600, "Driver Rate": 2000,
+                 "Total Dispatch Mileage": 1000, "Scheduled Pickup": _RECENT,
+                 "Load Status": "Delivered"}) for _ in range(5)]
+    # Brokered: 98% Corrected Margin (4000 rev, 80 driver rate), 1300 mi.
+    rows.append(dict(Office="X-Trux, Inc", **{"Customer Revenue": 4000, "Driver Rate": 80,
+                "Total Dispatch Mileage": 1300, "Scheduled Pickup": _RECENT,
+                "Load Status": "Delivered"}))
+    g = compute_rpm_goal({"Loads": pd.DataFrame(rows)}, _qb_pnl())
+    assert abs(g["pay_per_mile_raw"] - 2.0) < 1e-9       # 10000/5000, brokered excluded
+    assert g["pay_per_mile_floored"] is False            # 2.0 > 1.76 floor, no flooring
+    assert abs(g["pay_miles"] - 5000) < 1e-9             # brokered 1300 mi out of the pay leg
+    assert g["pay_loads"] == 5
+    assert abs(g["ytd_miles"] - 6300) < 1e-9             # but brokered miles count toward YTD
+
+
 def test_returns_none_without_xtrux_loads():
     only_xlinx = {"Loads": pd.DataFrame([
         dict(Office="X-Linx, Inc.", **{"Customer Revenue": 800, "Driver Rate": 500,
