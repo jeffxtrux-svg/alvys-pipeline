@@ -121,22 +121,29 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Recipient policy:
-          #   workflow_dispatch with empty recipients input → jeff only
-          #     (one-shot/manual sends default to a quiet single-mailbox
-          #     test send so they don't fan out to the whole team).
+          #   workflow_dispatch / push with empty recipients input → jeff only
+          #     (manual + mobile-escape-hatch sends default to a quiet
+          #     single-mailbox test send so a verification run doesn't fan out
+          #     to the whole team).
           #   workflow_dispatch with recipients input set    → that list.
-          #   any other trigger (schedule / push / workflow_call) → the
-          #     standing list (jeff + jb).
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
+          #   scheduled / workflow_call → the standing list (jeff + jb).
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
           # Push and manual dispatch bypass the same-day idempotency marker so
           # on-demand re-sends always fire. Cron slots leave the marker in force
           # so only the first scheduled slot each day actually emails.
           SCORECARD_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '1' || '' }}
-          # Read the exact workbook the Power BI report uses, by its OneDrive sharing
-          # URL — there is a second file of the same name, so reading by name picked
-          # the wrong (un-settled) one. The sharing URL resolves to the right item.
-          SCORECARD_ALVYS_SHARE_URL: ${{ secrets.ALVYS_SHARE_URL }}
-          SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+          # Read the EXACT workbook the Power BI report uses. There are two
+          # similarly-named files in OneDrive:
+          #   WRONG: "Alvys Master 2026.xlsx"  (space) in /Documents root — an
+          #          un-settled duplicate that inflates revenue / margin.
+          #   RIGHT: "Alvys Master2026.xlsx"   (no space) in the
+          #          "API Feeds and Updated XLXS" subfolder — what PBI reads.
+          # The ALVYS_SHARE_URL secret had drifted to the wrong item, so we no
+          # longer trust it: read by the explicit subfolder path, which is
+          # unambiguous against the root duplicate. Leave the share URL empty so
+          # the code skips it and uses the verified path.
+          SCORECARD_ALVYS_SHARE_URL: ""
+          SCORECARD_ALVYS_PATH: "API Feeds and Updated XLXS/Alvys Master2026.xlsx"
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive
@@ -175,7 +182,7 @@ jobs:
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Mirror the send step's recipient policy so a one-shot dispatch
           # to a single mailbox doesn't fan its failure notice out.
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'

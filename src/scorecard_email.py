@@ -150,6 +150,15 @@ ALVYS_MASTER_SHARE_URL = (
     "IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
 )
 
+# Fingerprint of the CORRECT workbook. The canonical "Alvys Master2026.xlsx"
+# (no space, in the "API Feeds and Updated XLXS" subfolder, re-uploaded every
+# afternoon) has exactly these three tabs. A same-named un-settled duplicate
+# ("Alvys Master 2026.xlsx", WITH a space, in the Documents root) has been read
+# by mistake several times and silently ships inflated revenue. main() aborts
+# the brief if the workbook it read is missing any of these tabs, so a wrong
+# file fails loudly (failure email) instead of emailing wrong numbers.
+ALVYS_EXPECTED_TABS = {"fuel", "loads", "trips"}
+
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
     "Scheduled Pickup", "Dispatched Date", "Invoiced Date", "Delivered",
@@ -7394,7 +7403,11 @@ def main() -> int:
     from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
-    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master2026.xlsx")
+    # Canonical no-space file in its subfolder. A second "Alvys Master 2026.xlsx"
+    # (with a space) sits in the Documents root and is an un-settled duplicate —
+    # the subfolder path here is unambiguous against it.
+    alvys_path = os.environ.get(
+        "SCORECARD_ALVYS_PATH", "API Feeds and Updated XLXS/Alvys Master2026.xlsx")
     # Read the Alvys workbook from this exact OneDrive sharing URL instead of by
     # name — avoids reading the wrong file when a duplicate of the same name
     # exists. Default is the canonical "Alvys Master2026.xlsx" the Power BI
@@ -7444,6 +7457,24 @@ def main() -> int:
     if alvys_sheets is None:
         alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
         data_asof = get_file_modified(token, upn, alvys_path)
+    # Wrong-file guard. The correct Alvys Master2026.xlsx has Fuel/Loads/Trips
+    # tabs; the un-settled same-named duplicate does not. If we somehow read a
+    # workbook without those tabs, abort rather than email inflated numbers —
+    # the workflow's failure step then notifies Jeff. (Fixed this 5+ times by
+    # hand; this makes a wrong read self-announcing.)
+    if alvys_sheets is not None:
+        tabs = sorted(alvys_sheets.keys())
+        got = {str(s).strip().lower() for s in alvys_sheets.keys()}
+        log.info("Alvys workbook tabs read: %s", tabs)
+        missing_tabs = ALVYS_EXPECTED_TABS - got
+        if missing_tabs:
+            raise ValueError(
+                f"Alvys workbook read from '{alvys_path}' is missing expected tab(s) "
+                f"{sorted(missing_tabs)} — got {tabs}. This means the WRONG file was "
+                f"read. The correct 'Alvys Master2026.xlsx' (no space, in 'API Feeds "
+                f"and Updated XLXS') has Fuel/Loads/Trips. Refusing to send a brief "
+                f"with wrong numbers."
+            )
     alvys_pipeline_sheets = _safe_read(token, upn, alvys_pipeline_path, missing, "Alvys Pipeline")
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
