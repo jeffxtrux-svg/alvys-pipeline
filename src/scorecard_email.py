@@ -1933,19 +1933,32 @@ def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: d
     miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
     settled = pay > 0
+    # Cost (driver-pay) leg excludes loads brokered out to a carrier, mirroring
+    # compute_rpm_goal — a brokered load's placeholder Driver Rate isn't X-Trux
+    # driver pay, so it would understate cost/mi. Same hold-out as the entity P&L
+    # (Corrected Margin % >= threshold). The revenue (actual) leg keeps all settled
+    # X-Trux Inc loads, so cards and chart stay aligned.
+    _pos_t = rev > 0
+    _margin_t = pd.Series(0.0, index=sub.index)
+    _margin_t[_pos_t] = (rev[_pos_t] - pay[_pos_t]) / rev[_pos_t]
+    _holdout_t = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
+    settled_pay = settled & ~(_pos_t & (_margin_t >= _holdout_t))
 
     labels, cost_s, goal_s, actual_s = [], [], [], []
     months = _last_6_months()
     for i, (yy, mm) in enumerate(months):
-        m = settled & (dates.dt.year == yy) & (dates.dt.month == mm)
+        in_month = (dates.dt.year == yy) & (dates.dt.month == mm)
+        m = settled & in_month            # actual: all settled X-Trux Inc loads
+        mp = settled_pay & in_month       # cost: X-Trux driver loads only
         mi = float(miles[m].sum())
+        mi_pay = float(miles[mp].sum())
         lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
         if i == len(months) - 1:
             lab += "*"
         labels.append(lab)
         actual_s.append((float(rev[m].sum()) / mi) if mi else 0.0)
-        if mi and overhead is not None:
-            cpm = float(pay[m].sum()) / mi + overhead
+        if mi_pay and overhead is not None:
+            cpm = float(pay[mp].sum()) / mi_pay + overhead
             cost_s.append(cpm)
             goal_s.append(cpm / target_or if target_or else cpm)
         else:
