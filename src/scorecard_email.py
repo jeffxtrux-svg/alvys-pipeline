@@ -5214,7 +5214,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             # Alvys-side total back to the AR PAST DUE · Alvys tile on page 1
             # (the QB-keyed total above only counts Alvys amounts that have a
             # QB anchor).
-            _qb_keys = {_norm_inv(r["invoice"]) for r in _pd_rows if r.get("invoice")}
+            # Match against ALL open QB invoices, not just past-due ones. A load
+            # can be past due in Alvys while its QB invoice is still "Current"
+            # (due today) — it's invoiced, so it's NOT an Alvys-only orphan. Using
+            # only past-due QB rows here wrongly flagged e.g. T1008720 (QB due 6/13)
+            # against Alvys load 1008720 "1d past due".
+            _qb_keys = {_norm_inv(r.get("invoice"))
+                        for r in (qb_ar.get("open_invoices") or []) if r.get("invoice")}
             _BUCKET_ORDER = {"1&ndash;30": 0, "31&ndash;60": 1, "61&ndash;90": 2, "91+": 3}
             def _bucket_from_days(d: int) -> str:
                 if d <= 30: return "1&ndash;30"
