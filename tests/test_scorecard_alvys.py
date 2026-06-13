@@ -1,11 +1,11 @@
 """Regression tests for the scorecard's Alvys KPIs.
 
 These lock in the contract that matches the Power BI XFreight Report:
-  - cost / "Driver Rate" = SUM(Loads[Driver Rate])  (Carrier Rate is NOT added)
-  - margin = Customer Revenue - Driver Rate
-  - margin_pct = Margin / Revenue = (Revenue - Driver Rate) / Revenue
-                                     (same formula for both entities,
-                                      matches Power BI)
+  - X-Trux cost = SUM(Loads[Driver Rate])  (settled loads only, Driver Rate > 0)
+  - X-Linx cost = SUM(Loads[Driver Rate] + Loads[Carrier Rate])
+                  (brokered: carrier payout lands in Carrier Rate, Driver Rate = 0)
+  - margin = Customer Revenue - cost
+  - margin_pct = Margin / Revenue  (same formula for both entities, matches Power BI)
   - entities are grouped by the Office slicer, not the Invoice As billing column
   - "Loads" counts every non-cancelled load in the window, not just revenue ones
 
@@ -33,10 +33,10 @@ def _loads():
              "Driver Rate": 300, "Carrier Rate": 0, "Total Dispatch Mileage": 100,
              "Empty Dispatch Mileage": 10, "Scheduled Pickup": pd.Timestamp(2026, 4, 10),
              "Load Status": "Delivered"}),
-        # brokered load: Office is X-Linx but it is invoiced under XFreight, and it
-        # carries a Carrier Rate that must be ignored (payout lives in Driver Rate).
+        # brokered load: Office is X-Linx, invoiced as XFreight. Carrier payout
+        # is in Carrier Rate (Driver Rate = 0 — no owner-op on brokered loads).
         dict(Office="X-Linx, Inc.", **{"Invoice As": "XFreight"}, **{"Customer Revenue": 500,
-             "Driver Rate": 400, "Carrier Rate": 999, "Total Dispatch Mileage": 80,
+             "Driver Rate": 0, "Carrier Rate": 400, "Total Dispatch Mileage": 80,
              "Empty Dispatch Mileage": 0, "Scheduled Pickup": pd.Timestamp(2026, 4, 12),
              "Load Status": "Delivered"}),
         # zero-revenue but settled (driver paid) — e.g. a positioning / deadhead
@@ -87,10 +87,11 @@ def test_grouping_by_office_not_invoice_as():
     assert round(e["X-Trux"]["revenue"]) == 1000     # L2 not folded into X-Trux
 
 
-def test_carrier_rate_is_not_added():
-    # L2 has Carrier Rate 999; cost must be the Driver Rate (400), not 400+999.
+def test_carrier_rate_adds_to_xlinx_cost():
+    # X-Linx brokered loads have Driver Rate = 0 and Carrier Rate = 400 (the
+    # carrier payout). Cost must be Driver Rate + Carrier Rate = 400.
     e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
-    assert round(e["X-Linx"]["cost"]) == 400
+    assert round(e["X-Linx"]["cost"]) == 400         # DR 0 + CR 400
     assert round(e["X-Linx"]["margin"]) == 100       # 500 - 400
 
 

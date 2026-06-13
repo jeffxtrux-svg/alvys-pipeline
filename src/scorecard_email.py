@@ -761,6 +761,8 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if not office_col:
         return {}
+    log.info("compute_alvys_entities: office_col=%r  available=[%s]",
+             office_col, ", ".join(c for c in loads.columns if any(n in c.lower() for n in ["office", "invoice"])))
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     mask = pd.Series(True, index=loads.index)
     if "Load Status" in loads.columns:
@@ -804,15 +806,18 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         # No open-load estimation here; estimates live in daily_upload.py only.
         rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
         if ent == "X-Linx":
-            # X-Linx brokerage: cost = Driver Rate only. Carrier Rate is the
-            # broker's buy-side rate field and is NOT the payout; the actual
-            # payout to the carrier lives in Driver Rate (same as asset side).
+            # X-Linx brokerage: cost = Driver Rate + Carrier Rate. For brokered
+            # loads the carrier payout lands in Carrier Rate (Driver Rate is 0).
+            # Mirrors Power BI Total Load Cost DAX: SUM(Driver Rate + Carrier Rate).
             revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
-            cost = float(rate_col.sum()) if rate_col is not None else 0.0
+            carrier_col = _col(rows, "Carrier Rate").fillna(0) if "Carrier Rate" in rows.columns else None
+            dr_cost = float(rate_col.sum()) if rate_col is not None else 0.0
+            cr_cost = float(carrier_col.sum()) if carrier_col is not None else 0.0
+            cost = dr_cost + cr_cost
             n_loads = len(rows)
             n_unsettled = 0
-            log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f cost",
-                     n_loads, cost)
+            log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f + CR $%.2f = $%.2f cost",
+                     n_loads, dr_cost, cr_cost, cost)
         else:
             # X-Trux: settled loads only (Driver Rate > 0) — PBI excludes open
             # loads implicitly because they have no DR yet; to match to the penny
