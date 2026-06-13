@@ -51,5 +51,10 @@ jobs:
     name: Scorecard email
     needs: [alvys, samsara, quickbooks, sambasafety]
     if: inputs.include_scorecard != 'false'
+    # scorecard_email.yml requests contents: write (it commits the Karpathy-Wiki
+    # archive). A called workflow can't request more than the caller grants, and
+    # this caller job otherwise defaults to contents: read — so grant write here.
+    permissions:
+      contents: write
     uses: ./.github/workflows/scorecard_email.yml
     secrets: inherit
