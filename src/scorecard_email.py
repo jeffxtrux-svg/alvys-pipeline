@@ -6928,12 +6928,138 @@ def build_page_coached(samsara, date_str) -> str:
             f"enables the field this column auto-populates.</div>")
 
 
+# ----------------------------------------------------------------------
+# Data refresh status (final brief page) — when each source last updated
+# and whether its refresh workflow ran clean. compute_refresh_status() does
+# the network gathering (called from main); build_refresh_status_page() is a
+# pure renderer.
+# ----------------------------------------------------------------------
+REFRESH_SOURCES = [
+    # label, refresh workflow file (for the Actions run status), and the
+    # expected-fresh window in hours (None = run-status only, no staleness flag).
+    {"label": "Alvys",             "wf": "refresh.yml",             "max_h": 30},
+    {"label": "QuickBooks",        "wf": "qb_refresh.yml",          "max_h": 8},
+    {"label": "Samsara",           "wf": "samsara_refresh.yml",     "max_h": 30},
+    {"label": "SambaSafety",       "wf": "sambasafety_refresh.yml", "max_h": 60},
+    {"label": "Google Sheets KPI", "wf": "sheets_refresh.yml",      "max_h": None},
+]
+
+
+def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
+                           samsara_path="Samsara/Samsara Master.xlsx",
+                           samba_path="SambaSafety/SambaSafety_Master.xlsx", now=None):
+    """Gather per-source freshness for the brief's final page: each source's
+    OneDrive file last-modified time (the "when") plus its latest refresh
+    workflow run from the GitHub Actions API (the "did it work"). Fail-soft — a
+    missing token, file, or GH_TOKEN just leaves that cell blank.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = now or datetime.now(timezone.utc)
+    repo = os.environ.get("GITHUB_REPOSITORY", "jeffxtrux-svg/alvys-pipeline")
+    gh_token = os.environ.get("GH_TOKEN", "")
+    try:
+        from src.upload_status_email import _recent_runs, _status_icon
+    except Exception:
+        _recent_runs = _status_icon = None
+
+    paths = {
+        "QuickBooks":  f"{qb_dir.strip('/')}/QB_ProfitAndLoss.xlsx",
+        "Samsara":     samsara_path,
+        "SambaSafety": samba_path,
+    }
+    out = []
+    for src in REFRESH_SOURCES:
+        label = src["label"]
+        modified = None
+        try:
+            if label == "Alvys" and alvys_share:
+                modified = get_shared_modified(token, alvys_share)
+            elif paths.get(label):
+                modified = get_file_modified(token, upn, paths[label])
+        except Exception:
+            modified = None
+        stale_h = fresh = None
+        if modified is not None:
+            try:
+                stale_h = (now - modified).total_seconds() / 3600.0
+                if src.get("max_h") is not None:
+                    fresh = stale_h <= src["max_h"]
+            except Exception:
+                pass
+        run_icon, run_detail = "&mdash;", "&mdash;"
+        if _recent_runs and gh_token:
+            try:
+                runs = _recent_runs(repo, src["wf"], now - timedelta(hours=48))
+                if runs:
+                    r = runs[0]
+                    run_icon, _ = _status_icon(r.get("conclusion"), r.get("status"))
+                    concl = (r.get("conclusion") or r.get("status") or "unknown").replace("_", " ")
+                    started = (r.get("created_at") or "")[:16].replace("T", " ")
+                    run_detail = concl + (f" &middot; {started} UTC" if started else "")
+                else:
+                    run_icon, run_detail = "&#10067;", "no run in 48h"
+            except Exception:
+                pass
+        out.append({"label": label, "modified": modified, "stale_h": stale_h,
+                    "fresh": fresh, "max_h": src.get("max_h"),
+                    "run_icon": run_icon, "run_detail": run_detail})
+    return out
+
+
+def build_refresh_status_page(refresh_status, date_str) -> str:
+    """Final brief page: data refresh status — when each source last updated and
+    whether its refresh workflow ran clean, so the reader can trust the brief is
+    built on current data."""
+    head = _header("Data refresh status &mdash; when each source last updated",
+                   15, date_str, section='DATA')
+    rows_html = ""
+    for s in (refresh_status or []):
+        label = s.get("label", "")
+        modified = s.get("modified")
+        max_h = s.get("max_h")
+        if modified is not None:
+            try:
+                t = pd.Timestamp(modified).tz_convert("America/Chicago")
+            except Exception:
+                t = pd.Timestamp(modified)
+            when = t.strftime("%b %d, %Y %I:%M %p") + " CT"
+            ago = s.get("stale_h")
+            if ago is not None:
+                when += (" &middot; &lt;1h ago" if ago < 1 else f" &middot; {int(ago)}h ago")
+        else:
+            when = "&mdash;"
+        if max_h is None:
+            badge = _pill("run-status only", "mute")
+        elif s.get("fresh") is True:
+            badge = _pill("Fresh", "good")
+        elif s.get("fresh") is False:
+            badge = _pill(f"Stale (&gt;{max_h}h)", "bad")
+        else:
+            badge = _pill("unknown", "mute")
+        run = f"{s.get('run_icon', '&mdash;')} {s.get('run_detail', '&mdash;')}"
+        rows_html += (
+            f"<tr>"
+            f"<td style='padding:8px 12px;font-weight:700;color:{INK};border-top:1px solid {LINE};'>{label}</td>"
+            f"<td style='padding:8px 12px;color:{INK};border-top:1px solid {LINE};font-size:12px;'>{when}</td>"
+            f"<td style='padding:8px 12px;border-top:1px solid {LINE};'>{badge}</td>"
+            f"<td style='padding:8px 12px;color:{MUTE};border-top:1px solid {LINE};font-size:12px;'>{run}</td>"
+            f"</tr>")
+    table = _table(["Source", "Last refreshed", "Fresh?", "Latest refresh run"],
+                   ["left", "left", "left", "left"], rows_html)
+    note = _brief(
+        "Last-refreshed is read from each source's OneDrive file; the run column is the "
+        "latest refresh workflow's outcome from GitHub Actions (last 48h). Google Sheets "
+        "KPI writes to Google Sheets (no OneDrive file), so it shows run status only. "
+        "Stale = the file is older than its expected refresh cadence.", "mute")
+    return head + _section("Data refresh status &middot; as of " + date_str) + table + note
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None, csa=None) -> str:
+               customer_rpm=None, csa=None, refresh_status=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
@@ -7101,7 +7227,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # safety event in the last 190 days, sorted newest-coached
             # first. Coach name column is a placeholder until Samsara
             # exposes user attribution — see build_page_coached docstring.
-            f"{wrap(build_page_coached(samsara, date_str))}"
+            f"{wrap(build_page_coached(samsara, date_str))}{pb}"
+            # FINAL PAGE — data refresh status: when each source last updated and
+            # whether its refresh workflow ran clean.
+            f"{wrap(build_refresh_status_page(refresh_status, date_str))}"
             f"</body></html>")
 
 
@@ -7110,7 +7239,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                  alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None,
-                 dso_hist_sheets=None) -> str:
+                 dso_hist_sheets=None, refresh_status=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(
         alvys_sheets, pipeline_sheets=alvys_pipeline_sheets
@@ -7154,7 +7283,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
                       avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm, csa=csa)
+                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
@@ -7580,9 +7709,14 @@ def main() -> int:
     if missing:
         log.warning("Required files missing: %s — those sections will be blank.", ", ".join(missing))
 
+    # Data refresh status for the brief's final page: when each source last
+    # updated (OneDrive file mtime) + its latest refresh-workflow run. Fail-soft.
+    refresh_status = compute_refresh_status(token, upn, alvys_share=alvys_share, qb_dir=qb_dir,
+                                            samsara_path=samsara_path, samba_path=samba_path)
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
-                        sambasafety_sheets=samba_sheets, dso_hist_sheets=dso_hist_sheets)
+                        sambasafety_sheets=samba_sheets, dso_hist_sheets=dso_hist_sheets,
+                        refresh_status=refresh_status)
     # Pre-send review — two layers:
     #   1. scorecard_lint  — rule-based, always on, catches known regressions
     #   2. scorecard_review — LLM-based (Claude), opt-in via ANTHROPIC_API_KEY,

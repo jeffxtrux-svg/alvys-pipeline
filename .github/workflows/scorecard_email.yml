@@ -155,6 +155,11 @@ jobs:
           # and must NOT be used.
           SCORECARD_ALVYS_SHARE_URL: ${{ secrets.ALVYS_SHARE_URL }}
           SCORECARD_ALVYS_PATH: "Alvys Master2026.xlsx"
+          # Read-only token for the brief's final "Data refresh status" page, which
+          # queries the GitHub Actions API for each refresh workflow's latest run.
+          # Reuses the GH_PAT already used by the upload-status digest. Fail-soft:
+          # if absent, the run column just shows blanks.
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive
