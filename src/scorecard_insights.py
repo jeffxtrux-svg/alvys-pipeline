@@ -307,7 +307,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     # policy was dropped from the brief per Jeff, 2026-06).
     if equipment:
         od_tractors = [t for t in (equipment.get("tractors") or [])
-                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < 0]
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < -30]
         if od_tractors:
             units = ", ".join(str(t.get("unit") or "?") for t in od_tractors[:8])
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
@@ -315,7 +315,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"Tractors overdue on annual DOT inspection: "
                 f"{units}{more} {_pgref(5)}.")
         od_trailers = [t for t in (equipment.get("trailers") or [])
-                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < 0]
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < -30]
         if od_trailers:
             units = ", ".join(str(t.get("unit") or "?") for t in od_trailers[:8])
             more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""

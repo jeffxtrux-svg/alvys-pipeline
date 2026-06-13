@@ -4017,7 +4017,13 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         if any(r.get("year") or r.get("make") for r in rows):
             head_cols.append(th.format(t="Year/Make"))
         if show_annual:
-            head_cols.append(th.format(t="Annual Insp Due"))
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"120 Day Insp Due"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>Company Policy</div></th>"
+            )
             head_cols.append(th.format(t="Days"))
         if show_reg:
             head_cols.append(th.format(t="Reg Expires"))
@@ -4099,7 +4105,8 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     sort_note = "Sort: soonest annual inspection first."
     body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
              f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
-             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note}</div>")
+             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note} "
+             f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
