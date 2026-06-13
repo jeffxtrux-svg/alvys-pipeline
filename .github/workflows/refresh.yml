@@ -75,7 +75,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           ONEDRIVE_FOLDER_PATH: ""
           # Uploads as "Alvys Pipeline.xlsx" — the API-data half of the
           # hybrid merge. The desktop "Alvys Master Fixer" tool downloads
@@ -97,7 +97,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           ALVYS_PIPELINE_PATH: "Alvys Pipeline.xlsx"
           COMBINED_MASTER_FILENAME: "XFreight Master.xlsx"
           COMBINED_MASTER_FOLDER: ""

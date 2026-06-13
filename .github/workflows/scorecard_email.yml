@@ -119,7 +119,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Recipient policy:
           #   workflow_dispatch with empty recipients input → jeff only
           #     (one-shot/manual sends default to a quiet single-mailbox
@@ -127,7 +127,7 @@ jobs:
           #   workflow_dispatch with recipients input set    → that list.
           #   any other trigger (schedule / push / workflow_call) → the
           #     standing list (jeff + jb).
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && 'jeff@xfreight.net' || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # idempotency marker so the on-demand resend actually sends.
           # Empty string for cron/dispatch leaves the marker check in force.
@@ -135,7 +135,7 @@ jobs:
           # Read the exact workbook the Power BI report uses, by its OneDrive sharing
           # URL — there is a second file of the same name, so reading by name picked
           # the wrong (un-settled) one. The sharing URL resolves to the right item.
-          SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+          SCORECARD_ALVYS_SHARE_URL: ${{ secrets.ALVYS_SHARE_URL }}
           SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
         run: python -m src.scorecard_email
 
@@ -172,10 +172,10 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Mirror the send step's recipient policy so a one-shot dispatch
           # to a single mailbox doesn't fan its failure notice out.
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && 'jeff@xfreight.net' || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
