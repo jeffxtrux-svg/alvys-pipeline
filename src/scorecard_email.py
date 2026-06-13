@@ -422,6 +422,22 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     }
 
 
+def _own_fleet_mask(loads: pd.DataFrame) -> pd.Series:
+    """Boolean mask dropping X-Trux loads brokered to an outside carrier (Corrected
+    Margin % = (Revenue - Driver Rate)/Revenue >= the hold-out). Their miles are the
+    carrier's, not our trucks', so they're excluded from asset metrics (deadhead /
+    RPM / mileage) — same reason X-Linx is excluded. Keeps the brief's asset deadhead
+    on own-fleet loads only, matching the PBI In-P&L view to the decimal."""
+    rev = _col_any(loads, ["Customer Revenue", "Revenue"]).fillna(0)
+    dr = (_col(loads, "Driver Rate").fillna(0)
+          if "Driver Rate" in loads.columns else pd.Series(0.0, index=loads.index))
+    margin = pd.Series(0.0, index=loads.index)
+    pos = rev > 0
+    margin[pos] = (rev[pos] - dr[pos]) / rev[pos]
+    holdout = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
+    return ~(pos & (margin >= holdout))
+
+
 def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     if not sheets:
         return None
@@ -502,8 +518,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # variant (exclude X-Linx brokerage) for those tiles.
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
-        is_asset = loads[office_col].map(_entity_group) == "X-Trux"
-        a_loads, a_dates = loads[is_asset], dates[is_asset]
+        # Own-fleet only for the asset deadhead/RPM/mileage tiles: X-Trux/XFreight
+        # AND not brokered to a carrier. Brokered X-Trux loads (high Corrected
+        # Margin %) are carrier-driven — including their miles understated June
+        # dead-head as 4.90% vs PBI's own-fleet 5.45%.
+        is_own = (loads[office_col].map(_entity_group) == "X-Trux") & _own_fleet_mask(loads)
+        a_loads, a_dates = loads[is_own], dates[is_own]
         out["asset"] = {key: _alvys_metrics(a_loads[(a_dates >= start) & (a_dates <= now)])
                         for key, start in capped_specs}
         # MTD: full calendar month including future-scheduled (matches PBI).
@@ -1184,6 +1204,9 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
+    # Own-fleet only — drop brokered X-Trux loads (carrier-driven), so the trend
+    # matches the dead-head tile and PBI's In-P&L view.
+    loads = loads[_own_fleet_mask(loads)]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     # Use the billed Loads-sheet columns (same as _alvys_metrics) because the
     # workbook's "Loaded Dispatch Mileage" is one-row-per-trip and double-counts

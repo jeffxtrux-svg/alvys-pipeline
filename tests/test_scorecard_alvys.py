@@ -19,7 +19,8 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_alvys_entities, _alvys_health, compute_alvys_drivers  # noqa: E402
+from src.scorecard_email import (compute_alvys_entities, _alvys_health,  # noqa: E402
+                                 compute_alvys_drivers, _own_fleet_mask)
 
 APR_START = pd.Timestamp(2026, 4, 1)
 APR_END = pd.Timestamp(2026, 5, 1)
@@ -192,6 +193,20 @@ def test_xlinx_brokered_dr_zero_load_still_counts():
     assert round(xl["revenue"]) == 500          # the DR=0 brokered load counts
     assert round(xl["cost"]) == 400             # cost = Carrier Rate
     assert xl["loads"] == 1 and xl["unsettled"] == 0
+
+
+def test_own_fleet_mask_drops_brokered_keeps_own_and_zero_rev():
+    """Asset metrics (deadhead/RPM/mileage) must exclude brokered X-Trux loads
+    (carrier-driven) the same way X-Linx is excluded — their miles aren't our
+    trucks'. _own_fleet_mask drops loads with Corrected Margin % >= the 74%
+    hold-out; keeps normal-margin loads and revenue-0 loads (e.g. deadhead moves)."""
+    df = pd.DataFrame([
+        {"Customer Revenue": 1000, "Driver Rate": 300},   # 70% margin -> own fleet (keep)
+        {"Customer Revenue": 4000, "Driver Rate": 80},     # 98% margin -> brokered (drop)
+        {"Customer Revenue": 2000, "Driver Rate": 520},    # 74% margin -> brokered (drop, inclusive)
+        {"Customer Revenue": 0,    "Driver Rate": 200},    # no revenue -> keep
+    ])
+    assert list(_own_fleet_mask(df)) == [True, False, False, True]
 
 
 def test_health_flags_missing_driver_rate():
