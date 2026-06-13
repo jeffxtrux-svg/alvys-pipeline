@@ -128,10 +128,10 @@ jobs:
           #   any other trigger (schedule / push / workflow_call) → the
           #     standing list (jeff + jb).
           SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS) }}
-          # Push-triggered runs (mobile escape hatch) bypass the same-day
-          # idempotency marker so the on-demand resend actually sends.
-          # Empty string for cron/dispatch leaves the marker check in force.
-          SCORECARD_SKIP_IDEMPOTENCY: ${{ github.event_name == 'push' && '1' || '' }}
+          # Push and manual dispatch bypass the same-day idempotency marker so
+          # on-demand re-sends always fire. Cron slots leave the marker in force
+          # so only the first scheduled slot each day actually emails.
+          SCORECARD_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '1' || '' }}
           # Read the exact workbook the Power BI report uses, by its OneDrive sharing
           # URL — there is a second file of the same name, so reading by name picked
           # the wrong (un-settled) one. The sharing URL resolves to the right item.
