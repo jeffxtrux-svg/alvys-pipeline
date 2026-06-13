@@ -6941,11 +6941,12 @@ REFRESH_SOURCES = [
     #         run = workflow run only; wiki = run + knowledge-base file count;
     #         pbi = Power BI — Desktop .pbix last-saved time on OneDrive, or the
     #               Service dataset refresh (Power BI REST API) if its IDs are set.
-    {"label": "Alvys",                    "wf": "refresh.yml",                  "kind": "share", "max_h": 30},
-    {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8},
-    {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30},
+    {"label": "Alvys",                    "wf": "refresh.yml",                  "kind": "share", "max_h": 30, "feed": "API"},
+    {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8,  "feed": "API"},
+    {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30, "feed": "API"},
     {"label": "SambaSafety",              "wf": "sambasafety_refresh.yml",      "kind": "file",  "max_h": 60, "feed": "CSV combine"},
-    {"label": "Google Sheets KPI",        "wf": "sheets_refresh.yml",           "kind": "run",   "max_h": 30},
+    {"label": "Google Sheets KPI",        "wf": "sheets_refresh.yml",           "kind": "run",   "max_h": 30, "feed": "Google API"},
+    {"label": "Daily MTD Upload",         "wf": "daily_upload.yml",             "kind": "run",   "max_h": 30, "feed": "Excel upload"},
     {"label": "Knowledge Base Wiki",      "wf": "karpathy_compile.yml",         "kind": "wiki",  "max_h": 48},
     {"label": "Upload Health Check",      "wf": "daily_upload_healthcheck.yml", "kind": "run",   "max_h": 30},
     {"label": "Scorecard Health Check",   "wf": "scorecard_healthcheck.yml",    "kind": "run",   "max_h": 30},

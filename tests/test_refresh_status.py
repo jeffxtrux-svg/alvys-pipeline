@@ -45,8 +45,15 @@ def test_compute_refresh_status_shape_and_freshness():
 
     by = {r["label"]: r for r in rows}
     assert set(by) == {"Alvys", "QuickBooks", "Samsara", "SambaSafety", "Google Sheets KPI",
-                       "Knowledge Base Wiki", "Upload Health Check", "Scorecard Health Check",
-                       "Power BI XFreight Report"}
+                       "Daily MTD Upload", "Knowledge Base Wiki", "Upload Health Check",
+                       "Scorecard Health Check", "Power BI XFreight Report"}
+    # Feed/source-type labels.
+    assert by["Alvys"]["feed"] == "API"
+    assert by["QuickBooks"]["feed"] == "API"
+    assert by["Samsara"]["feed"] == "API"
+    assert by["Google Sheets KPI"]["feed"] == "Google API"
+    assert by["Daily MTD Upload"]["feed"] == "Excel upload"
+    assert by["SambaSafety"]["feed"] == "CSV combine"
     assert by["Alvys"]["fresh"] is True              # 10h <= 30h
     assert by["QuickBooks"]["fresh"] is False        # 20h  > 8h
     assert by["Samsara"]["fresh"] is True            # 5h  <= 30h
