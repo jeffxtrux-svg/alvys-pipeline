@@ -33,5 +33,5 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
         run: python -m src.verify_master_cutover

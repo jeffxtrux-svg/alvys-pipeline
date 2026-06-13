@@ -72,7 +72,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           SAMSARA_OUTPUT_DIR: output/samsara
         run: python -m src.samsara_onedrive_upload
 
@@ -88,10 +88,10 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           SAMSARA_OUTPUT_DIR: output/samsara
-          ALERT_FROM_UPN: jeff@xfreight.net
-          ALERT_TO_EMAILS: jeff@xfreight.net,jackson@xfreight.net,dan@xfreight.net
+          ALERT_FROM_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          ALERT_TO_EMAILS: ${{ secrets.ALERT_RECIPIENTS }}
         run: python -m src.samsara_regression_check
 
       - name: Check diagnostics and send alerts
@@ -103,8 +103,8 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ALERT_FROM_UPN: jeff@xfreight.net
-          ALERT_TO_EMAILS: jeff@xfreight.net,jackson@xfreight.net,dan@xfreight.net
+          ALERT_FROM_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          ALERT_TO_EMAILS: ${{ secrets.ALERT_RECIPIENTS }}
         run: python -m src.samsara_alerts
 
       - name: Nudge drivers with uncertified logs
@@ -123,7 +123,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           CERT_NUDGE_FORCE: ${{ inputs.force_cert_nudge && '1' || '' }}
         run: python -m src.samsara_cert_nudge
 
