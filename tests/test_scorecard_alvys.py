@@ -124,11 +124,11 @@ def test_unsettled_loads_excluded_from_pnl():
 
 
 def test_xtrux_awaiting_driver_pay_excluded():
-    """An X-Trux asset load with revenue but NO driver pay yet (Driver Rate = 0,
-    e.g. status "Covered") is "awaiting driver pay" — its revenue and any partial
-    cost are held OUT of the P&L and it is surfaced as `unsettled`. This keeps a
-    load with revenue but missing cost from inflating X-Trux margin. Power BI's
-    X-Trux measures apply the same Driver Rate > 0 filter."""
+    """An X-Trux asset load whose driver pay is implausibly low for the revenue
+    (Corrected Margin % >= 80%) is "awaiting driver pay" — e.g. a "Covered" load
+    brokered to a carrier (Driver Rate = 0, 100% margin). Its revenue and partial
+    cost are held OUT of the P&L and surfaced as `unsettled`, so it can't inflate
+    X-Trux margin. Power BI applies the same Corrected Margin % threshold."""
     sheets = _loads()
     covered = pd.DataFrame([dict(
         Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
@@ -138,9 +138,49 @@ def test_xtrux_awaiting_driver_pay_excluded():
     sheets["Loads"] = pd.concat([sheets["Loads"], covered], ignore_index=True)
     e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
     xt = e["X-Trux"]
-    # Covered load is excluded from P&L (revenue/cost unchanged); counted unsettled.
+    # Covered load (100% margin) is excluded from P&L; revenue/cost unchanged.
     assert round(xt["revenue"]) == 1000 and round(xt["cost"]) == 500
     assert xt["loads"] == 2 and xt["unsettled"] == 1
+
+
+def test_xtrux_holdout_margin_threshold():
+    """X-Trux loads with Corrected Margin % ((Revenue - Driver Rate) / Revenue)
+    at or above the 80% hold-out threshold are held out of P&L (driver pay too
+    low for the revenue — e.g. brokered to a carrier whose cost isn't in Driver
+    Rate). Loads below the threshold count normally. X-Trux only."""
+    pk = pd.Timestamp(2026, 4, 14)
+
+    def xt(rev, dr):
+        return dict(Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
+                    **{"Customer Revenue": rev, "Driver Rate": dr, "Carrier Rate": 0,
+                       "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 0,
+                       "Scheduled Pickup": pk, "Load Status": "In Transit"})
+    rows = [
+        xt(4000, 80),    # 98.0% margin -> held out
+        xt(1000, 200),   # 80.0% margin -> held out (threshold is inclusive)
+        xt(1000, 250),   # 75.0% margin -> counts
+    ]
+    e = compute_alvys_entities({"Loads": pd.DataFrame(rows)}, start=APR_START, end=APR_END)
+    xt_out = e["X-Trux"]
+    # Only the 75%-margin load is in P&L: revenue 1000, cost 250.
+    assert round(xt_out["revenue"]) == 1000 and round(xt_out["cost"]) == 250
+    assert xt_out["loads"] == 1 and xt_out["unsettled"] == 2
+
+
+def test_xtrux_holdout_does_not_apply_to_xlinx():
+    """The Corrected Margin % hold-out is X-Trux only. An X-Linx brokered load
+    with a thin driver rate and high (Rev - DR)/Rev still counts — its real cost
+    is the Carrier Rate, captured separately."""
+    pk = pd.Timestamp(2026, 4, 14)
+    rows = [dict(Office="X-Linx, Inc.", **{"Invoice As": "XFreight"},
+                 **{"Customer Revenue": 4000, "Driver Rate": 0, "Carrier Rate": 3600,
+                    "Total Dispatch Mileage": 80, "Empty Dispatch Mileage": 0,
+                    "Scheduled Pickup": pk, "Load Status": "Invoiced"})]
+    e = compute_alvys_entities({"Loads": pd.DataFrame(rows)}, start=APR_START, end=APR_END)
+    xl = e["X-Linx"]
+    # Counts despite (4000-0)/4000 = 100% "margin" on Driver Rate alone.
+    assert round(xl["revenue"]) == 4000 and round(xl["cost"]) == 3600
+    assert xl["loads"] == 1 and xl["unsettled"] == 0
 
 
 def test_xlinx_brokered_dr_zero_load_still_counts():

@@ -587,6 +587,16 @@ ENTITY_ORDER = ["X-Trux", "X-Linx"]
 # "Driver Rate > 0" proxy that wrongly dropped DR=0 statuses like "Covered".
 ALVYS_OPEN_STATUSES = {"open"}
 
+# Hold-out threshold for X-Trux asset loads (the "variable", set by Jeff
+# 2026-06-13). A load whose Corrected Margin % = (Customer Revenue - Driver Rate)
+# / Customer Revenue is AT OR ABOVE this is treated as not-yet-fully-costed — the
+# recorded driver pay is implausibly low for the revenue (e.g. a load brokered to
+# a carrier whose real cost isn't in Driver Rate), which would inflate margin.
+# Such loads are held out of BOTH revenue and cost until they settle, surfaced as
+# `unsettled`. X-Trux ONLY — X-Linx brokerage legitimately runs thin and is
+# exempt. Override at runtime via ALVYS_XTRUX_HOLDOUT_MARGIN.
+ALVYS_XTRUX_HOLDOUT_MARGIN = 0.80
+
 
 def _entity_group(office) -> str | None:
     s = str(office).upper()
@@ -806,6 +816,7 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
+    holdout = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
     out: dict[str, dict] = {}
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
@@ -842,22 +853,29 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
                      "DR $%.2f + CR $%.2f = $%.2f cost | revenue $%.2f",
                      n_loads, n_unsettled, dr_cost, cr_cost, cost, float(revenue))
         else:
-            # X-Trux asset side: a load enters the P&L only once driver pay is
-            # recorded (Driver Rate > 0). Loads with revenue but no Driver Rate
-            # yet are "awaiting driver pay" — held out of BOTH revenue and cost
-            # (surfaced as `unsettled`) so a load with revenue but missing cost
-            # can't inflate margin. This also drops "Open" (pre-dispatch) loads,
-            # which have DR=0. NOTE: Power BI's X-Trux revenue measure must apply
-            # the same Driver Rate > 0 filter to stay matched to this brief.
-            settled = (~open_mask) & (dr_all > 0)
-            counted = rows[settled]
-            n_unsettled = int((~settled).sum())
+            # X-Trux asset side: a load enters the P&L only once it is properly
+            # costed. A load is HELD OUT (awaiting driver pay) when it is still
+            # "Open" (pre-dispatch) OR its Corrected Margin %
+            # — (Customer Revenue - Driver Rate) / Customer Revenue — is at/above
+            # the hold-out threshold, i.e. the recorded driver pay is implausibly
+            # low for the revenue (e.g. a load brokered to a carrier whose real
+            # cost isn't in Driver Rate). Held-out loads contribute NO revenue and
+            # NO cost and are surfaced as `unsettled`, so an under-costed load
+            # can't inflate margin. X-Trux ONLY. NOTE: Power BI's X-Trux measures
+            # must apply the same Corrected Margin % >= threshold filter to match.
+            rev_all = _col_any(rows, ["Customer Revenue", "Revenue"]).fillna(0)
+            margin_pct = pd.Series(0.0, index=rows.index)
+            pos = rev_all > 0
+            margin_pct[pos] = (rev_all[pos] - dr_all[pos]) / rev_all[pos]
+            held = open_mask | (pos & (margin_pct >= holdout))
+            counted = rows[~held]
+            n_unsettled = int(held.sum())
             revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
             cost = float(_col(counted, "Driver Rate").fillna(0).sum()) if "Driver Rate" in counted.columns else 0.0
             n_loads = len(counted)
-            log.info("compute_alvys_entities[%s]: %d loads (%d awaiting driver pay) | "
+            log.info("compute_alvys_entities[%s]: %d loads (%d held: open or >=%.0f%% margin) | "
                      "revenue $%.2f | cost (DR) $%.2f",
-                     ent, n_loads, n_unsettled, float(revenue), cost)
+                     ent, n_loads, n_unsettled, holdout * 100, float(revenue), cost)
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
@@ -5387,16 +5405,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
     # Entity P&L actuals for the current month. A load enters the P&L only once
-    # it is fully costed: X-Trux asset loads require driver pay (Driver Rate > 0);
-    # X-Linx brokered loads require dispatch (status past "Open"). Loads awaiting
-    # driver pay — revenue booked but no Driver Rate yet — are held out of BOTH
-    # revenue and cost so they can't inflate margin, and surfaced as the count
-    # below. (Power BI's X-Trux measure must apply the same Driver Rate > 0 filter
-    # to match.) Figures shown to the penny.
+    # it is fully costed: an X-Trux asset load is held out while it is "Open" or
+    # its Corrected Margin % ((Revenue - Driver Rate)/Revenue) is >= the hold-out
+    # threshold (driver pay too low for the revenue — e.g. brokered to a carrier).
+    # X-Linx brokered loads only require dispatch (status past "Open"). Held-out
+    # loads contribute no revenue and no cost so they can't inflate margin, and
+    # are surfaced as the count below. (Power BI applies the same Corrected
+    # Margin % threshold on X-Trux to match.) Figures shown to the penny.
     _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
     _mtd_msg = ("MTD revenue / cost / margin. Cost = Driver Rate (X-Trux), "
-                "Driver Rate + Carrier Rate (X-Linx). Loads awaiting driver pay "
-                "(revenue booked but no driver pay entered) are held out of revenue "
+                "Driver Rate + Carrier Rate (X-Linx). X-Trux loads awaiting driver "
+                "pay (driver pay too low for the revenue) are held out of revenue "
                 "and cost until they settle, so they can't inflate margin.")
     if _unsettled:
         _mtd_msg += f" {_unsettled} load{'s' if _unsettled != 1 else ''} held out (open / awaiting driver pay)."
