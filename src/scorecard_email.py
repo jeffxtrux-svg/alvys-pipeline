@@ -803,21 +803,16 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         #   X-Linx cost = SUM(Driver Rate + Carrier Rate)
         # No open-load estimation here; estimates live in daily_upload.py only.
         rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
-        n_loads = len(rows)
         if ent == "X-Linx":
-            # X-Linx: all loads — carrier rate is entered at booking so every
-            # load is "settled" from a cost perspective. Matches PBI X-Linx tab.
+            # X-Linx brokerage: cost = Driver Rate only. Carrier Rate is the
+            # broker's buy-side rate field and is NOT the payout; the actual
+            # payout to the carrier lives in Driver Rate (same as asset side).
             revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
-            dr_sum = float(rate_col.sum()) if rate_col is not None else 0.0
-            cr_sum = 0.0
-            for col_name in ("Carrier Rate", "Posted Carrier Rate", "Carrier Pay"):
-                if col_name in rows.columns:
-                    cr_sum = float(_col(rows, col_name).fillna(0).sum())
-                    break
-            cost = dr_sum + cr_sum
+            cost = float(rate_col.sum()) if rate_col is not None else 0.0
+            n_loads = len(rows)
             n_unsettled = 0
-            log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f + CR $%.2f = $%.2f cost",
-                     n_loads, dr_sum, cr_sum, cost)
+            log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f cost",
+                     n_loads, cost)
         else:
             # X-Trux: settled loads only (Driver Rate > 0) — PBI excludes open
             # loads implicitly because they have no DR yet; to match to the penny
@@ -826,10 +821,11 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             settled = rows[settled_mask]
             revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
             cost = float(rate_col[settled_mask].sum()) if rate_col is not None else 0.0
+            n_loads = int(settled_mask.sum())
             n_unsettled = int((~settled_mask).sum())
             log.info("compute_alvys_entities[%s]: %d loads (%d settled, %d open excluded) | "
                      "revenue $%.2f | cost (DR) $%.2f",
-                     ent, n_loads, int(settled_mask.sum()), n_unsettled,
+                     ent, n_loads + n_unsettled, n_loads, n_unsettled,
                      float(revenue), cost)
         margin = revenue - cost
         out[ent] = {
@@ -861,10 +857,10 @@ def _alvys_health(sheets: dict[str, pd.DataFrame] | None) -> list[str]:
     cols = set(loads.columns)
     if not ({"Customer Revenue", "Revenue"} & cols):
         warns.append("Loads tab has no Customer Revenue column — revenue and margin will be blank.")
-    if "Driver Rate" not in cols and "Carrier Rate" not in cols:
-        warns.append("Loads tab has no Driver Rate or Carrier Rate column — load cost reads $0 and margin is overstated.")
-    elif float(_load_cost(loads).abs().sum()) == 0:
-        warns.append("Loads Driver Rate and Carrier Rate columns are both entirely empty — load cost reads $0 and margin is overstated.")
+    if "Driver Rate" not in cols:
+        warns.append("Loads tab has no Driver Rate column — load cost reads $0 and margin is overstated.")
+    elif float(_col(loads, "Driver Rate").fillna(0).abs().sum()) == 0:
+        warns.append("Loads Driver Rate column is entirely empty — load cost reads $0 and margin is overstated.")
     if not _find_col(loads, OFFICE_COL_NEEDLES):
         warns.append("Loads tab has no Office / Invoice As column — the X-Trux vs X-Linx split is unavailable.")
     if not (set(ALVYS_DATE_CANDIDATES) & cols):
