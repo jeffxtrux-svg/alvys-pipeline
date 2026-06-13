@@ -123,23 +123,35 @@ def test_unsettled_loads_excluded_from_pnl():
     assert xt["loads"] == 2 and xt["unsettled"] == 1
 
 
-def test_covered_dr_zero_load_counts():
-    """A DR=0 load that is NOT "Open" (e.g. "Covered" — carrier assigned, driver
-    rate not yet entered) MUST count toward revenue, matching Power BI. This is
-    exactly the case the old "Driver Rate > 0" heuristic got wrong (it dropped
-    Covered loads along with Open ones)."""
+def test_xtrux_awaiting_driver_pay_excluded():
+    """An X-Trux asset load with revenue but NO driver pay yet (Driver Rate = 0,
+    e.g. status "Covered") is "awaiting driver pay" — its revenue and any partial
+    cost are held OUT of the P&L and it is surfaced as `unsettled`. This keeps a
+    load with revenue but missing cost from inflating X-Trux margin. Power BI's
+    X-Trux measures apply the same Driver Rate > 0 filter."""
     sheets = _loads()
     covered = pd.DataFrame([dict(
         Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
-        **{"Customer Revenue": 1420, "Driver Rate": 0, "Carrier Rate": 0,
+        **{"Customer Revenue": 1420, "Driver Rate": 0, "Carrier Rate": 1212,
            "Total Dispatch Mileage": 0, "Empty Dispatch Mileage": 0,
            "Scheduled Pickup": pd.Timestamp(2026, 4, 20), "Load Status": "Covered"})])
     sheets["Loads"] = pd.concat([sheets["Loads"], covered], ignore_index=True)
     e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
     xt = e["X-Trux"]
-    # Covered revenue is included (1000 + 1420); cost unchanged (DR=0); not unsettled.
-    assert round(xt["revenue"]) == 2420 and round(xt["cost"]) == 500
-    assert xt["loads"] == 3 and xt["unsettled"] == 0
+    # Covered load is excluded from P&L (revenue/cost unchanged); counted unsettled.
+    assert round(xt["revenue"]) == 1000 and round(xt["cost"]) == 500
+    assert xt["loads"] == 2 and xt["unsettled"] == 1
+
+
+def test_xlinx_brokered_dr_zero_load_still_counts():
+    """By contrast, an X-Linx brokered load legitimately has Driver Rate = 0 (no
+    company driver) — its cost is the Carrier Rate. As long as it is not "Open",
+    it MUST count. The awaiting-driver-pay exclusion is X-Trux-only."""
+    e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
+    xl = e["X-Linx"]
+    assert round(xl["revenue"]) == 500          # the DR=0 brokered load counts
+    assert round(xl["cost"]) == 400             # cost = Carrier Rate
+    assert xl["loads"] == 1 and xl["unsettled"] == 0
 
 
 def test_health_flags_missing_driver_rate():

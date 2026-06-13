@@ -825,22 +825,37 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
         status = (rows["Load Status"].astype(str).str.strip().str.lower()
                   if "Load Status" in rows.columns else pd.Series("", index=rows.index))
         open_mask = status.isin(ALVYS_OPEN_STATUSES)
-        counted = rows[~open_mask]
-        n_loads = len(counted)
-        n_unsettled = int(open_mask.sum())
-        revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
-        dr_col = _col(counted, "Driver Rate").fillna(0) if "Driver Rate" in counted.columns else None
-        dr_cost = float(dr_col.sum()) if dr_col is not None else 0.0
+        dr_all = (_col(rows, "Driver Rate").fillna(0)
+                  if "Driver Rate" in rows.columns else pd.Series(0.0, index=rows.index))
         if ent == "X-Linx":
-            carrier_col = _col(counted, "Carrier Rate").fillna(0) if "Carrier Rate" in counted.columns else None
-            cr_cost = float(carrier_col.sum()) if carrier_col is not None else 0.0
+            # Brokerage: no company driver, so Driver Rate is ~0 by design and the
+            # real cost is the Carrier Rate. A load counts once it leaves "Open"
+            # (booked, not dispatched). Cost = Driver Rate + Carrier Rate.
+            counted = rows[~open_mask]
+            n_unsettled = int(open_mask.sum())
+            revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
+            dr_cost = float(_col(counted, "Driver Rate").fillna(0).sum()) if "Driver Rate" in counted.columns else 0.0
+            cr_cost = float(_col(counted, "Carrier Rate").fillna(0).sum()) if "Carrier Rate" in counted.columns else 0.0
             cost = dr_cost + cr_cost
-            log.info("compute_alvys_entities[X-Linx]: %d loads (%d open excluded) | "
+            n_loads = len(counted)
+            log.info("compute_alvys_entities[X-Linx]: %d loads (%d open/unsettled) | "
                      "DR $%.2f + CR $%.2f = $%.2f cost | revenue $%.2f",
                      n_loads, n_unsettled, dr_cost, cr_cost, cost, float(revenue))
         else:
-            cost = dr_cost
-            log.info("compute_alvys_entities[%s]: %d loads (%d open excluded) | "
+            # X-Trux asset side: a load enters the P&L only once driver pay is
+            # recorded (Driver Rate > 0). Loads with revenue but no Driver Rate
+            # yet are "awaiting driver pay" — held out of BOTH revenue and cost
+            # (surfaced as `unsettled`) so a load with revenue but missing cost
+            # can't inflate margin. This also drops "Open" (pre-dispatch) loads,
+            # which have DR=0. NOTE: Power BI's X-Trux revenue measure must apply
+            # the same Driver Rate > 0 filter to stay matched to this brief.
+            settled = (~open_mask) & (dr_all > 0)
+            counted = rows[settled]
+            n_unsettled = int((~settled).sum())
+            revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
+            cost = float(_col(counted, "Driver Rate").fillna(0).sum()) if "Driver Rate" in counted.columns else 0.0
+            n_loads = len(counted)
+            log.info("compute_alvys_entities[%s]: %d loads (%d awaiting driver pay) | "
                      "revenue $%.2f | cost (DR) $%.2f",
                      ent, n_loads, n_unsettled, float(revenue), cost)
         margin = revenue - cost
@@ -5371,16 +5386,20 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
-    # Entity P&L actuals: same scope and formula as the Power BI XFreight Report
-    # (all non-cancelled loads for the current month; cost = Driver Rate for
-    # X-Trux, Driver Rate + Carrier Rate for X-Linx; open loads show $0 cost
-    # until driver pay is entered — identical to PBI). Figures shown to the penny.
+    # Entity P&L actuals for the current month. A load enters the P&L only once
+    # it is fully costed: X-Trux asset loads require driver pay (Driver Rate > 0);
+    # X-Linx brokered loads require dispatch (status past "Open"). Loads awaiting
+    # driver pay — revenue booked but no Driver Rate yet — are held out of BOTH
+    # revenue and cost so they can't inflate margin, and surfaced as the count
+    # below. (Power BI's X-Trux measure must apply the same Driver Rate > 0 filter
+    # to match.) Figures shown to the penny.
     _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
-    _mtd_msg = ("MTD revenue / cost / margin &mdash; actuals matching the Power BI XFreight Report "
-                "to the penny. Cost = Driver Rate (X-Trux) + Driver Rate + Carrier Rate (X-Linx). "
-                "Open loads show $0.00 cost until driver pay is entered.")
+    _mtd_msg = ("MTD revenue / cost / margin. Cost = Driver Rate (X-Trux), "
+                "Driver Rate + Carrier Rate (X-Linx). Loads awaiting driver pay "
+                "(revenue booked but no driver pay entered) are held out of revenue "
+                "and cost until they settle, so they can't inflate margin.")
     if _unsettled:
-        _mtd_msg += f" {_unsettled} load{'s' if _unsettled != 1 else ''} currently open (awaiting driver pay)."
+        _mtd_msg += f" {_unsettled} load{'s' if _unsettled != 1 else ''} held out (open / awaiting driver pay)."
     mtd_note = _brief(_mtd_msg, "mute")
     asof = ""
     if data_asof is not None:
