@@ -27,6 +27,8 @@ def test_compute_refresh_status_shape_and_freshness():
         "QuickBooks/QB_ProfitAndLoss.xlsx":     _NOW - timedelta(hours=20),  # > 8h  -> stale
         "Samsara/Samsara Master.xlsx":          _NOW - timedelta(hours=5),   # <=30h -> fresh
         "SambaSafety/SambaSafety_Master.xlsx":  None,                        # no file
+        # Power BI falls back to the Desktop .pbix file time (no Service IDs set).
+        "XFreight - Claude Working Files/02 - Power BI/XFreight Report.pbix": _NOW - timedelta(hours=4),
     }
     orig_fm, orig_sm = se.get_file_modified, se.get_shared_modified
     saved = {k: os.environ.pop(k, None) for k in ("GH_TOKEN", "PBI_WORKSPACE_ID", "PBI_DATASET_ID")}
@@ -49,8 +51,10 @@ def test_compute_refresh_status_shape_and_freshness():
     assert by["QuickBooks"]["fresh"] is False        # 20h  > 8h
     assert by["Samsara"]["fresh"] is True            # 5h  <= 30h
     assert by["SambaSafety"]["modified"] is None and by["SambaSafety"]["fresh"] is None
-    # Power BI unconfigured -> "not configured", never crashes / hits network.
-    assert by["Power BI XFreight Report"]["run_detail"] == "not configured"
+    # Power BI: no Service IDs -> falls back to the Desktop .pbix file time.
+    assert by["Power BI XFreight Report"]["feed"] == "Power BI Desktop"
+    assert by["Power BI XFreight Report"]["fresh"] is True            # .pbix 4h old <= 30h
+    assert _suggest_action(by["Power BI XFreight Report"]) is None    # healthy -> no action
     # Knowledge base: nonexistent dir -> no size; GH_TOKEN unset -> no run time.
     assert by["Knowledge Base Wiki"]["measure"] is None
     # GH_TOKEN unset -> Actions leg skipped, run cells left blank.
@@ -60,7 +64,6 @@ def test_compute_refresh_status_shape_and_freshness():
     assert by["QuickBooks"]["run_ok"] is None        # no GH_TOKEN -> unknown
     # Suggested actions derive from the row state.
     assert "stale" in _suggest_action(by["QuickBooks"]).lower()      # QB is stale
-    assert "PBI" in _suggest_action(by["Power BI XFreight Report"])  # unconfigured
     assert "file not found" in _suggest_action(by["SambaSafety"])    # no file
     assert by["SambaSafety"]["feed"] == "CSV combine"               # CSV source, not API
 
@@ -72,10 +75,17 @@ def test_suggest_action_cases():
                             "run_ok": False}).startswith("Refresh failed")
     assert _suggest_action({"kind": "file", "modified": None, "fresh": None,
                             "run_ok": True}).startswith("Source file not found")
-    assert _suggest_action({"kind": "pbi", "modified": None, "run_ok": None,
-                            "run_detail": "not configured"}).startswith("Set PBI")
     assert _suggest_action({"kind": "run", "modified": None, "run_ok": None,
                             "run_detail": "&mdash;", "wf": "x.yml"}).startswith("No recent run")
+    # Power BI (Desktop .pbix) cases.
+    assert _suggest_action({"kind": "pbi", "modified": "x", "fresh": False,
+                            "run_ok": None}).startswith("Open the report")
+    assert _suggest_action({"kind": "pbi", "modified": None, "fresh": None,
+                            "run_ok": None}).startswith("Report not found")
+    assert _suggest_action({"kind": "pbi", "modified": "x", "fresh": True,
+                            "run_ok": False}).startswith("Power BI refresh failed")
+    assert _suggest_action({"kind": "pbi", "modified": "x", "fresh": True,
+                            "run_ok": None}) is None
     # Healthy source -> no action.
     assert _suggest_action({"kind": "file", "modified": "x", "fresh": True,
                             "run_ok": True}) is None
@@ -94,9 +104,10 @@ def test_build_refresh_status_page_renders_all_sources():
          "modified": _NOW - timedelta(hours=3), "stale_h": 3, "fresh": True, "max_h": 48,
          "run_icon": "OK", "run_detail": "success", "run_ok": True,
          "measure": {"total": 80, "wiki": 32, "raw": 42}},
-        {"label": "Power BI XFreight Report", "kind": "pbi", "wf": None, "modified": None,
-         "stale_h": None, "fresh": None, "max_h": 30, "run_icon": "&mdash;",
-         "run_detail": "not configured", "run_ok": None, "measure": None},
+        {"label": "Power BI XFreight Report", "kind": "pbi", "wf": None,
+         "modified": _NOW - timedelta(hours=5), "stale_h": 5, "fresh": True, "max_h": 30,
+         "run_icon": "&mdash;", "run_detail": "&mdash;", "run_ok": None, "measure": None,
+         "feed": "Power BI Desktop"},
     ]
     html = build_refresh_status_page(status, "Saturday, June 13, 2026")
     for label in ("Alvys", "SambaSafety", "Knowledge Base Wiki", "Power BI XFreight Report"):
@@ -108,8 +119,7 @@ def test_build_refresh_status_page_renders_all_sources():
     assert "32 wiki / 42 raw files" in html                  # knowledge-base size measurement
     assert "Refresh failed" in html                          # SambaSafety failed run -> action
     assert "CSV combine" in html                             # SambaSafety relabeled as CSV source
-    assert "Set PBI" in html                                 # Power BI unconfigured -> action
-    assert "not configured" in html                          # Power BI run cell
+    assert "Power BI Desktop" in html                        # Power BI tracked via .pbix file
 
 
 def test_build_refresh_status_page_handles_empty():

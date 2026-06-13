@@ -6939,7 +6939,8 @@ REFRESH_SOURCES = [
     # expected-fresh window in hours (None = no staleness flag).
     #   kind: share = Alvys (read by sharing URL); file = OneDrive file mtime;
     #         run = workflow run only; wiki = run + knowledge-base file count;
-    #         pbi = Power BI dataset last refresh (Power BI REST API).
+    #         pbi = Power BI — Desktop .pbix last-saved time on OneDrive, or the
+    #               Service dataset refresh (Power BI REST API) if its IDs are set.
     {"label": "Alvys",                    "wf": "refresh.yml",                  "kind": "share", "max_h": 30},
     {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8},
     {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30},
@@ -7024,7 +7025,9 @@ def _pbi_last_refresh():
 def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
                            samsara_path="Samsara/Samsara Master.xlsx",
                            samba_path="SambaSafety/SambaSafety_Master.xlsx",
-                           wiki_dir="Karpathy-Wiki", now=None):
+                           wiki_dir="Karpathy-Wiki",
+                           pbix_path="XFreight - Claude Working Files/02 - Power BI/XFreight Report.pbix",
+                           now=None):
     """Gather per-source freshness for the brief's final page: each source's "when"
     (OneDrive file mtime, workflow run time, or Power BI refresh time) plus a
     fresh/stale flag and the latest refresh-workflow run from the GitHub Actions
@@ -7078,6 +7081,7 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
         label, kind = src["label"], src.get("kind")
         run_icon, run_detail, run_dt, run_ok = _run_cells(_latest_run(src.get("wf")))
         when = measure = None
+        feed = src.get("feed")
         if kind == "share" and alvys_share:
             try: when = get_shared_modified(token, alvys_share)
             except Exception: when = None
@@ -7089,8 +7093,12 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
             if kind == "wiki":
                 measure = _wiki_file_count(wiki_dir)
         elif kind == "pbi":
+            # Prefer the Power BI Service API (exact dataset refresh) when it's
+            # configured; otherwise fall back to the Desktop .pbix file's last-saved
+            # time on OneDrive — works with no setup, matching Jeff's Desktop flow.
             pbi = _pbi_last_refresh()
             if pbi:
+                feed = "Power BI Service"
                 when, status = pbi
                 s = (status or "").lower()
                 if s == "completed":
@@ -7100,7 +7108,11 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
                 else:
                     run_icon, run_detail, run_ok = "&#10067;", f"{status or 'unknown'} &middot; Power BI API", None
             else:
-                run_icon, run_detail, run_ok = "&mdash;", "not configured", None
+                feed = "Power BI Desktop"
+                if pbix_path:
+                    try: when = get_file_modified(token, upn, pbix_path)
+                    except Exception: when = None
+                run_icon, run_detail, run_ok = "&mdash;", "&mdash;", None
         stale_h = fresh = None
         if when is not None:
             try:
@@ -7112,7 +7124,7 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
         out.append({"label": label, "kind": kind, "wf": src.get("wf"), "modified": when,
                     "stale_h": stale_h, "fresh": fresh, "max_h": src.get("max_h"),
                     "run_icon": run_icon, "run_detail": run_detail, "run_ok": run_ok,
-                    "measure": measure, "feed": src.get("feed")})
+                    "measure": measure, "feed": feed})
     return out
 
 
@@ -7121,8 +7133,14 @@ def _suggest_action(s):
     Priority: unconfigured Power BI -> failed run -> stale data -> missing file ->
     no recent run."""
     kind = s.get("kind")
-    if kind == "pbi" and "not configured" in (s.get("run_detail") or ""):
-        return "Set PBI workspace + dataset IDs; grant the app Power BI access"
+    if kind == "pbi":
+        if s.get("run_ok") is False:
+            return "Power BI refresh failed &mdash; check the dataset"
+        if s.get("modified") is None:
+            return "Report not found &mdash; save XFreight Report.pbix to OneDrive (or set Service API IDs)"
+        if s.get("fresh") is False:
+            return "Open the report in Power BI Desktop, refresh &amp; save"
+        return None
     if s.get("run_ok") is False:
         return "Refresh failed &mdash; check the run &amp; re-run it"
     if s.get("fresh") is False:
@@ -7195,8 +7213,9 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
         "latest workflow outcome from GitHub Actions (last 72h). Knowledge Base Wiki also "
         "shows its size (compiled wiki pages + raw inbox files). Stale = older than the "
         "source's expected cadence. Suggested action is blank when a source is healthy and "
-        "shows a short fix when it's stale, failed, missing, or unconfigured. Power BI shows "
-        "'not configured' until its workspace + dataset IDs and Power BI API access are set up.", "mute")
+        "shows a short fix when one is needed. Power BI XFreight Report shows the Desktop "
+        "report's last-saved time on OneDrive (set the Service API IDs for exact dataset "
+        "refresh status instead).", "mute")
     return head + _section("Data refresh status &middot; as of " + date_str) + table + note
 
 
