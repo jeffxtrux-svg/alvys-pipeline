@@ -7050,20 +7050,23 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
             return None
 
     def _run_cells(run):
-        # returns (icon, detail, run_datetime)
+        # returns (icon, detail, run_datetime, run_ok)
         if run is None:
-            return (("&mdash;", "&mdash;", None) if not gh_token
-                    else ("&#10067;", "no run in 72h", None))
+            return (("&mdash;", "&mdash;", None, None) if not gh_token
+                    else ("&#10067;", "no run in 72h", None, None))
         icon = "&mdash;"
         if _status_icon:
             icon, _ = _status_icon(run.get("conclusion"), run.get("status"))
+        raw = (run.get("conclusion") or run.get("status") or "").lower()
+        run_ok = (True if raw == "success"
+                  else (False if raw in ("failure", "timed_out", "startup_failure") else None))
         concl = (run.get("conclusion") or run.get("status") or "unknown").replace("_", " ")
         started = (run.get("created_at") or "")[:16].replace("T", " ")
         try:
             rdt = datetime.fromisoformat((run.get("created_at") or "").replace("Z", "+00:00"))
         except Exception:
             rdt = None
-        return (icon, concl + (f" &middot; {started} UTC" if started else ""), rdt)
+        return (icon, concl + (f" &middot; {started} UTC" if started else ""), rdt, run_ok)
 
     paths = {
         "QuickBooks":  f"{qb_dir.strip('/')}/QB_ProfitAndLoss.xlsx",
@@ -7073,7 +7076,7 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
     out = []
     for src in REFRESH_SOURCES:
         label, kind = src["label"], src.get("kind")
-        run_icon, run_detail, run_dt = _run_cells(_latest_run(src.get("wf")))
+        run_icon, run_detail, run_dt, run_ok = _run_cells(_latest_run(src.get("wf")))
         when = measure = None
         if kind == "share" and alvys_share:
             try: when = get_shared_modified(token, alvys_share)
@@ -7091,13 +7094,13 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
                 when, status = pbi
                 s = (status or "").lower()
                 if s == "completed":
-                    run_icon, run_detail = "&#9989;", "completed &middot; Power BI API"
+                    run_icon, run_detail, run_ok = "&#9989;", "completed &middot; Power BI API", True
                 elif s in ("failed", "disabled"):
-                    run_icon, run_detail = "&#10060;", f"{status} &middot; Power BI API"
+                    run_icon, run_detail, run_ok = "&#10060;", f"{status} &middot; Power BI API", False
                 else:
-                    run_icon, run_detail = "&#10067;", f"{status or 'unknown'} &middot; Power BI API"
+                    run_icon, run_detail, run_ok = "&#10067;", f"{status or 'unknown'} &middot; Power BI API", None
             else:
-                run_icon, run_detail = "&mdash;", "not configured"
+                run_icon, run_detail, run_ok = "&mdash;", "not configured", None
         stale_h = fresh = None
         if when is not None:
             try:
@@ -7106,10 +7109,29 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
                     fresh = stale_h <= src["max_h"]
             except Exception:
                 pass
-        out.append({"label": label, "modified": when, "stale_h": stale_h, "fresh": fresh,
-                    "max_h": src.get("max_h"), "run_icon": run_icon, "run_detail": run_detail,
+        out.append({"label": label, "kind": kind, "wf": src.get("wf"), "modified": when,
+                    "stale_h": stale_h, "fresh": fresh, "max_h": src.get("max_h"),
+                    "run_icon": run_icon, "run_detail": run_detail, "run_ok": run_ok,
                     "measure": measure})
     return out
+
+
+def _suggest_action(s):
+    """Short imperative fix when a source needs attention, else None (no action).
+    Priority: unconfigured Power BI -> failed run -> stale data -> missing file ->
+    no recent run."""
+    kind = s.get("kind")
+    if kind == "pbi" and "not configured" in (s.get("run_detail") or ""):
+        return "Set PBI workspace + dataset IDs; grant the app Power BI access"
+    if s.get("run_ok") is False:
+        return "Refresh failed &mdash; check the run &amp; re-run it"
+    if s.get("fresh") is False:
+        return "Data is stale &mdash; re-run the refresh"
+    if kind in ("share", "file") and s.get("modified") is None:
+        return "Source file not found &mdash; check the upload"
+    if kind in ("run", "wiki") and s.get("modified") is None and s.get("wf"):
+        return "No recent run &mdash; trigger the workflow"
+    return None
 
 
 def build_refresh_status_page(refresh_status, date_str) -> str:
@@ -7148,7 +7170,10 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
         else:
             badge = _pill("unknown", "mute")
         run = f"{s.get('run_icon', '&mdash;')} {s.get('run_detail', '&mdash;')}"
-        _td = f"padding:7px 10px;border-top:1px solid {LINE};font-size:11.5px;"
+        action = _suggest_action(s)
+        action_cell = (f"<span style='color:{MUTE};'>&mdash;</span>" if not action
+                       else f"<span style='color:{WARN};font-weight:700;'>{action}</span>")
+        _td = f"padding:7px 9px;border-top:1px solid {LINE};font-size:11px;vertical-align:top;"
         rows_html += (
             f"<tr>"
             f"<td style='{_td}font-weight:700;color:{INK};'>{label}</td>"
@@ -7156,17 +7181,19 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
             f"<td style='{_td}color:{MUTE};white-space:nowrap;'>{age_str}</td>"
             f"<td style='{_td}'>{badge}</td>"
             f"<td style='{_td}color:{MUTE};'>{run}</td>"
+            f"<td style='{_td}'>{action_cell}</td>"
             f"</tr>")
-    table = _table(["Source", "Date &amp; time", "Age", "Fresh?", "Latest refresh run"],
-                   ["left", "left", "left", "left", "left"], rows_html)
+    table = _table(["Source", "Date &amp; time", "Age", "Fresh?", "Latest refresh run", "Suggested action"],
+                   ["left", "left", "left", "left", "left", "left"], rows_html)
     note = _brief(
         "Last refreshed: OneDrive file time for Alvys/QuickBooks/Samsara/SambaSafety; "
         "the workflow run time for Google Sheets KPI, the knowledge-base wiki, and the "
         "health checks; and the dataset refresh time for Power BI. The run column is the "
         "latest workflow outcome from GitHub Actions (last 72h). Knowledge Base Wiki also "
         "shows its size (compiled wiki pages + raw inbox files). Stale = older than the "
-        "source's expected cadence. Power BI shows 'not configured' until its workspace + "
-        "dataset IDs and Power BI API access are set up.", "mute")
+        "source's expected cadence. Suggested action is blank when a source is healthy and "
+        "shows a short fix when it's stale, failed, missing, or unconfigured. Power BI shows "
+        "'not configured' until its workspace + dataset IDs and Power BI API access are set up.", "mute")
     return head + _section("Data refresh status &middot; as of " + date_str) + table + note
 
 
