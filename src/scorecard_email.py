@@ -6943,7 +6943,7 @@ REFRESH_SOURCES = [
     {"label": "Alvys",                    "wf": "refresh.yml",                  "kind": "share", "max_h": 30},
     {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8},
     {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30},
-    {"label": "SambaSafety",              "wf": "sambasafety_refresh.yml",      "kind": "file",  "max_h": 60},
+    {"label": "SambaSafety",              "wf": "sambasafety_refresh.yml",      "kind": "file",  "max_h": 60, "feed": "CSV combine"},
     {"label": "Google Sheets KPI",        "wf": "sheets_refresh.yml",           "kind": "run",   "max_h": 30},
     {"label": "Knowledge Base Wiki",      "wf": "karpathy_compile.yml",         "kind": "wiki",  "max_h": 48},
     {"label": "Upload Health Check",      "wf": "daily_upload_healthcheck.yml", "kind": "run",   "max_h": 30},
@@ -7112,7 +7112,7 @@ def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
         out.append({"label": label, "kind": kind, "wf": src.get("wf"), "modified": when,
                     "stale_h": stale_h, "fresh": fresh, "max_h": src.get("max_h"),
                     "run_icon": run_icon, "run_detail": run_detail, "run_ok": run_ok,
-                    "measure": measure})
+                    "measure": measure, "feed": src.get("feed")})
     return out
 
 
@@ -7170,6 +7170,9 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
         else:
             badge = _pill("unknown", "mute")
         run = f"{s.get('run_icon', '&mdash;')} {s.get('run_detail', '&mdash;')}"
+        feed = s.get("feed")   # source-type tag, e.g. "CSV combine" (not an API feed)
+        if feed:
+            run += f" &middot; <span style='color:{MUTE};font-style:italic;'>{feed}</span>"
         action = _suggest_action(s)
         action_cell = (f"<span style='color:{MUTE};'>&mdash;</span>" if not action
                        else f"<span style='color:{WARN};font-weight:700;'>{action}</span>")

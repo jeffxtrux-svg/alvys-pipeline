@@ -62,6 +62,7 @@ def test_compute_refresh_status_shape_and_freshness():
     assert "stale" in _suggest_action(by["QuickBooks"]).lower()      # QB is stale
     assert "PBI" in _suggest_action(by["Power BI XFreight Report"])  # unconfigured
     assert "file not found" in _suggest_action(by["SambaSafety"])    # no file
+    assert by["SambaSafety"]["feed"] == "CSV combine"               # CSV source, not API
 
 
 def test_suggest_action_cases():
@@ -87,7 +88,8 @@ def test_build_refresh_status_page_renders_all_sources():
          "run_ok": True, "measure": None},
         {"label": "SambaSafety", "kind": "file", "wf": "sambasafety_refresh.yml",
          "modified": _NOW - timedelta(hours=80), "stale_h": 80, "fresh": False, "max_h": 60,
-         "run_icon": "X", "run_detail": "failure", "run_ok": False, "measure": None},
+         "run_icon": "X", "run_detail": "failure", "run_ok": False, "measure": None,
+         "feed": "CSV combine"},
         {"label": "Knowledge Base Wiki", "kind": "wiki", "wf": "karpathy_compile.yml",
          "modified": _NOW - timedelta(hours=3), "stale_h": 3, "fresh": True, "max_h": 48,
          "run_icon": "OK", "run_detail": "success", "run_ok": True,
@@ -105,6 +107,7 @@ def test_build_refresh_status_page_renders_all_sources():
     assert "16h ago" in html                                 # relative age rendered
     assert "32 wiki / 42 raw files" in html                  # knowledge-base size measurement
     assert "Refresh failed" in html                          # SambaSafety failed run -> action
+    assert "CSV combine" in html                             # SambaSafety relabeled as CSV source
     assert "Set PBI" in html                                 # Power BI unconfigured -> action
     assert "not configured" in html                          # Power BI run cell
 
