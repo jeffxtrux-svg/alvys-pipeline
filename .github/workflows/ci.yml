@@ -30,6 +30,7 @@ jobs:
         run: |
           python tests/test_rpm_goal.py
           python tests/test_scorecard_alvys.py
+          python tests/test_margin_projection.py
           python tests/test_brief_extensions.py
           python tests/test_schema_drift.py
           python tests/test_sambasafety_combine.py

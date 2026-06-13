@@ -1,17 +1,24 @@
 """Regression tests for compute_margin_projection.
 
-Pins the contract:
-    projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
-    projected_margin  = projected_revenue * trailing-90 settled margin %
+Pins the current contract (working-day run-rate model):
+    daily_run_rate    = trailing_revenue_over_{days}_working_days / {days}
+    projected_revenue = daily_run_rate * working_days_in_month
+    projected_margin  = projected_revenue * trailing_margin_pct,
+                        floored at the already-settled MTD margin
 
-  - 'booked MTD' includes unsettled loads (so the forward estimate captures
-    activity the settled-only MTD tile excludes)
-  - 'trailing-90 settled' = last 90 days of settled (Driver Rate > 0),
-    non-cancelled loads
-  - Combined trailing rate is revenue-weighted across X-Trux + X-Linx, NOT
-    a simple average of the per-entity rates
-  - Cancelled loads excluded from both windows
-  - Empty inputs return {} (no crash)
+  - trailing window = last {days} WORKING days (Mon-Fri excl. major US
+    holidays) of settled (load cost > 0), non-cancelled loads. Default 80.
+  - 'settled MTD margin' = revenue - cost of this month's settled loads; it is
+    the floor (the projection never reads below what's already earned).
+  - X-Trux cost = Driver Rate; X-Linx cost = Driver Rate + Carrier Rate.
+  - Unsettled loads (cost = 0) are excluded from BOTH the trailing rate and the
+    settled-MTD floor.
+  - Combined trailing rate is revenue-weighted (SUM margin / SUM revenue), NOT a
+    simple average of the per-entity rates.
+  - Cancelled loads excluded; empty inputs return {} (no crash).
+  - Output keys: per entity + 'combined' → settled_mtd_margin,
+    trailing_margin_pct, projected_revenue, projected_margin.
+    Top level → working_days_in_month, trailing_days.
 
 Run:  pytest tests/test_margin_projection.py
 """
@@ -22,7 +29,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_margin_projection  # noqa: E402
+from src.scorecard_email import compute_margin_projection, _working_days_in_month  # noqa: E402
+
+DAYS = 80  # default trailing working-day window
 
 
 def _now():
@@ -38,6 +47,12 @@ def _sheets(rows):
     return {"Loads": pd.DataFrame(rows)}
 
 
+def _prior_month_end(now):
+    """Last day of the previous month — firmly outside MTD but inside the
+    trailing ~80-working-day (~112 calendar day) window."""
+    return pd.Timestamp(now.year, now.month, 1) - pd.Timedelta(days=1)
+
+
 def test_empty_inputs_return_empty_dict():
     assert compute_margin_projection(None) == {}
     assert compute_margin_projection({}) == {}
@@ -45,62 +60,55 @@ def test_empty_inputs_return_empty_dict():
 
 
 def test_basic_projection_math():
-    # The formula is the run-rate blend:
-    #   projected_revenue = booked_mtd + daily_run_rate * days_remaining
-    #   daily_run_rate    = trailing_90_revenue / 90
-    # (The old naive "booked * factor" extrapolation was replaced because it
-    # swung too wildly on day 1-2 of the month.)
+    # Run-rate model:
+    #   daily_run_rate    = trailing_revenue / DAYS (80 working days)
+    #   projected_revenue = daily_run_rate * working_days_in_month
+    #   projected_margin  = projected_revenue * trailing_margin_pct (>= settled floor)
     now = _now()
-    # MTD: 1 settled load/day in the current month at rev=5000, cost=3500 (30% margin)
-    rows = [_row("X-Trux", pd.Timestamp(now.year, now.month, d), 5000, 3500)
-            for d in range(1, now.day + 1)]
-    # 30 prior-month settled loads at the same rate.
-    prior_end = pd.Timestamp(now.year, now.month, 1) - pd.Timedelta(days=1)
-    for d in range(30):
-        rows.append(_row("X-Trux", prior_end - pd.Timedelta(days=d), 5000, 3500))
+    # 5 settled MTD loads (rev 5000 / cost 3500 = 30% margin) on the 1st.
+    rows = [_row("X-Trux", pd.Timestamp(now.year, now.month, 1), 5000, 3500) for _ in range(5)]
+    # 50 settled loads at last month's end — inside the trailing window, outside MTD.
+    prior_end = _prior_month_end(now)
+    rows += [_row("X-Trux", prior_end, 5000, 3500) for _ in range(50)]
 
     p = compute_margin_projection(_sheets(rows))
     xt = p["X-Trux"]
 
-    # Booked MTD and trailing margin % are unaffected by the formula change.
-    assert xt["booked_mtd"] == 5000 * now.day
+    # Settled MTD margin = 5 loads * (5000 - 3500); trailing margin % = 30%.
+    assert round(xt["settled_mtd_margin"], 2) == 5 * 1500
     assert round(xt["trailing_margin_pct"], 4) == 0.30
 
-    # Run-rate formula: compute expected projected_revenue from first principles.
-    # Trailing window picks up all settled loads in the last 90 days, which
-    # here is 30 prior-month loads + all current-month loads (their timestamps
-    # are midnight which is before pd.Timestamp.now()).
-    t_rev = (30 + now.day) * 5000
-    daily_rr = t_rev / 90
-    days_remaining = max(now.days_in_month - now.day, 0)
-    expected_proj_rev = 5000 * now.day + daily_rr * days_remaining
+    # All 55 loads are settled and inside the trailing window.
+    t_rev = 55 * 5000
+    wdim = _working_days_in_month(now.year, now.month)
+    expected_proj_rev = (t_rev / DAYS) * wdim
     assert abs(xt["projected_revenue"] - expected_proj_rev) < 0.01
 
-    # Projected margin = projected_revenue × trailing margin % (floor is settled
-    # margin which is ≤ proj_margin when the month has positive trailing rate).
-    assert round(xt["projected_margin"], 2) == round(xt["projected_revenue"] * 0.30, 2)
+    # Projected margin = projected_revenue * 30%, floored at settled MTD margin.
+    expected_pm = max(expected_proj_rev * 0.30, 5 * 1500)
+    assert round(xt["projected_margin"], 2) == round(expected_pm, 2)
 
 
-def test_booked_mtd_includes_unsettled_loads():
-    """Loads with Driver Rate = 0 (booked, not yet settled) DO count toward
-    booked MTD — that's the point of the basis switch. They do NOT contribute
-    to the trailing-90 margin rate (which filters Driver Rate > 0)."""
+def test_unsettled_loads_excluded_from_settled_and_trailing():
+    """Loads with no cost (Driver Rate = 0 — booked, not yet settled) are
+    excluded from BOTH the settled-MTD floor and the trailing run-rate, which
+    each filter to load cost > 0."""
     now = _now()
     rows = [
-        _row("X-Trux", pd.Timestamp(now.year, now.month, 1), 10_000, 0,    "Booked"),
-        _row("X-Trux", pd.Timestamp(now.year, now.month, 1), 10_000, 7000, "Delivered"),
+        _row("X-Trux", pd.Timestamp(now.year, now.month, 1), 10_000, 0,    "Booked"),    # unsettled
+        _row("X-Trux", pd.Timestamp(now.year, now.month, 1), 10_000, 7000, "Delivered"),  # settled
     ]
-    # Trailing-90 history (settled only)
-    older = now - pd.Timedelta(days=45)
+    # Settled trailing history at last month's end.
+    prior_end = _prior_month_end(now)
     for _ in range(20):
-        rows.append(_row("X-Trux", older, 10_000, 7000))
+        rows.append(_row("X-Trux", prior_end, 10_000, 7000))
 
     p = compute_margin_projection(_sheets(rows))
     xt = p["X-Trux"]
-    assert xt["booked_mtd"] == 20_000                       # both loads counted
-    assert round(xt["trailing_margin_pct"], 4) == 0.30      # only settled in rate
-    # Unsettled load excluded from trailing despite being recent
-    # (it has Driver Rate = 0)
+    # Only the settled MTD load contributes: 10000 - 7000 = 3000.
+    assert round(xt["settled_mtd_margin"], 2) == 3000
+    # Trailing rate is settled-only, all at 30%.
+    assert round(xt["trailing_margin_pct"], 4) == 0.30
 
 
 def test_cancelled_loads_excluded():
@@ -109,29 +117,30 @@ def test_cancelled_loads_excluded():
         _row("X-Trux", pd.Timestamp(now.year, now.month, 1), 5000, 3500, "Cancelled"),
         _row("X-Trux", pd.Timestamp(now.year, now.month, 1), 5000, 3500, "Delivered"),
     ]
-    older = now - pd.Timedelta(days=45)
+    prior_end = _prior_month_end(now)
     for _ in range(10):
-        rows.append(_row("X-Trux", older, 5000, 3500, "Delivered"))
+        rows.append(_row("X-Trux", prior_end, 5000, 3500, "Delivered"))
 
     p = compute_margin_projection(_sheets(rows))
-    assert p["X-Trux"]["booked_mtd"] == 5000                # cancelled excluded
+    # Cancelled load excluded from the settled MTD floor — only the delivered one counts.
+    assert round(p["X-Trux"]["settled_mtd_margin"], 2) == 1500
 
 
 def test_xfreight_office_folds_into_xtrux_group():
-    """The asset fleet includes both 'X-Trux, Inc' and 'XFreight' offices —
-    they belong to the same group per _entity_group, so the projection
-    aggregates them."""
+    """The asset fleet includes both 'X-Trux, Inc' and 'XFreight' offices — they
+    belong to the same group per _entity_group, so the projection aggregates them."""
     now = _now()
     rows = [
-        _row("X-Trux, Inc", pd.Timestamp(now.year, now.month, 1), 5000, 3500),
-        _row("XFreight",    pd.Timestamp(now.year, now.month, 1), 3000, 2100),
+        _row("X-Trux, Inc", pd.Timestamp(now.year, now.month, 1), 5000, 3500),  # margin 1500
+        _row("XFreight",    pd.Timestamp(now.year, now.month, 1), 3000, 2100),  # margin 900
     ]
-    older = now - pd.Timedelta(days=45)
+    prior_end = _prior_month_end(now)
     for _ in range(20):
-        rows.append(_row("X-Trux, Inc", older, 5000, 3500))
+        rows.append(_row("X-Trux, Inc", prior_end, 5000, 3500))
 
     p = compute_margin_projection(_sheets(rows))
-    assert p["X-Trux"]["booked_mtd"] == 8000                # both offices summed
+    # Both offices fold into X-Trux: settled MTD margin = 1500 + 900.
+    assert round(p["X-Trux"]["settled_mtd_margin"], 2) == 2400
 
 
 def test_combined_rate_is_revenue_weighted_not_simple_average():
@@ -140,12 +149,12 @@ def test_combined_rate_is_revenue_weighted_not_simple_average():
     rates would understate when one entity dominates the trailing window."""
     now = _now()
     rows = []
-    # Tiny MTD just to give booked_mtd a number (negligible effect on trailing %)
+    # Tiny MTD just to give the entities a presence (negligible effect on trailing %)
     rows.append(_row("X-Trux", pd.Timestamp(now.year, now.month, 1), 1, 0.7))   # 30% margin
     rows.append(_row("X-Linx", pd.Timestamp(now.year, now.month, 1), 1, 0.9))   # 10% margin
-    # Trailing-90 history pushed into the prior month so it doesn't pollute MTD.
+    # Trailing-window history pushed into the prior month so it doesn't pollute MTD.
     # X-Trux gets 2x the revenue of X-Linx, so combined skews toward X-Trux's rate.
-    prior_end = pd.Timestamp(now.year, now.month, 1) - pd.Timedelta(days=1)
+    prior_end = _prior_month_end(now)
     for _ in range(5):
         rows.append(_row("X-Trux", prior_end, 200_000, 140_000))   # 30% margin
         rows.append(_row("X-Linx", prior_end, 100_000, 90_000))    # 10% margin
@@ -165,28 +174,39 @@ def test_missing_entity_returns_none_values():
     """No X-Linx data anywhere -> X-Linx entry exists with None values, not absent."""
     now = _now()
     rows = [_row("X-Trux", pd.Timestamp(now.year, now.month, 1), 5000, 3500)]
-    older = now - pd.Timedelta(days=45)
+    prior_end = _prior_month_end(now)
     for _ in range(5):
-        rows.append(_row("X-Trux", older, 5000, 3500))
+        rows.append(_row("X-Trux", prior_end, 5000, 3500))
 
     p = compute_margin_projection(_sheets(rows))
     xl = p["X-Linx"]
-    assert xl["booked_mtd"] is None
+    assert xl["settled_mtd_margin"] is None
     assert xl["trailing_margin_pct"] is None
     assert xl["projected_revenue"] is None
     assert xl["projected_margin"] is None
 
 
 def test_days_metadata_present():
-    """The pill in the tile shows N/M days; make sure those values surface."""
+    """The pill in the tile shows the working-day basis; make sure those surface."""
     now = _now()
     rows = [_row("X-Trux", pd.Timestamp(now.year, now.month, 1), 1000, 700)]
     p = compute_margin_projection(_sheets(rows))
-    assert p["days_in_month"] == now.days_in_month
-    assert p["day_of_month"] == now.day
-    assert p["trailing_days"] == 90
+    assert p["working_days_in_month"] == _working_days_in_month(now.year, now.month)
+    assert p["trailing_days"] == DAYS
 
 
 if __name__ == "__main__":
-    import pytest
-    sys.exit(pytest.main([__file__, "-v"]))
+    # Plain runner (no pytest dependency) so this can run in CI like the other
+    # gated test files — CI invokes `python tests/<file>.py`.
+    tests = [v for k, v in sorted(globals().items())
+             if k.startswith("test_") and callable(v)]
+    failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"PASS  {t.__name__}")
+        except AssertionError as exc:
+            failed += 1
+            print(f"FAIL  {t.__name__}: {exc}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)
