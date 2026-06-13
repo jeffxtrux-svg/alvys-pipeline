@@ -1859,6 +1859,9 @@ def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: d
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
     sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    # Mirror compute_rpm_goal: X-Trux Inc only (excludes XFreight) so the
+    # trend's monthly cost aligns with the point-in-time cost/goal figures.
+    sub = sub[sub[office_col].astype(str).str.upper().str.contains("TRUX")]
     if sub.empty:
         return empty
     dates = _dates(sub, ALVYS_DATE_CANDIDATES)

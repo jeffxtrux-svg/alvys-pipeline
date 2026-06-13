@@ -41,16 +41,17 @@ _RECENT = _recent_in_current_month()
 
 def _sheets():
     rows = [
-        # X-Trux asset, settled: pay 2000 over 1000 mi, revenue 2600.
+        # X-Trux Inc, settled: pay 2000 over 1000 mi, revenue 2600. → included.
         dict(Office="X-Trux, Inc", **{"Customer Revenue": 2600, "Driver Rate": 2000,
              "Total Dispatch Mileage": 1000, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
-        # X-Trux asset, settled: pay 1620 over 900 mi, revenue 2300.
+        # XFreight (X-Trux group but name lacks "TRUX") → excluded from pay/miles/revenue
+        # by the xtrux_only filter in both compute_rpm_goal and compute_rpm_goal_trend.
         dict(Office="XFreight", **{"Customer Revenue": 2300, "Driver Rate": 1620,
              "Total Dispatch Mileage": 900, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
-        # X-Linx brokerage — must NOT count toward X-Trux pay/miles.
+        # X-Linx brokerage — excluded by _entity_group filter.
         dict(Office="X-Linx, Inc.", **{"Customer Revenue": 800, "Driver Rate": 500,
              "Total Dispatch Mileage": 300, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
-        # Cancelled X-Trux — excluded.
+        # Cancelled X-Trux — excluded by Load Status filter.
         dict(Office="X-Trux, Inc", **{"Customer Revenue": 9999, "Driver Rate": 9999,
              "Total Dispatch Mileage": 9999, "Scheduled Pickup": _RECENT, "Load Status": "Cancelled"}),
     ]
@@ -67,12 +68,15 @@ def _qb_pnl():
     }
 
 
-_PAY = 2000 + 1620           # 3620
-_MILES = 1000 + 900          # 1900
-_PAY_PM = _PAY / _MILES      # ~1.9053
+# Only X-Trux Inc loads count; XFreight is in the X-Trux entity group but is
+# excluded by the xtrux_only filter (.str.contains("TRUX")) in both
+# compute_rpm_goal and compute_rpm_goal_trend.
+_PAY = 2000                  # X-Trux Inc only
+_MILES = 1000                # X-Trux Inc only
+_PAY_PM = _PAY / _MILES      # 2.0
 _OVERHEAD = 1000 + 710       # 1710
-_OVERHEAD_PM = _OVERHEAD / _MILES
-_COST_PM = _PAY_PM + _OVERHEAD_PM
+_OVERHEAD_PM = _OVERHEAD / _MILES   # 1.71
+_COST_PM = _PAY_PM + _OVERHEAD_PM  # 3.71
 
 
 def test_driver_pay_per_mile_excludes_xlinx_and_cancelled():
@@ -80,7 +84,7 @@ def test_driver_pay_per_mile_excludes_xlinx_and_cancelled():
     assert g is not None
     assert abs(g["pay_per_mile"] - _PAY_PM) < 1e-9
     assert abs(g["pay_miles"] - _MILES) < 1e-9
-    assert abs(g["actual_rpm"] - (4900 / _MILES)) < 1e-9
+    assert abs(g["actual_rpm"] - (2600 / _MILES)) < 1e-9  # X-Trux Inc revenue only
 
 
 def test_overhead_pools_configured_companies_only_and_abs():
@@ -122,22 +126,23 @@ def test_no_quickbooks_yields_partial_cost_out():
 
 
 def test_pay_leg_uses_settled_loads_only():
-    # A fresh X-Trux load whose driver pay hasn't settled yet (Driver Rate 0) has
+    # A fresh X-Trux Inc load whose driver pay hasn't settled yet (Driver Rate 0) has
     # real miles but must NOT drag the pay-per-mile down — it's excluded from the
     # pay read, yet its miles still count toward the YTD overhead denominator.
+    # XFreight row is present but excluded by the xtrux_only filter.
     rows = [
         dict(Office="X-Trux, Inc", **{"Customer Revenue": 2600, "Driver Rate": 2000,
              "Total Dispatch Mileage": 1000, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
         dict(Office="XFreight", **{"Customer Revenue": 2300, "Driver Rate": 1620,
              "Total Dispatch Mileage": 900, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
-        # unsettled: just picked up, driver pay not entered yet
+        # unsettled X-Trux Inc: pay not entered yet, miles still operated
         dict(Office="X-Trux, Inc", **{"Customer Revenue": 1500, "Driver Rate": 0,
              "Total Dispatch Mileage": 700, "Scheduled Pickup": _RECENT, "Load Status": "Delivered"}),
     ]
     g = compute_rpm_goal({"Loads": pd.DataFrame(rows)}, _qb_pnl())
-    assert abs(g["pay_per_mile"] - _PAY_PM) < 1e-9             # 3620/1900, unsettled excluded
-    assert abs(g["pay_miles"] - _MILES) < 1e-9
-    assert abs(g["ytd_miles"] - (_MILES + 700)) < 1e-9        # unsettled miles still operated
+    assert abs(g["pay_per_mile"] - _PAY_PM) < 1e-9             # 2000/1000, unsettled excluded
+    assert abs(g["pay_miles"] - _MILES) < 1e-9                 # 1000 mi (settled X-Trux Inc)
+    assert abs(g["ytd_miles"] - (_MILES + 700)) < 1e-9        # 1700: settled+unsettled X-Trux Inc
     assert abs(g["overhead_per_mile"] - (_OVERHEAD / (_MILES + 700))) < 1e-9
 
 
@@ -158,7 +163,7 @@ def test_goal_trend_this_month_matches_point_goal():
     # equal the point-in-time figures from compute_rpm_goal.
     assert abs(t["cost"][-1] - g["cost_per_mile"]) < 1e-9
     assert abs(t["goal"][-1] - g["goal_rpm"]) < 1e-9
-    assert abs(t["actual"][-1] - 4900 / _MILES) < 1e-9         # (2600+2300)/1900 revenue/mi
+    assert abs(t["actual"][-1] - 2600 / _MILES) < 1e-9         # X-Trux Inc revenue/mi (2600/1000)
 
 
 def test_goal_trend_cost_empty_without_quickbooks():
@@ -178,7 +183,7 @@ def _rich_sheets(rate=1.80, n=6, mi_each=1000):
 
 
 def test_pay_window_widens_when_sample_is_thin():
-    # _sheets() has only 2 settled loads / 1900 mi — below the 5-load / 5000-mi floor,
+    # _sheets() has only 1 settled X-Trux Inc load / 1000 mi — below the 5-load / 5000-mi floor,
     # so the window widens to the largest fallback and flags it.
     g = compute_rpm_goal(_sheets(), _qb_pnl())
     assert g["pay_window_fallback"] is True
