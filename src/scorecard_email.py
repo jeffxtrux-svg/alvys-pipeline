@@ -7128,17 +7128,17 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
                 t = pd.Timestamp(modified).tz_convert("America/Chicago")
             except Exception:
                 t = pd.Timestamp(modified)
-            when = t.strftime("%b %d, %Y %I:%M %p") + " CT"
+            dt_str = t.strftime("%b %d, %Y &middot; %I:%M %p") + " CT"
             ago = s.get("stale_h")
-            if ago is not None:
-                when += (" &middot; &lt;1h ago" if ago < 1 else f" &middot; {int(ago)}h ago")
+            age_str = ("&mdash;" if ago is None
+                       else ("&lt;1h ago" if ago < 1 else f"{int(ago)}h ago"))
         else:
-            when = "&mdash;"
+            dt_str = age_str = "&mdash;"
         # Knowledge-base size measurement (wiki/raw file counts) shown inline.
         measure = s.get("measure")
         if measure:
             mstr = f"{measure.get('wiki', 0)} wiki / {measure.get('raw', 0)} raw files"
-            when = mstr if when == "&mdash;" else f"{when} &middot; {mstr}"
+            dt_str = mstr if dt_str == "&mdash;" else f"{dt_str} &middot; {mstr}"
         if max_h is None:
             badge = _pill("run-status only", "mute")
         elif s.get("fresh") is True:
@@ -7148,15 +7148,17 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
         else:
             badge = _pill("unknown", "mute")
         run = f"{s.get('run_icon', '&mdash;')} {s.get('run_detail', '&mdash;')}"
+        _td = f"padding:7px 10px;border-top:1px solid {LINE};font-size:11.5px;"
         rows_html += (
             f"<tr>"
-            f"<td style='padding:8px 12px;font-weight:700;color:{INK};border-top:1px solid {LINE};'>{label}</td>"
-            f"<td style='padding:8px 12px;color:{INK};border-top:1px solid {LINE};font-size:12px;'>{when}</td>"
-            f"<td style='padding:8px 12px;border-top:1px solid {LINE};'>{badge}</td>"
-            f"<td style='padding:8px 12px;color:{MUTE};border-top:1px solid {LINE};font-size:12px;'>{run}</td>"
+            f"<td style='{_td}font-weight:700;color:{INK};'>{label}</td>"
+            f"<td style='{_td}color:{INK};'>{dt_str}</td>"
+            f"<td style='{_td}color:{MUTE};white-space:nowrap;'>{age_str}</td>"
+            f"<td style='{_td}'>{badge}</td>"
+            f"<td style='{_td}color:{MUTE};'>{run}</td>"
             f"</tr>")
-    table = _table(["Source", "Last refreshed", "Fresh?", "Latest refresh run"],
-                   ["left", "left", "left", "left"], rows_html)
+    table = _table(["Source", "Date &amp; time", "Age", "Fresh?", "Latest refresh run"],
+                   ["left", "left", "left", "left", "left"], rows_html)
     note = _brief(
         "Last refreshed: OneDrive file time for Alvys/QuickBooks/Samsara/SambaSafety; "
         "the workflow run time for Google Sheets KPI, the knowledge-base wiki, and the "

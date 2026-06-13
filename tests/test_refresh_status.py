@@ -72,7 +72,9 @@ def test_build_refresh_status_page_renders_all_sources():
     for label in ("Alvys", "SambaSafety", "Knowledge Base Wiki", "Power BI XFreight Report"):
         assert label in html
     assert "Data refresh status" in html
+    assert "Date &amp; time" in html and "Age" in html   # dedicated date/time + age columns
     assert "Fresh" in html and "Stale" in html
+    assert "16h ago" in html                   # relative age rendered
     assert "32 wiki / 42 raw files" in html    # knowledge-base size measurement
     assert "not configured" in html            # Power BI row before setup
 
