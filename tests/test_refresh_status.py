@@ -44,17 +44,17 @@ def test_compute_refresh_status_shape_and_freshness():
                 os.environ[k] = v
 
     by = {r["label"]: r for r in rows}
-    assert set(by) == {"Alvys", "QuickBooks", "Samsara", "SambaSafety", "Google Sheets KPI",
+    assert set(by) == {"Alvys Master", "QuickBooks", "Samsara", "SambaSafety", "Google Sheets KPI",
                        "Daily MTD Upload", "Knowledge Base Wiki", "Upload Health Check",
                        "Scorecard Health Check", "Power BI XFreight Report"}
     # Feed/source-type labels.
-    assert by["Alvys"]["feed"] == "API"
+    assert by["Alvys Master"]["feed"] == "Manual upload"
     assert by["QuickBooks"]["feed"] == "API"
     assert by["Samsara"]["feed"] == "API"
     assert by["Google Sheets KPI"]["feed"] == "Google API"
     assert by["Daily MTD Upload"]["feed"] == "Excel upload"
     assert by["SambaSafety"]["feed"] == "CSV combine"
-    assert by["Alvys"]["fresh"] is True              # 10h <= 30h
+    assert by["Alvys Master"]["fresh"] is True              # 10h <= 30h
     assert by["QuickBooks"]["fresh"] is False        # 20h  > 8h
     assert by["Samsara"]["fresh"] is True            # 5h  <= 30h
     assert by["SambaSafety"]["modified"] is None and by["SambaSafety"]["fresh"] is None
@@ -65,9 +65,9 @@ def test_compute_refresh_status_shape_and_freshness():
     # Knowledge base: nonexistent dir -> no size; GH_TOKEN unset -> no run time.
     assert by["Knowledge Base Wiki"]["measure"] is None
     # GH_TOKEN unset -> Actions leg skipped, run cells left blank.
-    assert by["Alvys"]["run_detail"] == "&mdash;"
+    assert by["Alvys Master"]["run_detail"] == "&mdash;"
     # New fields used by the suggested-action column.
-    assert by["Alvys"]["kind"] == "share"
+    assert by["Alvys Master"]["kind"] == "share"
     assert by["QuickBooks"]["run_ok"] is None        # no GH_TOKEN -> unknown
     # Suggested actions derive from the row state.
     assert "stale" in _suggest_action(by["QuickBooks"]).lower()      # QB is stale
@@ -93,6 +93,12 @@ def test_suggest_action_cases():
                             "run_ok": False}).startswith("Power BI refresh failed")
     assert _suggest_action({"kind": "pbi", "modified": "x", "fresh": True,
                             "run_ok": None}) is None
+    # Manual upload (Alvys Master) cases.
+    assert _suggest_action({"feed": "Manual upload", "modified": "x",
+                            "fresh": False}).startswith("Stale")
+    assert _suggest_action({"feed": "Manual upload", "modified": None,
+                            "fresh": None}).startswith("File not found")
+    assert _suggest_action({"feed": "Manual upload", "modified": "x", "fresh": True}) is None
     # Healthy source -> no action.
     assert _suggest_action({"kind": "file", "modified": "x", "fresh": True,
                             "run_ok": True}) is None

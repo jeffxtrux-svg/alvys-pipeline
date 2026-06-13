@@ -145,7 +145,7 @@ jobs:
       - name: Dispatch daily_upload.yml (marker missing)
         if: steps.ct_gate.outputs.skip != '1' && steps.marker.outputs.needs_send == '1'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           echo "Dispatching daily_upload.yml via gh workflow run…"
           gh workflow run daily_upload.yml --ref main

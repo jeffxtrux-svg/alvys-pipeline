@@ -6964,7 +6964,7 @@ REFRESH_SOURCES = [
     #         run = workflow run only; wiki = run + knowledge-base file count;
     #         pbi = Power BI — Desktop .pbix last-saved time on OneDrive, or the
     #               Service dataset refresh (Power BI REST API) if its IDs are set.
-    {"label": "Alvys",                    "wf": "refresh.yml",                  "kind": "share", "max_h": 30, "feed": "API"},
+    {"label": "Alvys Master",             "wf": None,                           "kind": "share", "max_h": 30, "feed": "Manual upload"},
     {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8,  "feed": "API"},
     {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30, "feed": "API"},
     {"label": "SambaSafety",              "wf": "sambasafety_refresh.yml",      "kind": "file",  "max_h": 60, "feed": "CSV combine"},
@@ -7164,6 +7164,12 @@ def _suggest_action(s):
             return "Report not found &mdash; save XFreight Report.pbix to OneDrive (or set Service API IDs)"
         if s.get("fresh") is False:
             return "Open the report in Power BI Desktop, refresh &amp; save"
+        return None
+    if s.get("feed") == "Manual upload":
+        if s.get("modified") is None:
+            return "File not found &mdash; upload the workbook to OneDrive"
+        if s.get("fresh") is False:
+            return "Stale &mdash; upload a fresh copy to OneDrive"
         return None
     if s.get("run_ok") is False:
         return "Refresh failed &mdash; check the run &amp; re-run it"
