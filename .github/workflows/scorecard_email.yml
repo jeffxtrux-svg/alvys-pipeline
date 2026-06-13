@@ -10,6 +10,8 @@
 # trigger: 2026-06-07 — re-fire after restoring 9 scorecard fixes that were
 # lost when the karpathy branch was force-pushed (coaching ack from
 # SafetyEvents, BL speed key, RPM chart/tile parity, MTD idle gallons, etc.).
+# trigger: 2026-06-13 — one-shot to Jeff after the X-Trux Corrected Margin %
+# (>= 80%) hold-out rule; X-Trux should read ~$225,078.85.
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.
