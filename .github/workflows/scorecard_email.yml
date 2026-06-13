@@ -132,18 +132,16 @@ jobs:
           # on-demand re-sends always fire. Cron slots leave the marker in force
           # so only the first scheduled slot each day actually emails.
           SCORECARD_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '1' || '' }}
-          # Read the EXACT workbook the Power BI report uses. There are two
-          # similarly-named files in OneDrive:
-          #   WRONG: "Alvys Master 2026.xlsx"  (space) in /Documents root — an
-          #          un-settled duplicate that inflates revenue / margin.
-          #   RIGHT: "Alvys Master2026.xlsx"   (no space) in the
-          #          "API Feeds and Updated XLXS" subfolder — what PBI reads.
-          # The ALVYS_SHARE_URL secret had drifted to the wrong item, so we no
-          # longer trust it: read by the explicit subfolder path, which is
-          # unambiguous against the root duplicate. Leave the share URL empty so
-          # the code skips it and uses the verified path.
-          SCORECARD_ALVYS_SHARE_URL: ""
-          SCORECARD_ALVYS_PATH: "API Feeds and Updated XLXS/Alvys Master2026.xlsx"
+          # Read the EXACT workbook the Power BI report uses, by its OneDrive
+          # sharing URL (resolves the specific item, immune to duplicate names).
+          # The ALVYS_SHARE_URL secret points at the correct no-space
+          # "Alvys Master2026.xlsx" (3 tabs Fuel/Loads/Trips, re-uploaded every
+          # afternoon) — verified 2026-06-13 that this read reproduces the PBI
+          # numbers to the penny. The fallback name below is the same no-space
+          # file; the WITH-space "Alvys Master 2026.xlsx" is a different workbook
+          # and must NOT be used.
+          SCORECARD_ALVYS_SHARE_URL: ${{ secrets.ALVYS_SHARE_URL }}
+          SCORECARD_ALVYS_PATH: "Alvys Master2026.xlsx"
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive

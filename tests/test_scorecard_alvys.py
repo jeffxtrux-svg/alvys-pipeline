@@ -102,22 +102,44 @@ def test_counts_all_loads_including_zero_revenue():
 
 
 def test_unsettled_loads_excluded_from_pnl():
-    """Booked-but-not-yet-dispatched loads (revenue > 0, Driver Rate = 0) must NOT
-    contribute to revenue/cost/margin (which would inflate margin % mid-month
-    relative to the Power BI report). They surface separately via `unsettled`."""
+    """Booked-but-not-yet-dispatched loads (Load Status = "Open") must NOT
+    contribute to revenue/cost/margin (which would inflate revenue mid-month
+    relative to the Power BI report, which excludes Open loads). They surface
+    separately via `unsettled`. This is a STATUS rule — note the Open load below
+    carries revenue but is still excluded, and a DR=0 non-Open load (e.g.
+    "Covered") would still count."""
     sheets = _loads()
     booked_unsettled = pd.DataFrame([dict(
         Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
         **{"Customer Revenue": 2665, "Driver Rate": 0, "Carrier Rate": 0,
            "Total Dispatch Mileage": 0, "Empty Dispatch Mileage": 0,
-           "Scheduled Pickup": pd.Timestamp(2026, 4, 28), "Load Status": "Delivered"})])
+           "Scheduled Pickup": pd.Timestamp(2026, 4, 28), "Load Status": "Open"})])
     sheets["Loads"] = pd.concat([sheets["Loads"], booked_unsettled], ignore_index=True)
     e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
     xt = e["X-Trux"]
-    # Same totals as without the unsettled load — it's excluded.
+    # Same totals as without the Open load — it's excluded from P&L.
     assert round(xt["revenue"]) == 1000 and round(xt["cost"]) == 500
     assert round(xt["margin"]) == 500
     assert xt["loads"] == 2 and xt["unsettled"] == 1
+
+
+def test_covered_dr_zero_load_counts():
+    """A DR=0 load that is NOT "Open" (e.g. "Covered" — carrier assigned, driver
+    rate not yet entered) MUST count toward revenue, matching Power BI. This is
+    exactly the case the old "Driver Rate > 0" heuristic got wrong (it dropped
+    Covered loads along with Open ones)."""
+    sheets = _loads()
+    covered = pd.DataFrame([dict(
+        Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
+        **{"Customer Revenue": 1420, "Driver Rate": 0, "Carrier Rate": 0,
+           "Total Dispatch Mileage": 0, "Empty Dispatch Mileage": 0,
+           "Scheduled Pickup": pd.Timestamp(2026, 4, 20), "Load Status": "Covered"})])
+    sheets["Loads"] = pd.concat([sheets["Loads"], covered], ignore_index=True)
+    e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
+    xt = e["X-Trux"]
+    # Covered revenue is included (1000 + 1420); cost unchanged (DR=0); not unsettled.
+    assert round(xt["revenue"]) == 2420 and round(xt["cost"]) == 500
+    assert xt["loads"] == 3 and xt["unsettled"] == 0
 
 
 def test_health_flags_missing_driver_rate():

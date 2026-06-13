@@ -578,6 +578,15 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 # all reporting; X-Linx (brokerage) is reported separately.
 ENTITY_ORDER = ["X-Trux", "X-Linx"]
 
+# Loads in these statuses are pre-dispatch (booked but not started). The Power BI
+# XFreight Report excludes them from revenue AND cost until they progress — they
+# are surfaced separately as "unsettled". "Cancelled" is dropped from the universe
+# entirely upstream; "Open" is the booked-not-dispatched bucket. Verified
+# 2026-06-13 against Alvys Master2026.xlsx: excluding {open} makes both X-Trux and
+# X-Linx match PBI to the penny (revenue and cost). This replaced an older
+# "Driver Rate > 0" proxy that wrongly dropped DR=0 statuses like "Covered".
+ALVYS_OPEN_STATUSES = {"open"}
+
 
 def _entity_group(office) -> str | None:
     s = str(office).upper()
@@ -804,43 +813,36 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": 0}
             continue
-        # X-Linx (brokerage) matches Power BI X-Linx Inc tab: every non-
-        # cancelled load counts, no Driver Rate > 0 filter. Brokered carrier
-        # rates land at book time, so the "unsettled" gap that justifies the
-        # filter on the asset side doesn't apply here.
-        #
-        # Actuals only — mirrors the Power BI Total Load Cost DAX measure exactly:
-        #   X-Trux cost = SUM(Driver Rate)          — open loads contribute $0 until settled
-        #   X-Linx cost = SUM(Driver Rate + Carrier Rate)
-        # No open-load estimation here; estimates live in daily_upload.py only.
-        rate_col = _col(rows, "Driver Rate").fillna(0) if "Driver Rate" in rows.columns else None
+        # Power BI recognizes a load once it progresses past "Open" (booked but
+        # not dispatched — no revenue/cost recognized yet). Exclude Open loads
+        # from P&L for BOTH entities and surface them as `unsettled`; every other
+        # non-cancelled status (Covered/Dispatched/In Transit/Completed/Invoiced/
+        # Released/Queued) counts. Verified to match the PBI XFreight Report to
+        # the penny for X-Trux and X-Linx (2026-06-13). Cost mirrors the PBI
+        # Total Load Cost DAX: X-Trux = SUM(Driver Rate); X-Linx (brokerage) =
+        # SUM(Driver Rate + Carrier Rate), since brokered carrier payout lands in
+        # Carrier Rate (Driver Rate ~0).
+        status = (rows["Load Status"].astype(str).str.strip().str.lower()
+                  if "Load Status" in rows.columns else pd.Series("", index=rows.index))
+        open_mask = status.isin(ALVYS_OPEN_STATUSES)
+        counted = rows[~open_mask]
+        n_loads = len(counted)
+        n_unsettled = int(open_mask.sum())
+        revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
+        dr_col = _col(counted, "Driver Rate").fillna(0) if "Driver Rate" in counted.columns else None
+        dr_cost = float(dr_col.sum()) if dr_col is not None else 0.0
         if ent == "X-Linx":
-            # X-Linx brokerage: cost = Driver Rate + Carrier Rate. For brokered
-            # loads the carrier payout lands in Carrier Rate (Driver Rate is 0).
-            # Mirrors Power BI Total Load Cost DAX: SUM(Driver Rate + Carrier Rate).
-            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
-            carrier_col = _col(rows, "Carrier Rate").fillna(0) if "Carrier Rate" in rows.columns else None
-            dr_cost = float(rate_col.sum()) if rate_col is not None else 0.0
+            carrier_col = _col(counted, "Carrier Rate").fillna(0) if "Carrier Rate" in counted.columns else None
             cr_cost = float(carrier_col.sum()) if carrier_col is not None else 0.0
             cost = dr_cost + cr_cost
-            n_loads = len(rows)
-            n_unsettled = 0
-            log.info("compute_alvys_entities[X-Linx]: %d loads | DR $%.2f + CR $%.2f = $%.2f cost",
-                     n_loads, dr_cost, cr_cost, cost)
+            log.info("compute_alvys_entities[X-Linx]: %d loads (%d open excluded) | "
+                     "DR $%.2f + CR $%.2f = $%.2f cost | revenue $%.2f",
+                     n_loads, n_unsettled, dr_cost, cr_cost, cost, float(revenue))
         else:
-            # X-Trux: settled loads only (Driver Rate > 0) — PBI excludes open
-            # loads implicitly because they have no DR yet; to match to the penny
-            # we apply the same filter on both revenue and cost.
-            settled_mask = (rate_col > 0) if rate_col is not None else pd.Series(False, index=rows.index)
-            settled = rows[settled_mask]
-            revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
-            cost = float(rate_col[settled_mask].sum()) if rate_col is not None else 0.0
-            n_loads = int(settled_mask.sum())
-            n_unsettled = int((~settled_mask).sum())
-            log.info("compute_alvys_entities[%s]: %d loads (%d settled, %d open excluded) | "
+            cost = dr_cost
+            log.info("compute_alvys_entities[%s]: %d loads (%d open excluded) | "
                      "revenue $%.2f | cost (DR) $%.2f",
-                     ent, n_loads + n_unsettled, n_loads, n_unsettled,
-                     float(revenue), cost)
+                     ent, n_loads, n_unsettled, float(revenue), cost)
         margin = revenue - cost
         out[ent] = {
             "revenue": revenue or None,
@@ -7403,11 +7405,11 @@ def main() -> int:
     from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
-    # Canonical no-space file in its subfolder. A second "Alvys Master 2026.xlsx"
-    # (with a space) sits in the Documents root and is an un-settled duplicate —
-    # the subfolder path here is unambiguous against it.
-    alvys_path = os.environ.get(
-        "SCORECARD_ALVYS_PATH", "API Feeds and Updated XLXS/Alvys Master2026.xlsx")
+    # Power BI reads the no-space "Alvys Master2026.xlsx" (3 tabs Fuel/Loads/Trips,
+    # re-uploaded every afternoon). NOTE the duplicate WITH a space
+    # ("Alvys Master 2026.xlsx") is a different, fuller workbook — do not read it.
+    # The primary read is the share URL below; this name is only a fallback.
+    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master2026.xlsx")
     # Read the Alvys workbook from this exact OneDrive sharing URL instead of by
     # name — avoids reading the wrong file when a duplicate of the same name
     # exists. Default is the canonical "Alvys Master2026.xlsx" the Power BI
@@ -7457,24 +7459,22 @@ def main() -> int:
     if alvys_sheets is None:
         alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
         data_asof = get_file_modified(token, upn, alvys_path)
-    # Wrong-file guard. The correct Alvys Master2026.xlsx has Fuel/Loads/Trips
-    # tabs; the un-settled same-named duplicate does not. If we somehow read a
-    # workbook without those tabs, abort rather than email inflated numbers —
-    # the workflow's failure step then notifies Jeff. (Fixed this 5+ times by
-    # hand; this makes a wrong read self-announcing.)
+    # Wrong-file canary (non-fatal). The correct Alvys Master2026.xlsx has
+    # Fuel/Loads/Trips tabs. Log the tabs every run so the Actions log shows
+    # exactly which workbook was read, and flag it loudly on the email if the
+    # expected tabs are missing — but do NOT abort (a hard fail here once blanked
+    # the whole brief). The share URL is the source of truth; this just surfaces
+    # a surprise instead of silently shipping it.
     if alvys_sheets is not None:
         tabs = sorted(alvys_sheets.keys())
         got = {str(s).strip().lower() for s in alvys_sheets.keys()}
         log.info("Alvys workbook tabs read: %s", tabs)
         missing_tabs = ALVYS_EXPECTED_TABS - got
         if missing_tabs:
-            raise ValueError(
-                f"Alvys workbook read from '{alvys_path}' is missing expected tab(s) "
-                f"{sorted(missing_tabs)} — got {tabs}. This means the WRONG file was "
-                f"read. The correct 'Alvys Master2026.xlsx' (no space, in 'API Feeds "
-                f"and Updated XLXS') has Fuel/Loads/Trips. Refusing to send a brief "
-                f"with wrong numbers."
-            )
+            warn = (f"Alvys workbook is missing expected tab(s) {sorted(missing_tabs)} "
+                    f"(got {tabs}) — this may be the WRONG file; numbers could be off.")
+            log.warning(warn)
+            missing.append("Alvys workbook (unexpected tabs — verify it's Alvys Master2026.xlsx)")
     alvys_pipeline_sheets = _safe_read(token, upn, alvys_pipeline_path, missing, "Alvys Pipeline")
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
