@@ -48,10 +48,16 @@ from src.onedrive_upload import (
     upload_file,
 )
 from src.scorecard_email import (
+    BAD,
+    BADBG,
     FONT_SERIF,
+    GOOD,
+    GOODBG,
     INK,
     LINE,
     MUTE,
+    WARN,
+    WARNBG,
     XFREIGHT_RED,
     _find_col,
     _safe_read,
@@ -61,6 +67,10 @@ from src.scorecard_email import (
     _to_naive_dt,
     _tr,
     _windows,
+    compute_alvys_drivers,
+    compute_alvys_uninvoiced,
+    compute_csa_scorecard,
+    compute_sambasafety,
     compute_samsara,
     send_email,
 )
@@ -238,17 +248,33 @@ def _wrap_page(inner_html: str) -> str:
     )
 
 
-def _page_header(title: str, pg: int, total: int) -> str:
+def _page_header(title: str, pg: int, total: int,
+                  section: str | None = None) -> str:
     """Lighter header than the executive brief — no logo SVG to keep
-    the dependency surface low. Title + date stamp + page counter."""
+    the dependency surface low. Title + date stamp + page counter.
+
+    `section` is the topic banner above the page title (DRIVERS / EVENTS
+    / EQUIPMENT / REGULATORY / CLOSEOUT). Pages within the same section
+    share a banner so the reader can see the brief's structure at a
+    glance without a separate table of contents."""
     today = _today_label()
+    if section:
+        eyebrow = (
+            f"<div style='font-size:10px;letter-spacing:2px;color:{XFREIGHT_RED};"
+            f"font-weight:800;'>XFREIGHT &middot; SAFETY &amp; COMPLIANCE "
+            f"&middot; <span style='color:{INK};'>{section}</span></div>"
+        )
+    else:
+        eyebrow = (
+            f"<div style='font-size:10px;letter-spacing:2px;color:{XFREIGHT_RED};"
+            f"font-weight:800;'>XFREIGHT &middot; SAFETY &amp; COMPLIANCE</div>"
+        )
     return (
         f"<table width='100%' cellpadding='0' cellspacing='0' "
         f"style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 24px 14px;'>"
         f"<tr>"
         f"<td valign='middle' style='padding:0;'>"
-        f"<div style='font-size:10px;letter-spacing:2px;color:{XFREIGHT_RED};"
-        f"font-weight:800;'>XFREIGHT &middot; SAFETY &amp; COMPLIANCE</div>"
+        f"{eyebrow}"
         f"<div style='{FONT_SERIF}font-size:18px;color:{INK};margin-top:4px;'>{title}</div>"
         f"</td>"
         f"<td align='right' valign='middle' style='padding:0;font-size:11px;color:{MUTE};'>"
@@ -260,8 +286,374 @@ def _page_header(title: str, pg: int, total: int) -> str:
     )
 
 
-def build_page1_overview(samsara: dict | None, metrics: dict, pg: int, total: int) -> str:
-    """Bottom line at the top + KPI tiles."""
+# ----------------------------------------------------------------------
+# Additional computes — Audra's full ownership scope (per the
+# xfreight-employee-responsibilities.md core memory): safety +
+# compliance + invoice closeout (loads invoiced timely + carrier
+# invoices entered into Alvys).
+# ----------------------------------------------------------------------
+
+def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
+                                      limit: int = 30) -> dict:
+    """X-Linx brokered loads that are delivered but have no carrier
+    invoice number entered into Alvys yet — Audra's second-half of
+    invoice closeout (the asset side is compute_alvys_uninvoiced).
+
+    A delivered brokered trip carries Carrier.Rate at book time, but
+    the Carrier Invoice Number isn't set until the carrier sends their
+    invoice and we type it in. Surfaces the backlog so Audra can chase
+    carriers or enter what's already on her desk.
+
+    Returns {count, total_carrier_rate, oldest_days, rows}.
+    """
+    empty = {"count": 0, "total_carrier_rate": 0.0, "oldest_days": None,
+             "rows": [], "shown": 0}
+    if not alvys_pipeline_sheets:
+        return empty
+    trips = alvys_pipeline_sheets.get("Trips")
+    if trips is None or trips.empty:
+        return empty
+    office_col = _find_col(trips, ["office"])
+    status_col = "Trip Status" if "Trip Status" in trips.columns else _find_col(trips, ["trip status", "status"])
+    inv_col = _find_col(trips, ["carrier invoice number", "carrier invoice #"])
+    rate_col = "Carrier Rate" if "Carrier Rate" in trips.columns else _find_col(trips, ["carrier rate"])
+    if not (status_col and inv_col and rate_col):
+        return empty
+
+    sub = trips.copy()
+    # X-Linx scope: brokered trips only. Office field on a trip can read
+    # "X-LINX INC" etc. — soft contains match.
+    if office_col:
+        sub = sub[sub[office_col].astype(str).str.lower().str.contains("linx", na=False)]
+    # Delivered or downstream — i.e., the load has actually been hauled.
+    delivered_statuses = {"delivered", "released", "completed", "invoiced"}
+    sub = sub[sub[status_col].astype(str).str.strip().str.lower().isin(delivered_statuses)]
+    # Carrier invoice not yet entered.
+    sub = sub[sub[inv_col].astype(str).str.strip().isin(["", "nan", "None", "none"])]
+
+    if sub.empty:
+        return empty
+
+    rate = pd.to_numeric(sub[rate_col], errors="coerce").fillna(0)
+    today = pd.Timestamp.now().normalize()
+    deliv_col = _find_col(sub, ["actual delivery", "scheduled delivery", "delivery date"])
+    if deliv_col:
+        deliv = _to_naive_dt(sub[deliv_col])
+    else:
+        deliv = pd.Series(pd.NaT, index=sub.index)
+    days = (today - deliv).dt.days
+
+    load_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number"])
+    cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer"])
+    carrier_col = "Carrier" if "Carrier" in sub.columns else _find_col(sub, ["carrier"])
+
+    rows = []
+    for idx in sub.index:
+        d = days.get(idx)
+        rows.append({
+            "load":     str(sub.at[idx, load_col]).strip() if load_col else "",
+            "customer": str(sub.at[idx, cust_col]).strip() if cust_col else "",
+            "carrier":  str(sub.at[idx, carrier_col]).strip() if carrier_col else "",
+            "delivered": deliv.get(idx).strftime("%m/%d/%Y") if pd.notna(deliv.get(idx)) else "",
+            "days":     int(d) if pd.notna(d) else None,
+            "carrier_rate": float(rate.get(idx, 0)),
+        })
+    rows.sort(key=lambda r: ((r["days"] if r["days"] is not None else -1),
+                              r["carrier_rate"]), reverse=True)
+    valid_days = [r["days"] for r in rows if r["days"] is not None]
+    return {
+        "count": len(rows),
+        "total_carrier_rate": float(rate.sum()),
+        "oldest_days": max(valid_days) if valid_days else None,
+        "rows": rows[:limit],
+        "shown": min(len(rows), limit),
+    }
+
+
+def compute_action_items(*, samsara, samba, alvys_drivers, equipment,
+                          uninvoiced, carrier_backlog, csa) -> list[dict]:
+    """Top-priority action items for Audra today. Each item is a dict
+    with {priority, owner, action, why, kb_link}. Priority ordering:
+    1 = drop-everything; 2 = today; 3 = this week. Caller renders the
+    list in order.
+    """
+    items: list[dict] = []
+    today = pd.Timestamp.now().normalize()
+
+    # PRIORITY 1 — disqualified/invalid CDLs.
+    invalid = (samba or {}).get("invalid_licenses") or []
+    for inv in invalid:
+        nm = inv.get("name") or "Unknown driver"
+        st = inv.get("status") or "DISQUALIFIED"
+        eff = inv.get("effective") or inv.get("date") or ""
+        items.append({
+            "priority": 1,
+            "owner": "Audra",
+            "action": f"Pull {nm} from dispatch immediately — license status {st}.",
+            "why": (f"SambaSafety Invalid License Report shows {st} effective "
+                    f"{eff}. Driver cannot legally operate."),
+            "kb_link": "xfreight-playbook-driver-disciplinary.md",
+        })
+
+    # PRIORITY 1 — CDL expiring ≤7 days (immediate).
+    crit_cdl = (alvys_drivers or {}).get("license_critical_14") or []
+    for d in crit_cdl:
+        days = d.get("license_days")
+        if days is not None and days <= 7:
+            items.append({
+                "priority": 1,
+                "owner": "Audra",
+                "action": f"Confirm {d.get('name', '?')} renewed CDL — expires in {days}d.",
+                "why": "CDL expiration ≤7 days. Pull from dispatch the moment it lapses.",
+                "kb_link": "xfreight-playbook-driver-disciplinary.md",
+            })
+
+    # PRIORITY 2 — Medical card expiring ≤14 days.
+    med = ((alvys_drivers or {}).get("medical_critical_14") or
+           [d for d in ((alvys_drivers or {}).get("medical_issues_30") or [])
+            if d.get("medical_days") is not None and d.get("medical_days") <= 14])
+    for d in med[:5]:
+        days = d.get("medical_days")
+        if days is None:
+            continue
+        items.append({
+            "priority": 2,
+            "owner": "Audra",
+            "action": f"Schedule {d.get('name', '?')} DOT physical — med card expires in {days}d.",
+            "why": "DOT medical card expiration ≤14 days. Federal OOS if it lapses.",
+            "kb_link": "xfreight-playbook-driver-disciplinary.md",
+        })
+
+    # PRIORITY 2 — CSA BASIC at intervention threshold.
+    if csa:
+        n_alert = csa.get("n_alert") or 0
+        worst = csa.get("worst") or {}
+        if n_alert and worst:
+            items.append({
+                "priority": 2,
+                "owner": "Audra",
+                "action": f"Review CSA {worst.get('basic', 'BASIC')} — at intervention threshold.",
+                "why": (f"{worst.get('basic', 'BASIC')} at {worst.get('pct', '?')}th "
+                        f"percentile (threshold {worst.get('threshold', '?')}). "
+                        f"{n_alert} BASIC(s) flagged."),
+                "kb_link": "xfreight-fmcsa-csa.md",
+            })
+
+    # PRIORITY 2 — equipment past 120d company policy (>30 days).
+    # `policy_days` counts down from the 120d window after LastInspectionDate
+    # (negative = past policy). `annual_days` is the 365d federal date — we
+    # don't gate on that here because anything past company policy gets
+    # flagged for inspection long before the federal OOS line.
+    if equipment:
+        od_t = [t for t in (equipment.get("tractors") or [])
+                if isinstance(t.get("policy_days"), int) and t["policy_days"] < -30]
+        od_r = [t for t in (equipment.get("trailers") or [])
+                if isinstance(t.get("policy_days"), int) and t["policy_days"] < -30]
+        if od_t or od_r:
+            units = ", ".join(str(t.get("unit") or "?") for t in (od_t + od_r)[:5])
+            more = f" (+{len(od_t + od_r) - 5} more)" if len(od_t + od_r) > 5 else ""
+            items.append({
+                "priority": 2,
+                "owner": "Audra (coord. Jackson + Dan)",
+                "action": f"Schedule inspection: {units}{more}.",
+                "why": (f"{len(od_t)} tractors + {len(od_r)} trailers past 120d "
+                        f"company policy by >30d. Flagged for inspection; "
+                        f"still in service. Federal 365d is the OOS line."),
+                "kb_link": "xfreight-playbook-equipment-inspection-backlog.md",
+            })
+
+    # PRIORITY 2 — un-acked coaching > 72h.
+    detail = (samsara or {}).get("detail", {}) or {}
+    coaching = detail.get("coaching") or []
+    stale_coach = [c for c in coaching if (c.get("days_since") or 0) > 3
+                   and (c.get("status") or "").lower() in ("needscoaching", "open", "")]
+    if stale_coach:
+        items.append({
+            "priority": 2,
+            "owner": "Audra",
+            "action": f"Close out {len(stale_coach)} coaching session(s) un-acked >72h.",
+            "why": "Stale coaching tickets erode the CSA Maintenance / Driver BASIC scores.",
+            "kb_link": "xfreight-playbook-driver-disciplinary.md",
+        })
+
+    # PRIORITY 3 — un-invoiced loads aging > 7 days.
+    if uninvoiced:
+        aged = [r for r in (uninvoiced.get("rows") or [])
+                if (r.get("days") or 0) > 7]
+        if aged:
+            total_aged = sum(r.get("revenue", 0) for r in aged)
+            items.append({
+                "priority": 3,
+                "owner": "Audra",
+                "action": f"Invoice {len(aged)} delivered load(s) (>${total_aged:,.0f}) past 7-day window.",
+                "why": ("Un-invoiced delivered loads drag AR aging and the "
+                        "QB-vs-Alvys reconciliation."),
+                "kb_link": "xfreight-playbook-ar-followup.md",
+            })
+
+    # PRIORITY 3 — carrier invoices not entered into Alvys.
+    if carrier_backlog and carrier_backlog.get("count"):
+        items.append({
+            "priority": 3,
+            "owner": "Audra",
+            "action": (f"Enter {carrier_backlog['count']} carrier invoice(s) "
+                       f"(~${carrier_backlog.get('total_carrier_rate', 0):,.0f}) "
+                       f"into Alvys."),
+            "why": ("X-Linx brokered loads delivered but no Carrier Invoice "
+                    "Number on file — blocks settlement to the carrier."),
+            "kb_link": "xfreight-playbook-ar-followup.md",
+        })
+
+    items.sort(key=lambda x: x["priority"])
+    return items
+
+
+def safety_relevant_signals(results: list[dict]) -> list[dict]:
+    """Filter risk_watch signals to the subset Audra owns or directly
+    needs to see on her brief. Keeps the cross-loop architecture intact
+    (one source of truth in risk-signals.yml) while letting each role
+    see only their slice."""
+    safety_ids = {
+        "equipment-inspection-backlog",
+        "equipment-registration-backlog",
+        "csa-near-intervention",
+    }
+    return [r for r in (results or []) if r.get("id") in safety_ids]
+
+
+# ----------------------------------------------------------------------
+# Design system helpers — clear hierarchy for the rebuilt brief
+# ----------------------------------------------------------------------
+
+_PRIORITY_COLOR = {1: BAD, 2: WARN, 3: MUTE}
+_PRIORITY_BG = {1: BADBG, 2: WARNBG, 3: "#fafafa"}
+_PRIORITY_LABEL = {1: "URGENT", 2: "TODAY", 3: "THIS WEEK"}
+
+
+def _urgent_banner(items: list[dict]) -> str:
+    """Red banner at the top of page 1 for any P1 items. Quiet (omitted)
+    when nothing's urgent — keeps signal-to-noise high."""
+    p1 = [i for i in items if i.get("priority") == 1]
+    if not p1:
+        return ""
+    rows = "".join(
+        f"<div style='padding:4px 0;font-size:13px;color:{INK};'>"
+        f"&nbsp;&middot;&nbsp;{i.get('action', '')}</div>"
+        for i in p1
+    )
+    return (
+        f"<tr><td style='padding:0 18px 14px;'>"
+        f"<div style='background:{BADBG};border-left:6px solid {BAD};"
+        f"border-radius:6px;padding:12px 16px;'>"
+        f"<div style='font-size:10px;letter-spacing:2px;font-weight:800;color:{BAD};"
+        f"margin-bottom:6px;'>&#9888;&nbsp;URGENT &middot; ACT NOW</div>"
+        f"{rows}"
+        f"</div></td></tr>"
+    )
+
+
+def _action_items_block(items: list[dict]) -> str:
+    """Top action items today, grouped by priority. Each item shows the
+    action, owner, why, and a KB link when one's available."""
+    if not items:
+        return ""
+    blocks = []
+    for prio in (1, 2, 3):
+        slice_ = [i for i in items if i.get("priority") == prio]
+        if not slice_:
+            continue
+        color = _PRIORITY_COLOR[prio]
+        label = _PRIORITY_LABEL[prio]
+        rows = ""
+        for i in slice_:
+            kb = (f"<div style='font-size:11px;color:{MUTE};margin-top:3px;'>"
+                  f"playbook: <code style='font-size:10px;'>{i['kb_link']}</code></div>"
+                  if i.get("kb_link") else "")
+            rows += (
+                f"<div style='padding:10px 12px;border-top:1px solid {LINE};'>"
+                f"<div style='font-size:13px;color:{INK};'><b>{i.get('action', '')}</b></div>"
+                f"<div style='font-size:12px;color:{MUTE};margin-top:3px;'>"
+                f"{i.get('why', '')} &middot; "
+                f"<span style='color:{INK};'>owner: {i.get('owner', 'Audra')}</span></div>"
+                f"{kb}</div>"
+            )
+        blocks.append(
+            f"<div style='margin-bottom:10px;border:1px solid {LINE};border-radius:6px;'>"
+            f"<div style='background:#fafafa;padding:6px 12px;font-size:10px;"
+            f"letter-spacing:1.5px;font-weight:700;color:{color};'>"
+            f"{label}</div>"
+            f"{rows}</div>"
+        )
+    if not blocks:
+        return ""
+    return (
+        f"<tr><td style='padding:0 18px 14px;'>"
+        f"<div style='font-size:10px;letter-spacing:2px;color:{MUTE};font-weight:700;"
+        f"margin-bottom:8px;'>ACTION ITEMS</div>"
+        + "".join(blocks)
+        + f"</td></tr>"
+    )
+
+
+def _risk_watch_block(signals: list[dict]) -> str:
+    """Compact safety-relevant Risk Watch strip. Same renderer as the
+    executive brief — single source of truth for the visual + value
+    formatting (money/days/pct)."""
+    if not signals:
+        return ""
+    from src.risk_watch import render_strip_html
+    strip = render_strip_html(
+        signals,
+        red=BAD, redbg=BADBG, green=GOOD, greenbg=GOODBG,
+        mute=MUTE, line=LINE,
+    )
+    if not strip:
+        return ""
+    return f"<tr><td style='padding:0 18px 0;'>{strip}</td></tr>"
+
+
+def _footer_kb_links() -> str:
+    """Footer pointing readers at the canonical KB pages so the brief
+    becomes a launch surface, not a dead-end."""
+    items = [
+        ("Risk Register", "Karpathy-Wiki/wiki/risk-register.md"),
+        ("Decision Journal", "Karpathy-Wiki/wiki/decision-journal.md"),
+        ("Safety + DOT inspection policy", "Karpathy-Wiki/raw/xfreight-dot-inspection-policy.md"),
+        ("Employee responsibilities", "Karpathy-Wiki/raw/xfreight-employee-responsibilities.md"),
+        ("Driver disciplinary playbook", "Karpathy-Wiki/raw/xfreight-playbook-driver-disciplinary.md"),
+        ("Equipment inspection backlog playbook", "Karpathy-Wiki/raw/xfreight-playbook-equipment-inspection-backlog.md"),
+        ("AR follow-up playbook", "Karpathy-Wiki/raw/xfreight-playbook-ar-followup.md"),
+    ]
+    rows = "".join(
+        f"<div style='padding:3px 0;font-size:11px;color:{MUTE};'>"
+        f"&middot;&nbsp;<b style='color:{INK};'>{label}</b> &mdash; "
+        f"<code style='font-size:10px;'>{path}</code></div>"
+        for label, path in items
+    )
+    return (
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='background:#fafafa;border-top:1px solid {LINE};margin-top:12px;'>"
+        f"<tr><td style='padding:14px 24px;'>"
+        f"<div style='font-size:10px;letter-spacing:2px;color:{MUTE};font-weight:700;"
+        f"margin-bottom:6px;'>KNOWLEDGE BASE</div>{rows}"
+        f"<div style='font-size:11px;color:{MUTE};margin-top:8px;font-style:italic;'>"
+        f"Each playbook listed here is a living protocol with a Recent Runs log &mdash; "
+        f"append outcomes when you act on a brief item so the playbook learns from real "
+        f"invocations.</div></td></tr></table>"
+    )
+
+
+def build_page1_overview(samsara: dict | None, metrics: dict,
+                          pg: int, total: int, *,
+                          urgent_items: list[dict] | None = None,
+                          action_items: list[dict] | None = None,
+                          risk_signals: list[dict] | None = None) -> str:
+    """Bottom line at the top + URGENT banner + Risk Watch strip + KPI tiles
+    + Action items list. Page-1 is the "what changed and what to do"
+    page; the detail tables on pages 2+ are the supporting evidence."""
+    urgent_items = urgent_items or []
+    action_items = action_items or []
+    risk_signals = risk_signals or []
     bl = build_bottom_line(metrics)
 
     def _fmt(v):
@@ -312,11 +704,28 @@ def build_page1_overview(samsara: dict | None, metrics: dict, pg: int, total: in
         f"<div style='{FONT_SERIF}font-size:15px;line-height:1.55;color:{INK};"
         f"border-left:3px solid {XFREIGHT_RED};padding-left:14px;'>{bl}</div>"
         f"</td></tr>"
-        f"<tr><td style='padding:14px 18px 8px;'>{tiles_row1}</td></tr>"
-        f"<tr><td style='padding:0 18px 14px;'>{tiles_row2}</td></tr>"
     )
 
-    return _page_header("Overview", pg, total) + _wrap_page(bottom_line_block)
+    body = (
+        bottom_line_block
+        + _urgent_banner(urgent_items)
+        + _risk_watch_block(risk_signals)
+        + f"<tr><td style='padding:14px 18px 8px;'>{tiles_row1}</td></tr>"
+        + f"<tr><td style='padding:0 18px 14px;'>{tiles_row2}</td></tr>"
+        + _action_items_block(action_items)
+    )
+
+    return _page_header("Overview", pg, total) + _wrap_page(body)
+
+
+# Section banners — keep them centralized so the page-order block in
+# _build_html_report is the only place that knows what section a page
+# belongs to.
+_SEC_DRIVERS = "DRIVERS"
+_SEC_EVENTS = "EVENTS"
+_SEC_EQUIPMENT = "EQUIPMENT"
+_SEC_REGULATORY = "REGULATORY"
+_SEC_CLOSEOUT = "CLOSEOUT"
 
 
 def _detail_table(rows: list[dict], headers: list[str], keys: list[str],
@@ -365,7 +774,7 @@ def build_page2_events(samsara: dict | None, pg: int, total: int) -> str:
         f"{_table(['Driver','Unit','Reported','Event','Severity','Status'], ['left']*6, rows_html)}"
         f"</td></tr>"
     )
-    return _page_header("Safety events", pg, total) + _wrap_page(body)
+    return _page_header("Safety events", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
 
 
 def build_page3_hos(samsara: dict | None, pg: int, total: int) -> str:
@@ -413,7 +822,7 @@ def build_page3_hos(samsara: dict | None, pg: int, total: int) -> str:
         f"{_table(['Driver','Days missing','Date range','Status'], ['left','right','left','left'], uncert_rows)}"
         f"</td></tr>"
     )
-    return _page_header("HOS compliance", pg, total) + _wrap_page(body)
+    return _page_header("HOS compliance", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
 
 
 def build_page4_scores(samsara: dict | None, pg: int, total: int) -> str:
@@ -451,7 +860,7 @@ def build_page4_scores(samsara: dict | None, pg: int, total: int) -> str:
         f"{_table(['Driver','Score','Hard brake','Hard accel','Hard turn','Crash'], ['left','right','right','right','right','right'], rows_html)}"
         f"</td></tr>"
     )
-    return _page_header("Driver safety scores", pg, total) + _wrap_page(body)
+    return _page_header("Driver safety scores", pg, total, section=_SEC_DRIVERS) + _wrap_page(body)
 
 
 def build_page5_vehicles(samsara: dict | None, samsara_sheets: dict | None,
@@ -490,7 +899,7 @@ def build_page5_vehicles(samsara: dict | None, samsara_sheets: dict | None,
         f"{inspection_html}"
         f"</td></tr>"
     )
-    return _page_header("Vehicle compliance", pg, total) + _wrap_page(body)
+    return _page_header("Vehicle compliance", pg, total, section=_SEC_EQUIPMENT) + _wrap_page(body)
 
 
 def _inspections_due_html(samsara_sheets: dict | None) -> str:
@@ -547,20 +956,343 @@ def _inspections_due_html(samsara_sheets: dict | None) -> str:
 
 
 # ----------------------------------------------------------------------
+# New page renderers — driver compliance, CSA scorecard, invoice closeout
+# ----------------------------------------------------------------------
+
+def build_page_driver_compliance(samba: dict | None,
+                                  alvys_drivers: dict | None,
+                                  pg: int, total: int) -> str:
+    """Driver compliance — disqualified/invalid CDLs (banner), then
+    CDL + DOT medical card expirations from the Alvys Drivers sheet,
+    plus the SambaSafety risk roster if available. This is the
+    "who can't drive today / this week" page."""
+    inner = ""
+
+    # 1. Disqualification banner — anyone SambaSafety flagged as
+    # DISQUALIFIED / SUSPENDED / INVALID is rendered first, in red,
+    # because they cannot legally operate as of today.
+    invalid = (samba or {}).get("invalid_licenses") or []
+    if invalid:
+        rows = "".join(
+            _tr(
+                [d.get("name", "&mdash;"),
+                 d.get("status", "INVALID"),
+                 d.get("action", "") or "&mdash;",
+                 (d.get("action_date").strftime("%Y-%m-%d")
+                  if d.get("action_date") is not None and pd.notna(d.get("action_date"))
+                  else "&mdash;")],
+                ["left", "left", "left", "left"],
+                [None, "bad", None, None],
+            )
+            for d in invalid
+        )
+        inner += (
+            f"<div style='margin:14px 18px 6px;padding:10px 14px;background:{BADBG};"
+            f"border-left:6px solid {BAD};border-radius:4px;'>"
+            f"<div style='font-size:11px;letter-spacing:1.5px;font-weight:800;color:{BAD};'>"
+            f"&#9888;&nbsp;DISQUALIFIED / INVALID LICENSES &mdash; PULL FROM DISPATCH"
+            f"</div></div>"
+            + f"<div style='padding:0 18px 6px;'>"
+            f"{_table(['Driver','Status','Latest action','Action date'], ['left']*4, rows)}"
+            f"</div>"
+        )
+
+    # 2. CDL expirations — next 30 days from the Alvys Drivers sheet.
+    lic30 = (alvys_drivers or {}).get("license_issues_30") or []
+    if lic30:
+        rows = "".join(
+            _tr(
+                [d.get("name", "&mdash;"),
+                 (d.get("license_exp").strftime("%Y-%m-%d")
+                  if d.get("license_exp") is not None and pd.notna(d.get("license_exp"))
+                  else "&mdash;"),
+                 (f"{d['license_days']}d"
+                  if isinstance(d.get("license_days"), int) else "&mdash;"),
+                 d.get("type", "") or "&mdash;"],
+                ["left", "left", "right", "left"],
+                [None, None,
+                 ("bad" if isinstance(d.get("license_days"), int) and d["license_days"] <= 7
+                  else "warn"),
+                 None],
+            )
+            for d in lic30
+        )
+        cdl_table = _table(
+            ['Driver', 'Expires', 'In', 'Type'],
+            ['left', 'left', 'right', 'left'],
+            rows,
+        )
+    else:
+        cdl_table = (
+            f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
+            f"No CDL expirations in the next 30 days.</div>"
+        )
+
+    # 3. DOT medical card expirations — next 30 days from the same sheet.
+    med30 = (alvys_drivers or {}).get("medical_issues_30") or []
+    if med30:
+        rows = "".join(
+            _tr(
+                [d.get("name", "&mdash;"),
+                 (d.get("medical_exp").strftime("%Y-%m-%d")
+                  if d.get("medical_exp") is not None and pd.notna(d.get("medical_exp"))
+                  else "&mdash;"),
+                 (f"{d['medical_days']}d"
+                  if isinstance(d.get("medical_days"), int) else "&mdash;"),
+                 d.get("type", "") or "&mdash;"],
+                ["left", "left", "right", "left"],
+                [None, None,
+                 ("bad" if isinstance(d.get("medical_days"), int) and d["medical_days"] <= 14
+                  else "warn"),
+                 None],
+            )
+            for d in med30
+        )
+        med_table = _table(
+            ['Driver', 'Expires', 'In', 'Type'],
+            ['left', 'left', 'right', 'left'],
+            rows,
+        )
+    else:
+        med_table = (
+            f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
+            f"No DOT medical card expirations in the next 30 days.</div>"
+        )
+
+    inner += (
+        f"<tr><td style='padding:18px 18px 0;'>"
+        f"{_section('CDL expirations &mdash; next 30 days')}"
+        f"{cdl_table}"
+        f"{_section('DOT medical card expirations &mdash; next 30 days')}"
+        f"{med_table}"
+    )
+
+    # 4. SambaSafety roster snapshot — high-risk drivers + worst-N.
+    if samba:
+        high = samba.get("high_risk") or []
+        ranked = samba.get("ranked") or []
+        avg = samba.get("avg_score")
+        avg_txt = (f"{avg:.0f}" if isinstance(avg, (int, float)) and avg == avg
+                   else "&mdash;")
+        if high or ranked:
+            inner += _section('SambaSafety risk roster &mdash; worst 10 by score')
+            top = ranked[:10] if ranked else []
+            if top:
+                rrows = "".join(
+                    _tr([d.get("name", "&mdash;"),
+                         f"{int(d['score'])}" if d.get("score") is not None else "&mdash;",
+                         d.get("category", "") or "&mdash;",
+                         d.get("state", "") or "&mdash;"],
+                        ["left", "right", "left", "left"],
+                        [None,
+                         ("bad" if d.get("high") else None),
+                         None, None])
+                    for d in top
+                )
+                inner += _table(['Driver', 'Score', 'Risk category', 'State'],
+                                 ['left', 'right', 'left', 'left'], rrows)
+            inner += (
+                f"<div style='padding:6px 18px;color:{MUTE};font-size:11px;'>"
+                f"{len(high)} driver{'s' if len(high) != 1 else ''} at HIGH risk &middot; "
+                f"fleet avg risk score: {avg_txt}.</div>"
+            )
+
+    inner += "</td></tr>"
+    return _page_header("Driver compliance", pg, total, section=_SEC_DRIVERS) + _wrap_page(inner)
+
+
+def build_page_csa_scorecard(csa: dict | None, pg: int, total: int) -> str:
+    """FMCSA CSA BASIC percentiles — same shape as the executive brief
+    page 10, but rendered with the safety-brief's lighter header.
+    Soft-skips when the SambaSafety CSV isn't on disk."""
+    if not csa:
+        body = (
+            f"<tr><td style='padding:18px 18px;color:{MUTE};font-size:12px;'>"
+            f"CSA scorecard CSV not present in OneDrive/SambaSafety/. "
+            f"Power Automate drops it several times a day &mdash; this page "
+            f"will re-appear automatically on the next run after the drop."
+            f"</td></tr>"
+        )
+        return _page_header("FMCSA CSA scorecard", pg, total, section=_SEC_REGULATORY) + _wrap_page(body)
+
+    basics = csa.get("basics") or []
+    rows = ""
+    for b in basics:
+        pct = b.get("percentile")
+        thr = b.get("threshold") or 80
+        is_int = b.get("intervention")
+        kind = "bad" if is_int else ("warn" if (pct or 0) >= max(thr - 10, 0) else "good")
+        pct_txt = f"{pct:.0f}" if pct is not None else "&mdash;"
+        thr_txt = f"{thr}th"
+        status_txt = "INTERVENTION LIKELY" if is_int else "OK"
+        rows += _tr(
+            [b.get("category", "&mdash;"),
+             pct_txt,
+             thr_txt,
+             (f"{b['seg_violations']}/{b['rel_inspections']}"
+              if (b.get("seg_violations") is not None
+                  and b.get("rel_inspections") is not None)
+              else "&mdash;"),
+             status_txt],
+            ["left", "right", "right", "right", "left"],
+            [None, kind, None, None, ("bad" if is_int else "good")],
+        )
+    meta = (
+        f"<div style='padding:8px 18px;color:{MUTE};font-size:11px;'>"
+        f"DOT {csa.get('dot_number', '&mdash;')} &middot; "
+        f"avg power units {csa.get('avg_power_units', '&mdash;')} &middot; "
+        f"snapshot {csa.get('snapshot_date', '&mdash;')} &middot; "
+        f"{csa.get('n_alert', 0)} BASIC(s) at intervention threshold."
+        f"</div>"
+    )
+    body = (
+        f"<tr><td style='padding:18px 18px 0;'>"
+        f"{_section('CSA BASIC percentiles')}"
+        f"{_table(['BASIC','Percentile','Intervention threshold','Viol/Insp','Status'], ['left','right','right','right','left'], rows)}"
+        f"{meta}"
+        f"</td></tr>"
+    )
+    return _page_header("FMCSA CSA scorecard", pg, total) + _wrap_page(body)
+
+
+def build_page_invoice_closeout(uninvoiced: dict | None,
+                                  carrier_backlog: dict | None,
+                                  pg: int, total: int) -> str:
+    """Audra's invoice-closeout responsibility (per the responsibility-map
+    core memory): loads invoiced timely AND carrier invoices entered
+    into Alvys. Two side-by-side sections.
+
+    Asset side (X-Trux + X-Linx delivered, no customer invoice yet) is
+    the same shape compute_alvys_uninvoiced returns to the executive
+    brief; brokered side (X-Linx delivered, no carrier invoice number
+    entered) is compute_carrier_invoice_backlog. Both feed AR aging."""
+    # --- Section 1: customer side ---
+    u_rows = (uninvoiced or {}).get("rows") or []
+    u_count = (uninvoiced or {}).get("count") or 0
+    u_total = (uninvoiced or {}).get("total_revenue") or 0
+    u_oldest = (uninvoiced or {}).get("oldest_days")
+    u_summary = (
+        f"<div style='padding:8px 18px;color:{MUTE};font-size:11px;'>"
+        f"{u_count} load(s) &middot; ${u_total:,.0f} revenue not yet invoiced &middot; "
+        f"oldest {u_oldest if u_oldest is not None else '&mdash;'}d.</div>"
+    )
+    if u_rows:
+        rows = "".join(
+            _tr([str(r.get("load") or "&mdash;"),
+                 str(r.get("customer") or "&mdash;"),
+                 str(r.get("entity") or "&mdash;"),
+                 str(r.get("delivered") or "&mdash;"),
+                 (f"{r['days']}d" if r.get("days") is not None else "&mdash;"),
+                 f"${(r.get('revenue') or 0):,.0f}"],
+                ["left", "left", "left", "left", "right", "right"],
+                [None, None, None, None,
+                 ("bad" if (r.get("days") or 0) > 7 else "warn"),
+                 None])
+            for r in u_rows
+        )
+        u_table = _table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'],
+                          ['left', 'left', 'left', 'left', 'right', 'right'], rows)
+    else:
+        u_table = (
+            f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
+            f"All delivered loads have been invoiced.</div>"
+        )
+
+    # --- Section 2: carrier side ---
+    c_rows = (carrier_backlog or {}).get("rows") or []
+    c_count = (carrier_backlog or {}).get("count") or 0
+    c_total = (carrier_backlog or {}).get("total_carrier_rate") or 0
+    c_oldest = (carrier_backlog or {}).get("oldest_days")
+    c_summary = (
+        f"<div style='padding:8px 18px;color:{MUTE};font-size:11px;'>"
+        f"{c_count} brokered trip(s) &middot; ~${c_total:,.0f} carrier rate "
+        f"not yet entered into Alvys &middot; oldest "
+        f"{c_oldest if c_oldest is not None else '&mdash;'}d.</div>"
+    )
+    if c_rows:
+        rows = "".join(
+            _tr([str(r.get("load") or "&mdash;"),
+                 str(r.get("customer") or "&mdash;"),
+                 str(r.get("carrier") or "&mdash;"),
+                 str(r.get("delivered") or "&mdash;"),
+                 (f"{r['days']}d" if r.get("days") is not None else "&mdash;"),
+                 f"${(r.get('carrier_rate') or 0):,.0f}"],
+                ["left", "left", "left", "left", "right", "right"],
+                [None, None, None, None,
+                 ("bad" if (r.get("days") or 0) > 7 else "warn"),
+                 None])
+            for r in c_rows
+        )
+        c_table = _table(['Load #', 'Customer', 'Carrier', 'Delivered', 'Days', 'Carrier rate'],
+                          ['left', 'left', 'left', 'left', 'right', 'right'], rows)
+    else:
+        c_table = (
+            f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
+            f"No outstanding carrier invoices to enter.</div>"
+        )
+
+    body = (
+        f"<tr><td style='padding:18px 18px 0;'>"
+        f"{_section('Customer side &mdash; delivered loads not yet invoiced')}"
+        f"{u_summary}"
+        f"{u_table}"
+        f"{_section('Carrier side &mdash; brokered trips with no carrier invoice number entered')}"
+        f"{c_summary}"
+        f"{c_table}"
+        f"</td></tr>"
+    )
+    return _page_header("Invoice closeout", pg, total, section=_SEC_CLOSEOUT) + _wrap_page(body)
+
+
+# ----------------------------------------------------------------------
 # Top-level report assembly + PDF
 # ----------------------------------------------------------------------
 
-def _build_html_report(samsara: dict | None, samsara_sheets: dict | None) -> str:
+def _build_html_report(*,
+                        samsara: dict | None,
+                        samsara_sheets: dict | None,
+                        samba: dict | None,
+                        csa: dict | None,
+                        alvys_drivers: dict | None,
+                        uninvoiced: dict | None,
+                        carrier_backlog: dict | None,
+                        risk_signals: list[dict] | None,
+                        action_items: list[dict] | None) -> str:
     metrics = compute_metrics(samsara)
-    total = 5
+    urgent_items = [i for i in (action_items or []) if i.get("priority") == 1]
+
+    # Page flow: overview narrates "what changed + what to do today";
+    # detail pages then progress topically so Audra can scan or read.
+    #
+    #   1. Overview                  — bottom line, urgent, risk-watch, actions
+    #   2. Driver compliance         — DRIVERS: who can't/shouldn't drive
+    #   3. Driver safety scores      — DRIVERS: ranked behavior 30d
+    #   4. Safety events             — EVENTS: what fired in the last 7d
+    #   5. HOS compliance            — EVENTS: HOS violations + uncertified
+    #   6. Vehicle compliance        — EQUIPMENT: DVIRs + inspections due
+    #   7. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
+    #   8. Invoice closeout          — CLOSEOUT: un-invoiced + carrier-bill backlog
+    #
+    # Banner grouping (eyebrow in _page_header) makes the structure
+    # readable without a TOC. CSA sits late because it's strategic
+    # standing, not daily-action; closeout sits last as the topic shift
+    # from safety to billing — Audra's second accountability area.
+    total = 8
     pages = [
-        build_page1_overview(samsara, metrics, 1, total),
-        build_page2_events(samsara, 2, total),
-        build_page3_hos(samsara, 3, total),
-        build_page4_scores(samsara, 4, total),
-        build_page5_vehicles(samsara, samsara_sheets, 5, total),
+        build_page1_overview(samsara, metrics, 1, total,
+                              urgent_items=urgent_items,
+                              action_items=(action_items or []),
+                              risk_signals=(risk_signals or [])),
+        build_page_driver_compliance(samba, alvys_drivers, 2, total),
+        build_page4_scores(samsara, 3, total),
+        build_page2_events(samsara, 4, total),
+        build_page3_hos(samsara, 5, total),
+        build_page5_vehicles(samsara, samsara_sheets, 6, total),
+        build_page_csa_scorecard(csa, 7, total),
+        build_page_invoice_closeout(uninvoiced, carrier_backlog, 8, total),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
+    body += _footer_kb_links()
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
@@ -615,7 +1347,8 @@ def main() -> int:
         log.info("Marker present for %s — already sent today. Skipping.", today)
         return 0
 
-    # Load Samsara_Master.xlsx from OneDrive (same path the scorecard reads).
+    # Load OneDrive sources: Samsara is required; SambaSafety + Alvys
+    # Pipeline are optional — pages soft-skip when their data is missing.
     missing: list[str] = []
     samsara_path = os.environ.get("SAMSARA_ONEDRIVE_PATH",
                                   "Samsara/Samsara Master.xlsx")
@@ -624,8 +1357,61 @@ def main() -> int:
         log.error("Could not read Samsara Master from OneDrive — aborting.")
         return 1
 
+    samba_path = os.environ.get("SAMBASAFETY_ONEDRIVE_PATH",
+                                "SambaSafety/SambaSafety_Master.xlsx")
+    samba_sheets = _safe_read(tok, upn, samba_path, missing, "SambaSafety Master")
+    alvys_path = os.environ.get("ALVYS_PIPELINE_ONEDRIVE_PATH",
+                                "Alvys Pipeline.xlsx")
+    alvys_sheets = _safe_read(tok, upn, alvys_path, missing, "Alvys Pipeline")
+    if missing:
+        log.info("Optional sources missing (page(s) will soft-skip): %s",
+                 ", ".join(missing))
+
     samsara = compute_samsara(samsara_sheets)
-    html = _build_html_report(samsara, samsara_sheets)
+    samba = compute_sambasafety(samba_sheets) if samba_sheets else None
+    csa = compute_csa_scorecard(samba_sheets) if samba_sheets else None
+    alvys_drivers = compute_alvys_drivers(alvys_sheets) if alvys_sheets else None
+    uninvoiced = compute_alvys_uninvoiced(alvys_sheets) if alvys_sheets else None
+    carrier_backlog = compute_carrier_invoice_backlog(alvys_sheets)
+
+    # Equipment compute — needed only for the action-items engine here
+    # (the equipment detail pages live on the executive brief). Import
+    # locally so missing optional deps don't break the safety brief.
+    try:
+        from src.scorecard_email import compute_alvys_equipment
+        equipment = compute_alvys_equipment(alvys_sheets,
+                                              samsara_sheets=samsara_sheets) \
+                    if alvys_sheets else None
+    except Exception as e:
+        log.warning("compute_alvys_equipment unavailable: %s", e)
+        equipment = None
+
+    # Risk Watch — evaluate the shared signal catalog and keep only the
+    # safety-relevant subset for Audra's brief.
+    try:
+        from src.risk_watch import evaluate as eval_signals
+        all_signals = eval_signals({
+            "equipment": equipment or {},
+            "csa": csa or {},
+            "samsara": samsara or {},
+        })
+        risk_signals = safety_relevant_signals(all_signals)
+    except Exception as e:
+        log.warning("Risk Watch evaluation failed: %s", e)
+        risk_signals = []
+
+    action_items = compute_action_items(
+        samsara=samsara, samba=samba, alvys_drivers=alvys_drivers,
+        equipment=equipment, uninvoiced=uninvoiced,
+        carrier_backlog=carrier_backlog, csa=csa,
+    )
+
+    html = _build_html_report(
+        samsara=samsara, samsara_sheets=samsara_sheets,
+        samba=samba, csa=csa, alvys_drivers=alvys_drivers,
+        uninvoiced=uninvoiced, carrier_backlog=carrier_backlog,
+        risk_signals=risk_signals, action_items=action_items,
+    )
     pdf = _render_pdf(html)
 
     subj = f"XFreight Safety & Compliance Report — {today.strftime('%B %-d, %Y')}"
