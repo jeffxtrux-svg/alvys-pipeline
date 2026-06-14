@@ -102,9 +102,22 @@ them on every pass, not just when their own raw seed changes:
   material reveals how a prior decision turned out, **go back and fill in the
   Actual outcome**, set `outcome` to confirmed / mixed / wrong, and note the
   lesson. This is the whole point: close the loop so judgment can be graded.
+- **Playbook pages** (`wiki/playbook-*.md`, seeds: `raw/xfreight-playbook-*.md`,
+  template: `templates/playbook.md`). One compiled wiki page per source raw
+  playbook. Each is a **living protocol**: the **Steps / Decision points /
+  Escalation / Capture** sections are the protocol itself and only change when
+  the seed `/raw` file does. The **Recent runs** log is append-only — every
+  time `/raw` surfaces a real-world invocation (a customer escalation
+  resolved, a driver disciplined, an inspection backlog cleared) add a
+  one-line dated entry with the outcome. Never overwrite or reorder past
+  runs. When a playbook is triggered by a risk-register entry, cross-link
+  both ways. When a playbook run produces a lesson that should change the
+  protocol, add the lesson to the run-log entry AND a decision-journal
+  entry rather than silently editing the protocol — protocol changes are
+  themselves consequential decisions.
 
-Keep both pages' summary tables in sync with their entries, and cross-link a
-risk to its paired decision (and vice-versa) when one exists. These are the only
+Keep all living-page summary tables in sync with their entries, and cross-link
+risks ↔ decisions ↔ playbooks when one references another. These are the only
 pages you may treat as append/update logs rather than rewrite-from-source.
 
 ## Guardrails

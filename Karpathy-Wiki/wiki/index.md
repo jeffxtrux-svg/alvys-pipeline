@@ -23,6 +23,19 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 
 ---
 
+## Operating Playbooks
+
+Codified response patterns — "what to do when X happens." Each playbook has a concrete trigger, a step-by-step protocol, decision points, escalation paths, and an append-only run log. Triggered by signals in the daily brief or by operator judgment; outcomes feed back into the [[Risk Register]] and [[Decision Journal]].
+
+- [[Playbook — Customer Escalation]] — when a customer relationship is at risk; save the account if savable, exit cleanly if not.
+- [[Playbook — Driver Disciplinary]] — coaching through separation, with the FMCSA/insurance documentation trail intact.
+- [[Playbook — AR Follow-up]] — 30 / 60 / 90+ day collections cycle tied to the brief's AR aging tile.
+- [[Playbook — RFP Response]] — competitive bidding process built on the AGCO 2026 lessons.
+- [[Playbook — Factoring Partner Switch]] — change providers without breaking cash flow.
+- [[Playbook — Equipment Inspection Backlog]] — response to past-due tractor/trailer inspections flagged on the brief.
+
+---
+
 ## Company Structure
 
 - [[XFreight Entities]] — the five legal entities: X-Trux (carrier), X-Linx (broker), Truk-Way (leasing/payroll), and two future N&J entities.
