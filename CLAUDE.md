@@ -182,6 +182,25 @@ daily scorecard email reads that same manual `"Alvys Master 2026.xlsx"` (not the
 pipeline output) so its KPIs match the report. The full secret-by-secret
 reference is in `docs/knowledge-base/automation-and-secrets.md`.
 
+## Core operating memory — employee responsibilities (org accountability map)
+
+Role-focused brief delivery. Owners get the brief for their area; Jeff + JB
+are cc'd on everything not directly owned by them for governance visibility.
+Canon: `Karpathy-Wiki/raw/xfreight-employee-responsibilities.md`.
+
+| Person(s) | Owns | Primary brief |
+|---|---|---|
+| **Audra** | Safety + Compliance · invoice closeout (loads invoiced timely + carrier invoices entered into Alvys) | Safety & Compliance (daily) |
+| **Jackson + Dan** | On-time delivery · truck coverage / return loads · drivers hitting 2,750 mi/wk avg | Operational / Maintenance (daily) |
+| **Jeff + JB** | Accounting / financial · sales · recruiting | Accounting / Financial (daily); Sales + Recruiting (weekly, Jeff primary, JB cc) |
+| **Dan + JB + Jeff** | Consolidated leadership view | Executive (daily) |
+
+When writing brief recipient lists, playbook `owner:` fields, or risk-register
+`owner:` fields, route owner-specific items to the person above; cc Jeff + JB
+unless they're the primary. New brief workflows use the same hardcoded literal
+fallback pattern as `scorecard_email.yml` so the right audience is reached
+even if a secret gets emptied.
+
 ## Core operating memory — read before touching equipment / safety code
 
 - **DOT inspection windows: 120-day company policy ≠ 365-day federal.** The

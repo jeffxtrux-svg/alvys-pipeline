@@ -73,3 +73,45 @@ and predicted outcomes below need Jeff's review/calibration.**
 - **Acrisure billing settled at $18,000 (paid)** — from the ~$95K ask, near the floor (~$77K saved). Graded **confirmed / well-executed** (credits-first negotiation script worked).
 - **Billion Auto renewed** — both Rapid City + Mason City lanes maintained, **fuel surcharge added** for protection. Graded **confirmed**; secures ~$47K/mo + hedges fuel.
 - **Selected Triumph for factoring** — onboarding ~June 16–17. Required paying off the operating loan, funded by **$40K owner capital ($20K Jeff + $20K JB) + trailer refinance**. Predicted: cash-flow relief. Actual: **pending** onboarding.
+
+## 2026-06-14 — Role-focused brief delivery (org accountability map)
+
+- **Decision:** restructure brief delivery from a single 13-page Executive
+  brief that everyone receives into role-focused daily briefs aimed at the
+  owner of each area, with Jeff + JB cc'd on everything for governance
+  visibility. The executive brief stays as the consolidated leadership view.
+- **Distribution plan** (canon in `xfreight-employee-responsibilities.md`
+  + repo-root `CLAUDE.md`):
+  - **Executive (X-Trux + X-Linx)** → Dan, JB, Jeff (existing — already live).
+  - **Safety & Compliance** → Audra; Jeff, JB cc. (`safety_compliance_email.py`
+    already built; flip from jeff-only test mode to this distribution.)
+  - **Operational / Maintenance** → Jackson, Dan; Jeff, JB cc. (Not yet
+    built — needs build.)
+  - **Accounting / Financial** → Jeff, JB. (Not yet built — extract from
+    exec brief pages 11–13 + deeper drill-downs.)
+  - **Sales** (weekly Monday) → Jeff; JB cc. (Not yet built.)
+  - **Recruiting** (weekly Monday) → Jeff; JB cc. (Not yet built; could
+    fold into Safety if hiring activity is sparse.)
+- **Rationale:** a single 13-page brief everyone receives gets skimmed —
+  people don't read the parts that aren't theirs and miss the parts that are.
+  Putting the right slice in front of the role owner drives accountability;
+  cc'ing leadership keeps visibility. Frees the executive brief to be the
+  consolidated view without trying to be the action prompt for five
+  different roles.
+- **Responsibility assignments** (also canon — should match playbook +
+  risk-register `owner:` fields):
+  - **Audra** — Safety, Compliance, invoice closeout (loads invoiced
+    timely + carrier invoices entered into Alvys).
+  - **Jackson + Dan** — On-time delivery, truck coverage / return loads,
+    drivers hitting 2,750 mi/wk average.
+  - **Jeff + JB** — Accounting / financial, sales, recruiting.
+- **Assumption:** owners actually engage with their brief instead of
+  treating it as another inbox item to file. If a role's brief isn't read
+  consistently for 2+ weeks, the format is wrong before we add more on top.
+- **Predicted outcome:** sharper accountability per area; faster action
+  cycles on safety, operational, and AR items; less "everyone read it,
+  no one acted" diffusion that comes with the single big brief.
+- **Actual:** _TBD — review after the new briefs land + run for 30 days.
+  Grading signals: are tripped Risk Watch items getting acked / closed
+  faster? Are equipment-inspection backlog items being cleared within the
+  14-day playbook window? Is AR aging dropping or holding?_
