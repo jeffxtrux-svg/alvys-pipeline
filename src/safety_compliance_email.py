@@ -294,7 +294,94 @@ def _page_header(title: str, pg: int, total: int,
 # invoices entered into Alvys).
 # ----------------------------------------------------------------------
 
+import re
+
+
+def compute_qb_xlinx_bill_loads(qb_bills_sheets: dict | None) -> set[str]:
+    """Build a set of Alvys load #s that already have a QB X-Linx bill
+    (paid OR unpaid). Used by compute_carrier_invoice_backlog to exclude
+    trips whose carrier has been billed via QB even if the Alvys Carrier
+    Invoice Number column never got the write-back.
+
+    QB Bills land in QB_Bills.xlsx with one sheet per company; X-Linx Inc
+    is the only company we cross-reference here (carrier bills for the
+    brokerage live there). The Alvys load # — typically a 7-digit
+    integer — is searched across DocNumber, PrivateNote, and every
+    line-item description on each bill, since the place it gets written
+    varies by who entered the bill. Returns the set of digit-normalized
+    load #s found (leading 'T' / 'XL' / etc. stripped to match the same
+    _norm_inv pattern the executive brief uses)."""
+    out: set[str] = set()
+    if not qb_bills_sheets:
+        return out
+    # X-Linx bills live on the "X-Linx Inc" sheet (one sheet per company),
+    # or in the global df with a Company column — be flexible.
+    df = None
+    for name, candidate in (qb_bills_sheets or {}).items():
+        if candidate is None or getattr(candidate, "empty", True):
+            continue
+        if "linx" in str(name).lower():
+            df = candidate
+            break
+    if df is None:
+        # Single combined sheet fallback — filter by Company column.
+        first = next(iter((qb_bills_sheets or {}).values()), None)
+        if first is None or getattr(first, "empty", True):
+            return out
+        co_col = _find_col(first, ["company"])
+        df = first[first[co_col].astype(str).str.lower().str.contains("linx", na=False)] \
+             if co_col else first
+    if df is None or df.empty:
+        return out
+
+    # Columns to scan for load-# tokens. json_normalize of a QB Bill
+    # record produces dotted names — "Line", "PrivateNote", "DocNumber"
+    # at top level, plus "Line[0].Description" etc. if not stringified.
+    # We string-concat every column whose name implies free-text content
+    # to be robust against schema variations.
+    free_text_cols: list[str] = []
+    for c in df.columns:
+        lc = str(c).lower()
+        if any(k in lc for k in ("docnumber", "doc_number", "doc number",
+                                  "privatenote", "private_note", "private note",
+                                  "memo", "description", "line", "reference",
+                                  "ref number", "refnumber")):
+            free_text_cols.append(c)
+    if not free_text_cols:
+        return out
+
+    pattern = re.compile(r"\b(\d{6,8})\b")  # Alvys load #s are 7 digits;
+                                              # allow 6–8 for robustness.
+
+    for _, r in df.iterrows():
+        blob_parts: list[str] = []
+        for c in free_text_cols:
+            v = r.get(c)
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                continue
+            blob_parts.append(str(v))
+        if not blob_parts:
+            continue
+        blob = " ".join(blob_parts)
+        for tok in pattern.findall(blob):
+            # Strip a single leading alpha if the source carried "T1234567"
+            # style — keeps parity with _norm_inv in scorecard_email.
+            out.add(tok.lstrip("0") or tok)
+    return out
+
+
+def _norm_load_token(s) -> str:
+    """Normalize a load # for set-membership comparison against the QB
+    bill index. Strips non-digits and leading zeros so '1008720',
+    '1008720.0', and ' 1008720 ' all collapse to the same key."""
+    if s is None:
+        return ""
+    t = re.sub(r"\D", "", str(s))
+    return t.lstrip("0") or t
+
+
 def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
+                                      qb_billed_load_ids: set[str] | None = None,
                                       limit: int = 30) -> dict:
     """X-Linx brokered loads that are delivered but have no carrier
     invoice number entered into Alvys yet — Audra's second-half of
@@ -386,6 +473,15 @@ def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
         sub = sub[~sub[pre_cust_col].apply(_is_ar_excluded)]
     if pre_carrier_col:
         sub = sub[~sub[pre_carrier_col].apply(_is_ar_excluded)]
+
+    # Signal 5 (when available): exclude any load # that already has a
+    # QB X-Linx bill (paid OR unpaid) — Audra has already entered it,
+    # the Alvys-side write-back just never landed.
+    if qb_billed_load_ids:
+        pre_load_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number"])
+        if pre_load_col:
+            mask = ~sub[pre_load_col].apply(_norm_load_token).isin(qb_billed_load_ids)
+            sub = sub[mask]
 
     if sub.empty:
         return empty
@@ -1303,12 +1399,12 @@ def build_page_invoice_closeout(uninvoiced: dict | None,
         f"{c_count} brokered trip(s) &middot; ~${c_total:,.0f} carrier rate "
         f"not yet entered into Alvys &middot; oldest "
         f"{c_oldest if c_oldest is not None else '&mdash;'}d."
-        f"<br/><i>Scope: delivered in the last 60 days &middot; "
-        f"Alvys Carrier Invoice Number, Due Date, and Brokerage Status "
-        f"all empty/unsettled. Verify against QB X-Linx (paid bills "
-        f"won't appear here, but if a bill posted in QB without an "
-        f"Alvys carrier-invoice-number write-back, it may still slip "
-        f"through &mdash; cross-check before chasing the carrier).</i>"
+        f"<br/><i>Scope: delivered in the last 60 days &middot; Alvys "
+        f"Carrier Invoice Number, Due Date, and Brokerage Status all "
+        f"empty/unsettled &middot; cross-referenced against QB X-Linx "
+        f"Bills (paid + unpaid, last 180d) so anything already billed in "
+        f"QB is excluded even if the Alvys carrier-invoice-number "
+        f"write-back never landed.</i>"
         f"</div>"
     )
     if c_rows:
@@ -1465,6 +1561,13 @@ def main() -> int:
     alvys_path = os.environ.get("ALVYS_PIPELINE_ONEDRIVE_PATH",
                                 "Alvys Pipeline.xlsx")
     alvys_sheets = _safe_read(tok, upn, alvys_path, missing, "Alvys Pipeline")
+    # QB Bills (X-Linx + others, paid + unpaid, last 180d) — cross-
+    # reference so the carrier-invoice-backlog page doesn't false-
+    # positive on bills that landed in QB but never got the Alvys
+    # Carrier Invoice Number write-back.
+    qb_bills_path = os.environ.get("QB_BILLS_ONEDRIVE_PATH",
+                                    "QuickBooks/QB_Bills.xlsx")
+    qb_bills_sheets = _safe_read(tok, upn, qb_bills_path, missing, "QB Bills")
     if missing:
         log.info("Optional sources missing (page(s) will soft-skip): %s",
                  ", ".join(missing))
@@ -1474,7 +1577,12 @@ def main() -> int:
     csa = compute_csa_scorecard(samba_sheets) if samba_sheets else None
     alvys_drivers = compute_alvys_drivers(alvys_sheets) if alvys_sheets else None
     uninvoiced = compute_alvys_uninvoiced(alvys_sheets) if alvys_sheets else None
-    carrier_backlog = compute_carrier_invoice_backlog(alvys_sheets)
+    qb_billed_loads = compute_qb_xlinx_bill_loads(qb_bills_sheets)
+    log.info("QB X-Linx bill cross-reference: %d load #s indexed (last 180d)",
+             len(qb_billed_loads))
+    carrier_backlog = compute_carrier_invoice_backlog(
+        alvys_sheets, qb_billed_load_ids=qb_billed_loads
+    )
 
     # Equipment compute — needed only for the action-items engine here
     # (the equipment detail pages live on the executive brief). Import

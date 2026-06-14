@@ -70,7 +70,21 @@ ENTITY_QUERIES: dict[str, str] = {
     "Customer": "SELECT * FROM Customer MAXRESULTS 1000",
     "Vendor":   "SELECT * FROM Vendor MAXRESULTS 1000",
     "Account":  "SELECT * FROM Account MAXRESULTS 1000",
+    # Bill: paid + unpaid carrier bills (and other payables). Used by
+    # the safety brief's carrier-invoice-backlog page to cross-reference
+    # Alvys load # → already-billed-in-QB, so paid bills don't false-
+    # positive into "no carrier invoice entered". QB's MAXRESULTS caps
+    # at 1000 per query; date-bound to ~180d back so brokerage shops
+    # with high bill volume don't overflow. Token {{BILL_SINCE}} is
+    # substituted at query time by fetch_entity.
+    "Bill":     "SELECT * FROM Bill WHERE TxnDate >= '{{BILL_SINCE}}' MAXRESULTS 1000",
 }
+
+
+# How far back to pull QB Bills. 180 days comfortably covers the safety
+# brief's 60-day delivered-trip window plus a 60-day bill-entry lag plus
+# slack. Increase if the brokered-bill volume sustains over the cap.
+BILL_LOOKBACK_DAYS = 180
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +180,13 @@ def fetch_entity(client: QBClient, entity: str, company_name: str) -> pd.DataFra
     query = ENTITY_QUERIES.get(entity)
     if not query:
         return None
+
+    # Substitute date placeholders so static query strings can still
+    # carry runtime-bound filters (currently used by Bill).
+    if "{{BILL_SINCE}}" in query:
+        since = (datetime.date.today()
+                  - datetime.timedelta(days=BILL_LOOKBACK_DAYS)).isoformat()
+        query = query.replace("{{BILL_SINCE}}", since)
 
     log.info("  %-25s %s", entity, company_name)
     try:
