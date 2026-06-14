@@ -2130,6 +2130,97 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
             "by_customer": by_customer, "open_invoices": open_invoices}
 
 
+def realign_alvys_aging_to_qb(alvys_ar: dict | None, qb_ar: dict | None) -> dict | None:
+    """Re-age every matched Alvys open invoice using the QB due date.
+
+    Alvys ages off its own `Customer Due Date` field (may be invoice date
+    + 15d depending on the load) while QuickBooks ages off whatever the
+    AP team typed into the invoice. When the two disagree, Alvys often
+    flags loads as past due before QB does — and the page 1 AR PAST DUE
+    tile's Alvys total includes that early-aging while page 7's
+    QB-keyed table can't show it. The brief looked like there was a
+    \$9K unexplained gap that no drilldown surfaced.
+
+    Fix: QB is the AR system of record. For any Alvys open invoice that
+    matches a QB invoice (by invoice number or Load # via _norm_inv),
+    overwrite `days` with the QB-derived aging. Un-matched (orphan)
+    Alvys invoices keep their Alvys aging — that's the true "Alvys
+    saw it before QB" set since there's no QB authority to defer to.
+
+    Returns a new dict shaped exactly like compute_alvys_ar's output so
+    callers can swap. Mutates nothing.
+    """
+    if not alvys_ar or not qb_ar:
+        return alvys_ar
+    open_inv = alvys_ar.get("open_invoices") or []
+    if not open_inv:
+        return alvys_ar
+    today = pd.Timestamp.now().normalize()
+    # Build key -> QB due date (Timestamp). qb_ar.rows has every QB
+    # invoice with its due date string.
+    qb_due_by_key: dict[str, pd.Timestamp] = {}
+    for r in (qb_ar.get("rows") or []):
+        k = _norm_inv(r.get("invoice"))
+        if not k:
+            continue
+        due_raw = r.get("due") or r.get("date")
+        if not due_raw:
+            continue
+        ts = pd.to_datetime(due_raw, errors="coerce")
+        if pd.notna(ts):
+            qb_due_by_key[k] = ts.normalize()
+
+    if not qb_due_by_key:
+        return alvys_ar
+
+    realigned: list[dict] = []
+    n_aligned = 0
+    for a in open_inv:
+        a2 = dict(a)
+        for field in ("invoice", "load"):
+            k = _norm_inv(a.get(field))
+            if k and k in qb_due_by_key:
+                qb_days = int((today - qb_due_by_key[k]).days)
+                a2["days"] = max(0, qb_days)
+                a2["aging_source"] = "qb"
+                n_aligned += 1
+                break
+        else:
+            a2.setdefault("aging_source", "alvys")
+        realigned.append(a2)
+
+    # Recompute bucket totals from realigned `days`.
+    current = d1_30 = d31_60 = d61_90 = d91plus = 0.0
+    for a in realigned:
+        days = int(a.get("days") or 0)
+        amt = float(a.get("amount") or 0)
+        if days <= 0:
+            current += amt
+        elif days <= 30:
+            d1_30 += amt
+        elif days <= 60:
+            d31_60 += amt
+        elif days <= 90:
+            d61_90 += amt
+        else:
+            d91plus += amt
+
+    out = dict(alvys_ar)
+    out["open_invoices"] = realigned
+    out["current"] = current
+    out["d1_30"] = d1_30
+    out["d31_60"] = d31_60
+    out["d61_90"] = d61_90
+    out["d91plus"] = d91plus
+    out["overdue"] = d1_30 + d31_60 + d61_90 + d91plus
+    out["realigned"] = True
+    out["realigned_count"] = n_aligned
+    out["realigned_total"] = len(realigned)
+    log.info("realign_alvys_aging_to_qb: aligned %d of %d Alvys invoices to QB due dates "
+             "(new overdue: $%.2f)", n_aligned, len(realigned), out["overdue"])
+    return out
+
+
 def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
     """Compare total open AR for X-Trux + X-Linx between QuickBooks (system of
     record) and Alvys (operational TMS). A persistent gap flags a fixable sync
@@ -7755,6 +7846,11 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    # Realign Alvys aging to QB due dates so the two systems' past-due
+    # totals match for any matched invoice — closes the "Alvys saw it
+    # past due before QB did" gap that was driving the unexplained
+    # delta on the page 1 AR PAST DUE tile.
+    alvys_ar = realign_alvys_aging_to_qb(alvys_ar, qb_ar) or alvys_ar
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
