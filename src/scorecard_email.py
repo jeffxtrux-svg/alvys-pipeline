@@ -1587,7 +1587,8 @@ def _working_days_elapsed(now=None) -> int:
     )
 
 
-def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 80) -> dict:
+def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 80,
+                                alvys_entities: dict | None = None) -> dict:
     """Estimate full-month settled margin per entity using a working-day run-rate.
 
     Formula per entity:
@@ -1716,7 +1717,18 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
             s_cost = float(_load_cost(settled_sub).sum())
         settled_margin = s_rev - s_cost
         trail_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
-        mtd_pct = ((s_rev - s_cost) / s_rev) if s_rev else None
+        # CRITICAL: MTD margin % MUST come from alvys_entities so the
+        # projection matches the page-1 entity table exactly. Computing
+        # it locally here gave a different number (49.9% vs the entity
+        # table's 35.7% for X-Trux) because the entity table uses the
+        # Pipeline Trips path with the open-trip-drop filter, while a
+        # local calc off the Master Loads sheet doesn't. Fall back to
+        # the local calc only if the entities dict wasn't passed.
+        mtd_pct = None
+        if alvys_entities and ent in alvys_entities:
+            mtd_pct = alvys_entities[ent].get("margin_pct")
+        if mtd_pct is None:
+            mtd_pct = ((s_rev - s_cost) / s_rev) if s_rev else None
         # MTD margin % drives the projection (matches today's economics).
         # Fall back to trailing only if MTD has zero revenue (very start
         # of the month).
@@ -1742,7 +1754,17 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         combined_settled_margin += settled_margin
 
     c_trail_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
-    c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
+    # Combined MTD margin from the entity table (sum of per-entity
+    # revenue/cost) — keeps the projection's MTD line in sync with the
+    # page-1 Total row.
+    c_mtd_pct = None
+    if alvys_entities:
+        _e_rev = sum(float(alvys_entities.get(e, {}).get("revenue") or 0) for e in ENTITY_ORDER)
+        _e_cost = sum(float(alvys_entities.get(e, {}).get("cost") or 0) for e in ENTITY_ORDER)
+        if _e_rev > 0:
+            c_mtd_pct = (_e_rev - _e_cost) / _e_rev
+    if c_mtd_pct is None:
+        c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
     c_applied = c_mtd_pct if c_mtd_pct is not None else c_trail_pct
     c_daily = (combined_t_rev / days) if days else 0.0
     c_proj_rev = (c_daily * wdim) if c_daily else None
@@ -7971,7 +7993,12 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
     rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
-    margin_projection = compute_margin_projection(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    # Pass alvys_entities so the projection's MTD margin % matches the
+    # page-1 entity table exactly (entity table uses Pipeline Trips with
+    # open-trip-drop; local-calc would diverge).
+    margin_projection = compute_margin_projection(
+        alvys_pipeline_sheets, alvys_entities=alvys_entities,
+    ) if alvys_pipeline_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     warnings += _rpm_goal_health(rpm_goal)
     for w in warnings:
