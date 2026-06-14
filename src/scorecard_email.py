@@ -1573,6 +1573,20 @@ def _working_days_in_month(year: int, month: int) -> int:
     )
 
 
+def _working_days_elapsed(now=None) -> int:
+    """Count Mon-Fri working days from start-of-month through `now`
+    (today inclusive), excluding US holidays. Used to weight MTD
+    margin vs trailing-window margin in the projection blend."""
+    now = now or pd.Timestamp.now()
+    year, month = now.year, now.month
+    holidays = _us_holidays(year)
+    return sum(
+        1 for day in range(1, now.day + 1)
+        if _dt.date(year, month, day).weekday() < 5
+        and _dt.date(year, month, day) not in holidays
+    )
+
+
 def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 80) -> dict:
     """Estimate full-month settled margin per entity using a working-day run-rate.
 
@@ -1580,12 +1594,23 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         trail_start           = date that is `days` working days before today
         daily_run_rate        = trailing_revenue_over_{days}_wd / {days}
         working_days_in_month = Mon-Fri days in current month excl. US holidays
+        wd_elapsed            = Mon-Fri days from start-of-month through today
+        weight_mtd            = wd_elapsed / working_days_in_month
+        blended_margin_pct    = mtd_margin_pct * weight_mtd
+                                  + trailing_margin_pct * (1 - weight_mtd)
         projected_revenue     = daily_run_rate * working_days_in_month
-        projected_margin      = projected_revenue * trailing_margin_pct
+        projected_margin      = projected_revenue * blended_margin_pct
 
-    Working days exclude weekends and six US federal holidays: New Year's Day,
-    Memorial Day, Independence Day, Labor Day, Thanksgiving, Christmas Day.
-    The floor ensures the estimate never reads below already-settled margin.
+    Why blend margin %: a pure trailing-80wd margin % anchors the
+    projection on ~4 months of history and lags the current month's
+    actual performance. Blending the MTD margin % in by month-progress
+    weight makes the projection track the live month — early in the
+    month the trailing window dominates (smoothing noise), late in
+    the month MTD dominates (matching what's already happened).
+
+    Working days exclude weekends and six US federal holidays. The
+    floor below ensures the estimate never reads below already-settled
+    margin (a bad month shouldn't project below what's already booked).
     """
     if not sheets:
         return {}
@@ -1618,11 +1643,30 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         settled_mtd_mask = settled_mtd_mask & (_load_cost(loads) > 0)
 
-    out: dict = {"working_days_in_month": wdim, "trailing_days": days}
+    # Month-progress weight: how much of the month has happened (in
+    # working days). At month-start this is ~0 (trailing window
+    # dominates); at month-end it approaches 1 (MTD dominates).
+    wd_elapsed = _working_days_elapsed(now)
+    weight_mtd = (min(wd_elapsed / wdim, 1.0) if wdim else 0.0)
+
+    out: dict = {"working_days_in_month": wdim, "trailing_days": days,
+                 "wd_elapsed": wd_elapsed, "weight_mtd": weight_mtd}
     combined_t_rev = combined_t_cost = 0.0
+    combined_s_rev = combined_s_cost = 0.0
     combined_settled_margin = 0.0
 
     dr_col = "Driver Rate" if "Driver Rate" in loads.columns else None
+
+    def _blend(mtd_pct, trail_pct, w):
+        """Weighted blend of MTD margin % and trailing margin %.
+        Falls back to whichever is available if the other is None."""
+        if mtd_pct is None and trail_pct is None:
+            return None
+        if mtd_pct is None:
+            return trail_pct
+        if trail_pct is None:
+            return mtd_pct
+        return mtd_pct * w + trail_pct * (1.0 - w)
 
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
@@ -1640,35 +1684,54 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
             t_cost = float(_load_cost(trail_sub).sum())
             s_cost = float(_load_cost(settled_sub).sum())
         settled_margin = s_rev - s_cost
-        m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
+        trail_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
+        mtd_pct = ((s_rev - s_cost) / s_rev) if s_rev else None
+        blended_pct = _blend(mtd_pct, trail_pct, weight_mtd)
         daily_run_rate = (t_rev / days) if days else 0.0
         proj_rev = (daily_run_rate * wdim) if daily_run_rate else None
-        proj_margin_t = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
+        proj_margin_t = (proj_rev * blended_pct) if (proj_rev and blended_pct is not None) else None
         proj_margin = (settled_margin
                        if (proj_margin_t is not None and settled_margin > proj_margin_t)
                        else proj_margin_t)
         out[ent] = {
             "settled_mtd_margin": settled_margin or None,
-            "trailing_margin_pct": m_pct,
+            "trailing_margin_pct": trail_pct,
+            "mtd_margin_pct": mtd_pct,
+            "blended_margin_pct": blended_pct,
             "projected_revenue": proj_rev,
             "projected_margin": proj_margin,
         }
         combined_t_rev += t_rev
         combined_t_cost += t_cost
+        combined_s_rev += s_rev
+        combined_s_cost += s_cost
         combined_settled_margin += settled_margin
 
-    c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
+    c_trail_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
+    c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
+    c_blended = _blend(c_mtd_pct, c_trail_pct, weight_mtd)
     c_daily = (combined_t_rev / days) if days else 0.0
     c_proj_rev = (c_daily * wdim) if c_daily else None
-    _c_t = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
+    _c_t = (c_proj_rev * c_blended) if (c_proj_rev and c_blended is not None) else None
     c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
                      else (combined_settled_margin or _c_t))
     out["combined"] = {
         "settled_mtd_margin": combined_settled_margin or None,
-        "trailing_margin_pct": c_pct,
+        "trailing_margin_pct": c_trail_pct,
+        "mtd_margin_pct": c_mtd_pct,
+        "blended_margin_pct": c_blended,
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
+    log.info("compute_margin_projection: wd %d/%d (mtd weight %.0f%%); "
+             "X-Trux trail %s blended %s, X-Linx trail %s blended %s, "
+             "combined trail %s blended %s",
+             wd_elapsed, wdim, weight_mtd * 100,
+             f"{out['X-Trux'].get('trailing_margin_pct') or 0:.1%}",
+             f"{out['X-Trux'].get('blended_margin_pct') or 0:.1%}",
+             f"{out['X-Linx'].get('trailing_margin_pct') or 0:.1%}",
+             f"{out['X-Linx'].get('blended_margin_pct') or 0:.1%}",
+             f"{c_trail_pct or 0:.1%}", f"{c_blended or 0:.1%}")
     return out
 
 
@@ -5249,17 +5312,31 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     # equation comes from compute_margin_projection():
     #   daily_run_rate    = trailing-80-working-day revenue / 80
     #   projected_revenue = daily_run_rate * working_days_in_month
-    #   projected_margin  = projected_revenue * trailing-80wd margin %
-    # Pill shows working days in month and trailing window so the basis is visible.
+    #   blended_margin %  = MTD margin × (wd_elapsed / wdim)
+    #                         + trailing-80wd margin × (1 - wd_elapsed / wdim)
+    #   projected_margin  = projected_revenue * blended_margin_pct
+    # Pill shows working days in month, trailing window, and the blended
+    # margin % being applied so the methodology is auditable on the brief.
     _mp = margin_projection or {}
     _wdim = _mp.get("working_days_in_month", 0)
     _td = _mp.get("trailing_days", 80)
+    _w_mtd = _mp.get("weight_mtd")
     _month_lbl = pd.Timestamp.now().strftime("%B")
     _tile_label = f"Est. {_month_lbl} margin"
     def _proj_tile(ent_key, pill_text):
         ent = _mp.get(ent_key) or {}
+        # Show the BLENDED margin % (what's actually applied to the
+        # projection) plus a small "trail X% · mtd Y%" hint so the
+        # reader can see the inputs without opening the code.
+        blended = ent.get("blended_margin_pct")
+        trail = ent.get("trailing_margin_pct")
+        mtd = ent.get("mtd_margin_pct")
         sub = (_pill(pill_text, "mute")
-               + f" &middot; {_wdim}wd &middot; w{_td} {pct(ent.get('trailing_margin_pct'))}")
+               + f" &middot; {_wdim}wd &middot; w{_td} {pct(blended)}")
+        if trail is not None and mtd is not None and _w_mtd is not None:
+            sub += (f" <span style='color:{MUTE};font-size:11px;'>"
+                    f"(trail {pct(trail)} · MTD {pct(mtd)} · "
+                    f"mtd weight {_w_mtd*100:.0f}%)</span>")
         return _tile(_tile_label, money(ent.get("projected_margin")), sub)
     # Order: Combined projection in the leftmost slot (visually anchors the
     # row's lead number), per-entity projections in the middle, and the plain
