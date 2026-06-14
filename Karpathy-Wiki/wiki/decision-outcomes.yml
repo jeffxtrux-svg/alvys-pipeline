@@ -1,0 +1,74 @@
+# Decision outcome checks — Phase 2C (active loop, decision side)
+#
+# Companion file to wiki/decision-journal.md and raw/xfreight-decision-journal.md.
+# Each entry maps a journal decision to a machine-checkable predicted
+# outcome. The brief evaluates these on each scorecard run and tags
+# each decision with a grade: pending / confirmed / mixed / wrong.
+#
+# Schema per decision:
+#   id              short kebab-case identifier (matches the journal entry's slug)
+#   title           human-readable name (matches the journal heading)
+#   journal_date    "YYYY-MM-DD" — date the decision was made (matches journal)
+#   check_after     "YYYY-MM-DD" — earliest date to grade (gives time for the
+#                   effect to materialize). Until this date, grade = pending.
+#   check:
+#     kind          one of: range | comparison
+#     metric        dot path into the brief's compute dicts
+#     For kind=range:
+#       min         confirmed if value >= min
+#       max         confirmed if value <= max
+#       wrong_below true → value < min grades 'wrong' instead of 'mixed'
+#       wrong_above true → value > max grades 'wrong' instead of 'mixed'
+#     For kind=comparison:
+#       direction   >= > <= < ==
+#       threshold   value the metric is compared against
+#       on_pass     confirmed | mixed | wrong  (grade when the comparison passes)
+#       on_fail     confirmed | mixed | wrong  (grade when the comparison fails)
+#     format        int | money | days | pct
+#
+# Adding a new decision check:
+#   1. Make sure the decision exists in raw/xfreight-decision-journal.md.
+#   2. Append a block here with the metric + predicted shape.
+#   3. The next scorecard run will start grading it (or showing pending
+#      until check_after).
+#
+# The brief renders a small "Decisions graded" summary on page 1; the
+# librarian uses this file + the live grades to render ✓/✗/⏳ badges in
+# wiki/decision-journal.md on its next compile.
+
+decisions:
+  - id: xtrux-pl-holdout-74pct
+    title: X-Trux P&L hold-out at ≥74% Corrected Margin
+    journal_date: "2026-06-13"
+    check_after: "2026-07-13"
+    check:
+      kind: range
+      metric: alvys_entities.X-Trux.margin_pct
+      min: 0.30
+      max: 0.50
+      wrong_above: true
+      format: pct
+
+  - id: deadhead-rpm-own-fleet-only
+    title: Deadhead / RPM scoped to own-fleet only
+    journal_date: "2026-06-13"
+    check_after: "2026-07-13"
+    check:
+      kind: range
+      metric: alvys.dead_head_pct
+      min: 0.04
+      max: 0.07
+      format: pct
+
+  - id: equipment-inspection-backlog-cleared
+    title: Equipment inspection backlog cleared within 14 days
+    journal_date: "2026-06-14"
+    check_after: "2026-06-28"
+    check:
+      kind: comparison
+      metric: equipment.tractors_overdue_annual
+      direction: "<="
+      threshold: 0
+      on_pass: confirmed
+      on_fail: wrong
+      format: int

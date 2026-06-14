@@ -4976,7 +4976,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
                 ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
-                risk_watch_html: str = "",
+                risk_watch_html: str = "", decision_grades_html: str = "",
                 part: str = "all") -> str:
     """Executive overview page. `part` controls split rendering so build_page8
     (bill-by-bill matching) can land on physical PDF page 5 between the AR
@@ -5753,9 +5753,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<tr><td colspan='4' style='padding:0 24px;'>{risk_watch_html}</td></tr>"
         if risk_watch_html else ""
     )
+    _decision_grades_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{decision_grades_html}</td></tr>"
+        if decision_grades_html else ""
+    )
     _overview_rows = (
         f"{warn_row}"
         f"{_risk_watch_row}"
+        f"{_decision_grades_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
         f"{_section(_entity_section)}"
@@ -7451,19 +7456,20 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
     # the top of page 1. Fails soft: any exception silences the strip
     # rather than crashing the brief.
     risk_watch_html = ""
+    decision_grades_html = ""
+    _watch_data = {
+        "equipment": equipment or {},
+        "qb_ar": qb_ar or {},
+        "csa": csa or {},
+        "alvys_entities": alvys_entities or {},
+        "samsara": samsara or {},
+        "alvys": alvys or {},
+        "samba": samba or {},
+        "alvys_ar": alvys_ar or {},
+        "uninvoiced": uninvoiced or {},
+    }
     try:
         from src import risk_watch as _risk_watch
-        _watch_data = {
-            "equipment": equipment or {},
-            "qb_ar": qb_ar or {},
-            "csa": csa or {},
-            "alvys_entities": alvys_entities or {},
-            "samsara": samsara or {},
-            "alvys": alvys or {},
-            "samba": samba or {},
-            "alvys_ar": alvys_ar or {},
-            "uninvoiced": uninvoiced or {},
-        }
         _watch_results = _risk_watch.evaluate(_watch_data)
         if _watch_results:
             log.info("risk_watch: evaluated %d signals (%d tripped)",
@@ -7475,6 +7481,24 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         )
     except Exception as exc:
         log.warning("risk_watch render skipped (%s: %s)", type(exc).__name__, exc)
+    # Phase 2C — Decision Grader: evaluate each tracked decision's
+    # predicted outcome against live data, render a compact summary
+    # chip, and write a grades snapshot the librarian uses on its next
+    # compile to stamp ✓/✗/⏳ badges into wiki/decision-journal.md.
+    try:
+        from src import decision_grader as _decision_grader
+        _grades = _decision_grader.evaluate(_watch_data)
+        if _grades:
+            log.info("decision_grader: graded %d decisions (%s)",
+                     len(_grades),
+                     ", ".join(f"{k}={v}" for k, v in
+                                _decision_grader.summary_counts(_grades).items() if v))
+        decision_grades_html = _decision_grader.render_summary_html(
+            _grades, red=BAD, green=GOOD, mute=MUTE, line=LINE,
+        )
+        _decision_grader.write_grades_snapshot(_grades)
+    except Exception as exc:
+        log.warning("decision_grader render skipped (%s: %s)", type(exc).__name__, exc)
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
@@ -7585,7 +7609,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
             f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
