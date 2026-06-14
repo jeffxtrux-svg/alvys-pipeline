@@ -105,6 +105,13 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ALERT_FROM_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           ALERT_TO_EMAILS: ${{ secrets.ALERT_RECIPIENTS }}
+          # LIVE: test mode off — emails the full ALERT_RECIPIENTS list and sends
+          # real Samsara Driver-App fault nudges. Set to '1' to revert to
+          # Jeff-only / dry-run while iterating.
+          SAMSARA_ALERT_TEST_MODE: '0'
+          # Whose OneDrive to read for the disqualified-driver check
+          # (SambaSafety_Master.xlsx + Alvys Pipeline.xlsx Drivers sheet).
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
         run: python -m src.samsara_alerts
 
       - name: Nudge drivers with uncertified logs

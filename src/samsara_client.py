@@ -199,33 +199,24 @@ class SamsaraClient:
         return items
 
     def fetch_fault_codes(self) -> list[dict]:
-        """Active OBD diagnostic fault codes (DTC / check-engine / warning lights).
+        """Active engine fault codes (J1939 SPN/FMI + OBD-II DTCs) per vehicle.
 
-        Samsara retired the `nativeObdDtcCodes` stat type from
-        /fleet/vehicles/stats in 2025.  The endpoint returns 400 for that type,
-        which is caught here and logged at INFO so the alerts job stays green
-        while DTC data is unavailable.
+        Uses the current `faultCodes` stat type on /fleet/vehicles/stats. (The
+        older `nativeObdDtcCodes` type was retired by Samsara in 2025 and now
+        400s — that's why the alert's fault section had gone silent.) Each
+        returned record carries the same data the Samsara maintenance view shows
+        in its "Active Faults" column:
+
+            faultCodes.j1939.diagnosticTroubleCodes[]  — {spnId, fmiId, txId,
+                spnDescription, fmiDescription, occurrenceCount, ...}
+            faultCodes.obdii.diagnosticTroubleCodes[]  — light-duty OBD-II trucks
+
+        The alert layer (samsara_alerts._extract_active_faults) reads those
+        arrays. Fail-soft via _safe_get: any HTTP error logs a warning and
+        yields [] so the refresh stays green.
         """
         log.info("Fetching active fault codes…")
-        try:
-            items = self._get_pages(
-                "/fleet/vehicles/stats", {"types": "nativeObdDtcCodes"}
-            )
-        except requests.HTTPError as exc:
-            code = exc.response.status_code if exc.response is not None else "?"
-            msg = ""
-            try:
-                msg = exc.response.json().get("message", "")
-            except Exception:
-                pass
-            if code == 400 and "nativeObdDtcCodes" in msg:
-                log.info(
-                    "DTC fault-code endpoint returned 400 (stat type retired by Samsara)"
-                    " — skipping DTC check."
-                )
-            else:
-                log.warning("GET /fleet/vehicles/stats → HTTP %s — skipping DTC check.", code)
-            items = []
+        items = self._safe_get("/fleet/vehicles/stats", {"types": "faultCodes"})
         log.info("Total fault-code vehicle records: %d", len(items))
         return items
 
@@ -435,6 +426,81 @@ class SamsaraClient:
                 return items
         log.info("Total HOS log entries: 0")
         return []
+
+    def fetch_hos_clocks(self) -> list[dict]:
+        """Current HOS clocks + live duty status for every driver.
+
+        GET /fleet/hos/clocks — each record carries:
+            driver{id, name}
+            currentDutyStatus.hosStatusType  — offDuty / driving / onDuty /
+                sleeperBed / personalConveyance (the driver's status *right now*)
+            clocks{drive,shift,break,cycle} remaining-time counters
+            violations{...}
+
+        Used by the alert to find drivers who are presently driving or on duty
+        so an uncertified-log flag is actionable. Fail-soft via _safe_get.
+        """
+        log.info("Fetching current HOS clocks (live duty status)…")
+        items = self._safe_get("/fleet/hos/clocks")
+        log.info("Total HOS clock records: %d", len(items))
+        return items
+
+    def fetch_current_drivers(
+        self, vehicle_ids: list[str], lookback_hours: int = 24
+    ) -> dict[str, dict]:
+        """Map each vehicle id → its current driver {id, name, driving_now}.
+
+        Uses GET /fleet/driver-vehicle-assignments (filterBy=vehicles). The
+        "current" driver is the assignment that contains *now* (ongoing); if none
+        is active right now, the most recent assignment within `lookback_hours`
+        wins (a parked truck keeps showing its last driver, like Samsara's
+        maintenance "Current Driver" column). `driving_now` flags whether that
+        assignment is active this moment. Vehicles with no recent assignment are
+        omitted. Fail-soft: returns {} on any error.
+        """
+        if not vehicle_ids:
+            return {}
+        now = datetime.datetime.now(datetime.timezone.utc)
+        params = {
+            "filterBy": "vehicles",
+            "vehicleIds": ",".join(str(v) for v in vehicle_ids if v),
+            "startTime": _iso(now - datetime.timedelta(hours=lookback_hours)),
+            "endTime": _iso(now + datetime.timedelta(hours=1)),
+        }
+        log.info("Fetching current driver assignments for %d vehicle(s)…", len(vehicle_ids))
+        records = self._safe_get("/fleet/driver-vehicle-assignments", params)
+
+        def _parse(t):
+            if not t:
+                return None
+            try:
+                return datetime.datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return None
+
+        best: dict[str, dict] = {}
+        for a in records:
+            if not isinstance(a, dict):
+                continue
+            vid = str((a.get("vehicle") or {}).get("id") or "")
+            drv = a.get("driver") or {}
+            did = str(drv.get("id") or "")
+            if not vid or not did:
+                continue
+            st, en = _parse(a.get("startTime")), _parse(a.get("endTime"))
+            active_now = (st is not None and st <= now) and (en is None or en >= now)
+            start_key = st or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+            cur = best.get(vid)
+            cand = {"id": did, "name": drv.get("name") or "",
+                    "driving_now": active_now, "_start": start_key}
+            if (cur is None
+                    or (active_now and not cur["driving_now"])
+                    or (active_now == cur["driving_now"] and start_key > cur["_start"])):
+                best[vid] = cand
+        for v in best.values():
+            v.pop("_start", None)
+        log.info("Resolved current driver for %d/%d vehicle(s)", len(best), len(vehicle_ids))
+        return best
 
     def send_driver_messages(self, driver_ids: list[str], text: str) -> dict | None:
         """Send a message to one or more drivers' Samsara Driver App inbox.
