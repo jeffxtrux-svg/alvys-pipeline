@@ -51,6 +51,17 @@ and predicted outcomes below need Jeff's review/calibration.**
 - **Predicted outcome:** consistent settlement, no rate disputes.
 - **Actual:** in effect; treated as confirmed.
 
+## 2026-05-01 — Renewed insurance with Acrisure (+$0.08–0.10/mi)
+- **Decision:** renew X-Trux / X-Linx insurance with Acrisure (Great West Casualty
+  underwriter) effective May 1, 2026, accepting a ~$0.08–0.10/mi premium increase.
+- **Rationale:** keep coverage continuity; no better-priced option lined up in time.
+- **Predicted outcome:** the increase is absorbed into the cost-out so the
+  rate-per-mile goal stays whole.
+- **Actual:** renewal completed 5/1/26; increase figured into the costing (overhead
+  pin $0.98 — confirm it fully reflects $0.08–0.10/mi). Outcome **confirmed**.
+- **Forward:** evaluate an alternative broker/carrier before the next renewal — a
+  different option may be needed down the road. (Jeff, 2026-06-13.)
+
 ## 2026-01 — AGCO 2026 truckload RFP (closed loop, graded)
 - **Decision:** bid the AGCO 2026 truckload RFP.
 - **Outcome:** NOT awarded (Jan 2026). Graded: lost. Lessons for the next cycle

@@ -21,9 +21,13 @@ by appending here; the librarian compiles this into the wiki register.
   intervention, audit, insurance cost. Watch: any BASIC crossing its threshold.
   Owner: Audra.
 
-- **Acrisure insurance dispute.** Open dispute with the insurance broker (detail
-  in the Acrisure Dispute wiki page). Exposure: coverage/premium/billing and
-  management time. Watch: unresolved past the next policy renewal. Owner: JB / Jeff.
+- **Insurance — Acrisure renewal & cost** (severity downgraded High→Medium, 2026-06-13).
+  The 2026 renewal went through May 1, 2026 with a ~$0.08–0.10/mi premium increase,
+  already absorbed into the cost-out. The separate ~$95K billing reconciliation
+  (~$31K likely) is still to settle. Forward: evaluate an alternative broker/carrier
+  before the next renewal — a different option may be needed down the road. Verify
+  the overhead pin ($0.92→$0.98 ≈ $0.06/mi) fully reflects the $0.08–0.10/mi increase.
+  Owner: JB / Jeff.
 
 ## Medium severity
 

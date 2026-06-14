@@ -22,6 +22,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 | 2026-06-12 | Retire SambaSafety API → CSV-drop | Compliance/CSA data keeps flowing | Pending — review ~7/12 |
 | 2026-06-13 | Next oil change as a 25k estimate | "Close enough" until real data | Pending |
 | Standing | Dispatch date locks the pay rate | Consistent settlement, no disputes | Confirmed |
+| 2026-05-01 | Renew with Acrisure (+$0.08–0.10/mi) | Increase absorbed into costing | Confirmed |
 | 2026-01 | Bid the AGCO 2026 RFP | (win the lane) | **Wrong** — not awarded |
 
 ---
@@ -40,6 +41,9 @@ A running log of XFreight's consequential decisions — each with the **rational
 
 ## Standing rule — dispatch date locks the per-mile pay rate
 **Decision.** Driver per-mile pay rate is revised weekly on Wednesday; a load's dispatch date determines which week's rate applies (Tuesday dispatch → prior rate, Wednesday → new rate). **Rationale.** An unambiguous rule for which rate a load pays, for settlement. **Predicted outcome.** Consistent settlement, no rate disputes. **Actual.** In effect — treated as confirmed. See [[Owner-Operator Program]], [[Rate-Per-Mile Goal]].
+
+## 2026-05-01 — Renewed insurance with Acrisure (+$0.08–0.10/mi)
+**Decision.** Renew X-Trux / X-Linx insurance with Acrisure (Great West Casualty underwriter) effective May 1, 2026, accepting a ~$0.08–0.10/mi premium increase. **Rationale.** Keep coverage continuity through the renewal; no better-priced option lined up in time. **Predicted outcome.** The higher premium is absorbed into the cost-out so the rate-per-mile goal stays whole. **Actual.** Renewal completed 5/1/26; the increase is figured into the costing (overhead pin $0.98 — confirm it fully reflects $0.08–0.10/mi; see [[Risk Register]]). **Forward.** Evaluate an alternative broker/carrier before the next renewal — a different option may be needed down the road. Outcome **confirmed** (renewal done, cost absorbed). See [[Insurance and Banking]], [[Acrisure Dispute]], [[Rate-Per-Mile Goal]].
 
 ## 2026-01 — AGCO 2026 truckload RFP (closed loop)
 **Decision.** Bid the AGCO 2026 truckload RFP. **Outcome.** **Not awarded** (Jan 2026). Graded **wrong** (lost). Lessons for the next cycle are in [[AGCO RFP]] — kept here as an example of a decision with a known result, so the journal shows the full loop. See [[Customer Portfolio]].

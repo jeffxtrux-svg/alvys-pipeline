@@ -70,9 +70,11 @@ Acrisure issued a breakdown claiming ~$95K in unpaid premiums on April 24, 2026.
 
 ## Status
 
-**UNRESOLVED as of June 5, 2026.** The April 27 analysis was prep for the negotiation — no follow-up email confirming resolution found in the source files.
+**Renewal — RESOLVED: went through May 1, 2026** (Jeff, 2026-06-13), carrying a ~$0.08–0.10/mi premium increase now figured into the cost-out. See [[Rate-Per-Mile Goal]] and [[Risk Register]]. A different broker/carrier may be evaluated before the next renewal.
 
-Track: Has the $43,739 been applied? What was the final settlement?
+**Billing reconciliation (~$95K claim) — still open** as of this update. The renewal proceeding does not by itself settle the back-billing dispute; Jeff's April 27 analysis (most-likely ~$31,266) stands as the negotiating position.
+
+Track: Has the $43,739 been applied? What was the final billing settlement?
 
 ## Contacts
 

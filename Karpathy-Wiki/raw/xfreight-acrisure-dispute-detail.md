@@ -16,6 +16,10 @@
 
 That's a ~$64K negotiating delta if the analysis is right.
 
+## Status update (Jeff, 2026-06-13)
+
+The **insurance renewal went through May 1, 2026** with a ~$0.08–0.10/mi premium increase (now figured into the cost-out). That resolves the renewal question but **not** this billing reconciliation — the ~$95K-vs-~$31K back-billing position below still stands until settled.
+
 ## Item-by-item breakdown
 
 | Item | Amount | Category | Notes |

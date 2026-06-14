@@ -19,7 +19,7 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 |------|:--------:|:------:|-------|--------------|
 | Equipment inspection backlog | **High** | Open | Safety / Logistics | Any unit past due (brief flags red) |
 | CSA BASIC near intervention | **High** | Monitor | Safety | A BASIC ≥ its 65th/80th threshold |
-| Acrisure insurance dispute | **High** | Open | JB / Jeff | Unresolved past renewal |
+| Insurance — Acrisure renewal &amp; cost | Medium | Monitor | JB / Jeff | Billing settlement; insurance cost trend |
 | Customer concentration | Medium | Watch | Jeff (BD) | One customer > ~25% of revenue |
 | Billion Auto contract lapsed | Medium | Open | Jeff (BD) | Rate agreement (exp. 6/1/26) unrenewed |
 | SambaSafety CSV fragility | Medium | Mitigated | Pipeline | CSV age > 60h |
@@ -39,12 +39,12 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 ### CSA BASIC near intervention
 **What it is.** FMCSA flags intervention when a BASIC crosses the 65th percentile (Unsafe Driving, Crash Indicator) or 80th (all others). Tracked on brief page 10 from the SambaSafety CSA scorecard. **Exposure:** intervention, audit, higher insurance cost. **Watch:** any BASIC crossing its threshold. **Owner:** Audra. See [[FMCSA CSA Scorecard]], [[Safety Program]].
 
-### Acrisure insurance dispute
-**What it is.** An open dispute with the insurance broker (detail in [[Acrisure Dispute]]). **Exposure:** coverage, premium/billing, and management time. **Watch:** unresolved past the next policy renewal. **Owner:** JB / Jeff. See [[Insurance and Banking]], [[Active Disputes and Open Issues]].
-
 ---
 
 ## Medium severity
+
+### Insurance — Acrisure renewal &amp; cost
+**What it is.** The 2026 Acrisure renewal **went through May 1, 2026**, carrying a **~$0.08–0.10/mi premium increase** — already folded into the cost-out. The separate ~$95K billing reconciliation (~$31K likely liability per Jeff's analysis) is still to be settled. **Mitigation / forward:** evaluate an alternative broker/carrier before the next renewal — a different option may be needed down the road. **Verify:** the documented overhead-pin bump was $0.92→$0.98 (~$0.06/mi), which looks ~$0.02–0.04/mi short of the stated increase — confirm the [[Rate-Per-Mile Goal]] cost-out fully reflects it. **Owner:** JB / Jeff. See [[Acrisure Dispute]], [[Insurance and Banking]].
 
 ### Customer concentration
 **What it is.** Revenue may be concentrated in a few customers. **Action:** quantify each customer's share of X-Trux + X-Linx revenue from Alvys (the data exists — a good first analysis). **Exposure:** losing one large account materially hits revenue. **Watch:** any single customer above ~25% of revenue. **Owner:** Jeff (BD). See [[Customer Portfolio]].
@@ -74,4 +74,5 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 
 ## Archive (closed risks)
 
-_None yet. When a risk is resolved, set its status to `closed`, add the resolution date and outcome, and move it here._
+### Acrisure renewal uncertainty — RESOLVED 2026-05-01
+The 2026 insurance renewal **went through May 1, 2026** (clears the old "unresolved past renewal" watch). It carried a ~$0.08–0.10/mi premium increase, now folded into the cost-out. Live aspects — the cost increase, the open ~$95K billing reconciliation, and shopping alternatives — continue under "Insurance — Acrisure renewal & cost" above.
