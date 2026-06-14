@@ -95,6 +95,16 @@ them on every pass, not just when their own raw seed changes:
   **add or update an entry**: set its severity, status, owner, and a concrete
   **watch signal**. Update `last_reviewed`. When a risk resolves, set status
   `closed`, add the resolution, and move it to the Archive section.
+  - **`wiki/risk-signals.yml`** — machine-readable companion. The daily
+    brief's "Risk Watch" strip reads this file and evaluates each signal
+    against live data. When you add or update a risk in `risk-register.md`,
+    add or update a matching block in `risk-signals.yml` with a dot-path
+    `metric:` into the brief's compute dicts (e.g. `equipment.tractors_overdue_annual`,
+    `qb_ar.d91plus`, `csa.n_alert`), a `threshold:`, a `direction:`, and the
+    `tripped_text:` template. If a risk has no measurable metric in the
+    brief yet, leave the YAML block out — the strip silently omits
+    signals whose underlying metric is missing rather than showing a
+    spurious "OK". Keep `risk-register.md` and `risk-signals.yml` in sync.
 - **`wiki/decision-journal.md`** (seed: `raw/xfreight-decision-journal.md`,
   template: `templates/decision.md`). When `/raw` records a consequential
   business or measurement decision, **append an entry** with rationale,

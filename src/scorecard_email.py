@@ -4976,6 +4976,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
                 ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
+                risk_watch_html: str = "",
                 part: str = "all") -> str:
     """Executive overview page. `part` controls split rendering so build_page8
     (bill-by-bill matching) can land on physical PDF page 5 between the AR
@@ -5744,8 +5745,17 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
              f"{action_items_html}"
              f"{coaching_html}")
     _table_open = f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+    # Risk Watch strip (Phase 2B). The renderer returns a <div>; wrap it
+    # in a colspan row so it slots into the page-1 table without breaking
+    # the 4-column tile grid below. Empty string when no signals defined
+    # OR all underlying metrics are missing — silent in that case.
+    _risk_watch_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{risk_watch_html}</td></tr>"
+        if risk_watch_html else ""
+    )
     _overview_rows = (
         f"{warn_row}"
+        f"{_risk_watch_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
         f"{_section(_entity_section)}"
@@ -7435,6 +7445,36 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
                customer_rpm=None, csa=None, refresh_status=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
+    # Phase 2B — Risk Watch strip: read the machine-readable signal
+    # definitions from Karpathy-Wiki/wiki/risk-signals.yml, evaluate each
+    # against the live compute dicts, and render a small status strip near
+    # the top of page 1. Fails soft: any exception silences the strip
+    # rather than crashing the brief.
+    risk_watch_html = ""
+    try:
+        from src import risk_watch as _risk_watch
+        _watch_data = {
+            "equipment": equipment or {},
+            "qb_ar": qb_ar or {},
+            "csa": csa or {},
+            "alvys_entities": alvys_entities or {},
+            "samsara": samsara or {},
+            "alvys": alvys or {},
+            "samba": samba or {},
+            "alvys_ar": alvys_ar or {},
+            "uninvoiced": uninvoiced or {},
+        }
+        _watch_results = _risk_watch.evaluate(_watch_data)
+        if _watch_results:
+            log.info("risk_watch: evaluated %d signals (%d tripped)",
+                     len(_watch_results),
+                     sum(1 for r in _watch_results if r.get("tripped")))
+        risk_watch_html = _risk_watch.render_strip_html(
+            _watch_results, red=BAD, redbg=BADBG, green=GOOD, greenbg=GOODBG,
+            mute=MUTE, line=LINE,
+        )
+    except Exception as exc:
+        log.warning("risk_watch render skipped (%s: %s)", type(exc).__name__, exc)
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
@@ -7545,7 +7585,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
             f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
