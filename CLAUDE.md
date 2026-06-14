@@ -182,6 +182,30 @@ daily scorecard email reads that same manual `"Alvys Master 2026.xlsx"` (not the
 pipeline output) so its KPIs match the report. The full secret-by-secret
 reference is in `docs/knowledge-base/automation-and-secrets.md`.
 
+## Core operating memory — read before touching equipment / safety code
+
+- **DOT inspection windows: 120-day company policy ≠ 365-day federal.** The
+  brief's Equipment Compliance pages render TWO distinct pills per fleet type:
+  - *"Annual inspection (365d federal):"* — the FMCSA rule. A unit listed here
+    as OVERDUE is **out of service per federal**. Almost never trips because of
+    the company policy below.
+  - *"DOT inspection (120d policy):"* — XFreight's voluntary, more-conservative
+    120-day window. A unit listed here as OVERDUE is past **company** policy and
+    needs scheduling; it is **still federally legal to run**. To actually be
+    past the federal 365d a unit would have to be **245+ days past the company
+    120d policy** (365 − 120 = 245).
+  - When writing prose / playbooks / risk entries about equipment compliance,
+    default to "past the 120d company policy" unless the text explicitly cites
+    the 365d federal rule. Do not say "out of service per FMCSA" for units past
+    only the company policy.
+  - Why XFreight runs the tighter 120d: driver safety, equipment condition /
+    longevity, protecting CSA Maintenance BASIC score, catching issues at the
+    4-month mark vs the 12-month mark.
+  - **DOT inspections are covered by X-Trux Inc** for all equipment regardless
+    of which entity holds title or whether the unit is pulled by a company
+    driver or an OO.
+  - Canon: `Karpathy-Wiki/raw/xfreight-dot-inspection-policy.md`.
+
 ## Documentation map
 
 The authoritative knowledge base is `docs/knowledge-base/` — start at its

@@ -9,11 +9,20 @@ by appending here; the librarian compiles this into the wiki register.
 ## High severity
 
 - **Equipment inspection backlog.** As of 2026-06-13 the fleet is carrying 4
-  tractors and 13 trailers past due on the federal 365-day annual inspection.
-  Exposure: roadside out-of-service orders, FMCSA Maintenance BASIC percentile
-  climb, lost truck utilization. Mitigation: the brief's Equipment Compliance
-  pages now flag past-due units in red; Safety/Logistics to schedule. Watch:
-  any unit past due. Owner: Audra (Safety) + Dan (Logistics).
+  tractors and 13 trailers past due on the **120-day company policy** (corrected
+  2026-06-14 — the prior wording said "federal 365-day annual" which was wrong).
+  These units are **not** out of service per FMCSA; the federal rule is 365 days
+  and XFreight's 120d policy keeps the fleet well ahead of federal exposure.
+  See `xfreight-dot-inspection-policy.md` for the canon distinction between the
+  120d company policy and the 365d federal rule. Exposure: drift toward the
+  federal 365d limit (would require 245+ days past company policy), worsening
+  Maintenance BASIC if a roadside inspection finds a defect, lost truck
+  utilization once units are pulled for inspection. Mitigation: the brief's
+  Equipment Compliance pages show both pills (120d company policy and 365d
+  federal) so the operator can tell at a glance which threshold has been
+  crossed; Safety/Logistics schedules from the 120d list. Watch: any unit past
+  the 120d company policy. Owner: Audra (Safety) + Dan (Logistics). DOT
+  inspections covered by X-Trux Inc for all equipment.
 
 - **CSA BASIC percentiles near intervention.** FMCSA flags intervention when a
   BASIC crosses 65th percentile (Unsafe Driving, Crash Indicator) or 80th (all
