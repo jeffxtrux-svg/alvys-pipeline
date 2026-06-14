@@ -27,7 +27,7 @@ from src.scorecard_email import (  # noqa: E402
     compute_bill_reconciliation, compute_samsara, compute_alvys_entities,
     _lead_phrase, compute_drag_attribution,
     compute_alvys_equipment, build_page_equipment, _samsara_odometer_map,
-    _EQUIP_AMBER, _EQUIP_AMBERBG, BAD, BADBG, OIL_CHANGE_INTERVAL_MI,
+    MUTE, BAD, BADBG, OIL_CHANGE_INTERVAL_MI,
 )
 from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
@@ -617,18 +617,17 @@ def test_equipment_overlays_current_mileage_from_samsara():
     assert by["200"]["current_mileage"] is None      # no Samsara row
 
 
-def test_equipment_badges_amber_until_expired_red_only_when_overdue():
+def test_equipment_badges_neutral_until_past_due_red_when_overdue():
     now = pd.Timestamp("2026-06-13")
     html = build_page_equipment(_equip(now), "x", kind="tractors", pg=5)
-    # Upcoming 15d inspection renders an AMBER-filled badge (not red).
-    amber_15 = (f"background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;"
-                f"padding:2px 6px;border-radius:4px;font-weight:700;'>15d</span>")
-    assert amber_15 in html
-    # The same red-fill treatment is reserved for the expired unit only.
+    # Upcoming 15d inspection stays NEUTRAL (normal color) — no emphasis.
+    assert f"<span style='color:{MUTE};font-size:12px;'>15d</span>" in html
+    # Red is reserved for the expired unit only.
     red_overdue = (f"background:{BADBG};color:{BAD};font-size:11px;"
                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE 5d</span>")
     assert red_overdue in html
-    # An upcoming inspection must never get the red OVERDUE/red-fill treatment.
+    # No amber anywhere on the page, and the upcoming day is never red.
+    assert "#b45309" not in html and "#fef3c7" not in html
     assert (f"background:{BADBG};color:{BAD};font-size:11px;padding:2px 6px;"
             f"border-radius:4px;font-weight:700;'>15d</span>") not in html
     assert "Current Mileage" in html and "1,000" in html

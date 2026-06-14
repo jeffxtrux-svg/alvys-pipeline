@@ -3886,9 +3886,6 @@ def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | Non
     }
 
 
-_EQUIP_WARN_DAYS     = 60   # amber flag when due within 60 days
-_EQUIP_CRITICAL_DAYS = 30   # stronger amber when due within 30 days (NOT red —
-                            # red is reserved for expired/overdue only)
 # Oil-change service interval (miles). Next-oil-due mileage = the odometer
 # logged at the last oil change + this interval. The Alvys maintenance feed
 # does not currently capture the odometer at each oil change, so this stays a
@@ -4223,19 +4220,14 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         return header + pending_note
 
     def _badge(days):
-        # Red is reserved for EXPIRED (overdue) inspections only. Upcoming
-        # inspections that haven't lapsed yet render amber, never red —
-        # stronger amber within 30 days, lighter amber 31–60 days out.
+        # Days stay neutral (normal color) until the inspection is actually past
+        # due. Only an expired/overdue date turns red — no color emphasis on
+        # upcoming dates, however close.
         if days is None:
             return f"<span style='color:{MUTE};'>—</span>"
         if days < 0:
             return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
                     f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE {abs(days)}d</span>")
-        if days <= _EQUIP_CRITICAL_DAYS:
-            return (f"<span style='background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;"
-                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
-        if days <= _EQUIP_WARN_DAYS:
-            return (f"<span style='color:{_EQUIP_AMBER};font-size:12px;font-weight:600;'>{days}d</span>")
         return f"<span style='color:{MUTE};font-size:12px;'>{days}d</span>"
 
     def _date_str(ts):
@@ -4354,9 +4346,9 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         if overdue:
             parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} OVERDUE</span>")
         if warn30:
-            parts.append(f"<span style='background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{warn30} within 30d</span>")
+            parts.append(f"<span style='background:#eef2f7;color:{MUTE};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn30} within 30d</span>")
         elif warn60:
-            parts.append(f"<span style='background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
+            parts.append(f"<span style='background:#eef2f7;color:{MUTE};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
         if not parts:
             parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
@@ -4387,8 +4379,7 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
              f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
              f"(Category = DOT/Annual); current mileage (tractors) from the Samsara OBD odometer. "
-             f"<span style='color:{BAD};font-weight:700;'>Red = expired (overdue)</span>. "
-             f"<span style='color:{_EQUIP_AMBER};font-weight:700;'>Amber = upcoming, within 60 days</span> &mdash; not yet expired. {sort_note} "
+             f"<span style='color:{BAD};font-weight:700;'>Red = past due (expired)</span> &mdash; days stay neutral until past due. {sort_note} "
              f"Next Oil Due marked <span style='font-style:italic;'>est</span> is the current odometer rounded up to the next "
              f"{OIL_CHANGE_INTERVAL_MI // 1000}k mark &mdash; a rough estimate until the odometer at each oil change is logged in Alvys. "
              f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")
@@ -4418,12 +4409,6 @@ PAGE_COUNT = 13
 ACCENTBG = "#fde8ea"      # light red tint replaces the orange current-week column
 BAD = XFREIGHT_RED
 BADBG = "#fde8ea"
-# Equipment-compliance amber — a TRUE orange, distinct from the brand red.
-# The global WARN collapses into XFREIGHT_RED, so upcoming (not-yet-expired)
-# inspections would otherwise render red. These are used ONLY on the equipment
-# badges/pills so red stays reserved for expired/overdue.
-_EQUIP_AMBER   = "#b45309"   # amber-700 text
-_EQUIP_AMBERBG = "#fef3c7"   # amber-100 fill
 ACCENT = XFREIGHT_RED     # was orange — now brand red
 BLUE = "#3a4a5a"          # neutral slate replaces the old chart blue
 FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
