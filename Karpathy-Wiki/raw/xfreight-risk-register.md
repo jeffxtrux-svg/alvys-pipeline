@@ -9,10 +9,12 @@ by appending here; the librarian compiles this into the wiki register.
 ## High severity
 
 - **Equipment inspection backlog.** As of 2026-06-13 the fleet is carrying 4
-  tractors and 13 trailers past due on the **120-day company policy** (corrected
-  2026-06-14 — the prior wording said "federal 365-day annual" which was wrong).
-  These units are **not** out of service per FMCSA; the federal rule is 365 days
-  and XFreight's 120d policy keeps the fleet well ahead of federal exposure.
+  tractors and 13 trailers **flagged as needing inspection** under the
+  **120-day company policy** (corrected 2026-06-14 — the prior wording said
+  "federal 365-day annual" which was wrong). Flagged units remain in service
+  while scheduling; the federal 365-day rule is the boundary that would
+  actually take a unit out of service, and XFreight's 120d policy keeps the
+  fleet well ahead of it.
   See `xfreight-dot-inspection-policy.md` for the canon distinction between the
   120d company policy and the 365d federal rule. Exposure: drift toward the
   federal 365d limit (would require 245+ days past company policy), worsening

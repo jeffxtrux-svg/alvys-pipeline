@@ -195,9 +195,11 @@ reference is in `docs/knowledge-base/automation-and-secrets.md`.
     past the federal 365d a unit would have to be **245+ days past the company
     120d policy** (365 − 120 = 245).
   - When writing prose / playbooks / risk entries about equipment compliance,
-    default to "past the 120d company policy" unless the text explicitly cites
-    the 365d federal rule. Do not say "out of service per FMCSA" for units past
-    only the company policy.
+    a unit past only the 120d company policy is **flagged as needing
+    inspection** — it remains in service. Do not call it "out of service" at
+    all (not "per FMCSA," not "per company policy"). The "out of service"
+    framing is reserved for the federal 365d threshold; default everywhere
+    else to "needs inspection" / "flagged for inspection."
   - Why XFreight runs the tighter 120d: driver safety, equipment condition /
     longevity, protecting CSA Maintenance BASIC score, catching issues at the
     4-month mark vs the 12-month mark.

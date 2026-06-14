@@ -11,7 +11,7 @@ must keep them distinct in every label, badge, and copy:
 
 | Window | Length | Who owns it | What "OVERDUE" means |
 |---|---|---|---|
-| **120-day company policy** | 120 days from the last DOT inspection | XFreight (X-Trux Inc) | Past the **company** policy. Service action required by ops, but the equipment is still legal to run under federal rules. |
+| **120-day company policy** | 120 days from the last DOT inspection | XFreight (X-Trux Inc) | **Flagged as needing inspection.** Unit remains in service while ops schedules the inspection — still legal to run under federal rules. Not characterized as "out of service" anywhere. |
 | **365-day federal DOT** | 365 days from the last DOT inspection | FMCSA | Out of service per federal rules. Only triggered if the equipment is **245+ days past the company 120d policy** (365 − 120 = 245). |
 
 To be past the federal DOT window, a unit would have to be **245
@@ -73,11 +73,13 @@ When writing about inspection status anywhere in this codebase or
 KB:
 
 - "Past due" / "OVERDUE" / red badge — must say which window. Default
-  to **"past the 120d company policy"** unless the text explicitly
-  cites the 365d federal rule.
-- "Out of service per FMCSA" — applies **only** at 365+ days, i.e.,
-  245+ days past the company 120d policy. Do not use this phrasing
-  for the company-policy threshold.
+  to **"flagged as needing inspection (120d company policy)"** unless
+  the text explicitly cites the 365d federal rule. Units past only
+  the company policy remain in service.
+- "Out of service" — reserved language. Use it **only** for units past
+  the federal 365d limit (i.e., 245+ days past the 120d company
+  policy). Do not say "out of service per company policy" or "out of
+  service per FMCSA" for units past only the company threshold.
 - The "Equipment inspection backlog" risk register entry and its
   associated playbook are tracking the **120d company policy**
   backlog, not federal-DOT-overdue equipment.
