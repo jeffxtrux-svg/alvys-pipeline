@@ -104,7 +104,11 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ALERT_FROM_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
-          ALERT_TO_EMAILS: ${{ secrets.ALERT_RECIPIENTS }}
+          # Recipients = the ALERT_RECIPIENTS secret (Dan, Jackson, Jeff) plus JB,
+          # appended here as a literal so JB is on the fleet alert going forward.
+          # (Long-term, add jb@xfreight.net to the ALERT_RECIPIENTS secret and drop
+          # this suffix.) The alert de-dupes case-insensitively.
+          ALERT_TO_EMAILS: ${{ secrets.ALERT_RECIPIENTS }},jb@xfreight.net
           # LIVE: test mode off — emails the full ALERT_RECIPIENTS list and sends
           # real Samsara Driver-App fault nudges. Set to '1' to revert to
           # Jeff-only / dry-run while iterating.

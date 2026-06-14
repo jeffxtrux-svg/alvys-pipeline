@@ -912,7 +912,15 @@ def main() -> int:
     client_secret = os.environ.get("AZURE_CLIENT_SECRET")
     from_upn = os.environ.get("ALERT_FROM_UPN") or "jeff@xfreight.net"
     to_raw = os.environ.get("ALERT_TO_EMAILS") or from_upn
-    to_emails = [e.strip() for e in to_raw.split(",") if e.strip()]
+    # De-dupe case-insensitively, preserving order (recipients may be a secret
+    # list plus literal additions appended in the workflow, e.g. JB).
+    to_emails: list[str] = []
+    _seen: set[str] = set()
+    for e in to_raw.split(","):
+        e = e.strip()
+        if e and e.lower() not in _seen:
+            _seen.add(e.lower())
+            to_emails.append(e)
 
     # --- Test mode ------------------------------------------------------------
     # While fleet-alert changes are in progress, force every send to a single
