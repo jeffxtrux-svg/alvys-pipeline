@@ -19,15 +19,14 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 |------|:--------:|:------:|-------|--------------|
 | Equipment inspection backlog | **High** | Open | Safety / Logistics | Any unit past due (brief flags red) |
 | CSA BASIC near intervention | **High** | Monitor | Safety | A BASIC ≥ its 65th/80th threshold |
-| Insurance — Acrisure renewal &amp; cost | Medium | Monitor | JB / Jeff | Billing settlement; insurance cost trend |
+| Rate-per-mile goal may be light | Medium | Watch | Jeff | Live cost/mi creeping above the $0.98 goal pin |
 | Customer concentration | Medium | Watch | Jeff (BD) | One customer > ~25% of revenue |
-| Billion Auto contract lapsed | Medium | Open | Jeff (BD) | Rate agreement (exp. 6/1/26) unrenewed |
+| Insurance — Acrisure (renewal done) | Medium | Monitor | JB / Jeff | Cost trend; shop alternatives by next renewal |
+| Factoring onboarding (Triumph) | Medium | Improving | JB / Jeff | Onboarding ~6/16–17, then cash-flow relief |
 | SambaSafety CSV fragility | Medium | Mitigated | Pipeline | CSV age > 60h |
 | Manual Alvys upload dependency | Medium | Open | Ops | File age > 30h |
 | Pipeline cron fragility | Medium | Mitigated | Pipeline | A morning with no brief by ~7am CT |
-| Factoring cost / cash reliance | Medium | Monitor | JB / Jeff | AR aging into penalty band |
 | AR aging / collections | Medium | Ongoing | AP / AR | 90+ AR rising |
-| SBA 504 execution | Medium | In&nbsp;progress | JB / Jeff | Timeline / rate slippage |
 
 ---
 
@@ -43,14 +42,14 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 
 ## Medium severity
 
-### Insurance — Acrisure renewal &amp; cost
-**What it is.** The 2026 Acrisure renewal **went through May 1, 2026**, carrying a **~$0.08–0.10/mi premium increase** — already folded into the cost-out. The separate ~$95K billing reconciliation (~$31K likely liability per Jeff's analysis) is still to be settled. **Mitigation / forward:** evaluate an alternative broker/carrier before the next renewal — a different option may be needed down the road. **Verify:** the documented overhead-pin bump was $0.92→$0.98 (~$0.06/mi), which looks ~$0.02–0.04/mi short of the stated increase — confirm the [[Rate-Per-Mile Goal]] cost-out fully reflects it. **Owner:** JB / Jeff. See [[Acrisure Dispute]], [[Insurance and Banking]].
+### Rate-per-mile goal may be light
+**What it is.** The $0.08–0.10/mi insurance increase may exceed what the cost-out absorbed — the overhead pin moved $0.92→$0.98 (~$0.06/mi), ~$0.02–0.04/mi less than the stated increase. If so, the [[Rate-Per-Mile Goal]] is set a touch below true cost (under-pricing). **Mitigation:** Jeff asked to monitor the costing and **alert on evidence we're light**. **Watch:** actual all-in cost per mile creeping above the $0.98 goal pin; insurance expense per mile (QB) vs what the pin assumes. **Owner:** Jeff. See [[Decision Journal]].
+
+### Insurance — Acrisure (renewal done, billing settled)
+**What it is.** The 2026 renewal went through May 1, 2026 (+~$0.08–0.10/mi, in the cost-out), and the back-billing reconciliation was **negotiated to $18,000, paid, and resolved** (2026-06-13) — near Jeff's floor, well under the ~$95K ask and ~$31K mid-estimate. **Residual:** the higher premium is a permanent margin drag; evaluate an alternative broker/carrier before the next renewal. **Owner:** JB / Jeff. See [[Acrisure Dispute]], [[Insurance and Banking]].
 
 ### Customer concentration
 **What it is.** Revenue may be concentrated in a few customers. **Action:** quantify each customer's share of X-Trux + X-Linx revenue from Alvys (the data exists — a good first analysis). **Exposure:** losing one large account materially hits revenue. **Watch:** any single customer above ~25% of revenue. **Owner:** Jeff (BD). See [[Customer Portfolio]].
-
-### Billion Auto contract lapsed
-**What it is.** The Billion Auto dedicated 2-lane rate agreement **expired June 1, 2026**; renewal status unknown. **Exposure:** a known recurring revenue stream at risk. **Watch:** still unrenewed. **Owner:** Jeff (BD). See [[Customer Portfolio]].
 
 ### SambaSafety CSV fragility
 **What it is.** The SambaSafety API token expired 2026-06-02; the feed is now CSV-drop only via Power Automate. **Exposure:** if the drop stops, driver MVR/license compliance and CSA data go **stale silently**. **Mitigation:** hourly-armed refresh + the Data Refresh Status page. **Watch:** CSV age > 60h. **Owner:** pipeline. See [[Data Pipeline Architecture]], [[Safety Program]]. Paired decision: [[Decision Journal]] (retire SambaSafety API).
@@ -61,18 +60,21 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 ### Pipeline cron fragility
 **What it is.** GitHub's scheduled cron is best-effort and has dropped whole morning batches (e.g., 2026-06-08). **Exposure:** no brief / stale dashboards on drop mornings. **Mitigation:** dual-cron DST hardening, staggered backups, 6am healthchecks, and an off-GitHub Cloudflare Worker backstop. **Watch:** a morning with no brief by ~7am CT. **Owner:** pipeline. See [[Data Pipeline Architecture]], [[Daily Scorecard Email]].
 
-### Factoring cost / cash reliance
-**What it is.** Working capital depends on factoring; the vendor decision is still open (Pathward / Triumph / OTR / eCapital). **Exposure:** factoring fees erode margin; AR aging into penalty bands. **Watch:** AR aging trend and factoring fee as a % of revenue. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]].
+### Factoring onboarding (Triumph)
+**What it is.** **Triumph** selected for invoice factoring; onboarding expected **~June 16–17, 2026** to relieve cash flow. Onboarding required clearing the existing operating loan — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the gap. **Exposure (residual):** onboarding execution this week; factoring fees (~1%); new trailer-refi debt service. **Watch:** onboarding completes on schedule, then AR aging should shorten. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]].
 
 ### AR aging / collections
 **What it is.** Overdue AR (31+/90+) and the QB-vs-Alvys variance from un-invoiced loads are tracked on the accounting pages. **Exposure:** cash flow and factoring penalties. **Watch:** 90+ AR rising. **Owner:** Audra (AP/AR). See [[Daily Scorecard Email]], [[Factoring]].
-
-### SBA 504 execution
-**What it is.** SBA 504 financing is in flight. **Exposure:** timeline and rate slippage on a financing the plan depends on. **Watch:** milestone or rate movement. **Owner:** JB / Jeff. See [[SBA 504 Financing]], [[Insurance and Banking]].
 
 ---
 
 ## Archive (closed risks)
 
-### Acrisure renewal uncertainty — RESOLVED 2026-05-01
-The 2026 insurance renewal **went through May 1, 2026** (clears the old "unresolved past renewal" watch). It carried a ~$0.08–0.10/mi premium increase, now folded into the cost-out. Live aspects — the cost increase, the open ~$95K billing reconciliation, and shopping alternatives — continue under "Insurance — Acrisure renewal & cost" above.
+### Acrisure renewal + billing dispute — RESOLVED (2026-05-01 / 2026-06-13)
+The 2026 insurance renewal went through May 1, 2026 (+~$0.08–0.10/mi, in the cost-out), and the back-billing reconciliation was **negotiated to $18,000, paid, and resolved** (2026-06-13) — near Jeff's floor, well under the ~$95K ask. The residual cost-watch continues under "Rate-per-mile goal may be light" and "Insurance — Acrisure (renewal done, billing settled)" above.
+
+### Billion Auto contract — RENEWED (June 2026)
+The dedicated rate agreement **renewed** — both the Rapid City and Mason City lanes maintained, plus a **fuel surcharge added for protection**. Was the portfolio's most immediate revenue risk; now secured. See [[Billion Auto]].
+
+### SBA 504 financing — SHELVED (2026-06-13)
+**Not currently on the table** (Jeff, 2026-06-13); removed from the active list. Context retained in [[SBA 504 Financing]] if it returns.

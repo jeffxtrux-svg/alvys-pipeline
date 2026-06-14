@@ -67,3 +67,9 @@ and predicted outcomes below need Jeff's review/calibration.**
 - **Outcome:** NOT awarded (Jan 2026). Graded: lost. Lessons for the next cycle
   are captured in the AGCO RFP wiki page — kept here as an example of a decision
   with a known result, so the journal shows the full loop.
+
+## Updates (2026-06-13, afternoon — Jeff)
+
+- **Acrisure billing settled at $18,000 (paid)** — from the ~$95K ask, near the floor (~$77K saved). Graded **confirmed / well-executed** (credits-first negotiation script worked).
+- **Billion Auto renewed** — both Rapid City + Mason City lanes maintained, **fuel surcharge added** for protection. Graded **confirmed**; secures ~$47K/mo + hedges fuel.
+- **Selected Triumph for factoring** — onboarding ~June 16–17. Required paying off the operating loan, funded by **$40K owner capital ($20K Jeff + $20K JB) + trailer refinance**. Predicted: cash-flow relief. Actual: **pending** onboarding.

@@ -1,5 +1,7 @@
 # XFreight SBA 504 financing — building + business purchase in progress (seeded 2026-06-05 from Outlook)
 
+> **Update (2026-06-13, Jeff): SHELVED — not currently on the table.** Removed from the active risk list. Historical context retained below in case it returns.
+
 > Source: Email thread between Jeff Hannahs ↔ JB Sweere ↔ Mike Flint
 > (First Dakota National Bank), Feb 11-19, 2026.
 

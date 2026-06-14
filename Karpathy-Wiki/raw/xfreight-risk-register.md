@@ -70,3 +70,11 @@ by appending here; the librarian compiles this into the wiki register.
 - **SBA 504 financing execution.** SBA 504 financing is in flight. Exposure:
   timeline and rate slippage on a financing the plan depends on. Watch: milestone
   or rate movement. Owner: JB / Jeff.
+
+## Updates (2026-06-13, afternoon — Jeff)
+
+- **Acrisure billing reconciliation RESOLVED:** negotiated to **$18,000, paid**. Near Jeff's floor, well under the ~$95K ask. Renewal (May 1) + billing both closed; residual is the cost-watch only. → archive the Acrisure risk.
+- **Billion Auto contract RENEWED:** both Rapid City + Mason City lanes maintained, **fuel surcharge added** for protection. → remove "Billion Auto contract lapsed" from active risks (secured/archive).
+- **Factoring:** **Triumph selected**; onboarding ~June 16–17, 2026. Required paying off the operating loan — funded by **$40K owner capital ($20K Jeff + $20K JB) + a trailer refinance**. → reframe factoring risk as "onboarding (Triumph), improving."
+- **SBA 504: SHELVED** — not currently on the table. → remove from active risks.
+- **NEW watch — rate-per-mile goal may be light:** the $0.08–0.10/mi insurance increase may exceed the ~$0.06/mi the pin absorbed ($0.92→$0.98). Jeff: **monitor the costing and alert on evidence we're light on the goal.** Watch actual cost/mi vs the $0.98 pin.

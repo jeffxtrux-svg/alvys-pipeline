@@ -8,7 +8,7 @@ related: ["[[Financial Performance]]", "[[AGCO RFP]]", "[[Brokerage X-Linx]]", "
 
 # Factoring
 
-XFreight has evaluated at least four invoice-factoring vendors. Decision pending as of October 2025 (last file touch). Factoring would primarily address cash-flow gaps on slow-pay customers (e.g. AGCO's 60-day terms).
+XFreight evaluated four invoice-factoring vendors and **selected Triumph** (June 2026), with onboarding expected ~June 16–17, 2026. Factoring primarily addresses cash-flow gaps on slow-pay customers (e.g. AGCO's 60-day terms).
 
 ## Summary
 
@@ -26,7 +26,7 @@ Factoring converts unpaid invoices into immediate cash (minus a fee of ~1–1.5%
 | Vendor | Contact | Rate | Notes |
 |---|---|---|---|
 | **Pathward** | Sherri Myers (smyers@pathward.com, 586-709-1360) | ~1.0% | Full advance, no reserve, free ACH, $5 wire |
-| **Triumph** | Chase Griffith (cgriffith@triumphpay.com, 214-513-9624) | TBD | |
+| **Triumph** ✓ **selected** | Chase Griffith (cgriffith@triumphpay.com, 214-513-9624) | TBD | **Selected June 2026; onboarding ~6/16–17** |
 | **OTR Solutions** | Sawyer Folks (sawyer.folks@otrsolutions.com, 470-900-3505) | ~1.0% | Dedicated reps, online portal, no setup fee |
 | **eCapital** | Alex Sanchez (Alex.Sanchez@ecapital.com, 760-253-6325) | 1.5% + Quick Pay 2.5% | 12-mo contract, 60-day notice; targets brokerage/carrier Quick Pay |
 
@@ -45,9 +45,9 @@ The Alvys → QB reconciliation (pages 12–13 of the brief) and the AR aging ti
 - **Brokerage quick pay (X-Linx):** eCapital's 2.5% quick-pay option pays carriers immediately. X-Linx would collect from the factor instead of waiting 30 days.
 - **Fleet growth:** Adding trucks creates a cash-flow lag between spending on driver pay/fuel and collecting from customers.
 
-## Status
+## Status — Triumph selected; onboarding ~June 16–17, 2026
 
-**Decision pending.** The comparison spreadsheet was last touched 2025-10-02. No selection confirmed in the source files.
+**SELECTED: Triumph** (Jeff, 2026-06-13). Onboarding expected **Tuesday/Wednesday, ~June 16–17, 2026**, to relieve cash flow. Onboarding required clearing the existing **operating loan** (the factor takes first position on AR) — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the difference so the deal could move forward. Expected to shorten the AR-to-cash cycle. See [[Financial Performance]], [[Risk Register]].
 
 ## Connections
 
