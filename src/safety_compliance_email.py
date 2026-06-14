@@ -456,13 +456,14 @@ def compute_action_items(*, samsara, samba, alvys_drivers, equipment,
     # TRACTORS ONLY on Audra's brief. Per the responsibility map,
     # trailer inspections are Jackson + Dan's lane (they own trailer
     # maintenance); they'll see trailers on the operational/maintenance
-    # brief. Truk-Way fleet tractors are a *shared* responsibility —
-    # Audra (safety) + Jackson + Dan (maintenance on Truk-Way tractors
-    # per the responsibility map). The owner label below reflects that
-    # split (X-Trux company tractors: Audra solo; Truk-Way: co-owned).
-    # TODO once main.py adds Fleet.Name to the Trucks sheet, split the
-    # tractor list into per-fleet action items so each owner sees only
-    # their slice.
+    # brief. Ownership split by fleet:
+    #   - X-Trux owner-operator tractors: Audra solo (safety + compliance).
+    #   - Truk-Way fleet tractors: shared — Audra (safety/CSA Maintenance
+    #     BASIC) plus Jackson + Dan (Truk-Way tractor maintenance, per
+    #     the responsibility map).
+    # The owner label below reflects that split. TODO once main.py adds
+    # Fleet.Name to the Trucks sheet, split the tractor list into
+    # per-fleet action items so each owner sees only their slice.
     # `policy_days` counts down from the 120d window after
     # LastInspectionDate (negative = past policy). `annual_days` is the
     # 365d federal date — we don't gate on that here because anything
@@ -480,7 +481,7 @@ def compute_action_items(*, samsara, samba, alvys_drivers, equipment,
                 "action": f"Schedule tractor inspection: {units}{more}.",
                 "why": (f"{len(od_t)} tractor(s) past 120d company policy "
                         f"by >30d. Flagged for inspection; still in service. "
-                        f"Federal 365d is the OOS line. X-Trux company "
+                        f"Federal 365d is the OOS line. X-Trux owner-operator "
                         f"tractors: Audra owns. Truk-Way fleet tractors: "
                         f"co-owned with Jackson + Dan (maintenance)."),
                 "kb_link": "xfreight-playbook-equipment-inspection-backlog.md",
