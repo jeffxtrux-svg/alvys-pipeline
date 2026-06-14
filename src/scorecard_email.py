@@ -5412,6 +5412,13 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             # against Alvys load 1008720 "1d past due".
             _qb_keys = {_norm_inv(r.get("invoice"))
                         for r in (qb_ar.get("open_invoices") or []) if r.get("invoice")}
+            # Keys of QB invoices that ARE past due — used below to find
+            # invoices that match QB on key but where QB hasn't aged them
+            # past due yet (different due date / payment terms between
+            # systems). Those are the silent contributors to the page 1
+            # tile's higher Alvys total vs page 7's QB-keyed total.
+            _qb_pd_keys = {_norm_inv(r.get("invoice"))
+                           for r in _pd_rows if r.get("invoice")}
             _BUCKET_ORDER = {"1&ndash;30": 0, "31&ndash;60": 1, "61&ndash;90": 2, "91+": 3}
             def _bucket_from_days(d: int) -> str:
                 if d <= 30: return "1&ndash;30"
@@ -5419,65 +5426,107 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 if d <= 90: return "61&ndash;90"
                 return "91+"
             _orphans: list[dict] = []
+            _discrepancies: list[dict] = []
             for _a in _al_open:
                 days = int(_a.get("days") or 0)
                 if days <= 0:
                     continue
                 inv_key = _norm_inv(_a.get("invoice"))
                 load_key = _norm_inv(_a.get("load"))
-                if (inv_key and inv_key in _qb_keys) or (load_key and load_key in _qb_keys):
-                    continue
+                matched_qb_key = None
+                if inv_key and inv_key in _qb_keys:
+                    matched_qb_key = inv_key
+                elif load_key and load_key in _qb_keys:
+                    matched_qb_key = load_key
                 amt = float(_a.get("amount") or 0)
                 if abs(amt) < 1.0:
                     continue
-                _orphans.append({
+                row = {
                     "customer": _cell(_a.get("customer")),
                     "invoice": _cell(_a.get("invoice")) or _cell(_a.get("load")) or "",
                     "amount": amt,
                     "days": days,
                     "bucket": _bucket_from_days(days),
-                })
+                }
+                if matched_qb_key is None:
+                    # Alvys past due with no QB invoice — un-billed loads.
+                    _orphans.append(row)
+                elif matched_qb_key not in _qb_pd_keys:
+                    # QB has the invoice but doesn't age it past due —
+                    # due-date discrepancy between systems.
+                    _discrepancies.append(row)
+                # else: matched + QB also past due → already in main table.
             _orphans.sort(key=lambda x: (_BUCKET_ORDER[x["bucket"]], -x["amount"]))
-            if _orphans:
-                _orph_body = ""
-                _g_orph = 0.0
-                for o in _orphans:
-                    _g_orph += o["amount"]
-                    _orph_body += _tr(
-                        [o["customer"], o["invoice"], f"{o['days']}d",
-                         money(o["amount"]), o["bucket"]],
+            _discrepancies.sort(key=lambda x: (_BUCKET_ORDER[x["bucket"]], -x["amount"]))
+
+            def _extra_table(title: str, rows: list[dict], total_label: str) -> tuple[str, float]:
+                """Render a sub-table identical in shape to the orphan table.
+                Returns (html, total_amount) so the caller can roll the
+                grand reconciliation total."""
+                if not rows:
+                    return "", 0.0
+                body = ""
+                running = 0.0
+                for r in rows:
+                    running += r["amount"]
+                    body += _tr(
+                        [r["customer"], r["invoice"], f"{r['days']}d",
+                         money(r["amount"]), r["bucket"]],
                         ["left", "left", "right", "right", "left"],
-                        [None, None, None, None, _bkt_kind.get(o["bucket"])],
+                        [None, None, None, None, _bkt_kind.get(r["bucket"])],
                     )
-                _orph_total = (
+                tot = (
                     f"<tr><td colspan='3' style='padding:9px 8px;font-weight:800;color:{INK};"
-                    f"border-top:2px solid {LINE};'>Total Alvys-only past due</td>"
+                    f"border-top:2px solid {LINE};'>{total_label}</td>"
                     f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
-                    f"border-top:2px solid {LINE};'>{money(_g_orph)}</td>"
+                    f"border-top:2px solid {LINE};'>{money(running)}</td>"
                     f"<td style='border-top:2px solid {LINE};'></td></tr>"
                 )
-                # Combined-reconciliation caption stays inside the table as
-                # its final row — outside the table the stray <tr> rendered
-                # on its own page. pgref-70 (tail anchor for the page-4
-                # tile reference) is inlined inside this same caption so
-                # it resolves to the orphan section's last physical page
-                # without consuming any extra vertical space.
-                _combined = _g_al + _g_orph
-                _pg70_anchor = "<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a>"
-                _orph_caption = (
-                    f"<tr><td colspan='5' style='padding:8px 8px;color:{MUTE};"
-                    f"font-size:11px;background:#fafafa;border-top:1px solid {LINE};'>"
-                    f"{_pg70_anchor}Combined Alvys past due (matched + orphans): "
+                html = (
+                    f"{_section(title)}"
+                    f"{_table(['Customer', 'Invoice / Load', 'Alvys days past', 'Alvys amount', 'Alvys bucket'], ['left', 'left', 'right', 'right', 'left'], body + tot)}"
+                )
+                return html, running
+
+            _disc_html, _g_disc = _extra_table(
+                "Past due in Alvys, current in QB &middot; due-date discrepancy between systems &middot; these bills drive the page 1 gap",
+                _discrepancies,
+                "Total Alvys-past-due / QB-current",
+            )
+            _orph_html, _g_orph = _extra_table(
+                "Alvys past-due with no QB invoice &middot; un-billed loads (need a QB invoice to close the gap)",
+                _orphans,
+                "Total Alvys-only past due (no QB invoice)",
+            )
+
+            _qb_overdue_html += _disc_html + _orph_html
+
+            # Reconciliation caption — fires whenever there's anything to
+            # reconcile (extras present OR a non-trivial QB-side total).
+            # Contains pgref-70 so the page 1 tile's "thru" pointer lands
+            # on the last physical page of this section.
+            _combined = _g_al + _g_orph + _g_disc
+            _pg70_anchor = "<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a>"
+            if _disc_html or _orph_html:
+                _recon_parts = [f"matched ${_g_al:,.0f}"]
+                if _g_disc:
+                    _recon_parts.append(f"+ Alvys-past/QB-current ${_g_disc:,.0f}")
+                if _g_orph:
+                    _recon_parts.append(f"+ un-billed orphans ${_g_orph:,.0f}")
+                _recon_caption_html = (
+                    f"<div style='padding:8px 18px 0;'>"
+                    f"<div style='padding:8px 12px;color:{MUTE};font-size:11px;"
+                    f"background:#fafafa;border:1px solid {LINE};border-radius:6px;'>"
+                    f"{_pg70_anchor}<b style='color:{INK};'>Combined Alvys past due:</b> "
+                    f"{' '.join(_recon_parts)} = "
                     f"<b style='color:{INK};'>{money(_combined)}</b> &mdash; "
-                    f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1.</td></tr>"
+                    f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1."
+                    f"</div></div>"
                 )
-                _qb_overdue_html += (
-                    f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
-                    f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total + _orph_caption)}"
-                )
+                _qb_overdue_html += _recon_caption_html
             else:
-                # No orphans this run — still need a pgref-70 target so the
-                # page-4 tile reference resolves. Inline it on the QB-keyed
+                # No extras this run — still need a pgref-70 target so the
+                # page-1 tile reference resolves. Inline it on the QB-keyed
                 # table's _section header (same place as pgref-60).
                 _qb_overdue_html = _qb_overdue_html.replace(
                     "id='pgref-60'",
