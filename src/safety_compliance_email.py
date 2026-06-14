@@ -300,12 +300,34 @@ def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
     invoice number entered into Alvys yet — Audra's second-half of
     invoice closeout (the asset side is compute_alvys_uninvoiced).
 
-    A delivered brokered trip carries Carrier.Rate at book time, but
-    the Carrier Invoice Number isn't set until the carrier sends their
-    invoice and we type it in. Surfaces the backlog so Audra can chase
-    carriers or enter what's already on her desk.
+    Confidence problem solved here: the Alvys "Carrier Invoice Number"
+    column comes from a load→invoice-index lookup that misses any
+    invoice not indexed under the Carrier heuristic in lookups.py.
+    When a carrier invoice is entered in Alvys then later posted +
+    paid in QuickBooks under X-Linx, the column on the Trips sheet
+    can still read blank long after the bill has cleared. That used
+    to dump hundreds of 6-month / 2-year-old ghost rows onto Audra's
+    brief.
 
-    Returns {count, total_carrier_rate, oldest_days, rows}.
+    Multiple-signal AND filter, all must hold for the trip to count
+    as backlog:
+      1. Carrier Invoice Number is empty/missing
+      2. Carrier Invoice Due Date is empty/missing
+         (a due date implies the invoice exists)
+      3. Brokerage Status is NOT a settled/paid value
+         (Alvys writes 'Carrier Settled', 'Paid', etc. when the
+         carrier side is closed)
+      4. Delivered in the last 60 days
+         (anything older is almost certainly a data issue, not
+         a real backlog — the carrier won't wait 60+ days to
+         invoice and we won't wait 60+ days to pay)
+
+    Cross-reference with QB paid bills would be the gold-standard
+    confirmation but needs a new pull — TODO: add a QB Bill entity
+    pull or a Purchase query so we can exclude any load# that shows
+    up as a paid bill in QB X-Linx.
+
+    Returns {count, total_carrier_rate, oldest_days, rows, shown}.
     """
     empty = {"count": 0, "total_carrier_rate": 0.0, "oldest_days": None,
              "rows": [], "shown": 0}
@@ -317,6 +339,8 @@ def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
     office_col = _find_col(trips, ["office"])
     status_col = "Trip Status" if "Trip Status" in trips.columns else _find_col(trips, ["trip status", "status"])
     inv_col = _find_col(trips, ["carrier invoice number", "carrier invoice #"])
+    due_col = _find_col(trips, ["carrier invoice due date", "carrier invoice due"])
+    brok_col = _find_col(trips, ["brokerage status"])
     rate_col = "Carrier Rate" if "Carrier Rate" in trips.columns else _find_col(trips, ["carrier rate"])
     if not (status_col and inv_col and rate_col):
         return empty
@@ -329,8 +353,27 @@ def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
     # Delivered or downstream — i.e., the load has actually been hauled.
     delivered_statuses = {"delivered", "released", "completed", "invoiced"}
     sub = sub[sub[status_col].astype(str).str.strip().str.lower().isin(delivered_statuses)]
-    # Carrier invoice not yet entered.
-    sub = sub[sub[inv_col].astype(str).str.strip().isin(["", "nan", "None", "none"])]
+
+    # Signal 1: Carrier Invoice Number must be empty/missing. Robust
+    # against NaN, "0", "None", "null", and whitespace-only strings.
+    inv_norm = sub[inv_col].astype(str).str.strip().str.lower()
+    sub = sub[inv_norm.isin(["", "nan", "none", "null", "0", "<na>"])]
+
+    # Signal 2: Carrier Invoice Due Date must be empty too — if a due
+    # date exists, the invoice exists even if the number didn't make
+    # it back through the lookup index.
+    if due_col:
+        sub = sub[pd.to_datetime(sub[due_col], errors="coerce").isna()]
+
+    # Signal 3: Brokerage Status must not indicate the carrier side is
+    # already settled or paid. Conservative match — substring on any
+    # of the known close-out tokens.
+    if brok_col:
+        bs = sub[brok_col].astype(str).str.lower()
+        settled_tokens = ("settled", "paid", "closed", "complete")
+        for tok in settled_tokens:
+            sub = sub[~bs.str.contains(tok, na=False)]
+            bs = sub[brok_col].astype(str).str.lower()
 
     # Exclude JW Logistics on either side — match the executive brief's
     # _AR_DETAIL_EXCLUDE rule so the safety report's bills reconcile
@@ -355,6 +398,18 @@ def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
     else:
         deliv = pd.Series(pd.NaT, index=sub.index)
     days = (today - deliv).dt.days
+
+    # Signal 4: cap age. Anything > 60 days post-delivery without a
+    # carrier invoice number / due date / settlement status is almost
+    # certainly a data-cleanup issue (Alvys lost the lookup), not a
+    # real bill to chase. Drop them so the section stays trustworthy.
+    age_mask = (days.notna() & (days <= 60))
+    sub = sub[age_mask]
+    rate = rate[age_mask]
+    deliv = deliv[age_mask]
+    days = days[age_mask]
+    if sub.empty:
+        return empty
 
     load_col = "Load #" if "Load #" in sub.columns else _find_col(sub, ["load #", "load number"])
     cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer"])
@@ -1247,7 +1302,14 @@ def build_page_invoice_closeout(uninvoiced: dict | None,
         f"<div style='padding:8px 18px;color:{MUTE};font-size:11px;'>"
         f"{c_count} brokered trip(s) &middot; ~${c_total:,.0f} carrier rate "
         f"not yet entered into Alvys &middot; oldest "
-        f"{c_oldest if c_oldest is not None else '&mdash;'}d.</div>"
+        f"{c_oldest if c_oldest is not None else '&mdash;'}d."
+        f"<br/><i>Scope: delivered in the last 60 days &middot; "
+        f"Alvys Carrier Invoice Number, Due Date, and Brokerage Status "
+        f"all empty/unsettled. Verify against QB X-Linx (paid bills "
+        f"won't appear here, but if a bill posted in QB without an "
+        f"Alvys carrier-invoice-number write-back, it may still slip "
+        f"through &mdash; cross-check before chasing the carrier).</i>"
+        f"</div>"
     )
     if c_rows:
         rows = "".join(
