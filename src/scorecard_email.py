@@ -1628,20 +1628,22 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
 
     now = pd.Timestamp.now()
 
-    # Trailing window: last `days` working days of settled loads
-    trail_start = _working_days_back(days, now)
-    trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
-    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
-        trail_mask = trail_mask & (_load_cost(loads) > 0)
+    # Trailing window: last `days` working days of non-cancelled loads.
+    # The cost-source filter is applied per-entity below, NOT here, so
+    # X-Trux uses a Driver-Rate-only filter (matching its Driver-Rate-only
+    # cost source) and X-Linx uses a Driver + Carrier Rate filter. Doing
+    # the filter globally with _load_cost (Driver + Carrier) let brokered
+    # XFreight loads (Carrier Rate > 0, Driver Rate = 0) pass into the
+    # X-Trux trailing slice — their revenue inflated t_rev while their
+    # $0 contribution to t_cost made X-Trux margin look ~10pp too high.
+    trail_mask = (dates >= _working_days_back(days, now)) & (dates < now) & not_cancelled
 
     # Working days in the current month — the projection multiplier
     wdim = _working_days_in_month(now.year, now.month)
 
-    # Settled MTD floor: never project below what's already earned this month
-    mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
-    settled_mtd_mask = mtd_mask.copy()
-    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
-        settled_mtd_mask = settled_mtd_mask & (_load_cost(loads) > 0)
+    # Settled MTD floor: never project below what's already earned this month.
+    # Same per-entity-cost-filter pattern as the trailing window.
+    settled_mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
 
     # Month-progress weight: how much of the month has happened (in
     # working days). At month-start this is ~0 (trailing window
@@ -1668,15 +1670,25 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
             return mtd_pct
         return mtd_pct * w + trail_pct * (1.0 - w)
 
+    # Per-entity cost-source masks (used to filter both the trailing window
+    # and the MTD-settled slice). Each entity's filter MUST match the cost
+    # source used below: X-Trux costs from Driver Rate only → filter to
+    # Driver Rate > 0. X-Linx costs from Driver + Carrier Rate → filter to
+    # _load_cost > 0. Using the wrong filter lets brokered/un-costed loads
+    # inflate the revenue side without contributing to cost.
+    dr_series = _col(loads, "Driver Rate").fillna(0)
+    cost_filter_by_ent = {
+        "X-Trux": dr_series > 0,
+        "X-Linx": _load_cost(loads) > 0,
+    }
+
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
-        trail_sub = loads[trail_mask & ent_mask]
-        settled_sub = loads[settled_mtd_mask & ent_mask]
+        ent_cost_filter = cost_filter_by_ent.get(ent, pd.Series(True, index=loads.index))
+        trail_sub = loads[trail_mask & ent_mask & ent_cost_filter]
+        settled_sub = loads[settled_mtd_mask & ent_mask & ent_cost_filter]
         t_rev = float(_col_any(trail_sub, ["Customer Revenue", "Revenue"]).sum())
         s_rev = float(_col_any(settled_sub, ["Customer Revenue", "Revenue"]).sum())
-        # Match compute_alvys_entities: X-Trux cost = Driver Rate only;
-        # X-Linx cost = Driver Rate + Carrier Rate. XFreight loads (grouped
-        # into X-Trux) carry Carrier Rate which must NOT count as X-Trux cost.
         if ent == "X-Trux":
             t_cost = float(_col(trail_sub, "Driver Rate").fillna(0).sum()) if dr_col else 0.0
             s_cost = float(_col(settled_sub, "Driver Rate").fillna(0).sum()) if dr_col else 0.0
