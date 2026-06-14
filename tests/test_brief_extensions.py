@@ -658,6 +658,39 @@ def test_equipment_next_oil_due_real_basis_overrides_estimate():
     assert by["100"]["next_oil_est"] is False
 
 
+def test_equipment_overlays_last_oil_change_from_maintenance_tab():
+    now = pd.Timestamp("2026-06-13")
+    trucks = pd.DataFrame([
+        {"Unit": "100", "Status": "Active", "VIN": "V100",
+         "AnnualInspectionDue": now + pd.Timedelta(days=15),
+         "RegistrationExpires": now + pd.Timedelta(days=300)},
+    ])
+    # RelatedAsset / Category arrive as stringified dicts in the workbook.
+    maint = pd.DataFrame([
+        {"RelatedAsset": "{'AssetNumber': '100', 'AssetType': 'Truck'}",
+         "Category": "{'Name': 'Oil Change /PM'}", "Description": "Oil Change Service",
+         "CreatedAt": "2026-05-01T12:00:00Z"},
+        {"RelatedAsset": "{'AssetNumber': '100', 'AssetType': 'Truck'}",
+         "Category": "{'Name': 'Oil Change /PM'}", "Description": "Oil Change",
+         "CreatedAt": "2026-06-09T12:00:00Z"},                       # latest -> wins
+        {"RelatedAsset": "{'AssetNumber': '100', 'AssetType': 'Truck'}",
+         "Category": "{'Name': 'Oil Change'}", "Description": "Oil Change",
+         "CreatedAt": "1970-01-01T00:00:00Z"},                       # epoch -> ignored
+        {"RelatedAsset": "{'AssetNumber': '100', 'AssetType': 'Truck'}",
+         "Category": "{'Name': 'Brakes'}", "Description": "Brake job",
+         "CreatedAt": "2026-06-10T12:00:00Z"},                       # not oil -> ignored
+        {"RelatedAsset": "{'AssetNumber': '100', 'AssetType': 'Trailer'}",
+         "Category": "{'Name': 'Oil Change'}", "Description": "Oil",
+         "CreatedAt": "2026-06-12T12:00:00Z"},                       # trailer -> ignored
+    ])
+    eq = compute_alvys_equipment(
+        {"Trucks": trucks, "Trailers": pd.DataFrame(), "Maintenance": maint}, now=now)
+    by = {r["unit"]: r for r in eq["tractors"]}
+    assert by["100"]["oil_change_date"] == pd.Timestamp("2026-06-09 12:00:00")
+    html = build_page_equipment(eq, "x", kind="tractors", pg=5)
+    assert "Last Oil Change" in html and "Jun 09, 2026" in html
+
+
 # ---------------------------------------------------------------------------
 # Tiny runner so the file works without pytest installed
 # ---------------------------------------------------------------------------

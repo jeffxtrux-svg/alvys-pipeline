@@ -53,11 +53,12 @@ on:
   push:
     paths:
       - .github/workflows/scorecard_email.yml
-  # trigger: 2026-06-13 — Equipment Compliance page update: tractor/trailer
+  # trigger: 2026-06-13b — Equipment Compliance page update: tractor/trailer
   # inspections no longer render red until actually expired (amber for upcoming
-  # ≤60d); tractor page now shows current mileage (live Samsara OBD odometer)
-  # + an estimated next-oil-due mileage (current odometer → next 25k mark, "est"
-  # until Alvys logs the odometer at each oil change).
+  # ≤60d); tractor page now shows current mileage (live Samsara OBD odometer),
+  # last oil change date (from the Alvys Maintenance tab), and an estimated
+  # next-oil-due mileage (current odometer → next 25k mark, "est" until Alvys
+  # logs the odometer at each oil change).
   schedule:
     # Defense in depth against GitHub Actions schedule drops — GitHub's cron
     # is documented as best-effort, and during high load runs are silently

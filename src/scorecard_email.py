@@ -3943,6 +3943,60 @@ def _samsara_odometer_map(samsara_sheets, now: pd.Timestamp | None = None,
     return out
 
 
+def _alvys_oil_change_map(sheets, now: pd.Timestamp | None = None) -> dict:
+    """Map normalized truck unit -> latest oil-change date from the Alvys
+    Pipeline 'Maintenance' sheet.
+
+    The Trucks sheet's LastOilChangeDate isn't populated by the feed, but the
+    raw Maintenance records are: each carries a RelatedAsset ({AssetNumber,
+    AssetType}), a Category/Description naming the service, and CreatedAt. Keep
+    Truck-asset records whose category or description mentions oil, drop the
+    1970 epoch placeholder dates, and take the most recent per unit.
+    """
+    if not sheets:
+        return {}
+    M = sheets.get("Maintenance")
+    if M is None or getattr(M, "empty", True):
+        return {}
+
+    def _as_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str) and v.strip().startswith("{"):
+            try:
+                return json.loads(v)
+            except Exception:
+                try:
+                    return ast.literal_eval(v)
+                except Exception:
+                    return {}
+        return {}
+
+    out: dict = {}
+    for _, r in M.iterrows():
+        asset = _as_dict(r.get("RelatedAsset"))
+        if str(asset.get("AssetType", "")).lower() not in ("", "truck"):
+            continue  # skip trailer maintenance
+        unit = re.sub(r"\D", "", str(asset.get("AssetNumber", "")))
+        if not unit:
+            continue
+        cat  = str(_as_dict(r.get("Category")).get("Name", "") or "")
+        desc = str(r.get("Description", "") or "")
+        if "oil" not in cat.lower() and "oil" not in desc.lower():
+            continue
+        dt = pd.to_datetime(r.get("CreatedAt"), errors="coerce")
+        if pd.isna(dt):
+            continue
+        if getattr(dt, "tz", None) is not None:
+            dt = dt.tz_localize(None)
+        if dt.year < 2000:        # 1970 epoch placeholder -> not a real date
+            continue
+        prev = out.get(unit)
+        if prev is None or dt > prev:
+            out[unit] = dt
+    return out
+
+
 def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None,
                             samsara_sheets=None) -> dict | None:
     """Read Trucks and Trailers sheets from Alvys Pipeline.xlsx.
@@ -4092,10 +4146,16 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None,
     #     round it UP to the next OIL_CHANGE_INTERVAL_MI boundary. A rough proxy
     #     (not tied to the actual last service) — rendered with an "est" tag.
     odo = _samsara_odometer_map(samsara_sheets, now=now)
+    oil_map = _alvys_oil_change_map(sheets, now=now)
     for r in tractors:
-        cm = odo.get(re.sub(r"\D", "", str(r.get("unit", ""))))
+        key = re.sub(r"\D", "", str(r.get("unit", "")))
+        cm = odo.get(key)
         if cm:
             r["current_mileage"], r["current_mileage_ts"] = cm
+        # Real last oil-change date from the Maintenance tab when the Trucks
+        # sheet didn't carry one (it currently never does).
+        if r.get("oil_change_date") is None and oil_map.get(key) is not None:
+            r["oil_change_date"] = oil_map[key]
         lom = r.get("oil_change_miles")
         if isinstance(lom, int):
             r["next_oil_miles"] = lom + OIL_CHANGE_INTERVAL_MI
