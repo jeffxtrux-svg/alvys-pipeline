@@ -301,18 +301,26 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"{name} CDL will expire on {date_str}, and that is "
                 f"{int(d['license_days'])} days from expiration {_pgref(2)}.")
 
-    # Equipment compliance — surface overdue inspections at the executive
-    # level so they don't get buried on the Equipment Compliance pages.
-    # Keyed on the federal 365-day annual inspection (the 120-day company
-    # policy was dropped from the brief per Jeff, 2026-06).
+    # Equipment compliance — surface units flagged for inspection at the
+    # executive level so they don't get buried on the Equipment Compliance
+    # pages. Keyed on the 120-day company policy (what XFreight tracks
+    # against; field is `annual_days` in the equipment dict but for
+    # tractors the user-entered InspectionExpirationDate IS the 120d
+    # company-policy date, not the federal 365d). Federal 365d is the
+    # legal backstop; see CLAUDE.md core memory + xfreight-dot-inspection-policy.md.
     if equipment:
         od_tractors = [t for t in (equipment.get("tractors") or [])
                        if isinstance(t.get("annual_days"), int) and t["annual_days"] < -30]
         if od_tractors:
             units = ", ".join(str(t.get("unit") or "?") for t in od_tractors[:8])
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
+            # 120d company policy is the operational threshold XFreight
+            # tracks against. Past-policy units are flagged for inspection
+            # (still in service); federal 365d is the legal backstop that
+            # would actually trigger out-of-service (245+ days past
+            # company policy). See xfreight-dot-inspection-policy.md.
             parts.append(
-                f"Tractors overdue on annual DOT inspection: "
+                f"Tractors flagged for inspection (past 120d company policy): "
                 f"{units}{more} {_pgref(5)}.")
         od_trailers = [t for t in (equipment.get("trailers") or [])
                        if isinstance(t.get("annual_days"), int) and t["annual_days"] < -30]
@@ -320,7 +328,7 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
             units = ", ".join(str(t.get("unit") or "?") for t in od_trailers[:8])
             more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""
             parts.append(
-                f"Trailers overdue on annual DOT inspection: "
+                f"Trailers flagged for inspection (past 120d company policy): "
                 f"{units}{more} {_pgref(6)}.")
 
     # Speed-over-limit escalations — name the drivers whose page-4
@@ -682,8 +690,10 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
 
     # === SAFETY (continued) ===
     # Pages 5+6 — Equipment Compliance (tractors / trailers)
-    out[5] = "Tractor annual inspections and registration deadlines. Red = overdue or ≤30 days."
-    out[6] = "Trailer annual inspections and registration deadlines. Red = overdue or ≤30 days."
+    out[5] = ("Tractor 120-day company-policy inspection and registration deadlines. "
+              "Red = past 120d policy (flagged for inspection, remains in service).")
+    out[6] = ("Trailer 120-day company-policy inspection and registration deadlines. "
+              "Red = past 120d policy (flagged for inspection, remains in service).")
 
     # === OPERATIONAL ===
     # Page 7 — Driver Mileage
