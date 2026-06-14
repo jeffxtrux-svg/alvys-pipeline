@@ -453,25 +453,27 @@ def compute_action_items(*, samsara, samba, alvys_drivers, equipment,
             })
 
     # PRIORITY 2 — equipment past 120d company policy (>30 days).
-    # `policy_days` counts down from the 120d window after LastInspectionDate
-    # (negative = past policy). `annual_days` is the 365d federal date — we
-    # don't gate on that here because anything past company policy gets
-    # flagged for inspection long before the federal OOS line.
+    # TRACTORS ONLY on Audra's brief. Per the responsibility map,
+    # trailer inspections are Jackson + Dan's lane (they own trailer
+    # maintenance); they'll see trailers on the operational/maintenance
+    # brief. `policy_days` counts down from the 120d window after
+    # LastInspectionDate (negative = past policy). `annual_days` is the
+    # 365d federal date — we don't gate on that here because anything
+    # past company policy gets flagged for inspection long before the
+    # federal OOS line.
     if equipment:
         od_t = [t for t in (equipment.get("tractors") or [])
                 if isinstance(t.get("policy_days"), int) and t["policy_days"] < -30]
-        od_r = [t for t in (equipment.get("trailers") or [])
-                if isinstance(t.get("policy_days"), int) and t["policy_days"] < -30]
-        if od_t or od_r:
-            units = ", ".join(str(t.get("unit") or "?") for t in (od_t + od_r)[:5])
-            more = f" (+{len(od_t + od_r) - 5} more)" if len(od_t + od_r) > 5 else ""
+        if od_t:
+            units = ", ".join(str(t.get("unit") or "?") for t in od_t[:5])
+            more = f" (+{len(od_t) - 5} more)" if len(od_t) > 5 else ""
             items.append({
                 "priority": 2,
-                "owner": "Audra (coord. Jackson + Dan)",
-                "action": f"Schedule inspection: {units}{more}.",
-                "why": (f"{len(od_t)} tractors + {len(od_r)} trailers past 120d "
-                        f"company policy by >30d. Flagged for inspection; "
-                        f"still in service. Federal 365d is the OOS line."),
+                "owner": "Audra",
+                "action": f"Schedule tractor inspection: {units}{more}.",
+                "why": (f"{len(od_t)} tractor(s) past 120d company policy "
+                        f"by >30d. Flagged for inspection; still in service. "
+                        f"Federal 365d is the OOS line."),
                 "kb_link": "xfreight-playbook-equipment-inspection-backlog.md",
             })
 
@@ -525,13 +527,28 @@ def safety_relevant_signals(results: list[dict]) -> list[dict]:
     """Filter risk_watch signals to the subset Audra owns or directly
     needs to see on her brief. Keeps the cross-loop architecture intact
     (one source of truth in risk-signals.yml) while letting each role
-    see only their slice."""
+    see only their slice.
+
+    Trailer-inspection counts are Jackson + Dan's responsibility per
+    the org responsibility map, so the equipment-inspection-backlog
+    signal is rewritten in-place to strip its paired trailer values
+    before rendering. The same signal still ships unmodified to the
+    operational brief; we mutate a copy so we don't poison the cache."""
     safety_ids = {
         "equipment-inspection-backlog",
         "equipment-registration-backlog",
         "csa-near-intervention",
     }
-    return [r for r in (results or []) if r.get("id") in safety_ids]
+    out: list[dict] = []
+    for r in (results or []):
+        if r.get("id") not in safety_ids:
+            continue
+        if r.get("id") == "equipment-inspection-backlog":
+            # Shallow copy + zero the paired-trailer keys so the strip
+            # renderer omits the "+ N trailers" suffix.
+            r = {**r, "paired_value": None, "paired_tripped_text": None}
+        out.append(r)
+    return out
 
 
 # ----------------------------------------------------------------------
