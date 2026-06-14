@@ -15,6 +15,14 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 
 ---
 
+## Decision Support
+
+- [[Risk Register]] — living list of open business risks, ranked by severity, each with its exposure, mitigation, and the watch signal that means it's getting worse.
+- [[Decision Journal]] — consequential decisions logged with rationale, assumptions, and predicted outcome, then graded later — so you can tell judgment from luck.
+- [[Recent Decisions 2026-06-05]] — changelog of pipeline/code changes and the rationale behind each (distinct from the business Decision Journal).
+
+---
+
 ## Company Structure
 
 - [[XFreight Entities]] — the five legal entities: X-Trux (carrier), X-Linx (broker), Truk-Way (leasing/payroll), and two future N&J entities.

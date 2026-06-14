@@ -1,0 +1,45 @@
+---
+title: Decision Journal
+type: register
+tags: [decisions, finance, operations, decision-support]
+sources: ["raw/xfreight-decision-journal.md"]
+related: ["[[Risk Register]]", "[[Recent Decisions 2026-06-05]]", "[[Rate-Per-Mile Goal]]", "[[Brokerage X-Linx]]", "[[Owner-Operator Program]]", "[[AGCO RFP]]", "[[Safety Program]]", "[[Daily Scorecard Email]]"]
+last_reviewed: "2026-06-13"
+---
+
+# Decision Journal
+
+A running log of XFreight's consequential decisions — each with the **rationale**, the **assumptions** it rests on, and the **predicted outcome**, so that later we can grade it. Most businesses never write down *why* they made a call, so they can't tell good judgment from luck. Over time this page answers: which kinds of bets actually pay?
+
+> **How this page works.** When a meaningful decision is made, append it to `raw/xfreight-decision-journal.md` using `templates/decision.md`; the librarian compiles it here. Leave the **Actual outcome** blank at first and fill it in once known — then set `outcome` to confirmed / mixed / wrong and note the lesson. This is distinct from [[Recent Decisions 2026-06-05]], which logs *pipeline/code* changes; this page is for **business and measurement decisions**. **Seeded 2026-06-13 — assumptions and predicted outcomes need Jeff's review.**
+
+## At a glance
+
+| Date | Decision | Predicted outcome | Status |
+|------|----------|-------------------|:------:|
+| 2026-06-13 | X-Trux P&L hold-out at ≥74% margin | P&L matches Power BI, reflects own-fleet | Pending |
+| 2026-06-13 | Deadhead / RPM = own-fleet only | 5.448% true own-fleet deadhead | Pending |
+| 2026-06-12 | Retire SambaSafety API → CSV-drop | Compliance/CSA data keeps flowing | Pending — review ~7/12 |
+| 2026-06-13 | Next oil change as a 25k estimate | "Close enough" until real data | Pending |
+| Standing | Dispatch date locks the pay rate | Consistent settlement, no disputes | Confirmed |
+| 2026-01 | Bid the AGCO 2026 RFP | (win the lane) | **Wrong** — not awarded |
+
+---
+
+## 2026-06-13 — X-Trux P&L hold-out at ≥74% Corrected Margin
+**Decision.** Exclude X-Trux loads that are status "Open" OR have Corrected Margin % = (Revenue − Driver Rate)/Revenue ≥ 74% from the entity P&L. **Rationale.** Those are office loads brokered to outside carriers with a tiny placeholder driver rate; counting them inflates own-fleet P&L. **Assumption.** ≥74% margin reliably identifies brokered/under-costed loads. **Predicted outcome.** Brief P&L matches Power BI to the penny and reflects true own-fleet economics. **Actual.** _TBD — watch for genuine high-margin own-fleet loads wrongly held out._ See [[Brokerage X-Linx]], [[Rate-Per-Mile Goal]].
+
+## 2026-06-13 — Deadhead / RPM scoped to own-fleet only
+**Decision.** Deadhead %, asset RPM, and mileage tiles count X-Trux own-fleet loads only (exclude X-Linx AND brokered X-Trux). **Rationale.** Deadhead is empty miles *your own trucks* drive; carrier-driven loads aren't your deadhead. **Predicted outcome.** 5.448% true own-fleet deadhead (vs 4.90% with brokered loads in). **Actual.** _TBD._ See [[Rate-Per-Mile Goal]].
+
+## 2026-06-12 — Retire SambaSafety API, switch to CSV-drop
+**Decision.** After the API token expired 2026-06-02, retire API mode and read the CSVs Power Automate drops into OneDrive. **Rationale.** API access lapsed; CSV covers driver compliance + CSA needs without renewal cost. **Assumption.** The Power Automate CSV drop stays reliable. **Predicted outcome.** Driver-compliance and CSA data keep flowing. **Actual.** _TBD — review ~2026-07-12._ Paired risk: "SambaSafety CSV fragility" in [[Risk Register]]. See [[Safety Program]], [[Data Pipeline Architecture]].
+
+## 2026-06-13 — Next oil change shown as a 25k estimate
+**Decision.** Show estimated next-oil-due mileage (current odometer → next 25k mark, labeled "est") rather than wait for real odometer-at-service capture. **Rationale.** Deliver visible value now; the page auto-flips to a real value once Alvys logs the odometer at each oil change. **Predicted outcome.** The estimate is close enough to be useful in the interim. **Actual.** _TBD when real oil-odometer data exists._ See [[Daily Scorecard Email]].
+
+## Standing rule — dispatch date locks the per-mile pay rate
+**Decision.** Driver per-mile pay rate is revised weekly on Wednesday; a load's dispatch date determines which week's rate applies (Tuesday dispatch → prior rate, Wednesday → new rate). **Rationale.** An unambiguous rule for which rate a load pays, for settlement. **Predicted outcome.** Consistent settlement, no rate disputes. **Actual.** In effect — treated as confirmed. See [[Owner-Operator Program]], [[Rate-Per-Mile Goal]].
+
+## 2026-01 — AGCO 2026 truckload RFP (closed loop)
+**Decision.** Bid the AGCO 2026 truckload RFP. **Outcome.** **Not awarded** (Jan 2026). Graded **wrong** (lost). Lessons for the next cycle are in [[AGCO RFP]] — kept here as an example of a decision with a known result, so the journal shows the full loop. See [[Customer Portfolio]].

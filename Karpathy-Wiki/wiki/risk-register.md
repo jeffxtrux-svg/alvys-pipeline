@@ -1,0 +1,77 @@
+---
+title: Risk Register
+type: register
+tags: [risk, compliance, finance, operations, decision-support]
+sources: ["raw/xfreight-risk-register.md"]
+related: ["[[Decision Journal]]", "[[Safety Program]]", "[[FMCSA CSA Scorecard]]", "[[Acrisure Dispute]]", "[[Active Disputes and Open Issues]]", "[[Customer Portfolio]]", "[[Factoring]]", "[[Data Pipeline Architecture]]", "[[SBA 504 Financing]]"]
+last_reviewed: "2026-06-13"
+---
+
+# Risk Register
+
+A living list of XFreight's open business risks — ranked by severity, each with its exposure, what's being done, and the **watch signal** that means it's getting worse. This is decision-support, not a status report: the goal is to keep the handful of things that could actually hurt the business in front of leadership, and to let the brief flag them automatically when they cross a line.
+
+> **How this page works.** The librarian keeps this current from new material in `/raw` (daily briefs, notes). Add a risk by appending to `raw/xfreight-risk-register.md`; update severity/status as things change; close a risk by setting its status to `closed` and moving it to the archive at the bottom. Each entry follows `templates/risk.md`. **Seeded 2026-06-13 — severities, owners, and dollar exposures need Jeff's review.**
+
+## At a glance
+
+| Risk | Severity | Status | Owner | Watch signal |
+|------|:--------:|:------:|-------|--------------|
+| Equipment inspection backlog | **High** | Open | Safety / Logistics | Any unit past due (brief flags red) |
+| CSA BASIC near intervention | **High** | Monitor | Safety | A BASIC ≥ its 65th/80th threshold |
+| Acrisure insurance dispute | **High** | Open | JB / Jeff | Unresolved past renewal |
+| Customer concentration | Medium | Watch | Jeff (BD) | One customer > ~25% of revenue |
+| Billion Auto contract lapsed | Medium | Open | Jeff (BD) | Rate agreement (exp. 6/1/26) unrenewed |
+| SambaSafety CSV fragility | Medium | Mitigated | Pipeline | CSV age > 60h |
+| Manual Alvys upload dependency | Medium | Open | Ops | File age > 30h |
+| Pipeline cron fragility | Medium | Mitigated | Pipeline | A morning with no brief by ~7am CT |
+| Factoring cost / cash reliance | Medium | Monitor | JB / Jeff | AR aging into penalty band |
+| AR aging / collections | Medium | Ongoing | AP / AR | 90+ AR rising |
+| SBA 504 execution | Medium | In&nbsp;progress | JB / Jeff | Timeline / rate slippage |
+
+---
+
+## High severity
+
+### Equipment inspection backlog
+**What it is.** As of 2026-06-13 the fleet carries **4 tractors and 13 trailers** past due on the federal 365-day annual inspection. **Exposure:** roadside out-of-service orders, a climbing FMCSA Maintenance BASIC, lost truck utilization. **Mitigation:** the [[Daily Scorecard Email]] Equipment Compliance pages now flag past-due units in red. **Watch:** any unit past due. **Owner:** Audra (Safety) + Dan (Logistics). See [[Safety Program]], [[FMCSA CSA Scorecard]].
+
+### CSA BASIC near intervention
+**What it is.** FMCSA flags intervention when a BASIC crosses the 65th percentile (Unsafe Driving, Crash Indicator) or 80th (all others). Tracked on brief page 10 from the SambaSafety CSA scorecard. **Exposure:** intervention, audit, higher insurance cost. **Watch:** any BASIC crossing its threshold. **Owner:** Audra. See [[FMCSA CSA Scorecard]], [[Safety Program]].
+
+### Acrisure insurance dispute
+**What it is.** An open dispute with the insurance broker (detail in [[Acrisure Dispute]]). **Exposure:** coverage, premium/billing, and management time. **Watch:** unresolved past the next policy renewal. **Owner:** JB / Jeff. See [[Insurance and Banking]], [[Active Disputes and Open Issues]].
+
+---
+
+## Medium severity
+
+### Customer concentration
+**What it is.** Revenue may be concentrated in a few customers. **Action:** quantify each customer's share of X-Trux + X-Linx revenue from Alvys (the data exists — a good first analysis). **Exposure:** losing one large account materially hits revenue. **Watch:** any single customer above ~25% of revenue. **Owner:** Jeff (BD). See [[Customer Portfolio]].
+
+### Billion Auto contract lapsed
+**What it is.** The Billion Auto dedicated 2-lane rate agreement **expired June 1, 2026**; renewal status unknown. **Exposure:** a known recurring revenue stream at risk. **Watch:** still unrenewed. **Owner:** Jeff (BD). See [[Customer Portfolio]].
+
+### SambaSafety CSV fragility
+**What it is.** The SambaSafety API token expired 2026-06-02; the feed is now CSV-drop only via Power Automate. **Exposure:** if the drop stops, driver MVR/license compliance and CSA data go **stale silently**. **Mitigation:** hourly-armed refresh + the Data Refresh Status page. **Watch:** CSV age > 60h. **Owner:** pipeline. See [[Data Pipeline Architecture]], [[Safety Program]]. Paired decision: [[Decision Journal]] (retire SambaSafety API).
+
+### Manual Alvys upload dependency
+**What it is.** The daily afternoon manual upload of `Alvys Master2026.xlsx` feeds revenue and P&L for both the brief and Power BI. Single human dependency; no API yet. **Exposure:** a missed upload silently stales the numbers. **Mitigation:** Data Refresh Status page flags staleness. **Watch:** file age > 30h. **Owner:** ops. See [[Data Pipeline Architecture]].
+
+### Pipeline cron fragility
+**What it is.** GitHub's scheduled cron is best-effort and has dropped whole morning batches (e.g., 2026-06-08). **Exposure:** no brief / stale dashboards on drop mornings. **Mitigation:** dual-cron DST hardening, staggered backups, 6am healthchecks, and an off-GitHub Cloudflare Worker backstop. **Watch:** a morning with no brief by ~7am CT. **Owner:** pipeline. See [[Data Pipeline Architecture]], [[Daily Scorecard Email]].
+
+### Factoring cost / cash reliance
+**What it is.** Working capital depends on factoring; the vendor decision is still open (Pathward / Triumph / OTR / eCapital). **Exposure:** factoring fees erode margin; AR aging into penalty bands. **Watch:** AR aging trend and factoring fee as a % of revenue. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]].
+
+### AR aging / collections
+**What it is.** Overdue AR (31+/90+) and the QB-vs-Alvys variance from un-invoiced loads are tracked on the accounting pages. **Exposure:** cash flow and factoring penalties. **Watch:** 90+ AR rising. **Owner:** Audra (AP/AR). See [[Daily Scorecard Email]], [[Factoring]].
+
+### SBA 504 execution
+**What it is.** SBA 504 financing is in flight. **Exposure:** timeline and rate slippage on a financing the plan depends on. **Watch:** milestone or rate movement. **Owner:** JB / Jeff. See [[SBA 504 Financing]], [[Insurance and Banking]].
+
+---
+
+## Archive (closed risks)
+
+_None yet. When a risk is resolved, set its status to `closed`, add the resolution date and outcome, and move it here._
