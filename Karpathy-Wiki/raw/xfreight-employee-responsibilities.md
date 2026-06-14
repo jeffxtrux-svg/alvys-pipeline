@@ -12,7 +12,7 @@
 | Person(s) | Owns | Receives (primary) | CC on |
 |---|---|---|---|
 | **Audra** | Safety + Compliance · invoice closeout (loads invoiced timely + carrier invoices entered into Alvys) | Safety & Compliance brief (daily) | — |
-| **Jackson + Dan** | On-time delivery · truck coverage / return loads · drivers hitting 2,750 mi/wk average | Operational / Maintenance brief (daily) | — |
+| **Jackson + Dan** | On-time delivery · truck coverage / return loads · drivers hitting 2,750 mi/wk average · driver dispatching · maintenance on trailers + Truk-Way tractors · overall brokerage (X-Linx) operations | Operational / Maintenance brief (daily) | — |
 | **Jeff + JB** | Accounting / financial · sales · recruiting | Accounting / financial brief (daily); Sales brief (weekly); Recruiting brief (weekly) — Jeff primary on sales/recruiting, JB cc | All non-owned briefs (governance visibility) |
 | **Dan + JB + Jeff** | Consolidated executive view | Executive brief (X-Trux + X-Linx, daily) | — |
 
@@ -58,19 +58,34 @@ Jeff + JB cc'd unless they're already the primary. Concretely:
   is entered into Alvys (brokered-side). Slippage here drags AR
   aging and Power BI's accuracy.
 
-### Jackson + Dan — Operations / Maintenance
+### Jackson + Dan — Operations / Maintenance / Brokerage ops
 
-- On-time delivery — every load delivered within the customer's
+- **On-time delivery** — every load delivered within the customer's
   appointment window. Drives customer relationships and rate
   retention.
-- Truck coverage / return loads — every truck has a return load
+- **Truck coverage / return loads** — every truck has a return load
   back to a region where another customer load can be grabbed. No
   empty bobtail home unless unavoidable.
-- Driver mileage target — average **2,750 miles per week** per
+- **Driver mileage target** — average **2,750 miles per week** per
   driver. Drives revenue, driver pay, and driver retention (drivers
   leave when their miles are short).
-- Maintenance scheduling alongside Audra for the safety-side
-  inspection coordination.
+- **Driver dispatching** — load assignment, route planning, driver
+  communication during transit, handling appointment changes.
+- **Maintenance — trailers** — scheduling and tracking trailer
+  repairs, tire/brake/light condition, replacement decisions. All
+  trailers across the fleet.
+- **Maintenance — Truk-Way tractors** — the leased-out tractor fleet
+  (Truk-Way is the leasing entity). Coordination with the OO-group
+  drivers, repair scheduling, vendor relationships.
+- **Overall X-Linx brokerage operations** — day-to-day brokerage
+  execution: booking loads, finding carriers to cover, negotiating
+  carrier rates, tracking brokered loads in transit, escalating
+  carrier issues. Strategic brokerage BD / customer relationships
+  still sit with Jeff + JB; Jackson + Dan run the operational side.
+- Coordinates with Audra on the safety-side DOT inspection
+  scheduling (Audra owns the 120d company-policy compliance angle;
+  Jackson + Dan own the broader maintenance program). See
+  `xfreight-dot-inspection-policy.md` for the inspection split.
 
 ### Jeff + JB — Finance, Sales, Recruiting
 
