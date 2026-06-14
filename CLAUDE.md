@@ -201,6 +201,17 @@ unless they're the primary. New brief workflows use the same hardcoded literal
 fallback pattern as `scorecard_email.yml` so the right audience is reached
 even if a secret gets emptied.
 
+**Tractor inspections — split ownership by fleet.** *X-Trux* (company-driver)
+tractors fall under Audra's safety + compliance lane. *Truk-Way* fleet tractors
+are a **shared** responsibility: Audra (safety/CSA Maintenance BASIC) **plus**
+Jackson + Dan (Truk-Way tractor maintenance, per the responsibility row above).
+Until `main.py` adds `Truck.Fleet.Name` to the Trucks sheet, action items on
+Audra's brief can't be split per-fleet — the action's `owner` label calls out
+the shared piece explicitly ("Audra (Truk-Way tractors: shared w/ Jackson +
+Dan)"). Trailer inspections are Jackson + Dan only (Audra's brief filters
+trailers out of the equipment action item + the Risk Watch strip's paired
+trailer text via `safety_relevant_signals`).
+
 ## Core operating memory — read before touching equipment / safety code
 
 - **DOT inspection windows: 120-day company policy ≠ 365-day federal.** The
