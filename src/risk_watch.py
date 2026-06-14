@@ -317,3 +317,37 @@ def render_strip_html(results: list[dict],
         + "".join(rows) +
         f"</div>"
     )
+
+
+def write_signals_snapshot(results: list[dict], path: Path | None = None) -> None:
+    """Write the current evaluated signals to a JSON snapshot the Slack
+    digest (and other downstream consumers) can read without re-running
+    the full scorecard. Same pattern as decision_grader.write_grades_snapshot."""
+    import json
+    from datetime import datetime
+    target = path or (_SIGNALS_PATH.parent / "risk-watch-latest.json")
+    snap = {
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "signals": [
+            {
+                "id": r.get("id"),
+                "title": r.get("title"),
+                "page": r.get("page"),
+                "severity": r.get("severity"),
+                "tripped": r.get("tripped"),
+                "value": r.get("value"),
+                "threshold": r.get("threshold"),
+                "format": r.get("format"),
+                "ok_text": r.get("ok_text"),
+                "tripped_text_template": r.get("tripped_text"),
+                "paired_value": r.get("paired_value"),
+                "paired_tripped_text_template": r.get("paired_tripped_text"),
+            }
+            for r in results
+        ],
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(snap, indent=2, default=str))
+    except Exception as exc:
+        log.warning("risk_watch: failed to write signals snapshot (%s)", exc)

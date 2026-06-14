@@ -7479,6 +7479,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             _watch_results, red=BAD, redbg=BADBG, green=GOOD, greenbg=GOODBG,
             mute=MUTE, line=LINE,
         )
+        _risk_watch.write_signals_snapshot(_watch_results)
     except Exception as exc:
         log.warning("risk_watch render skipped (%s: %s)", type(exc).__name__, exc)
     # Phase 2C — Decision Grader: evaluate each tracked decision's

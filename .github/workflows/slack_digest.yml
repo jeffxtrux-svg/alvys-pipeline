@@ -1,0 +1,78 @@
+# Slack/Teams morning digest — Phase 3A delivery surface.
+#
+# Posts a compact summary of the brief (MTD KPIs + tripped risk signals
+# + decision grades) to an incoming webhook URL right after the
+# scorecard email lands. Source files are written by the scorecard run
+# itself (snapshot, risk-watch-latest.json, decision-grades.json) so
+# this job is pure presentation — no re-compute.
+#
+# Required secret to actually post:
+#   SLACK_WEBHOOK_URL  — Slack or Teams incoming-webhook URL.
+#     Slack:  https://api.slack.com/messaging/webhooks
+#     Teams:  https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook
+#     Either accepts the Block Kit payload shape this workflow posts.
+#
+# Without the secret, the job still runs and exits cleanly with a log
+# warning (composed but not posted) — useful for dry-running the
+# digest content against a real brief.
+
+name: Slack/Teams morning digest
+
+on:
+  # Auto-fires when the scorecard email workflow completes successfully.
+  workflow_run:
+    workflows: ["Daily KPI Scorecard Email"]
+    types: [completed]
+
+  # Manual run for testing the digest formatting.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true → print payload, do not POST'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # When triggered by workflow_run, only fire if the scorecard succeeded.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout repo (latest main)
+        uses: actions/checkout@v4
+        with:
+          # Always check out HEAD of main, NOT workflow_run.head_sha.
+          # The scorecard workflow commits + pushes risk-watch-latest.json
+          # and decision-grades.json BEFORE it completes, so main has the
+          # freshest state files by the time this trigger fires. Pinning
+          # to workflow_run.head_sha would check out the pre-scorecard
+          # SHA and read stale (or missing) snapshot files.
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        # Only need requests to POST the webhook + the existing project
+        # modules (read JSON, format the payload). Keep this slim so the
+        # digest stays fast.
+        run: pip install requests
+
+      - name: Compose and post digest
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.event.workflow_run.html_url || (github.server_url + '/' + github.repository + '/actions/runs/' + github.run_id) }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python -m src.slack_digest --dry-run
+          else
+            python -m src.slack_digest
+          fi
