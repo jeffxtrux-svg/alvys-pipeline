@@ -3886,11 +3886,65 @@ def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | Non
     }
 
 
-_EQUIP_WARN_DAYS     = 60   # orange flag when due within 60 days
-_EQUIP_CRITICAL_DAYS = 30   # red flag when due within 30 days
+_EQUIP_WARN_DAYS     = 60   # amber flag when due within 60 days
+_EQUIP_CRITICAL_DAYS = 30   # stronger amber when due within 30 days (NOT red —
+                            # red is reserved for expired/overdue only)
+# Oil-change service interval (miles). Next-oil-due mileage = the odometer
+# logged at the last oil change + this interval. The Alvys maintenance feed
+# does not currently capture the odometer at each oil change, so this stays a
+# tunable constant until that data exists. 25k is a typical OTR semi interval.
+OIL_CHANGE_INTERVAL_MI = 25000
 
 
-def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | None:
+def _samsara_odometer_map(samsara_sheets, now: pd.Timestamp | None = None,
+                          max_age_days: int = 120) -> dict:
+    """Map normalized tractor unit -> (current_miles:int, read_ts) from Samsara.
+
+    Reads VehicleStats' obdOdometerMeters (the OBD odometer; the GPS odometer is
+    unreliable for our fleet — it reports impossible 1M+ mile values on several
+    units). Meters -> miles. Reads older than max_age_days are dropped so a
+    sold/out-of-service truck's stale (e.g. 2-year-old) odometer is never shown
+    as 'current'. Unit names are reduced to their digit run ("X - 40179",
+    "x43195", "X-OOS38166" -> "40179"/"43195"/"38166") to match Alvys unit #s.
+    """
+    if not samsara_sheets:
+        return {}
+    vs = samsara_sheets.get("VehicleStats")
+    if vs is None or getattr(vs, "empty", True):
+        return {}
+    now = now or pd.Timestamp.now()
+    cutoff = now.normalize() - pd.Timedelta(days=max_age_days)
+    odo_col  = next((c for c in vs.columns if c.startswith("obdOdometerMeters") and c.endswith(".value")), None)
+    t_col    = next((c for c in vs.columns if c.startswith("obdOdometerMeters") and c.endswith(".time")),  None)
+    if not odo_col or "name" not in vs.columns:
+        return {}
+    out: dict = {}
+    for _, r in vs.iterrows():
+        unit = re.sub(r"\D", "", str(r.get("name", "")))
+        if not unit:
+            continue
+        meters = pd.to_numeric(r.get(odo_col), errors="coerce")
+        if pd.isna(meters):
+            continue
+        read_ts = None
+        if t_col:
+            read_ts = pd.to_datetime(r.get(t_col), errors="coerce")
+            if pd.notna(read_ts):
+                if getattr(read_ts, "tz", None) is not None:
+                    read_ts = read_ts.tz_localize(None)
+            else:
+                read_ts = None
+        if read_ts is not None and read_ts < cutoff:
+            continue  # stale read -> treat as no current mileage
+        miles = int(round(float(meters) / 1609.344))
+        prev = out.get(unit)
+        if prev is None or (read_ts is not None and (prev[1] is None or read_ts > prev[1])):
+            out[unit] = (miles, read_ts)
+    return out
+
+
+def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None,
+                            samsara_sheets=None) -> dict | None:
     """Read Trucks and Trailers sheets from Alvys Pipeline.xlsx.
 
     Returns a dict with:
@@ -4008,6 +4062,11 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 "oil_change_date":  oil_dt,
                 "oil_change_days":  oil_days,
                 "oil_change_miles": oil_mi_int,
+                # Overlaid below for tractors from Samsara / the oil interval.
+                "current_mileage":    None,
+                "current_mileage_ts": None,
+                "next_oil_miles":     None,
+                "next_oil_est":       False,
             })
         # Soonest annual inspection first (the 120-day company policy is
         # tracked in the data but no longer rendered on the page).
@@ -4023,6 +4082,28 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
 
     tractors = _parse_sheet(trucks_df,   exclude=_TRUCK_EXCLUDE)
     trailers = _parse_sheet(trailers_df, exclude=_TRAILER_EXCLUDE)
+
+    # Current mileage (tractors): overlay the live Samsara OBD odometer, matched
+    # by digit-normalized unit #. Next oil-change-due mileage:
+    #   - REAL basis (preferred): odometer logged at the last oil change +
+    #     OIL_CHANGE_INTERVAL_MI. The Alvys feed does not yet capture the
+    #     odometer at each oil change, so this path is dormant until populated.
+    #   - ESTIMATE (next_oil_est=True): when only the current odometer is known,
+    #     round it UP to the next OIL_CHANGE_INTERVAL_MI boundary. A rough proxy
+    #     (not tied to the actual last service) — rendered with an "est" tag.
+    odo = _samsara_odometer_map(samsara_sheets, now=now)
+    for r in tractors:
+        cm = odo.get(re.sub(r"\D", "", str(r.get("unit", ""))))
+        if cm:
+            r["current_mileage"], r["current_mileage_ts"] = cm
+        lom = r.get("oil_change_miles")
+        if isinstance(lom, int):
+            r["next_oil_miles"] = lom + OIL_CHANGE_INTERVAL_MI
+            r["next_oil_est"]   = False
+        elif isinstance(r.get("current_mileage"), int):
+            cur = r["current_mileage"]
+            r["next_oil_miles"] = (cur // OIL_CHANGE_INTERVAL_MI + 1) * OIL_CHANGE_INTERVAL_MI
+            r["next_oil_est"]   = True
 
     def _counts(rows, key):
         overdue = sum(1 for r in rows if isinstance(r.get(key), int) and r[key] < 0)
@@ -4082,17 +4163,19 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         return header + pending_note
 
     def _badge(days):
+        # Red is reserved for EXPIRED (overdue) inspections only. Upcoming
+        # inspections that haven't lapsed yet render amber, never red —
+        # stronger amber within 30 days, lighter amber 31–60 days out.
         if days is None:
             return f"<span style='color:{MUTE};'>—</span>"
         if days < 0:
             return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
                     f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE {abs(days)}d</span>")
         if days <= _EQUIP_CRITICAL_DAYS:
-            return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
+            return (f"<span style='background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;"
                     f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
         if days <= _EQUIP_WARN_DAYS:
-            return (f"<span style='background:{WARNBG};color:{WARN};font-size:11px;"
-                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
+            return (f"<span style='color:{_EQUIP_AMBER};font-size:12px;font-weight:600;'>{days}d</span>")
         return f"<span style='color:{MUTE};font-size:12px;'>{days}d</span>"
 
     def _date_str(ts):
@@ -4114,6 +4197,8 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         show_oil     = any(r.get("oil_change_date") is not None
                            or isinstance(r.get("oil_change_miles"), int)
                            for r in rows)
+        show_current  = any(isinstance(r.get("current_mileage"), int) for r in rows)
+        show_next_oil = any(isinstance(r.get("next_oil_miles"),  int) for r in rows)
 
         th = f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>{{t}}</th>"
         head_cols = [th.format(t="Unit")]
@@ -4131,10 +4216,26 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         if show_reg:
             head_cols.append(th.format(t="Reg Expires"))
             head_cols.append(th.format(t="Days"))
+        if show_current:
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"Current Mileage"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>Samsara odometer</div></th>"
+            )
         if show_mileage:
             head_cols.append(th.format(t="Last Mileage"))
         if show_oil:
             head_cols.append(th.format(t="Last Oil Change"))
+        if show_next_oil:
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"Next Oil Due"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>+{OIL_CHANGE_INTERVAL_MI // 1000}k mi interval</div></th>"
+            )
 
         tbody = ""
         for i, r in enumerate(rows):
@@ -4153,6 +4254,15 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             if show_reg:
                 cols_td.append(td.format(v=_date_str(r.get("reg_due"))))
                 cols_td.append(td.format(v=_badge(r.get("reg_days"))))
+            if show_current:
+                cm = r.get("current_mileage")
+                ts = r.get("current_mileage_ts")
+                if isinstance(cm, int):
+                    sub = (f"<div style='color:{MUTE};font-size:10px;'>as of {_date_str(ts)}</div>"
+                           if ts is not None else "")
+                    cols_td.append(td.format(v=f"{cm:,}{sub}"))
+                else:
+                    cols_td.append(td.format(v="—"))
             if show_mileage:
                 mi = r.get("last_mileage")
                 cols_td.append(td.format(v=f"{mi:,}" if isinstance(mi, int) else "—"))
@@ -4165,6 +4275,14 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
                 if isinstance(miles, int):
                     parts.append(f"<span style='color:{MUTE};font-size:11px;'>@ {miles:,} mi</span>")
                 cols_td.append(td.format(v=" ".join(parts) if parts else "—"))
+            if show_next_oil:
+                no = r.get("next_oil_miles")
+                if isinstance(no, int):
+                    tag = (f" <span style='color:{MUTE};font-size:10px;font-style:italic;'>est</span>"
+                           if r.get("next_oil_est") else "")
+                    cols_td.append(td.format(v=f"{no:,} mi{tag}"))
+                else:
+                    cols_td.append(td.format(v="—"))
             tbody += f"<tr style='background:{bg};'>{''.join(cols_td)}</tr>"
 
         return (f"<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse;'>"
@@ -4176,9 +4294,9 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         if overdue:
             parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} OVERDUE</span>")
         if warn30:
-            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn30} within 30d</span>")
+            parts.append(f"<span style='background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{warn30} within 30d</span>")
         elif warn60:
-            parts.append(f"<span style='background:{WARNBG};color:{WARN};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
+            parts.append(f"<span style='background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
         if not parts:
             parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
@@ -4208,7 +4326,11 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     sort_note = "Sort: soonest annual inspection first."
     body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
              f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
-             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note} "
+             f"(Category = DOT/Annual); current mileage (tractors) from the Samsara OBD odometer. "
+             f"<span style='color:{BAD};font-weight:700;'>Red = expired (overdue)</span>. "
+             f"<span style='color:{_EQUIP_AMBER};font-weight:700;'>Amber = upcoming, within 60 days</span> &mdash; not yet expired. {sort_note} "
+             f"Next Oil Due marked <span style='font-style:italic;'>est</span> is the current odometer rounded up to the next "
+             f"{OIL_CHANGE_INTERVAL_MI // 1000}k mark &mdash; a rough estimate until the odometer at each oil change is logged in Alvys. "
              f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
@@ -4236,6 +4358,12 @@ PAGE_COUNT = 13
 ACCENTBG = "#fde8ea"      # light red tint replaces the orange current-week column
 BAD = XFREIGHT_RED
 BADBG = "#fde8ea"
+# Equipment-compliance amber — a TRUE orange, distinct from the brand red.
+# The global WARN collapses into XFREIGHT_RED, so upcoming (not-yet-expired)
+# inspections would otherwise render red. These are used ONLY on the equipment
+# badges/pills so red stays reserved for expired/overdue.
+_EQUIP_AMBER   = "#b45309"   # amber-700 text
+_EQUIP_AMBERBG = "#fef3c7"   # amber-100 fill
 ACCENT = XFREIGHT_RED     # was orange — now brand red
 BLUE = "#3a4a5a"          # neutral slate replaces the old chart blue
 FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
@@ -7467,7 +7595,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     # Read from the same Alvys Pipeline.xlsx as everything else — the
     # `Drivers` sheet is added by src.main when the pipeline writes it.
     alvys_drivers = compute_alvys_drivers(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
-    equipment = compute_alvys_equipment(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    equipment = compute_alvys_equipment(alvys_pipeline_sheets, samsara_sheets=samsara_sheets) if alvys_pipeline_sheets else None
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
     # DSO history: filter to X-Trux only (asset fleet — same scope the user sees in QB).

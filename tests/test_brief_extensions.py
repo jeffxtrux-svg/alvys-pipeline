@@ -26,6 +26,8 @@ from src.scorecard_email import (  # noqa: E402
     compute_ar_reconciliation, compute_ar_customer_reconciliation,
     compute_bill_reconciliation, compute_samsara, compute_alvys_entities,
     _lead_phrase, compute_drag_attribution,
+    compute_alvys_equipment, build_page_equipment, _samsara_odometer_map,
+    _EQUIP_AMBER, _EQUIP_AMBERBG, BAD, BADBG, OIL_CHANGE_INTERVAL_MI,
 )
 from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
@@ -560,6 +562,100 @@ def test_drag_rpm_text_names_lift_to_clear_goal():
     # J.B. Hunt is removed. rpm() formats to 3 decimals — match that.
     assert "clears" in d["text"]
     assert "$3.000 goal" in d["text"]
+
+
+# ---------------------------------------------------------------------------
+# Equipment compliance: amber-until-expired badges + Samsara current mileage
+# + next-oil-due from the service interval.
+# ---------------------------------------------------------------------------
+def _equip(now, oil_miles=None):
+    """Two active tractors: unit 100 due in 15d (upcoming), unit 200 expired 5d
+    ago. Samsara gives unit 100 a 1,000-mile current odometer (1,609,344 m)."""
+    trucks = pd.DataFrame([
+        {"Unit": "100", "Status": "Active", "VIN": "V100",
+         "AnnualInspectionDue": now + pd.Timedelta(days=15),
+         "RegistrationExpires": now + pd.Timedelta(days=300),
+         "LastOilChangeMileage": oil_miles},
+        {"Unit": "200", "Status": "Active", "VIN": "V200",
+         "AnnualInspectionDue": now - pd.Timedelta(days=5),
+         "RegistrationExpires": now + pd.Timedelta(days=300),
+         "LastOilChangeMileage": None},
+    ])
+    vs = pd.DataFrame([
+        {"name": "X-100", "obdOdometerMeters.value": 1609344,
+         "obdOdometerMeters.time": "2026-06-01T00:00:00Z"},
+    ])
+    return compute_alvys_equipment(
+        {"Trucks": trucks, "Trailers": pd.DataFrame()},
+        now=now, samsara_sheets={"VehicleStats": vs})
+
+
+def test_samsara_odometer_map_normalizes_units_prefers_obd_drops_stale():
+    now = pd.Timestamp("2026-06-13")
+    vs = pd.DataFrame([
+        # Messy name, fresh obd read; gps is garbage and must be ignored.
+        {"name": "X - 40179", "obdOdometerMeters.value": 1609344,
+         "obdOdometerMeters.time": "2026-06-01T00:00:00Z",
+         "gpsOdometerMeters.value": 999999999,
+         "gpsOdometerMeters.time": "2026-06-01T00:00:00Z"},
+        # 2-year-old read -> a sold/OOS truck -> dropped, not shown as current.
+        {"name": "x43195", "obdOdometerMeters.value": 3218688,
+         "obdOdometerMeters.time": "2024-01-01T00:00:00Z"},
+        {"name": "44202", "obdOdometerMeters.value": 804672,
+         "obdOdometerMeters.time": "2026-06-10T00:00:00Z"},
+    ])
+    m = _samsara_odometer_map({"VehicleStats": vs}, now=now)
+    assert m["40179"][0] == 1000          # 1,609,344 m -> 1000 mi via OBD (not GPS)
+    assert "43195" not in m               # stale read dropped
+    assert m["44202"][0] == 500
+
+
+def test_equipment_overlays_current_mileage_from_samsara():
+    now = pd.Timestamp("2026-06-13")
+    by = {r["unit"]: r for r in _equip(now)["tractors"]}
+    assert by["100"]["current_mileage"] == 1000     # matched X-100 -> 100
+    assert by["200"]["current_mileage"] is None      # no Samsara row
+
+
+def test_equipment_badges_amber_until_expired_red_only_when_overdue():
+    now = pd.Timestamp("2026-06-13")
+    html = build_page_equipment(_equip(now), "x", kind="tractors", pg=5)
+    # Upcoming 15d inspection renders an AMBER-filled badge (not red).
+    amber_15 = (f"background:{_EQUIP_AMBERBG};color:{_EQUIP_AMBER};font-size:11px;"
+                f"padding:2px 6px;border-radius:4px;font-weight:700;'>15d</span>")
+    assert amber_15 in html
+    # The same red-fill treatment is reserved for the expired unit only.
+    red_overdue = (f"background:{BADBG};color:{BAD};font-size:11px;"
+                   f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE 5d</span>")
+    assert red_overdue in html
+    # An upcoming inspection must never get the red OVERDUE/red-fill treatment.
+    assert (f"background:{BADBG};color:{BAD};font-size:11px;padding:2px 6px;"
+            f"border-radius:4px;font-weight:700;'>15d</span>") not in html
+    assert "Current Mileage" in html and "1,000" in html
+    assert "Samsara odometer" in html
+
+
+def test_equipment_next_oil_due_estimate_from_current_odometer():
+    now = pd.Timestamp("2026-06-13")
+    # No last-oil odometer: unit 100 has a 1,000-mi current odometer, so next
+    # oil due is ESTIMATED to the next 25k mark and tagged "est".
+    eq = _equip(now)
+    by = {r["unit"]: r for r in eq["tractors"]}
+    assert by["100"]["next_oil_miles"] == OIL_CHANGE_INTERVAL_MI  # 1,000 -> next 25k = 25,000
+    assert by["100"]["next_oil_est"] is True
+    assert by["200"]["next_oil_miles"] is None                    # no current mileage -> nothing
+    html = build_page_equipment(eq, "x", kind="tractors", pg=5)
+    assert "Next Oil Due" in html and ">est</span>" in html
+
+
+def test_equipment_next_oil_due_real_basis_overrides_estimate():
+    now = pd.Timestamp("2026-06-13")
+    # Once the odometer at the last oil change is captured, it takes precedence
+    # over the estimate and drops the "est" tag.
+    eq = _equip(now, oil_miles=500000)
+    by = {r["unit"]: r for r in eq["tractors"]}
+    assert by["100"]["next_oil_miles"] == 500000 + OIL_CHANGE_INTERVAL_MI
+    assert by["100"]["next_oil_est"] is False
 
 
 # ---------------------------------------------------------------------------
