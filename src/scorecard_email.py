@@ -4222,12 +4222,17 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     def _badge(days):
         # Days stay neutral (normal color) until the inspection is actually past
         # due. Only an expired/overdue date turns red — no color emphasis on
-        # upcoming dates, however close.
+        # upcoming dates, however close. Wording is "Needs Insp · Xd past"
+        # (not "OVERDUE Xd") because for company-policy past-due the unit is
+        # flagged for inspection, NOT out of service. See CLAUDE.md core
+        # memory + xfreight-dot-inspection-policy.md for the canonical
+        # 120d company policy vs 365d federal distinction.
         if days is None:
             return f"<span style='color:{MUTE};'>—</span>"
         if days < 0:
             return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
-                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE {abs(days)}d</span>")
+                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>"
+                    f"Needs Insp &middot; {abs(days)}d past</span>")
         return f"<span style='color:{MUTE};font-size:12px;'>{days}d</span>"
 
     def _date_str(ts):
@@ -4341,10 +4346,10 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
                 f"<thead><tr>{''.join(head_cols)}</tr></thead>"
                 f"<tbody>{tbody}</tbody></table>")
 
-    def _summary_pill(overdue, warn30, warn60, label):
+    def _summary_pill(overdue, warn30, warn60, label, *, overdue_word="need insp"):
         parts = []
         if overdue:
-            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} OVERDUE</span>")
+            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} {overdue_word}</span>")
         if warn30:
             parts.append(f"<span style='background:#eef2f7;color:{MUTE};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn30} within 30d</span>")
         elif warn60:
@@ -4354,8 +4359,17 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
 
     def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
-        parts = [_summary_pill(overdue_a, w30_a, w60_a, "Annual inspection (365d federal):")]
-        parts.append(_summary_pill(overdue_r, w30_r, w60_r, "Registration:"))
+        # The primary inspection pill describes the **120-day company policy**
+        # — that's the threshold XFreight tracks against and what the
+        # `Needs Insp · Xd past` badges measure. The federal 365-day rule
+        # is the legal backstop (out-of-service threshold), not what we
+        # operationally flag against. Reg keeps "OVERDUE" wording — a
+        # past-due registration tag IS a hard problem.
+        parts = [_summary_pill(overdue_a, w30_a, w60_a,
+                                "DOT inspection (120d company policy):",
+                                overdue_word="need insp")]
+        parts.append(_summary_pill(overdue_r, w30_r, w60_r, "Registration:",
+                                    overdue_word="OVERDUE"))
         summary = (f"<div style='padding:10px 0 6px;'>"
                    + "&nbsp;&nbsp;".join(parts)
                    + "</div>")
@@ -4375,11 +4389,14 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
             equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
         )
-    sort_note = "Sort: soonest annual inspection first."
+    sort_note = "Sort: soonest 120d company-policy date first."
     body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
-             f"(Category = DOT/Annual); current mileage (tractors) from the Samsara OBD odometer. "
-             f"<span style='color:{BAD};font-weight:700;'>Red = past due (expired)</span> &mdash; days stay neutral until past due. {sort_note} "
+             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets (InspectionExpirationDate / InspectionExpiresAt set "
+             f"per XFreight's 120-day company policy); current mileage (tractors) from the Samsara OBD odometer. "
+             f"<span style='color:{BAD};font-weight:700;'>Red = past 120d company policy</span> &mdash; unit is flagged "
+             f"for inspection and remains in service while scheduling. Federal 365d is the boundary that would actually "
+             f"warrant out-of-service (a unit would have to be 245+ days past company policy to hit federal). "
+             f"All DOT inspections covered by X-Trux Inc. {sort_note} "
              f"Next Oil Due marked <span style='font-style:italic;'>est</span> is the current odometer rounded up to the next "
              f"{OIL_CHANGE_INTERVAL_MI // 1000}k mark &mdash; a rough estimate until the odometer at each oil change is logged in Alvys. "
              f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")

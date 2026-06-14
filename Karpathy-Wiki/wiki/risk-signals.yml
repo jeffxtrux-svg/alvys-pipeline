@@ -26,15 +26,15 @@
 
 risks:
   - id: equipment-inspection-backlog
-    title: Equipment inspection backlog
+    title: Equipment inspection backlog (120d company policy)
     page: risk-register#equipment-inspection-backlog
     severity: high
     metric: equipment.tractors_overdue_annual
     threshold: 1
     direction: ">="
     format: int
-    ok_text: "All tractors current on annual inspection"
-    tripped_text: "{value} tractors past federal 365-day annual inspection"
+    ok_text: "All tractors current on 120d company-policy inspection"
+    tripped_text: "{value} tractors flagged for inspection (120d company policy)"
     paired:
       metric: equipment.trailers_overdue_annual
       threshold: 1
