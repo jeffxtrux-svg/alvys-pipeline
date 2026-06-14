@@ -1677,10 +1677,38 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
     # _load_cost > 0. Using the wrong filter lets brokered/un-costed loads
     # inflate the revenue side without contributing to cost.
     dr_series = _col(loads, "Driver Rate").fillna(0)
+    cr_series = _col(loads, "Carrier Rate").fillna(0)
     cost_filter_by_ent = {
         "X-Trux": dr_series > 0,
         "X-Linx": _load_cost(loads) > 0,
     }
+
+    # Diagnostic: identify X-Trux loads excluded by the Driver-Rate-only
+    # filter (these are the brokered XFreight loads that previously
+    # inflated X-Trux trailing margin). Log the load numbers so the
+    # user can verify which specific loads the fix is catching.
+    try:
+        loadno_col = "Load #" if "Load #" in loads.columns else _find_col(loads, ["load #", "load number"])
+        if loadno_col:
+            xtrux_brokered_mask = (
+                (groups_all == "X-Trux")
+                & trail_mask
+                & (dr_series <= 0)
+                & (cr_series > 0)
+            )
+            brokered = loads[xtrux_brokered_mask]
+            if not brokered.empty:
+                rev = _col_any(brokered, ["Customer Revenue", "Revenue"]).fillna(0)
+                excluded_rev = float(rev.sum())
+                excluded_carrier = float(_col(brokered, "Carrier Rate").fillna(0).sum())
+                sample = brokered[loadno_col].astype(str).str.strip().head(15).tolist()
+                log.info("compute_margin_projection: excluded %d brokered XFreight loads "
+                         "from X-Trux trailing window (rev $%s, carrier rate $%s). "
+                         "Sample loads: %s",
+                         len(brokered), f"{excluded_rev:,.0f}",
+                         f"{excluded_carrier:,.0f}", ", ".join(sample))
+    except Exception as exc:
+        log.debug("brokered-XFreight diag skipped: %s", exc)
 
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
