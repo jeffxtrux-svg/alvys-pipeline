@@ -2121,7 +2121,12 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
                 continue
             by_customer.setdefault(_norm_name(name), {"name": name, "amount": 0.0})["amount"] += float(amt)
             open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
-                                  "customer": name, "amount": float(amt)})
+                                  "customer": name, "amount": float(amt),
+                                  # Include due + date so realign_alvys_aging_to_qb
+                                  # can pick the QB-side due date for CURRENT QB
+                                  # invoices too (qb_ar.rows only has 31+ past due).
+                                  "due": str(r.get(due_col, "")) if due_col else "",
+                                  "date": str(r.get(date_col, "")) if date_col else ""})
 
     return {"rows": rows, "rows_past_due": rows_past_due,
             "totals": totals, "total31": sum(totals.values()),
@@ -2156,19 +2161,24 @@ def realign_alvys_aging_to_qb(alvys_ar: dict | None, qb_ar: dict | None) -> dict
     if not open_inv:
         return alvys_ar
     today = pd.Timestamp.now().normalize()
-    # Build key -> QB due date (Timestamp). qb_ar.rows has every QB
-    # invoice with its due date string.
+    # Build key -> QB due date (Timestamp). Use open_invoices (every
+    # open QB invoice, all aging buckets) NOT qb_ar.rows (which only
+    # contains 31+ past-due). The bug we're closing is precisely
+    # Alvys-past-due / QB-CURRENT invoices — they live in the current
+    # bucket on the QB side and were invisible to the old map.
     qb_due_by_key: dict[str, pd.Timestamp] = {}
-    for r in (qb_ar.get("rows") or []):
-        k = _norm_inv(r.get("invoice"))
-        if not k:
-            continue
-        due_raw = r.get("due") or r.get("date")
-        if not due_raw:
-            continue
-        ts = pd.to_datetime(due_raw, errors="coerce")
-        if pd.notna(ts):
-            qb_due_by_key[k] = ts.normalize()
+    for src in ((qb_ar.get("open_invoices") or []),
+                (qb_ar.get("rows") or [])):
+        for r in src:
+            k = _norm_inv(r.get("invoice"))
+            if not k or k in qb_due_by_key:
+                continue
+            due_raw = r.get("due") or r.get("date")
+            if not due_raw:
+                continue
+            ts = pd.to_datetime(due_raw, errors="coerce")
+            if pd.notna(ts):
+                qb_due_by_key[k] = ts.normalize()
 
     if not qb_due_by_key:
         return alvys_ar
