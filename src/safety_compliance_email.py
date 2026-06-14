@@ -60,6 +60,7 @@ from src.scorecard_email import (
     WARNBG,
     XFREIGHT_RED,
     _find_col,
+    _is_ar_excluded,
     _safe_read,
     _section,
     _table,
@@ -330,6 +331,18 @@ def compute_carrier_invoice_backlog(alvys_pipeline_sheets: dict | None,
     sub = sub[sub[status_col].astype(str).str.strip().str.lower().isin(delivered_statuses)]
     # Carrier invoice not yet entered.
     sub = sub[sub[inv_col].astype(str).str.strip().isin(["", "nan", "None", "none"])]
+
+    # Exclude JW Logistics on either side — match the executive brief's
+    # _AR_DETAIL_EXCLUDE rule so the safety report's bills reconcile
+    # like-for-like with the AR pages. Applied to BOTH the customer
+    # (a JW-customer brokered load) and the carrier (a JW-carrier
+    # brokered load) — neither should surface as a bill to chase.
+    pre_cust_col = "Customer" if "Customer" in sub.columns else _find_col(sub, ["customer name"])
+    pre_carrier_col = "Carrier" if "Carrier" in sub.columns else _find_col(sub, ["carrier"])
+    if pre_cust_col:
+        sub = sub[~sub[pre_cust_col].apply(_is_ar_excluded)]
+    if pre_carrier_col:
+        sub = sub[~sub[pre_carrier_col].apply(_is_ar_excluded)]
 
     if sub.empty:
         return empty
