@@ -850,34 +850,34 @@ def _risk_watch_block(signals: list[dict]) -> str:
     return f"<tr><td style='padding:0 24px 8px;'>{strip}</td></tr>"
 
 
-def _unverified_onduty_logs(samsara_sheets: dict | None) -> tuple[int, str]:
-    """Count daily logs the driver never certified AND on which they
-    were on-duty or driving (any non-zero on-duty / drive duration).
-    Distinct from Missing Log Certs: that's any uncertified day;
-    this filter narrows to days the driver was actually working,
-    which is the FMCSA exposure window — uncertified off-duty days
-    are a paperwork nit, uncertified on-duty days can fail an audit.
+def compute_onduty_uncertified(samsara_sheets: dict | None) -> list[dict]:
+    """Per-driver rollup of daily logs the driver never certified AND on
+    which they were on-duty or driving. Distinct from Missing Log Certs
+    (any uncertified day) — this filter narrows to days the driver was
+    actually working, which is the FMCSA exposure window. Uncertified
+    off-duty days are a paperwork nit; uncertified on-duty days can fail
+    an audit because the driver hasn't attested to their on-duty time.
 
-    Reads HOS_DailyLogs (driver-day rows from Samsara's daily-log
-    feed). Returns (count, worst_driver_label). Worst-driver label
-    shows the driver with the most unverified on-duty days so the
-    tile sub-text mirrors the Missing Log Certs format."""
+    Returns a list of dicts sorted worst-first:
+      {driver, on_duty_days, date_range, last_uncert_date}
+
+    Empty list when no data or no offenders."""
     if not samsara_sheets:
-        return 0, ""
+        return []
     df = samsara_sheets.get("HOS_DailyLogs")
     if df is None or df.empty:
-        return 0, ""
+        return []
     cert_col = _find_col(df, ["logmetadata.iscertified", "iscertified"])
     drive_col = _find_col(df, ["dutystatusdurations.drivedurationms",
                                  "drivedurationms"])
     onduty_col = _find_col(df, ["dutystatusdurations.ondutydurationms",
                                   "ondutydurationms"])
     name_col = _find_col(df, ["driver name", "driver.name"])
-    if not cert_col:
-        return 0, ""
+    date_col = _find_col(df, ["logstartdate", "log start date", "date",
+                                "logmetadata.logdate"])
+    if not (cert_col and name_col):
+        return []
 
-    # `isCertified` arrives as boolean True/False (or strings). False =
-    # not yet certified.
     cert_series = df[cert_col]
     if cert_series.dtype == object:
         cert_norm = cert_series.astype(str).str.strip().str.lower()
@@ -891,16 +891,174 @@ def _unverified_onduty_logs(samsara_sheets: dict | None) -> tuple[int, str]:
               if onduty_col else pd.Series(0, index=df.index))
     active_mask = (drive > 0) | (onduty > 0)
 
-    sub = df[uncert_mask & active_mask]
-    count = int(len(sub))
-    worst = ""
-    if count and name_col:
-        worst_series = sub[name_col].astype(str).str.strip().value_counts()
-        if len(worst_series):
-            nm = worst_series.index[0]
-            n = int(worst_series.iloc[0])
-            worst = f"Worst: {nm} ({n}d)"
-    return count, worst
+    sub = df[uncert_mask & active_mask].copy()
+    if sub.empty:
+        return []
+
+    out: list[dict] = []
+    for nm, group in sub.groupby(sub[name_col].astype(str).str.strip()):
+        if not nm or nm.lower() == "nan":
+            continue
+        n_days = len(group)
+        date_range = "&mdash;"
+        last_uncert = "&mdash;"
+        if date_col:
+            dts = pd.to_datetime(group[date_col], errors="coerce").dropna()
+            if not dts.empty:
+                d_min = dts.min().strftime("%Y-%m-%d")
+                d_max = dts.max().strftime("%Y-%m-%d")
+                date_range = d_min if d_min == d_max else f"{d_min} &ndash; {d_max}"
+                last_uncert = d_max
+        out.append({
+            "driver": nm,
+            "on_duty_days": int(n_days),
+            "date_range": date_range,
+            "last_uncert_date": last_uncert,
+        })
+    out.sort(key=lambda r: -r["on_duty_days"])
+    return out
+
+
+def compute_inspection_compliance(samsara_sheets: dict | None,
+                                    days: int = 7) -> list[dict]:
+    """Per-driver DVIR inspection completion + defect rollup over the
+    last `days` days. FMCSA requires a pre-trip AND a post-trip DVIR
+    per working day, so expected_total = working_days * 2.
+
+    Returns a list of dicts sorted by deficit (expected - done) descending:
+      {driver, working_days,
+       expected_tractor, done_tractor, defects_tractor,
+       expected_trailer, done_trailer, defects_trailer,
+       expected_total, done_total, defects_total}
+
+    Trailer inspections share the working-day count — a working day
+    typically pairs a tractor and a trailer, so expected trailer
+    inspections also = working_days * 2. Drivers without any working
+    days in the window are omitted."""
+    if not samsara_sheets:
+        return []
+    dvirs = samsara_sheets.get("DVIRs")
+    hos = samsara_sheets.get("HOS_DailyLogs")
+    if dvirs is None or dvirs.empty or hos is None or hos.empty:
+        return []
+
+    window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
+
+    # Working days per driver from HOS daily logs.
+    hos_name_col = _find_col(hos, ["driver name", "driver.name"])
+    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
+                                     "logmetadata.logdate"])
+    hos_drive_col = _find_col(hos, ["dutystatusdurations.drivedurationms",
+                                       "drivedurationms"])
+    hos_onduty_col = _find_col(hos, ["dutystatusdurations.ondutydurationms",
+                                        "ondutydurationms"])
+    if not (hos_name_col and hos_date_col):
+        return []
+
+    hos_dt = pd.to_datetime(hos[hos_date_col], errors="coerce")
+    drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
+             if hos_drive_col else pd.Series(0, index=hos.index))
+    onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
+              if hos_onduty_col else pd.Series(0, index=hos.index))
+    active = (drive > 0) | (onduty > 0)
+    hos_window = hos[active & (hos_dt >= window_start)].copy()
+    if hos_window.empty:
+        return []
+    working_days_by_driver = (
+        hos_window.groupby(hos_window[hos_name_col].astype(str).str.strip())
+        .size()
+        .to_dict()
+    )
+
+    # DVIR completion per driver, split tractor vs trailer.
+    dvir_driver_col = _find_col(dvirs, ["driver.name", "driver name"])
+    dvir_time_col = _find_col(dvirs, ["starttime", "start time",
+                                        "createdattime", "submittedattime"])
+    dvir_vehicle_col = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+    dvir_trailer_col = _find_col(dvirs, ["trailer.name", "trailer name"])
+    if not (dvir_driver_col and dvir_time_col):
+        return []
+
+    dvir_dt = pd.to_datetime(dvirs[dvir_time_col], errors="coerce", utc=True)
+    dvir_dt = dvir_dt.dt.tz_localize(None) if hasattr(dvir_dt, "dt") else dvir_dt
+    dvirs_window = dvirs[dvir_dt >= window_start].copy()
+
+    done_tractor: dict[str, int] = {}
+    done_trailer: dict[str, int] = {}
+    if not dvirs_window.empty:
+        for nm, group in dvirs_window.groupby(
+            dvirs_window[dvir_driver_col].astype(str).str.strip()
+        ):
+            if not nm or nm.lower() == "nan":
+                continue
+            # Tractor DVIRs: vehicle.name populated.
+            if dvir_vehicle_col:
+                tractor_mask = (group[dvir_vehicle_col].notna()
+                                & (group[dvir_vehicle_col].astype(str).str.strip() != ""))
+                done_tractor[nm] = int(tractor_mask.sum())
+            # Trailer DVIRs: trailer.name populated.
+            if dvir_trailer_col:
+                trailer_mask = (group[dvir_trailer_col].notna()
+                                & (group[dvir_trailer_col].astype(str).str.strip() != ""))
+                done_trailer[nm] = int(trailer_mask.sum())
+
+    # Defect counts per driver from the exploded DVIR_Defects sheet.
+    defects_tractor: dict[str, int] = {}
+    defects_trailer: dict[str, int] = {}
+    df_defects = samsara_sheets.get("DVIR_Defects")
+    if df_defects is not None and not df_defects.empty:
+        d_driver = _find_col(df_defects, ["driver"])
+        d_time = _find_col(df_defects, ["reported", "createdat"])
+        d_dvir_type = _find_col(df_defects, ["dvir type"])
+        d_unit = _find_col(df_defects, ["unit"])
+        if d_driver and d_time:
+            d_dt = pd.to_datetime(df_defects[d_time], errors="coerce")
+            d_window = df_defects[d_dt >= window_start].copy()
+            # Heuristic for tractor vs trailer when DVIR Type isn't set:
+            # unit names containing TR / TRL / a leading digit ≤ 9999 are
+            # tractors; longer unit numbers + names with T### / TR### lean
+            # trailer. We default to tractor since the fleet is mostly
+            # tractor-driven and trailer DVIRs are less common. Total is
+            # always the sum so accuracy on the split isn't critical for
+            # the bottom-line action item.
+            for nm, group in d_window.groupby(
+                d_window[d_driver].astype(str).str.strip()
+            ):
+                if not nm or nm.lower() == "nan":
+                    continue
+                n = len(group)
+                # Default everything to tractor unless we can distinguish.
+                defects_tractor[nm] = n
+
+    rows: list[dict] = []
+    all_drivers = set(working_days_by_driver) | set(done_tractor) | set(done_trailer)
+    for nm in all_drivers:
+        wd = int(working_days_by_driver.get(nm, 0))
+        if wd == 0:
+            continue
+        exp_t = wd * 2
+        exp_tr = wd * 2
+        d_t = int(done_tractor.get(nm, 0))
+        d_tr = int(done_trailer.get(nm, 0))
+        df_t = int(defects_tractor.get(nm, 0))
+        df_tr = int(defects_trailer.get(nm, 0))
+        rows.append({
+            "driver": nm,
+            "working_days": wd,
+            "expected_tractor": exp_t,
+            "done_tractor": d_t,
+            "defects_tractor": df_t,
+            "expected_trailer": exp_tr,
+            "done_trailer": d_tr,
+            "defects_trailer": df_tr,
+            "expected_total": exp_t + exp_tr,
+            "done_total": d_t + d_tr,
+            "defects_total": df_t + df_tr,
+        })
+    # Sort by deficit (expected_total - done_total) desc — biggest
+    # compliance gap first.
+    rows.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))
+    return rows
 
 
 def _speed_window_trend(samsara: dict | None
@@ -981,6 +1139,57 @@ def _coaching_action_monthly(samsara: dict | None, state: str
     if not dates:
         return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
     return _monthly_counts(pd.Series(dates))
+
+
+def _onduty_uncert_block(samsara_sheets: dict | None) -> str:
+    """Render the On Duty + Uncertified table — drivers actively working
+    (drive or on-duty time > 0) with logs NOT yet certified. Returns ""
+    when nothing's open. Designed to be injected above the Missing Log
+    Certifications section for at-a-glance comparison."""
+    rows = compute_onduty_uncertified(samsara_sheets)
+    if not rows:
+        return ""
+    body_rows = "".join(
+        _tr(
+            [r["driver"], str(r["on_duty_days"]),
+             r["date_range"], r["last_uncert_date"], "Not certified"],
+            ["left", "right", "left", "left", "left"],
+            [None, "bad", None, None, "bad"],
+        )
+        for r in rows
+    )
+    return (
+        _section('On-duty &amp; uncertified &mdash; drivers actively working with logs not certified')
+        + _table(
+            ['Driver', 'On-duty days uncertified', 'Date range',
+             'Last uncert date', 'Status'],
+            ['left', 'right', 'left', 'left', 'left'],
+            body_rows,
+        )
+    )
+
+
+def _inject_onduty_section(detail_html: str,
+                             samsara_sheets: dict | None) -> str:
+    """Splice the On Duty + Uncertified table into the shared detail-tables
+    HTML, positioned immediately above the Missing Log Certifications
+    section. Falls back to a no-op when either side is empty so the brief
+    never breaks on missing data."""
+    block = _onduty_uncert_block(samsara_sheets)
+    if not block:
+        return detail_html
+    marker = "Missing log certifications"
+    pos = detail_html.find(marker)
+    if pos <= 0:
+        # Marker text changed — append to top of detail block as a fallback.
+        return block + detail_html
+    # _section() returns "<tr><td colspan=...>...</td></tr>" — back up to
+    # that <tr> so the new block sits cleanly between sections rather than
+    # inside the marker's table cell.
+    sec_start = detail_html.rfind("<tr>", 0, pos)
+    if sec_start < 0:
+        return block + detail_html
+    return detail_html[:sec_start] + block + detail_html[sec_start:]
 
 
 def _safety_summary_block_inline(samsara: dict | None,
@@ -1158,9 +1367,14 @@ def _safety_summary_block_inline(samsara: dict | None,
         f"<tr>{safety_charts_row2}</tr>"
         f"<tr>{safety_charts_row3}</tr>"
         f"</table>"
-        # Detail tables (events / HOS / DVIR / coaching)
+        # Detail tables (events / HOS / DVIR / coaching). The on-duty +
+        # uncertified subsection is injected above the "Missing log
+        # certifications" section via string replace so it sits where
+        # a reader naturally compares the two — strictest filter on top
+        # (drivers actively working with uncertified logs), then the
+        # superset (all uncertified days including off-duty paperwork).
         f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:4px;'>"
-        f"{_safety_detail_tables(samsara)}"
+        f"{_inject_onduty_section(_safety_detail_tables(samsara), samsara_sheets)}"
         f"</table>"
         f"</td></tr>"
     )
@@ -1648,6 +1862,106 @@ def build_page_driver_compliance(samba: dict | None,
     return _page_header("Driver compliance", pg, total, section=_SEC_DRIVERS) + _wrap_page(inner)
 
 
+def build_page_inspection_compliance(samsara_sheets: dict | None,
+                                       pg: int, total: int) -> str:
+    """Per-driver DVIR inspection compliance over the last 7 days.
+
+    FMCSA 396.11 / 396.13 requires a pre-trip AND a post-trip DVIR per
+    working day, so expected = working_days * 2. The table shows each
+    driver who worked in the window with their expected vs completed
+    inspections + defects logged, broken out by tractor vs trailer."""
+    rows = compute_inspection_compliance(samsara_sheets, days=7)
+    if not rows:
+        body = (
+            f"<tr><td style='padding:18px 24px;color:{MUTE};font-size:12px;'>"
+            f"DVIR inspection data unavailable from Samsara for this window. "
+            f"Check the DVIRs / HOS_DailyLogs sheets in Samsara Master.xlsx."
+            f"</td></tr>"
+        )
+        return _page_header("Inspection compliance", pg, total,
+                             section=_SEC_EQUIPMENT) + _wrap_page(body)
+
+    # Totals row across all drivers.
+    tot_wd = sum(r["working_days"] for r in rows)
+    tot_exp_t = sum(r["expected_tractor"] for r in rows)
+    tot_done_t = sum(r["done_tractor"] for r in rows)
+    tot_def_t = sum(r["defects_tractor"] for r in rows)
+    tot_exp_tr = sum(r["expected_trailer"] for r in rows)
+    tot_done_tr = sum(r["done_trailer"] for r in rows)
+    tot_def_tr = sum(r["defects_trailer"] for r in rows)
+    tot_exp = sum(r["expected_total"] for r in rows)
+    tot_done = sum(r["done_total"] for r in rows)
+    tot_def = sum(r["defects_total"] for r in rows)
+
+    def _pct(done: int, expected: int) -> str:
+        if expected <= 0:
+            return "&mdash;"
+        return f"{100 * done / expected:.0f}%"
+
+    def _kind(done: int, expected: int) -> str:
+        if expected <= 0:
+            return None
+        pct = done / expected
+        return "good" if pct >= 0.9 else ("warn" if pct >= 0.5 else "bad")
+
+    body_rows = ""
+    for r in rows:
+        body_rows += _tr(
+            [r["driver"],
+             str(r["working_days"]),
+             f"{r['done_tractor']} / {r['expected_tractor']}",
+             str(r["defects_tractor"]),
+             f"{r['done_trailer']} / {r['expected_trailer']}",
+             str(r["defects_trailer"]),
+             f"{r['done_total']} / {r['expected_total']}",
+             str(r["defects_total"]),
+             _pct(r["done_total"], r["expected_total"])],
+            ["left", "right", "right", "right", "right", "right",
+             "right", "right", "right"],
+            [None, None,
+             _kind(r["done_tractor"], r["expected_tractor"]),
+             ("warn" if r["defects_tractor"] > 0 else None),
+             _kind(r["done_trailer"], r["expected_trailer"]),
+             ("warn" if r["defects_trailer"] > 0 else None),
+             _kind(r["done_total"], r["expected_total"]),
+             ("warn" if r["defects_total"] > 0 else None),
+             _kind(r["done_total"], r["expected_total"])],
+        )
+    body_rows += _totals_row(
+        [f"TOTAL ({len(rows)} drivers)",
+         str(tot_wd),
+         f"{tot_done_t} / {tot_exp_t}",
+         str(tot_def_t),
+         f"{tot_done_tr} / {tot_exp_tr}",
+         str(tot_def_tr),
+         f"{tot_done} / {tot_exp}",
+         str(tot_def),
+         _pct(tot_done, tot_exp)],
+        ["left", "right", "right", "right", "right", "right",
+         "right", "right", "right"],
+    )
+
+    note = (
+        f"<div style='padding:8px 24px;color:{MUTE};font-size:11px;'>"
+        f"Expected inspections = working days &times; 2 (FMCSA 396.11 requires "
+        f"a pre-trip and post-trip DVIR each working day). Working days "
+        f"counted from HOS daily logs with drive or on-duty time &gt; 0. "
+        f"Tractor vs trailer split derived from the asset on each DVIR; "
+        f"defects exploded from DVIR_Defects with one row per defect line."
+        f"</div>"
+    )
+
+    body = (
+        f"<tr><td style='padding:18px 24px 0;'>"
+        f"{_section('DVIR inspection compliance &mdash; last 7 days')}"
+        f"{_table(['Driver', 'Worked', 'Tractor done / exp', 'Tractor defects', 'Trailer done / exp', 'Trailer defects', 'Total done / exp', 'Total defects', 'Compliance'], ['left', 'right', 'right', 'right', 'right', 'right', 'right', 'right', 'right'], body_rows)}"
+        f"{note}"
+        f"</td></tr>"
+    )
+    return _page_header("Inspection compliance", pg, total,
+                         section=_SEC_EQUIPMENT) + _wrap_page(body)
+
+
 def build_page_csa_scorecard(csa: dict | None, pg: int, total: int) -> str:
     """FMCSA CSA BASIC percentiles — same shape as the executive brief
     page 10, but rendered with the safety-brief's lighter header.
@@ -1890,16 +2204,19 @@ def _build_html_report(*,
     #                                  turn + speed + crashes)
     #   4. Safety & compliance detail— EVENTS: exec-brief build_page2
     #                                  (Speed Over Limit + Coaching tiles)
-    #   5. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
-    #   6. Coached Events audit trail— SAFETY: exec-brief build_page_coached
+    #   5. Inspection compliance     — EQUIPMENT: per-driver DVIR
+    #                                  completion vs FMCSA-required 2/day
+    #                                  (pre + post trip), tractor / trailer
+    #                                  / total + defects logged
+    #   6. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
+    #   7. Coached Events audit trail— SAFETY: exec-brief build_page_coached
     #                                  (190-day every-coach/dismiss/recognize)
     #
     # Vehicle Compliance was dropped 2026-06-15 — its Open DVIR defects
     # table already lives on page 1's _safety_detail_tables block, and
-    # the inspections-due section was a permanent placeholder (Samsara
-    # doesn't expose due-dates). Net effect: the standalone page was
-    # duplicated data, and removing it tightens the brief from 7 → 6
-    # pages with no information loss.
+    # the inspections-due section was a permanent placeholder. The
+    # Inspection Compliance page added 2026-06-15 takes EQUIPMENT slot
+    # with actionable per-driver compliance data instead.
     #
     # Invoice Closeout + AR Reconciliation moved to the separate
     # Financial Brief (src/financial_email.py) so each report stays
@@ -1907,7 +2224,7 @@ def _build_html_report(*,
     # batch admin. The two ship at different times of day to match
     # when the work actually happens.
     today_label = _today_label()
-    total = 6
+    total = 7
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
@@ -1917,15 +2234,19 @@ def _build_html_report(*,
         build_page_driver_compliance(samba, alvys_drivers, 2, total),
         _exec_build_page2b(samsara, today_label, pg=3),
         _exec_build_page2(samsara, today_label, pg=4),
-        build_page_csa_scorecard(csa, 5, total),
-        _exec_build_page_coached(samsara, today_label, pg=6),
+        build_page_inspection_compliance(samsara_sheets, 5, total),
+        build_page_csa_scorecard(csa, 6, total),
+        _exec_build_page_coached(samsara, today_label, pg=7),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
-        f"body{{margin:0;background:#fff;font-family:Helvetica,Arial,sans-serif;color:{INK};font-size:13px;line-height:1.45;}}"
+        # No body line-height — inherited line-height inflates spacer divs
+        # in _bar_chart and breaks the bar bottom-anchoring. Components
+        # that need their own line-height set it inline.
+        f"body{{margin:0;background:#fff;font-family:Helvetica,Arial,sans-serif;color:{INK};font-size:13px;}}"
         ".page-break{page-break-after:always;break-after:page;height:0;}"
         # WeasyPrint page counters — adds a true per-PDF-page footer on
         # every physical page (auto-paginated continuations included).
