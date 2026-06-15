@@ -53,15 +53,15 @@ explained after the fact.
 1. **"Late" definition.** Late = past the **delivery appointment time
    stored in Alvys**. Not the appointment window, not a buffered
    version — the appointment time itself is the line.
-2. **ETA source — preference order.**
+2. **ETA source — preference order, both approved.**
    - **Preferred:** if Alvys exposes its UI "miles to delivery" and
      "estimated time to delivery" fields via the API, use those. The
      Alvys UI already shows these for every load — same number the
      dispatcher sees should be the number the brief uses.
-   - **Fallback:** build our own algorithm from Samsara current
-     location → Alvys delivery address compared against the Alvys
-     appointment time. Acceptable if Alvys's API doesn't expose the
-     UI ETA.
+   - **Fallback (explicitly approved 2026-06-15):** build our own
+     algorithm from Samsara current location → Alvys delivery address
+     compared against the Alvys appointment time. Jeff confirmed this
+     is acceptable if Alvys doesn't expose the UI ETA.
    - **Investigation note.** The legacy `Alvys_Master.xlsx` schema in
      `src/column_mappings.py` (around line 847-851) already has
      placeholder columns for `Location`, `Next Stop`, `ETA`,
@@ -77,19 +77,32 @@ explained after the fact.
      `mileage`, `location`, `lastLocationAt` — if found, wire into
      those five placeholder columns AND into the OTD page.
 
+4. **Brief vs dashboard.** Brief page (not a standalone dashboard). And
+   specifically: ship the page on **two** briefs once the second one
+   exists —
+   - **Phase 1 — Executive brief.** Jeff's primary surface; add the OTD
+     page there now.
+   - **Phase 2 — Operations brief.** Doesn't exist yet (planned —
+     Jackson + Dan primary owners per the responsibility map). When
+     that brief is built, the OTD page also lands there so the people
+     who can act on it own its delivery channel.
+   - Both surfaces render the **same** OTD compute; only the framing /
+     accompanying pages differ. (Note: this is the rare forecast page
+     Jeff explicitly wants on the executive brief even though his
+     month-end tracking philosophy is facts-first — OTD is binary
+     will/won't-deliver, not a financial estimate, so it doesn't
+     conflict with the facts-vs-forecast split captured in
+     `xfreight-jeff-vs-jb-tracking-philosophy.md`.)
+
 ## Still open
 
 3. **Today scope.** Today only, or today + next 24h rolling window so
    tomorrow-AM appointments also show?
-4. **Brief vs dashboard.** New page on the existing Operational brief
-   (sent 5am to Jackson + Dan, Jeff cc), or a standing one-pager
-   refreshed every 2h that lives somewhere else (Teams card? Sheets
-   tab?). The morning brief is the right *first* surface — refreshing
-   intra-day is a phase-2 ask.
 5. **Status column.** Three buckets (on-time / at-risk / late) or
    five (early / on-time / tight / at-risk / late)?
-6. **Who's the audience.** Jackson + Dan primary (they can act),
-   Jeff cc. Audra not on this — it's operational, not safety.
+6. **Audience confirmation.** Phase 1 brief audience is Jeff (executive
+   brief). Phase 2 brief audience is Jackson + Dan (operations brief)
+   when it's built. Audra not on this — operational, not safety.
 
 ## What "done" looks like
 
