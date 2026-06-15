@@ -1890,9 +1890,10 @@ def build_page_safety_events_hos(samsara: dict | None,
 
 
 def build_page_dvir_coaching(samsara: dict | None, pg: int, total: int) -> str:
-    """Page 4 — Open DVIR defects + coaching needs assigned. Starts on a
-    fresh page so DVIR always appears at the top regardless of how much
-    content the safety-events/HOS page carries."""
+    """Page 4 — Open DVIR defects. The coaching-needs-assigned table
+    that used to live here was a duplicate of the dedicated coached
+    events page (_exec_build_page_coached) — removed to keep each
+    detail surface in one place."""
     detail = (samsara or {}).get("detail", {}) or {}
 
     # DVIR dedup — same logic as build_page5_vehicles.
@@ -1923,56 +1924,15 @@ def build_page_dvir_coaching(samsara: dict | None, pg: int, total: int) -> str:
             "No open DVIR defects &mdash; all reported defects have been resolved.", 6
         )
 
-    # Coaching needs assigned — replicated from _safety_detail_tables.
-    _ACK_KEEP_DAYS = 3
-    _now_utc = pd.Timestamp.now(tz="UTC")
-    _seven_d_ago = _now_utc - pd.Timedelta(days=7)
-    coaching_list = (samsara or {}).get("coaching_list") or []
-    coach_rows = ""
-    for c in coaching_list:
-        n = c.get("events", 0)
-        last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
-        is_coaching = n >= COACH_EVENT_THRESHOLD
-        if is_coaching:
-            ack_ts = c.get("ack_ts") if c.get("acked") else None
-            if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
-                continue
-            acked = ack_ts is not None
-        else:
-            if pd.notna(last_ts) and last_ts < _seven_d_ago:
-                continue
-            acked = False
-        action = "Assign coaching" if is_coaching else "Monitor"
-        action_kind = "bad" if is_coaching else "warn"
-        events_kind = "bad" if is_coaching else ("warn" if n > 0 else None)
-        types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
-        ack_cell = ("&check;" if acked else "&mdash;") if is_coaching else "n/a"
-        ack_color = ("good" if acked else "mute") if is_coaching else "mute"
-        _coach_full = (c.get("coach") or "").strip()
-        coach_cell = _coach_full.split()[0] if _coach_full else "&mdash;"
-        coach_rows += _tr(
-            [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
-             action, coach_cell, ack_cell],
-            ["left", "left", "right", "left", "left", "left", "center"],
-            [None, None, events_kind, None, action_kind, None, ack_color],
-        )
-    if not coach_rows:
-        coach_rows = _all_clear_row(
-            "No coaching assignments pending &mdash; all drivers are clear.", 7
-        )
-
     body = (
         f"<tr><td style='padding:18px 24px 0;'>"
         f"<table width='100%' cellpadding='0' cellspacing='0'>"
         + _section('DVIR defects (open) &mdash; all unresolved')
         + _table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'],
                  ['left'] * 6, dvir_rows)
-        + _section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')
-        + _table(['Driver', 'Event types', 'Events (7d)', 'Last event', 'Action', 'Coach', 'Ack'],
-                 ['left', 'left', 'right', 'left', 'left', 'left', 'center'], coach_rows)
         + f"</table></td></tr>"
     )
-    return _page_header("DVIR & Coaching", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
+    return _page_header("DVIR defects", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
 
 
 def build_page_dvir_detail_by_driver(samsara_sheets: dict | None,
