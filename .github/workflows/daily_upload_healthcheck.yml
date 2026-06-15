@@ -35,6 +35,9 @@ permissions:
   contents: read
   actions: write   # required to dispatch daily_upload.yml via gh CLI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   healthcheck:
     runs-on: ubuntu-latest

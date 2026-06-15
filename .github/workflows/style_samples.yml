@@ -16,6 +16,9 @@ on:
       - .github/workflows/style_samples.yml
       - src/style_samples.py
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   samples:
     runs-on: ubuntu-latest

@@ -17,6 +17,9 @@ on:
     - cron: '45 17 * * *'  # CDT 12:45pm / CST 11:45am (CDT: gated)
     - cron: '45 23 * * *'  # CDT 6:45pm  / CST 5:45pm  (CDT: gated)
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   send-status:
     runs-on: ubuntu-latest

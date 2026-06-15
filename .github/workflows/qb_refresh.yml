@@ -28,6 +28,9 @@ on:
     #              2pm→20, 4pm→22, 6pm→0 (next day)
     - cron: '0 0,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 * * *'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
