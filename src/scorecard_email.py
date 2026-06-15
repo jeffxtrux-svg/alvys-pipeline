@@ -608,14 +608,16 @@ ENTITY_ORDER = ["X-Trux", "X-Linx"]
 ALVYS_OPEN_STATUSES = {"open"}
 
 # Hold-out threshold for X-Trux asset loads (the "variable", set by Jeff
-# 2026-06-13). A load whose Corrected Margin % = (Customer Revenue - Driver Rate)
-# / Customer Revenue is AT OR ABOVE this is treated as not-yet-fully-costed — the
-# recorded driver pay is implausibly low for the revenue (e.g. a load brokered to
-# a carrier whose real cost isn't in Driver Rate), which would inflate margin.
-# Such loads are held out of BOTH revenue and cost until they settle, surfaced as
-# `unsettled`. X-Trux ONLY — X-Linx brokerage legitimately runs thin and is
-# exempt. Override at runtime via ALVYS_XTRUX_HOLDOUT_MARGIN.
-ALVYS_XTRUX_HOLDOUT_MARGIN = 0.74
+# 2026-06-13 at 0.74, raised to 0.80 on 2026-06-15 to match the Power BI
+# change). A load whose Corrected Margin % = (Customer Revenue - Driver Rate)
+# / Customer Revenue is AT OR ABOVE this is treated as not-yet-fully-costed —
+# the recorded driver pay is implausibly low for the revenue (e.g. a load
+# brokered to a carrier whose real cost isn't in Driver Rate), which would
+# inflate margin. Such loads are held out of BOTH revenue and cost until
+# they settle, surfaced as `unsettled`. X-Trux ONLY — X-Linx brokerage
+# legitimately runs thin and is exempt. Override at runtime via
+# ALVYS_XTRUX_HOLDOUT_MARGIN.
+ALVYS_XTRUX_HOLDOUT_MARGIN = 0.80
 
 
 def _entity_group(office) -> str | None:
