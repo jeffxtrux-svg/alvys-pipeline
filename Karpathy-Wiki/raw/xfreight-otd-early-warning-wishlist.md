@@ -48,13 +48,37 @@ explained after the fact.
   Samsara is keyed by truck/asset name. Same join pattern used by the
   per-driver MPG and Speed pages in the Operational brief.
 
-## Open scoping questions (for tomorrow's drive answer)
+## Scoping answers (Jeff, 2026-06-15 drive home)
 
-1. **"Late" definition.** Late vs the appointment window? Late vs the
-   scheduled appointment time? With a buffer (e.g., 30 min)?
-2. **ETA source.** Do we trust a simple haversine + assumed 55 mph
-   highway speed, or do we need Samsara's Route ETA (more accurate but
-   may require a different endpoint), or Google Distance Matrix?
+1. **"Late" definition.** Late = past the **delivery appointment time
+   stored in Alvys**. Not the appointment window, not a buffered
+   version — the appointment time itself is the line.
+2. **ETA source — preference order.**
+   - **Preferred:** if Alvys exposes its UI "miles to delivery" and
+     "estimated time to delivery" fields via the API, use those. The
+     Alvys UI already shows these for every load — same number the
+     dispatcher sees should be the number the brief uses.
+   - **Fallback:** build our own algorithm from Samsara current
+     location → Alvys delivery address compared against the Alvys
+     appointment time. Acceptable if Alvys's API doesn't expose the
+     UI ETA.
+   - **Investigation note.** The legacy `Alvys_Master.xlsx` schema in
+     `src/column_mappings.py` (around line 847-851) already has
+     placeholder columns for `Location`, `Next Stop`, `ETA`,
+     `Next Appointment`, and `Location Update` — all mapped to `None`
+     with the comment `# UI real-time`. That suggests whoever built
+     the original mapping looked for these in the Alvys API and didn't
+     find them at the time (or didn't find them on the loads/trips
+     JSON shape they had). Worth re-investigating against the
+     **current** API before committing to the Samsara-only fallback —
+     Alvys may have added them since. Concrete first step: run the
+     pipeline once, open `output/_debug/sample_loads.json` and
+     `sample_trips.json`, grep for `eta`, `nextStop`, `distance`,
+     `mileage`, `location`, `lastLocationAt` — if found, wire into
+     those five placeholder columns AND into the OTD page.
+
+## Still open
+
 3. **Today scope.** Today only, or today + next 24h rolling window so
    tomorrow-AM appointments also show?
 4. **Brief vs dashboard.** New page on the existing Operational brief
