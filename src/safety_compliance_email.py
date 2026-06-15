@@ -1023,6 +1023,32 @@ def _coaching_action_monthly(samsara: dict | None, state: str
     return _monthly_counts(pd.Series(dates))
 
 
+def _all_clear_row(msg: str, colspan: int = 4) -> str:
+    """Green ALL CLEAR banner as a <tr> row — for table-context empty states."""
+    return (
+        f"<tr><td colspan='{colspan}' style='padding:4px 6px 10px;'>"
+        f"<div style='border:1px solid {LINE};border-left:4px solid {GOOD};"
+        f"border-radius:6px;padding:12px 16px;background:{GOODBG};'>"
+        f"<div style='font-size:10px;letter-spacing:1.5px;font-weight:800;"
+        f"color:{GOOD};margin-bottom:4px;'>&#10003;&nbsp;ALL CLEAR</div>"
+        f"<div style='font-size:12.5px;color:{INK};'>{msg}</div>"
+        f"</div></td></tr>"
+    )
+
+
+def _all_clear_div(msg: str) -> str:
+    """Green ALL CLEAR banner as a <div> — for non-table empty states."""
+    return (
+        f"<div style='margin:4px 0 10px;border:1px solid {LINE};"
+        f"border-left:4px solid {GOOD};border-radius:6px;padding:12px 16px;"
+        f"background:{GOODBG};'>"
+        f"<div style='font-size:10px;letter-spacing:1.5px;font-weight:800;"
+        f"color:{GOOD};margin-bottom:4px;'>&#10003;&nbsp;ALL CLEAR</div>"
+        f"<div style='font-size:12.5px;color:{INK};'>{msg}</div>"
+        f"</div>"
+    )
+
+
 def _onduty_uncert_block(samsara_sheets: dict | None) -> str:
     """Render the On-duty Today + Prior-day Uncertified table.
 
@@ -1403,8 +1429,9 @@ def build_page2_events(samsara: dict | None, pg: int, total: int) -> str:
     if not rows_html:
         rows_html = (
             f"<tr><td colspan='6' style='padding:14px;color:{MUTE};font-size:12px;'>"
-            f"No safety events in the last 7 days.</td></tr>"
-        )
+            ) + _all_clear_row(
+                "No safety events recorded in the last 7 days &mdash; fleet is operating safely.", 6
+            )
     body = (
         f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('Safety events &mdash; last 7 days')}"
@@ -1430,9 +1457,8 @@ def build_page3_hos(samsara: dict | None, pg: int, total: int) -> str:
         for r in hos
     )
     if not hos_rows:
-        hos_rows = (
-            f"<tr><td colspan='4' style='padding:14px;color:{MUTE};font-size:12px;'>"
-            f"No HOS violations in the last 7 days.</td></tr>"
+        hos_rows = _all_clear_row(
+            "No HOS violations in the last 7 days &mdash; all drivers operating within hours of service.", 4
         )
 
     uncert = detail.get("hos_uncert", []) or []
@@ -1446,9 +1472,8 @@ def build_page3_hos(samsara: dict | None, pg: int, total: int) -> str:
         for r in uncert
     )
     if not uncert_rows:
-        uncert_rows = (
-            f"<tr><td colspan='4' style='padding:14px;color:{MUTE};font-size:12px;'>"
-            f"All daily logs certified.</td></tr>"
+        uncert_rows = _all_clear_row(
+            "All daily logs certified &mdash; no outstanding certifications.", 4
         )
 
     body = (
@@ -1539,9 +1564,8 @@ def build_page5_vehicles(samsara: dict | None, samsara_sheets: dict | None,
         for r in deduped_dvirs
     )
     if not dvir_rows:
-        dvir_rows = (
-            f"<tr><td colspan='6' style='padding:14px;color:{MUTE};font-size:12px;'>"
-            f"No open DVIR defects.</td></tr>"
+        dvir_rows = _all_clear_row(
+            "No open DVIR defects &mdash; all reported defects have been resolved.", 6
         )
 
     # Inspections-due lookup: scan Vehicles sheet for any *Inspection* /
@@ -1638,8 +1662,9 @@ def build_page_safety_events_hos(samsara: dict | None,
         for r in evs
     )
     if not event_rows:
-        event_rows = (f"<tr><td colspan='6' style='padding:14px;color:{MUTE};font-size:12px;'>"
-                      f"No safety events in the last 7 days.</td></tr>")
+        event_rows = _all_clear_row(
+            "No safety events recorded in the last 7 days &mdash; fleet is operating safely.", 6
+        )
 
     hos = detail.get("hos", []) or []
     hos_rows = "".join(
@@ -1652,8 +1677,9 @@ def build_page_safety_events_hos(samsara: dict | None,
         for r in hos
     )
     if not hos_rows:
-        hos_rows = (f"<tr><td colspan='4' style='padding:14px;color:{MUTE};font-size:12px;'>"
-                    f"No HOS violations in the last 7 days.</td></tr>")
+        hos_rows = _all_clear_row(
+            "No HOS violations in the last 7 days &mdash; all drivers operating within hours of service.", 4
+        )
 
     uncert = detail.get("hos_uncert", []) or []
     uncert_rows = "".join(
@@ -1663,8 +1689,9 @@ def build_page_safety_events_hos(samsara: dict | None,
         for r in uncert
     )
     if not uncert_rows:
-        uncert_rows = (f"<tr><td colspan='4' style='padding:14px;color:{MUTE};font-size:12px;'>"
-                       f"All daily logs certified.</td></tr>")
+        uncert_rows = _all_clear_row(
+            "All daily logs certified &mdash; no outstanding certifications.", 4
+        )
 
     body = (
         f"<tr><td style='padding:18px 24px 0;'>"
@@ -1713,8 +1740,9 @@ def build_page_dvir_coaching(samsara: dict | None, pg: int, total: int) -> str:
         for r in deduped
     )
     if not dvir_rows:
-        dvir_rows = (f"<tr><td colspan='6' style='padding:14px;color:{MUTE};font-size:12px;'>"
-                     f"No open DVIR defects.</td></tr>")
+        dvir_rows = _all_clear_row(
+            "No open DVIR defects &mdash; all reported defects have been resolved.", 6
+        )
 
     # Coaching needs assigned — replicated from _safety_detail_tables.
     _ACK_KEEP_DAYS = 3
@@ -1750,8 +1778,9 @@ def build_page_dvir_coaching(samsara: dict | None, pg: int, total: int) -> str:
             [None, None, events_kind, None, action_kind, None, ack_color],
         )
     if not coach_rows:
-        coach_rows = (f"<tr><td colspan='7' style='padding:14px;color:{MUTE};font-size:12px;'>"
-                      f"No coaching needs assigned.</td></tr>")
+        coach_rows = _all_clear_row(
+            "No coaching assignments pending &mdash; all drivers are clear.", 7
+        )
 
     body = (
         f"<tr><td style='padding:18px 24px 0;'>"
@@ -1837,9 +1866,8 @@ def build_page_driver_compliance(samba: dict | None,
             rows,
         )
     else:
-        cdl_table = (
-            f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
-            f"No CDL expirations in the next 30 days.</div>"
+        cdl_table = _all_clear_div(
+            "No CDL expirations in the next 30 days &mdash; all driver licenses are current."
         )
 
     # 3. DOT medical card expirations — next 30 days from the same sheet.
@@ -1868,9 +1896,8 @@ def build_page_driver_compliance(samba: dict | None,
             rows,
         )
     else:
-        med_table = (
-            f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
-            f"No DOT medical card expirations in the next 30 days.</div>"
+        med_table = _all_clear_div(
+            "No DOT medical card expirations in the next 30 days &mdash; all medical certificates are current."
         )
 
     inner += (
