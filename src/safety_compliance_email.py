@@ -82,6 +82,7 @@ from src.scorecard_email import (
     build_page2b as _exec_build_page2b,
     build_page7 as _exec_build_page7,
     build_page_coached as _exec_build_page_coached,
+    build_page_equipment as _exec_build_page_equipment,
     compute_alvys_ar,
     compute_alvys_drivers,
     compute_alvys_uninvoiced,
@@ -834,10 +835,17 @@ def _action_items_block(items: list[dict]) -> str:
     )
 
 
-def _risk_watch_block(signals: list[dict]) -> str:
+def _risk_watch_block(signals: list[dict],
+                        equipment: dict | None = None) -> str:
     """Compact safety-relevant Risk Watch strip. Same renderer as the
     executive brief — single source of truth for the visual + value
-    formatting (money/days/pct)."""
+    formatting (money/days/pct).
+
+    When `equipment` is supplied and the equipment-inspection-backlog
+    signal is tripped, the tractor/trailer unit numbers flagged for
+    inspection are appended as a detail line so the trip text says
+    not just "4 tractors flagged" but "tractors: 44206, 45207, 44201,
+    42188" — accountability needs the actual numbers, not a count."""
     if not signals:
         return ""
     from src.risk_watch import render_strip_html
@@ -848,6 +856,60 @@ def _risk_watch_block(signals: list[dict]) -> str:
     )
     if not strip:
         return ""
+
+    # Enrich the tripped equipment-inspection-backlog signal with the
+    # actual unit numbers. We splice a small "Units flagged" line into
+    # the rendered HTML rather than re-doing the whole render, so the
+    # YAML-driven catalog stays the source of truth for the strip.
+    if equipment:
+        backlog_tripped = any(
+            (s.get("id") == "equipment-inspection-backlog" and s.get("tripped"))
+            for s in signals
+        )
+        if backlog_tripped:
+            def _units_past_policy(items: list[dict] | None) -> list[str]:
+                items = items or []
+                return [
+                    str(t.get("unit") or "?")
+                    for t in items
+                    if isinstance(t.get("policy_days"), int)
+                    and t["policy_days"] < 0
+                ]
+            tractors = _units_past_policy(equipment.get("tractors"))
+            trailers = _units_past_policy(equipment.get("trailers"))
+            detail_parts: list[str] = []
+            if tractors:
+                detail_parts.append(
+                    f"<b style='color:{INK};'>Tractors ({len(tractors)}):</b> "
+                    f"<span style='color:{MUTE};'>"
+                    f"{', '.join(tractors)}</span>"
+                )
+            if trailers:
+                detail_parts.append(
+                    f"<b style='color:{INK};'>Trailers ({len(trailers)}):</b> "
+                    f"<span style='color:{MUTE};'>"
+                    f"{', '.join(trailers)}</span>"
+                )
+            if detail_parts:
+                detail_html = (
+                    f"<div style='margin-top:6px;padding:6px 10px;"
+                    f"background:{BADBG};border-left:3px solid {BAD};"
+                    f"border-radius:3px;font-size:11px;color:{INK};"
+                    f"line-height:1.5;'>"
+                    + " &middot; ".join(detail_parts)
+                    + f"</div>"
+                )
+                # Splice the detail block under the equipment-inspection
+                # row. The render_strip_html row text contains the title
+                # exactly once; find its closing </div> and insert there.
+                marker = "Equipment inspection backlog"
+                pos = strip.find(marker)
+                if pos > 0:
+                    # Locate the </div> that closes that row.
+                    close = strip.find("</div>", pos)
+                    if close > 0:
+                        strip = strip[:close] + detail_html + strip[close:]
+
     return f"<tr><td style='padding:0 24px 8px;'>{strip}</td></tr>"
 
 
@@ -1332,7 +1394,8 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
                           urgent_items: list[dict] | None = None,
                           action_items: list[dict] | None = None,
                           risk_signals: list[dict] | None = None,
-                          samsara_sheets: dict | None = None) -> str:
+                          samsara_sheets: dict | None = None,
+                          equipment: dict | None = None) -> str:
     """Executive summary — bottom line + URGENT banner + Risk Watch strip
     + Action items. The dense metrics view (24h/7d/MTD tiles, 6-month
     trend bars, detail tables) moved to its own logical page 2 so page 1
@@ -1357,7 +1420,7 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
     body = (
         bottom_line_block
         + _urgent_banner(urgent_items)
-        + _risk_watch_block(risk_signals)
+        + _risk_watch_block(risk_signals, equipment=equipment)
         + _action_items_block(action_items)
     )
 
@@ -1794,6 +1857,198 @@ def build_page_dvir_coaching(samsara: dict | None, pg: int, total: int) -> str:
         + f"</table></td></tr>"
     )
     return _page_header("DVIR & Coaching", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
+
+
+def build_page_dvir_detail_by_driver(samsara_sheets: dict | None,
+                                       pg: int, total: int) -> str:
+    """Per-driver DVIR audit trail for the last 14 days.
+
+    Sourced from the raw DVIRs sheet (one row per inspection form, not per
+    defect line), grouped by driver, sorted within each driver by date
+    descending. For each inspection we render: date/time, location,
+    vehicle, trailer, inspection type, safe flag, defect count, and
+    mechanic notes — every detail Audra needs to reconstruct who did
+    what, when, and where.
+
+    Auto-paginates: when the table is long it flows across as many
+    physical pages as needed (one logical page in the page count)."""
+    LOOKBACK_DAYS = 14
+    inner_blocks: list[str] = []
+
+    dvirs = (samsara_sheets or {}).get("DVIRs")
+    if dvirs is None or dvirs.empty:
+        inner_blocks.append(_all_clear_div(
+            "DVIRs sheet is empty &mdash; no inspection records to audit. "
+            "Verify Samsara pull ran successfully."
+        ))
+    else:
+        driver_col = _find_col(dvirs, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        time_col = _find_col(dvirs, ["starttime", "start time",
+                                       "createdattime", "submittedattime"])
+        vehicle_col = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+        trailer_col = _find_col(dvirs, ["trailer.name", "trailer name",
+                                          "asset.name"])
+        loc_col = _find_col(dvirs, [
+            "startlocation.formatted", "startlocation.address",
+            "endlocation.formatted", "endlocation.address",
+            "location.formatted", "location.address",
+            "startlocation", "endlocation", "location",
+        ])
+        type_col = _find_col(dvirs, ["inspectiontype", "dvirtype", "type"])
+        safe_col = _find_col(dvirs, ["safe", "issafe"])
+        defects_col = _find_col(dvirs, ["vehicledefects", "trailerdefects",
+                                          "defects", "defectcount"])
+        notes_col = _find_col(dvirs, ["mechanicnotes", "notes"])
+
+        if not driver_col or not time_col:
+            inner_blocks.append(_all_clear_div(
+                "DVIRs sheet is missing driver/time columns &mdash; cannot "
+                "build per-driver audit trail. Check Samsara field mapping."
+            ))
+        else:
+            window_start = (pd.Timestamp.now(tz="UTC").tz_localize(None)
+                            - pd.Timedelta(days=LOOKBACK_DAYS))
+            dt = _to_naive_dt(dvirs[time_col])
+            df = dvirs.assign(_dt=dt)
+            df = df[df["_dt"] >= window_start].copy()
+
+            if df.empty:
+                inner_blocks.append(_all_clear_div(
+                    f"No DVIR inspections recorded in the last {LOOKBACK_DAYS} days."
+                ))
+            else:
+                df["_driver"] = df[driver_col].astype(str).str.strip()
+                df = df[df["_driver"].str.lower().isin(["", "nan", "none"]) == False]
+                df = df.sort_values(["_driver", "_dt"], ascending=[True, False])
+
+                def _fmt_safe(v) -> tuple[str, str]:
+                    s = str(v).strip().lower() if v is not None else ""
+                    if s in ("true", "1", "yes", "y"):
+                        return ("Safe", GOOD)
+                    if s in ("false", "0", "no", "n"):
+                        return ("Unsafe", BAD)
+                    return ("&mdash;", MUTE)
+
+                def _fmt_defects(v) -> tuple[str, str]:
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        return ("0", MUTE)
+                    s = str(v).strip()
+                    if s in ("", "nan", "[]", "None"):
+                        return ("0", MUTE)
+                    if s.isdigit():
+                        n = int(s)
+                        return (str(n), BAD if n > 0 else MUTE)
+                    # List-like — count commas + 1, or fall back to "yes"
+                    if s.startswith("["):
+                        n = s.count("{") or s.count(",") + 1
+                        return (str(n), BAD if n > 0 else MUTE)
+                    return ("1", BAD)
+
+                def _trim(s: str, n: int) -> str:
+                    s = (s or "").strip()
+                    if not s or s.lower() == "nan":
+                        return "&mdash;"
+                    return (s[:n - 1] + "&hellip;") if len(s) > n else s
+
+                # Render one block per driver — a section header + table.
+                for driver_name, group in df.groupby("_driver", sort=True):
+                    rows = ""
+                    for _, r in group.iterrows():
+                        ts = r["_dt"]
+                        when = (ts.strftime("%Y-%m-%d %H:%M")
+                                if pd.notna(ts) else "&mdash;")
+                        loc = _trim(str(r[loc_col]) if loc_col else "", 40)
+                        veh = _trim(str(r[vehicle_col]) if vehicle_col else "", 16)
+                        trl = _trim(str(r[trailer_col]) if trailer_col else "", 16)
+                        itype = _trim(str(r[type_col]) if type_col else "", 14)
+                        safe_v, safe_color = (_fmt_safe(r[safe_col])
+                                              if safe_col else ("&mdash;", MUTE))
+                        dcount, dcolor = (_fmt_defects(r[defects_col])
+                                          if defects_col else ("&mdash;", MUTE))
+                        notes = _trim(str(r[notes_col]) if notes_col else "", 38)
+                        rows += (
+                            f"<tr>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11.5px;color:{INK};'>{when}</td>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11.5px;color:{INK};'>{loc}</td>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11.5px;color:{INK};'>{veh}</td>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11.5px;color:{INK};'>{trl}</td>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11.5px;color:{INK};'>{itype}</td>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11.5px;color:{safe_color};font-weight:700;'>{safe_v}</td>"
+                            f"<td align='right' style='padding:6px 8px;"
+                            f"border-bottom:1px solid {LINE};font-size:11.5px;"
+                            f"color:{dcolor};font-weight:700;'>{dcount}</td>"
+                            f"<td style='padding:6px 8px;border-bottom:1px solid {LINE};"
+                            f"font-size:11px;color:{MUTE};'>{notes}</td>"
+                            f"</tr>"
+                        )
+                    inner_blocks.append(
+                        f"<div style='page-break-inside:avoid;margin-top:14px;'>"
+                        f"<div style='{FONT_SERIF}font-size:14px;font-weight:700;"
+                        f"color:{INK};border-bottom:2px solid {XFREIGHT_RED};"
+                        f"padding:0 0 4px;margin-bottom:6px;'>"
+                        f"{driver_name} "
+                        f"<span style='font-size:10px;color:{MUTE};font-weight:400;"
+                        f"font-style:italic;'>&middot; {len(group)} inspection"
+                        f"{'s' if len(group) != 1 else ''}</span>"
+                        f"</div>"
+                        f"<table width='100%' cellpadding='0' cellspacing='0' "
+                        f"style='border-collapse:collapse;'>"
+                        f"<thead><tr>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Date / Time</th>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Location</th>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Vehicle</th>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Trailer</th>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Type</th>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Safe</th>"
+                        f"<th align='right' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Defects</th>"
+                        f"<th align='left' style='padding:4px 8px;font-size:9.5px;"
+                        f"letter-spacing:.5px;color:{MUTE};text-transform:uppercase;"
+                        f"border-bottom:1px solid {LINE};'>Mechanic notes</th>"
+                        f"</tr></thead>"
+                        f"<tbody>{rows}</tbody>"
+                        f"</table>"
+                        f"</div>"
+                    )
+
+    body = (
+        f"<tr><td style='padding:18px 24px 0;'>"
+        f"<div style='{FONT_SERIF}font-size:17px;font-weight:400;color:{INK};"
+        f"letter-spacing:-0.3px;'>DVIR audit trail &mdash; per driver &middot; "
+        f"last 14 days</div>"
+        f"<div style='width:36px;height:2px;background:{INK};margin-top:6px;'></div>"
+        f"<div style='font-size:11px;color:{MUTE};margin-top:6px;'>"
+        f"Every inspection submitted in Samsara, grouped by driver. Use this "
+        f"trail to reconstruct who inspected which unit, where, and when &mdash; "
+        f"the accountability record behind the DVIR completion percentages.</div>"
+        + "".join(inner_blocks)
+        + f"</td></tr>"
+    )
+    return _page_header("DVIR audit trail", pg, total,
+                         section=_SEC_EVENTS) + _wrap_page(body)
 
 
 # ----------------------------------------------------------------------
@@ -2266,6 +2521,7 @@ def _build_html_report(*,
                         csa: dict | None,
                         alvys_drivers: dict | None,
                         alvys_sheets: dict | None,
+                        equipment: dict | None,
                         risk_signals: list[dict] | None,
                         action_items: list[dict] | None) -> str:
     metrics = compute_metrics(samsara)
@@ -2285,8 +2541,11 @@ def _build_html_report(*,
     #   7. Inspection compliance — per-driver DVIR completion vs FMCSA 2/day
     #   8. FMCSA CSA scorecard — BASIC percentile ranks
     #   9. Coached events trail — 190-day every-coach/dismiss/recognize
+    #  10. Tractor inspections  — exec brief equipment page (kind='tractors')
+    #  11. Trailer inspections  — exec brief equipment page (kind='trailers')
+    #  12. DVIR audit trail     — per-driver inspection trail, last 14 days
     today_label = _today_label()
-    total = 9
+    total = 12
     _scores_footnote = (
         f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
         f"border-top:1px solid {LINE};margin-top:14px;'>"
@@ -2302,7 +2561,8 @@ def _build_html_report(*,
                               urgent_items=urgent_items,
                               action_items=(action_items or []),
                               risk_signals=(risk_signals or []),
-                              samsara_sheets=samsara_sheets),
+                              samsara_sheets=samsara_sheets,
+                              equipment=equipment),
         build_page2_metrics(samsara, samsara_sheets, 2, total),
         build_page_safety_events_hos(samsara, samsara_sheets, 3, total),
         build_page_dvir_coaching(samsara, 4, total),
@@ -2311,6 +2571,11 @@ def _build_html_report(*,
         build_page_inspection_compliance(samsara_sheets, 7, total),
         build_page_csa_scorecard(csa, 8, total),
         _exec_build_page_coached(samsara, today_label, pg=9),
+        _exec_build_page_equipment(equipment, today_label,
+                                     kind="tractors", pg=10),
+        _exec_build_page_equipment(equipment, today_label,
+                                     kind="trailers", pg=11),
+        build_page_dvir_detail_by_driver(samsara_sheets, 12, total),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
@@ -2444,7 +2709,7 @@ def main() -> int:
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
         samba=samba, csa=csa, alvys_drivers=alvys_drivers,
-        alvys_sheets=alvys_sheets,
+        alvys_sheets=alvys_sheets, equipment=equipment,
         risk_signals=risk_signals, action_items=action_items,
     )
     pdf = _render_pdf(html)
