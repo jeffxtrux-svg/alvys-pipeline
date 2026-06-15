@@ -99,11 +99,13 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Recipient routing (mirrors scorecard_email.yml pattern):
-          #   dispatch/push with `recipients` input set → use that override
+          #   dispatch/push with `recipients` input set → use that TO override
           #   dispatch/push with no input → jeff-only (quiet test send)
-          #   scheduled cron → SAFETY_RECIPIENTS secret (standing list)
-          #   last fallback → hardcoded Audra + Jeff + JB
-          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net,jeff@xfreight.net,jb@xfreight.net') }}
+          #   scheduled cron → SAFETY_RECIPIENTS / SAFETY_CC_RECIPIENTS secrets
+          #   last fallback → Audra TO + JB/Jeff CC (per owner approval
+          #   2026-06-15; only Audra owns the brief, JB+Jeff stay informed)
+          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net') }}
+          SAFETY_CC_EMAILS: ${{ ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '') || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # marker so the on-demand resend actually sends. The
           # skip_idempotency dispatch input does the same on demand.
@@ -222,7 +224,8 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
-          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net,jeff@xfreight.net,jb@xfreight.net') }}
+          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net') }}
+          SAFETY_CC_EMAILS: ${{ ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '') || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
@@ -235,6 +238,7 @@ jobs:
               os.environ["AZURE_CLIENT_SECRET"],
           )
           to = [e.strip() for e in os.environ.get("SAFETY_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+          cc = [e.strip() for e in os.environ.get("SAFETY_CC_EMAILS", "").split(",") if e.strip()]
           run = os.environ.get("RUN_URL", "")
           html = (
               f"<p>The Safety &amp; Compliance Report job <b>failed</b> &mdash; "
@@ -242,5 +246,6 @@ jobs:
               f"<p>Run log: <a href='{run}'>{run}</a></p>"
           )
           send_email(tok, os.environ["ONEDRIVE_USER_UPN"], to,
-                     "⚠️ XFreight Safety & Compliance Report FAILED", html)
+                     "⚠️ XFreight Safety & Compliance Report FAILED", html,
+                     cc_emails=cc or None)
           PY
