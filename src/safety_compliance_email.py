@@ -2836,7 +2836,16 @@ def main() -> int:
             "content_bytes": pdf,
             "mime": "application/pdf",
         }]
-    send_email(tok, upn, to_emails, subj, html, attachments=attachments)
+    # PDF-only delivery: when the attachment is present, the email body
+    # is an empty stub so the reader opens the PDF rather than scrolling
+    # the HTML twice. Falls back to the full HTML if PDF generation
+    # failed so the data still gets through.
+    email_body = (
+        "<html><body style='font-family:Helvetica,Arial,sans-serif;"
+        "font-size:13px;color:#222;'>See attached PDF.</body></html>"
+        if pdf else html
+    )
+    send_email(tok, upn, to_emails, subj, email_body, attachments=attachments)
 
     _write_marker(tok, upn, today,
                   f"sent={len(to_emails)} pdf={'yes' if pdf else 'no'}")
