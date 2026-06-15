@@ -44,6 +44,9 @@ permissions:
   # "Could not fetch an OIDC token" during setupGitHubToken.
   id-token: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   compile:
     runs-on: ubuntu-latest
