@@ -56,6 +56,8 @@ from src.scorecard_email import (
     INK,
     LINE,
     MUTE,
+    NAVY,
+    TILEBG,
     WARN,
     WARNBG,
     XFREIGHT_RED,
@@ -75,6 +77,7 @@ from src.scorecard_email import (
     _to_naive_dt,
     _tr,
     _windows,
+    _xfreight_logo_svg,
     build_page2 as _exec_build_page2,
     build_page2b as _exec_build_page2b,
     build_page7 as _exec_build_page7,
@@ -265,36 +268,44 @@ def _wrap_page(inner_html: str) -> str:
 
 def _page_header(title: str, pg: int, total: int,
                   section: str | None = None) -> str:
-    """Lighter header than the executive brief — no logo SVG to keep
-    the dependency surface low. Title + date stamp + page counter.
+    """Branded page header — XFreight logo + section chip + two-line date,
+    matching the executive brief's visual quality.
 
     `section` is the topic banner above the page title (DRIVERS / EVENTS
-    / EQUIPMENT / REGULATORY / CLOSEOUT). Pages within the same section
-    share a banner so the reader can see the brief's structure at a
-    glance without a separate table of contents."""
+    / EQUIPMENT / REGULATORY). Pages within the same section share a
+    banner so the reader can see the brief's structure at a glance."""
+    logo = _xfreight_logo_svg(width=150, height=26)
     today = _today_label()
+    try:
+        from datetime import datetime as _dt
+        dt = _dt.strptime(today, "%A, %B %d, %Y")
+        day_part = dt.strftime("%A")
+        date_part = dt.strftime("%B %d, %Y")
+    except Exception:
+        day_part, date_part = today, ""
+    section_chip = ""
     if section:
-        eyebrow = (
-            f"<div style='font-size:10px;letter-spacing:2px;color:{XFREIGHT_RED};"
-            f"font-weight:800;'>XFREIGHT &middot; SAFETY &amp; COMPLIANCE "
-            f"&middot; <span style='color:{INK};'>{section}</span></div>"
-        )
-    else:
-        eyebrow = (
-            f"<div style='font-size:10px;letter-spacing:2px;color:{XFREIGHT_RED};"
-            f"font-weight:800;'>XFREIGHT &middot; SAFETY &amp; COMPLIANCE</div>"
+        section_chip = (
+            f"<span style='display:inline-block;padding:2px 9px;border-radius:3px;"
+            f"background:{XFREIGHT_RED};color:#fff;font-size:9px;font-weight:800;"
+            f"letter-spacing:1.2px;margin-left:14px;vertical-align:middle;'>{section}</span>"
         )
     return (
         f"<table width='100%' cellpadding='0' cellspacing='0' "
         f"style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 24px 14px;'>"
         f"<tr>"
         f"<td valign='middle' style='padding:0;'>"
-        f"{eyebrow}"
-        f"<div style='{FONT_SERIF}font-size:18px;color:{INK};margin-top:4px;'>{title}</div>"
+        f"{logo}{section_chip}"
+        f"<div style='{FONT_SERIF}font-style:italic;font-size:13px;color:{INK};"
+        f"font-weight:400;margin-top:8px;'>"
+        f"Safety &amp; Compliance &middot; <b style='font-style:normal;'>{title}</b>"
+        f"</div>"
         f"</td>"
-        f"<td align='right' valign='middle' style='padding:0;font-size:11px;color:{MUTE};'>"
-        f"<div style='{FONT_SERIF}font-style:italic;font-weight:600;color:{INK};'>{today}</div>"
-        f"<div class='pg-of' style='font-size:9px;margin-top:4px;letter-spacing:0.5px;'>"
+        f"<td align='right' valign='middle' style='padding:0;font-size:9.5px;color:{MUTE};font-weight:500;'>"
+        f"<div style='{FONT_SERIF}font-style:italic;font-size:11px;color:{INK};"
+        f"font-weight:600;margin-bottom:2px;'>{day_part}</div>"
+        f"<div>{date_part}</div>"
+        f"<div class='pg-of' style='font-size:9px;color:{MUTE};margin-top:4px;letter-spacing:0.5px;'>"
         f"Page {pg} of {total}</div>"
         f"</td>"
         f"</tr></table>"
@@ -742,16 +753,19 @@ def _urgent_banner(items: list[dict]) -> str:
     if not p1:
         return ""
     rows = "".join(
-        f"<div style='padding:4px 0;font-size:13px;color:{INK};'>"
-        f"&nbsp;&middot;&nbsp;{i.get('action', '')}</div>"
+        f"<div style='padding:5px 0 5px 12px;font-size:13px;color:{INK};"
+        f"border-left:3px solid {BAD};margin-bottom:4px;line-height:1.4;'>"
+        f"<b>{i.get('action', '')}</b>"
+        f"<div style='font-size:11px;color:{MUTE};margin-top:2px;'>{i.get('why', '')}</div>"
+        f"</div>"
         for i in p1
     )
     return (
-        f"<tr><td style='padding:0 18px 14px;'>"
-        f"<div style='background:{BADBG};border-left:6px solid {BAD};"
-        f"border-radius:6px;padding:12px 16px;'>"
+        f"<tr><td style='padding:0 24px 14px;'>"
+        f"<div style='background:{BADBG};border:1px solid {BAD};"
+        f"border-left:6px solid {BAD};border-radius:8px;padding:14px 18px;'>"
         f"<div style='font-size:10px;letter-spacing:2px;font-weight:800;color:{BAD};"
-        f"margin-bottom:6px;'>&#9888;&nbsp;URGENT &middot; ACT NOW</div>"
+        f"margin-bottom:10px;'>&#9888;&nbsp;URGENT &mdash; ACT NOW</div>"
         f"{rows}"
         f"</div></td></tr>"
     )
@@ -761,40 +775,59 @@ def _action_items_block(items: list[dict]) -> str:
     """Top action items today, grouped by priority. Each item shows the
     action, owner, why, and a KB link when one's available."""
     if not items:
-        return ""
+        # All-clear state — green signal so Audra knows she can skip this section.
+        return (
+            f"<tr><td style='padding:0 24px 18px;'>"
+            f"<div style='background:{GOODBG};border-left:4px solid {GOOD};"
+            f"border-radius:6px;padding:12px 16px;'>"
+            f"<div style='font-size:10px;letter-spacing:2px;font-weight:800;color:{GOOD};"
+            f"margin-bottom:4px;'>&#10003;&nbsp;ALL CLEAR</div>"
+            f"<div style='font-size:12.5px;color:{INK};'>No action items today &mdash; "
+            f"fleet is within all safety and compliance thresholds.</div>"
+            f"</div></td></tr>"
+        )
     blocks = []
     for prio in (1, 2, 3):
         slice_ = [i for i in items if i.get("priority") == prio]
         if not slice_:
             continue
         color = _PRIORITY_COLOR[prio]
+        bg = _PRIORITY_BG[prio]
         label = _PRIORITY_LABEL[prio]
         rows = ""
         for i in slice_:
-            kb = (f"<div style='font-size:11px;color:{MUTE};margin-top:3px;'>"
-                  f"playbook: <code style='font-size:10px;'>{i['kb_link']}</code></div>"
+            kb = (f"<div style='font-size:10.5px;color:{MUTE};margin-top:4px;'>"
+                  f"&#128196;&nbsp;playbook: "
+                  f"<code style='font-size:10px;color:{MUTE};'>{i['kb_link']}</code></div>"
                   if i.get("kb_link") else "")
+            owner_chip = (
+                f"<span style='display:inline-block;padding:1px 7px;border-radius:3px;"
+                f"background:#eef2f7;color:{INK};font-size:10px;font-weight:700;"
+                f"margin-left:6px;'>owner: {i.get('owner', 'Audra')}</span>"
+            )
             rows += (
-                f"<div style='padding:10px 12px;border-top:1px solid {LINE};'>"
-                f"<div style='font-size:13px;color:{INK};'><b>{i.get('action', '')}</b></div>"
-                f"<div style='font-size:12px;color:{MUTE};margin-top:3px;'>"
-                f"{i.get('why', '')} &middot; "
-                f"<span style='color:{INK};'>owner: {i.get('owner', 'Audra')}</span></div>"
+                f"<div style='padding:11px 14px;border-top:1px solid {LINE};'>"
+                f"<div style='font-size:13px;color:{INK};font-weight:700;line-height:1.4;'>"
+                f"{i.get('action', '')}</div>"
+                f"<div style='font-size:11.5px;color:{MUTE};margin-top:4px;line-height:1.4;'>"
+                f"{i.get('why', '')}{owner_chip}</div>"
                 f"{kb}</div>"
             )
         blocks.append(
-            f"<div style='margin-bottom:10px;border:1px solid {LINE};border-radius:6px;'>"
-            f"<div style='background:#fafafa;padding:6px 12px;font-size:10px;"
-            f"letter-spacing:1.5px;font-weight:700;color:{color};'>"
-            f"{label}</div>"
+            f"<div style='margin-bottom:12px;border:1px solid {LINE};border-radius:8px;"
+            f"overflow:hidden;'>"
+            f"<div style='background:{bg};border-bottom:1px solid {LINE};"
+            f"padding:7px 14px;font-size:9.5px;"
+            f"letter-spacing:1.8px;font-weight:800;color:{color};'>"
+            f"&#9679;&nbsp;{label}</div>"
             f"{rows}</div>"
         )
     if not blocks:
         return ""
     return (
-        f"<tr><td style='padding:0 18px 14px;'>"
-        f"<div style='font-size:10px;letter-spacing:2px;color:{MUTE};font-weight:700;"
-        f"margin-bottom:8px;'>ACTION ITEMS</div>"
+        f"<tr><td style='padding:4px 24px 18px;'>"
+        f"<div style='font-size:9.5px;letter-spacing:2px;color:{MUTE};font-weight:700;"
+        f"margin-bottom:10px;text-transform:uppercase;'>Action items</div>"
         + "".join(blocks)
         + f"</td></tr>"
     )
@@ -814,7 +847,7 @@ def _risk_watch_block(signals: list[dict]) -> str:
     )
     if not strip:
         return ""
-    return f"<tr><td style='padding:0 18px 0;'>{strip}</td></tr>"
+    return f"<tr><td style='padding:0 24px 8px;'>{strip}</td></tr>"
 
 
 def _unverified_onduty_logs(samsara_sheets: dict | None) -> tuple[int, str]:
@@ -1141,11 +1174,13 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
         return "&mdash;" if v is None else str(v)
 
     bottom_line_block = (
-        f"<tr><td style='padding:18px 24px 6px;'>"
-        f"<div style='font-size:10px;letter-spacing:2px;color:{MUTE};"
-        f"font-weight:700;margin-bottom:8px;'>BOTTOM LINE</div>"
-        f"<div style='{FONT_SERIF}font-size:15px;line-height:1.55;color:{INK};"
-        f"border-left:3px solid {XFREIGHT_RED};padding-left:14px;'>{bl}</div>"
+        f"<tr><td style='padding:20px 24px 8px;'>"
+        f"<div style='font-size:9.5px;letter-spacing:2px;color:{MUTE};"
+        f"font-weight:700;text-transform:uppercase;margin-bottom:10px;'>Bottom line</div>"
+        f"<div style='border:1px solid {LINE};border-left:4px solid {XFREIGHT_RED};"
+        f"background:#fafafa;border-radius:0 6px 6px 0;padding:14px 18px 14px 20px;'>"
+        f"<div style='{FONT_SERIF}font-size:15px;line-height:1.6;color:{INK};'>{bl}</div>"
+        f"</div>"
         f"</td></tr>"
     )
 
@@ -1216,7 +1251,7 @@ def build_page2_events(samsara: dict | None, pg: int, total: int) -> str:
             f"No safety events in the last 7 days.</td></tr>"
         )
     body = (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('Safety events &mdash; last 7 days')}"
         f"{_table(['Driver','Unit','Reported','Event','Severity','Status'], ['left']*6, rows_html)}"
         f"</td></tr>"
@@ -1262,7 +1297,7 @@ def build_page3_hos(samsara: dict | None, pg: int, total: int) -> str:
         )
 
     body = (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('HOS violations &mdash; last 7 days')}"
         f"{_table(['Driver','Reported','Violation','Status'], ['left']*4, hos_rows)}"
         f"{_section('Missing log certifications &mdash; last 7 days')}"
@@ -1302,7 +1337,7 @@ def build_page4_scores(samsara: dict | None, pg: int, total: int) -> str:
             f"No driver safety scores available.</td></tr>"
         )
     body = (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('Driver safety scores &mdash; worst-to-best')}"
         f"{_table(['Driver','Score','Hard brake','Hard accel','Hard turn','Crash'], ['left','right','right','right','right','right'], rows_html)}"
         f"</td></tr>"
@@ -1340,7 +1375,7 @@ def build_page5_vehicles(samsara: dict | None, samsara_sheets: dict | None,
     inspection_html = _inspections_due_html(samsara_sheets)
 
     body = (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('Open DVIR defects &mdash; all unresolved')}"
         f"{_table(['Unit','Driver','Reported','Defect','Type','Status'], ['left']*6, dvir_rows)}"
         f"{inspection_html}"
@@ -1507,7 +1542,7 @@ def build_page_driver_compliance(samba: dict | None,
         )
 
     inner += (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('CDL expirations &mdash; next 30 days')}"
         f"{cdl_table}"
         f"{_section('DOT medical card expirations &mdash; next 30 days')}"
@@ -1592,7 +1627,7 @@ def build_page_csa_scorecard(csa: dict | None, pg: int, total: int) -> str:
         f"</div>"
     )
     body = (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('CSA BASIC percentiles')}"
         f"{_table(['BASIC','Percentile','Intervention threshold','Viol/Insp','Status'], ['left','right','right','right','left'], rows)}"
         f"{meta}"
@@ -1749,7 +1784,7 @@ def build_page_invoice_closeout(uninvoiced: dict | None,
         )
 
     body = (
-        f"<tr><td style='padding:18px 18px 0;'>"
+        f"<tr><td style='padding:18px 24px 0;'>"
         f"{_section('Customer side &mdash; delivered loads not yet invoiced')}"
         f"{u_summary}"
         f"{u_table}"
