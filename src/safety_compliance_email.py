@@ -1918,6 +1918,32 @@ def build_page_dvir_detail_by_driver(samsara_sheets: dict | None,
                 df = df[df["_driver"].str.lower().isin(["", "nan", "none"]) == False]
                 df = df.sort_values(["_driver", "_dt"], ascending=[True, False])
 
+                # Per-driver working-day count for compliance stats.
+                # Primary: HOS_DailyLogs — count unique dates the driver had
+                # any drive/on-duty time in the window.
+                # Fallback: count unique DVIR submission dates per driver.
+                driver_working_days: dict[str, int] = {}
+                hos_daily = (samsara_sheets or {}).get("HOS_DailyLogs")
+                if hos_daily is not None and not hos_daily.empty:
+                    hd_drv = _find_col(hos_daily, [
+                        "driver.name", "driver name", "drivername"])
+                    hd_date = _find_col(hos_daily, [
+                        "date", "starttime", "logdate", "createdattime"])
+                    hd_drive = _find_col(hos_daily, [
+                        "totaldrivedurations", "drivedurations",
+                        "drivems", "drivetime", "driveduration"])
+                    if hd_drv and hd_date:
+                        hd_dt = _to_naive_dt(hos_daily[hd_date])
+                        hd = hos_daily.assign(_dt=hd_dt)
+                        hd = hd[hd["_dt"] >= window_start].copy()
+                        if hd_drive and hd_drive in hd.columns:
+                            hd = hd[pd.to_numeric(
+                                hd[hd_drive], errors="coerce").fillna(0) > 0]
+                        hd["_drv_n"] = hd[hd_drv].astype(str).str.strip()
+                        hd["_d"] = hd["_dt"].dt.date.astype(str)
+                        for drv, grp in hd.groupby("_drv_n"):
+                            driver_working_days[drv] = int(grp["_d"].nunique())
+
                 def _fmt_safe(v) -> tuple[str, str]:
                     s = str(v).strip().lower() if v is not None else ""
                     if s in ("true", "1", "yes", "y"):
@@ -1949,6 +1975,18 @@ def build_page_dvir_detail_by_driver(samsara_sheets: dict | None,
 
                 # Render one block per driver — a section header + table.
                 for driver_name, group in df.groupby("_driver", sort=True):
+                    # Compliance stats for this driver's 14-day window.
+                    completed = len(group)
+                    working_days = driver_working_days.get(str(driver_name), 0)
+                    if working_days == 0:
+                        # Fallback: unique dates the driver submitted a DVIR.
+                        working_days = int(group["_dt"].dt.date.nunique())
+                    required = working_days * 2  # pre-trip + post-trip per day
+                    missing = max(0, required - completed)
+                    pct = round(completed / required * 100) if required > 0 else 100
+                    pct_color = GOOD if missing == 0 else (
+                        BAD if pct < 75 else WARN)
+
                     rows = ""
                     for _, r in group.iterrows():
                         ts = r["_dt"]
@@ -1986,13 +2024,20 @@ def build_page_dvir_detail_by_driver(samsara_sheets: dict | None,
                         )
                     inner_blocks.append(
                         f"<div style='page-break-inside:avoid;margin-top:14px;'>"
-                        f"<div style='{FONT_SERIF}font-size:14px;font-weight:700;"
-                        f"color:{INK};border-bottom:2px solid {XFREIGHT_RED};"
+                        f"<div style='border-bottom:2px solid {XFREIGHT_RED};"
                         f"padding:0 0 4px;margin-bottom:6px;'>"
-                        f"{driver_name} "
+                        f"<span style='{FONT_SERIF}font-size:14px;font-weight:700;"
+                        f"color:{INK};'>{driver_name}</span>"
                         f"<span style='font-size:10px;color:{MUTE};font-weight:400;"
-                        f"font-style:italic;'>&middot; {len(group)} inspection"
-                        f"{'s' if len(group) != 1 else ''}</span>"
+                        f"font-style:italic;margin-left:6px;'>&middot; {completed} "
+                        f"inspection{'s' if completed != 1 else ''}</span>"
+                        f"<span style='float:right;font-size:10.5px;color:{INK};'>"
+                        f"Required:&nbsp;<b>{required}</b>"
+                        f"&nbsp;&nbsp;Completed:&nbsp;<b>{completed}</b>"
+                        f"&nbsp;&nbsp;Missing:&nbsp;<b style='color:{BAD if missing else MUTE};'>"
+                        f"{missing}</b>"
+                        f"&nbsp;&nbsp;<b style='color:{pct_color};'>{pct}%</b>"
+                        f"</span>"
                         f"</div>"
                         f"<table width='100%' cellpadding='0' cellspacing='0' "
                         f"style='border-collapse:collapse;'>"
@@ -2539,16 +2584,6 @@ def _build_html_report(*,
     #  12. DVIR audit trail     — per-driver inspection trail, last 14 days
     today_label = _today_label()
     total = 12
-    _scores_footnote = (
-        f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
-        f"border-top:1px solid {LINE};margin-top:14px;'>"
-        f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
-        f"Speed Over Limit = time-over-posted-limit &divide; total drive time, shown as % "
-        f"when both fields are available (&ge;5% flagged for coaching, 1&ndash;5% monitored); "
-        f"falls back to minutes over limit when drive time isn&rsquo;t exposed. "
-        f"Coaching &amp; training: Samsara Coaching Sessions / "
-        f"Training Assignments (past-due only; tiles hidden when module not enabled).</div>"
-    )
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
@@ -2560,14 +2595,14 @@ def _build_html_report(*,
         build_page_safety_events_hos(samsara, samsara_sheets, 3, total),
         build_page_dvir_coaching(samsara, 4, total),
         build_page_driver_compliance(samba, alvys_drivers, 5, total),
-        _exec_build_page2b(samsara, today_label, pg=6) + _scores_footnote,
-        build_page_inspection_compliance(samsara_sheets, 7, total),
-        build_page_csa_scorecard(csa, 8, total),
-        _exec_build_page_coached(samsara, today_label, pg=9),
+        _exec_build_page2b(samsara, today_label, pg=6),
+        _exec_build_page_coached(samsara, today_label, pg=7),
         _exec_build_page_equipment(equipment, today_label,
-                                     kind="tractors", pg=10),
+                                     kind="tractors", pg=8),
         _exec_build_page_equipment(equipment, today_label,
-                                     kind="trailers", pg=11),
+                                     kind="trailers", pg=9),
+        build_page_inspection_compliance(samsara_sheets, 10, total),
+        build_page_csa_scorecard(csa, 11, total),
         build_page_dvir_detail_by_driver(samsara_sheets, 12, total),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
