@@ -851,17 +851,26 @@ def _risk_watch_block(signals: list[dict]) -> str:
 
 
 def compute_onduty_uncertified(samsara_sheets: dict | None) -> list[dict]:
-    """Per-driver rollup of daily logs the driver never certified AND on
-    which they were on-duty or driving. Distinct from Missing Log Certs
-    (any uncertified day) — this filter narrows to days the driver was
-    actually working, which is the FMCSA exposure window. Uncertified
-    off-duty days are a paperwork nit; uncertified on-duty days can fail
-    an audit because the driver hasn't attested to their on-duty time.
+    """Drivers currently working today who have UNCERTIFIED logs from
+    PREVIOUS days. This is the actual FMCSA audit risk — yesterday's
+    log should already be certified before today's shift starts. The
+    naive interpretation ("any active driver with any uncertified log")
+    catches everyone working today since today's log is uncertified
+    until end-of-day, which is noise not signal.
 
-    Returns a list of dicts sorted worst-first:
+    Two filters AND'd:
+      1. Driver is on a HOS daily log for today with drive or on-duty
+         time > 0 (i.e., actively working today)
+      2. Driver has at least one HOS daily log for a date BEFORE today
+         that is uncertified AND has drive or on-duty time > 0
+         (a missed cert on a day they actually worked)
+
+    Returns a list of dicts sorted worst-first by count of uncertified
+    prior days:
       {driver, on_duty_days, date_range, last_uncert_date}
 
-    Empty list when no data or no offenders."""
+    where on_duty_days = count of PRIOR uncertified working days,
+    date_range = earliest..latest of those prior uncert dates."""
     if not samsara_sheets:
         return []
     df = samsara_sheets.get("HOS_DailyLogs")
@@ -875,8 +884,11 @@ def compute_onduty_uncertified(samsara_sheets: dict | None) -> list[dict]:
     name_col = _find_col(df, ["driver name", "driver.name"])
     date_col = _find_col(df, ["logstartdate", "log start date", "date",
                                 "logmetadata.logdate"])
-    if not (cert_col and name_col):
+    if not (cert_col and name_col and date_col):
         return []
+
+    log_dt = _to_naive_dt(df[date_col])
+    log_date = log_dt.dt.date
 
     cert_series = df[cert_col]
     if cert_series.dtype == object:
@@ -890,32 +902,43 @@ def compute_onduty_uncertified(samsara_sheets: dict | None) -> list[dict]:
     onduty = (pd.to_numeric(df[onduty_col], errors="coerce").fillna(0)
               if onduty_col else pd.Series(0, index=df.index))
     active_mask = (drive > 0) | (onduty > 0)
+    nm_series = df[name_col].astype(str).str.strip()
 
-    sub = df[uncert_mask & active_mask].copy()
-    if sub.empty:
+    today = _today_chi()
+    # Step 1 — drivers actively working today (any active log dated today).
+    today_mask = (log_date == today) & active_mask
+    today_drivers = {n for n in nm_series[today_mask].dropna().unique()
+                     if n and n.lower() != "nan"}
+    if not today_drivers:
         return []
 
+    # Step 2 — prior uncertified active logs (date < today).
+    prior_mask = (log_date < today) & active_mask & uncert_mask
+    prior_sub = df[prior_mask]
+    if prior_sub.empty:
+        return []
+    prior_dates = log_dt[prior_mask]
+    prior_names = nm_series[prior_mask]
+
     out: list[dict] = []
-    for nm, group in sub.groupby(sub[name_col].astype(str).str.strip()):
-        if not nm or nm.lower() == "nan":
+    for nm in today_drivers:
+        nm_rows = prior_names == nm
+        if not nm_rows.any():
             continue
-        n_days = len(group)
-        date_range = "&mdash;"
-        last_uncert = "&mdash;"
-        if date_col:
-            dts = pd.to_datetime(group[date_col], errors="coerce").dropna()
-            if not dts.empty:
-                d_min = dts.min().strftime("%Y-%m-%d")
-                d_max = dts.max().strftime("%Y-%m-%d")
-                date_range = d_min if d_min == d_max else f"{d_min} &ndash; {d_max}"
-                last_uncert = d_max
+        d_series = prior_dates[nm_rows].dropna()
+        if d_series.empty:
+            continue
+        n_days = int(d_series.count())
+        d_min = d_series.min().strftime("%Y-%m-%d")
+        d_max = d_series.max().strftime("%Y-%m-%d")
+        date_range = d_min if d_min == d_max else f"{d_min} &ndash; {d_max}"
         out.append({
             "driver": nm,
-            "on_duty_days": int(n_days),
+            "on_duty_days": n_days,
             "date_range": date_range,
-            "last_uncert_date": last_uncert,
+            "last_uncert_date": d_max,
         })
-    out.sort(key=lambda r: -r["on_duty_days"])
+    out.sort(key=lambda r: (-r["on_duty_days"], r["last_uncert_date"]))
     return out
 
 
@@ -1158,10 +1181,11 @@ def _onduty_uncert_block(samsara_sheets: dict | None) -> str:
         for r in rows
     )
     return (
-        _section('On-duty &amp; uncertified &mdash; drivers actively working with logs not certified')
+        _section('On-duty today &mdash; uncertified prior-day logs &middot; '
+                 'started this shift without certifying yesterday')
         + _table(
-            ['Driver', 'On-duty days uncertified', 'Date range',
-             'Last uncert date', 'Status'],
+            ['Driver', 'Prior days uncertified', 'Uncert date range',
+             'Latest uncert date', 'Status'],
             ['left', 'right', 'left', 'left', 'left'],
             body_rows,
         )
