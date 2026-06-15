@@ -963,24 +963,25 @@ def _safety_summary_block_inline(samsara: dict | None,
     coaching). Returns a <tr> chain ready to drop into the page-1
     body table.
 
-    6-month-trend layout (per latest user direction):
-      Row 1: Fleet avg     | DVIR Open      | HOS violations | DVIR
-             safety score  | Defects        | (6-mo bar)     | defects
-             (Samsara tile)| (snapshot tile)|                | (6-mo bar)
-      Row 2: Coached       | Safety events  | Dismissed      | Speed over
-             events (bar)  | (bar)          | (bar)          | limit %
-                                                              (3-window)
-    DVIR Open Defects is the snapshot tile (current open count) that
-    Audra requested next to the Safety Score — both are "right now"
-    indicators. The DVIR 6-month bar in row 1 stays so the trend is
-    visible alongside the snapshot. Speeding switched from an event-
-    count chart to a 3-window % drive-time-over-limit chart because
-    Samsara records speed as a continuous metric on DriverSafetyScores,
-    not as discrete SafetyEvents — the old SafetyEvents filter
-    returned 0 matches. Recognized dropped from the visible set; it
-    runs all-zero in our data (no manager recognitions in the period).
-    Coached / Dismissed bars still bin samsara.coached_events by
-    state + coached_at month."""
+    6-month-trend layout (per latest user direction — uniform 3x3 grid):
+      Row 1 (snapshot tiles, 33% each):
+        Fleet Avg Safety Score | DVIR Open Defects | Missing Log Certs
+      Row 2 (bars, 33% each):
+        HOS violations         | DVIR defects      | Coached events
+      Row 3 (bars, 33% each):
+        Safety events          | Dismissed events  | Speed over limit
+    Missing Log Certs moved out of its own 50%-wide row into the
+    snapshot lead row so the layout reads as a clean 3x3 grid with
+    no half-empty rows. DVIR Open Defects + Missing Log Certs are the
+    "right now" indicators paired with the Safety Score; the bars
+    below all share the 33%-width geometry so they look uniform.
+    Speed Over Limit synthesizes 6 monthly bars from the 3 available
+    windows (Samsara doesn't expose monthly speed time-over-limit) —
+    Jan/Feb/Mar = 2*pct_6mo - pct_3mo, Apr/May = (3*pct_3mo - pct_mtd)/2,
+    Jun* = pct_mtd. Coached / Dismissed bars come from binning
+    samsara.coached_events by state + coached_at month. Recognized
+    bar dropped from the visible set; it runs all-zero in our data
+    (no manager recognitions in the period)."""
     if not samsara:
         return ""
     sw = samsara.get("windows", {}) or {}
@@ -1020,51 +1021,19 @@ def _safety_summary_block_inline(samsara: dict | None,
         "Fleet avg safety score",
         (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
         _pill("Samsara &middot; 0&ndash;100 &middot; higher better", "mute"),
+        width="33%",
     )
-    # DVIR Open Defects snapshot tile — current open count (MTD on the
-    # 24h/7d/MTD window). User wanted this next to the Safety Score so
-    # both "right now" indicators sit together at the top of the trend
-    # section.
+    # DVIR Open Defects snapshot tile — current open count.
     dvir_open_mtd = swv("dvir", "mtd")
     dvir_open_tile = _tile(
         "DVIR open defects",
         str(dvir_open_mtd),
         _pill("pending mechanic resolution",
               "bad" if dvir_open_mtd else "mute"),
+        width="33%",
     )
-
-    # Row 1: snapshot tiles (Fleet Score + DVIR Open) lead, followed
-    # by HOS and DVIR 6-month bars. Both indicators of "right now"
-    # state sit together; the bars to the right give the trend
-    # context.
-    safety_charts_row1 = (
-        fleet_score_tile
-        + dvir_open_tile
-        + chart("hos", "HOS violations", "per month &middot; *MTD")
-        + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
-    )
-
-    # Row 2: all bar charts so the styling matches across the row.
-    # Coached / Safety events / Dismissed are 6-month per-month bars;
-    # Speeding uses 3 windows (6mo / 3mo / MTD) because Samsara doesn't
-    # expose monthly speed time-over-limit. Format the bar values as
-    # percentages so the unit is unambiguous.
-    safety_charts_row2 = (
-        _bar_chart("Coached events", coached_ml[0], coached_ml[1],
-                   "manager-reviewed / mo &middot; *MTD")
-        + chart("events", "Safety events", "per month &middot; *MTD")
-        + _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
-                     "no-action-needed / mo &middot; *MTD")
-        + _bar_chart("Speed over limit", spd_labels, spd_vals,
-                     "% drive time &middot; fleet avg",
-                     fmt=lambda v: f"{v:.1f}%" if v else "0%")
-    )
-
-    # Missing Log Certs snapshot tile — sits directly under the
-    # Fleet Safety Score + DVIR Open Defects tiles (the leftmost
-    # 2 cells of trend Row 1). Right half left empty so the tile
-    # vertically aligns with the snapshot tiles above it; the bar
-    # charts to the right (HOS / DVIR) sit on a separate row.
+    # Missing Log Certs snapshot tile — moves into the snapshot lead
+    # row so the layout reads as a 3x3 grid with no half-empty rows.
     uncert_drivers = ((samsara.get("detail") or {}).get("hos_uncert") or [])
     uncert_count = len(uncert_drivers)
     uncert_worst = ""
@@ -1077,22 +1046,40 @@ def _safety_summary_block_inline(samsara: dict | None,
         str(uncert_count),
         _pill(uncert_worst or "all daily logs certified",
               "bad" if uncert_count else "good"),
-        width="50%",
-    )
-    log_tiles_row = (
-        f"<tr><td colspan='4' style='padding:8px 0 0;'>"
-        f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
-        f"{miss_log_tile}"
-        f"<td width='50%' style='padding:6px;'></td>"
-        f"</tr></table></td></tr>"
+        width="33%",
     )
 
-    # Drop into a colspan=4 row so the 4-tile grid lines up with the
-    # page's 4-col layout. log_tiles_row sits between trend Row 1
-    # and Row 2 so Missing Log Certs is directly under the Fleet
-    # Safety Score + DVIR Open Defects snapshot tiles in Row 1.
-    # _safety_detail_tables already emits its own _section/_table
-    # rows so it slots in directly.
+    # Row 1: snapshot tiles (3 at 33% each) — all "right now"
+    # indicators paired together at the top of the trend section.
+    safety_charts_row1 = fleet_score_tile + dvir_open_tile + miss_log_tile
+
+    # Row 2: 3 bars at 33% each — HOS, DVIR, Coached.
+    # _bar_chart cells default to width based on their containing
+    # row; with 3 cells in a row they auto-distribute to 33% each.
+    safety_charts_row2 = (
+        chart("hos", "HOS violations", "per month &middot; *MTD")
+        + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
+        + _bar_chart("Coached events", coached_ml[0], coached_ml[1],
+                     "manager-reviewed / mo &middot; *MTD")
+    )
+
+    # Row 3: 3 bars at 33% each — Safety events, Dismissed, Speed
+    # over limit. Speed uses a percentage formatter since its values
+    # are %s rather than raw event counts.
+    safety_charts_row3 = (
+        chart("events", "Safety events", "per month &middot; *MTD")
+        + _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
+                     "no-action-needed / mo &middot; *MTD")
+        + _bar_chart("Speed over limit", spd_labels, spd_vals,
+                     "% drive time &middot; fleet avg",
+                     fmt=lambda v: f"{v:.1f}%" if v else "0%")
+    )
+
+    # Drop into a colspan=4 row so the inline block plays nicely with
+    # the page's 4-col layout, even though the 6-month trend section
+    # below uses a 3-col grid (3 tiles + 6 bars = 9 cells in 3 rows
+    # of 3, all at 33% width). _safety_detail_tables already emits
+    # its own _section/_table rows so it slots in directly.
     return (
         f"<tr><td colspan='4' style='padding:8px 18px 0;'>"
         f"<table width='100%' cellpadding='0' cellspacing='0'>"
@@ -1100,8 +1087,8 @@ def _safety_summary_block_inline(samsara: dict | None,
         f"<tr>{safety_tiles}</tr>"
         f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}"
         f"<tr>{safety_charts_row1}</tr>"
-        f"{log_tiles_row}"
         f"<tr>{safety_charts_row2}</tr>"
+        f"<tr>{safety_charts_row3}</tr>"
         f"{_safety_detail_tables(samsara)}"
         f"</table></td></tr>"
     )
