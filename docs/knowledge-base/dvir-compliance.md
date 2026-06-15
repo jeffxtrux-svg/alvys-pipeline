@@ -57,18 +57,17 @@ multiply by **4**:
 A driver with 5 working days in the window owes (5 × 4) = 20 DVIR
 asset-rows in that window.
 
-**Two different working-day sources, one for each surface:**
+**Both surfaces (tile + 6-month trend) use the same working-day
+source:** `HOS_DailyLogs` rows with `drivedurationms > 0` or
+`ondutydurationms > 0`. Reconciliation: the tile is a 7-day subset of
+the latest month's bar, so they read close to each other (the tile
+trails the current bar slightly because it's a shorter window). A day
+where a driver drove but submitted zero DVIRs counts against both.
 
-| Surface | Working-day source | Why |
-|---|---|---|
-| Page-2 tile (last 7d) | `HOS_DailyLogs` (drive or on-duty > 0) | Most accurate — catches full no-DVIR days too |
-| Page-2 6-month trend  | `DVIRs` sheet (unique driver+date) | `HOS_DailyLogs` only pulls last 7d (`samsara_main.py`), so prior months have no rows; DVIRs fetch ~190 days, so they're the only sheet with enough history to populate the bar chart |
-
-This is a deliberate trade-off — the monthly trend uses DVIRs as a
-self-referential proxy: "of the days a driver showed up enough to
-submit at least one DVIR, what % of the four required ones did they
-file?" A driver who drove but submitted zero DVIRs for the whole day
-is invisible in the trend, but visible in the live 7d tile.
+This requires `samsara_main.py` to fetch HOS daily logs over the
+*full safety window* (not just 7 days). The fetch uses `start_safety`
+(`SAMSARA_SAFETY_DAYS_BACK`, default 190d) for exactly this reason —
+without it, prior months' buckets would have an empty denominator.
 
 ### Capping at 100%
 
@@ -128,25 +127,20 @@ Row 3 (3 bars,  25% each):  Events      | Dismissed | Speed o/limit| (spacer)
   compliance number; the per-driver page is the audit trail, not the
   scorecard.
 
-- **HOS data dependency (7d tile).** If `HOS_DailyLogs` is missing or
-  its driver/date columns can't be resolved by `_find_col`, the live
-  tile renders as "—". The 6-month bar chart depends on `DVIRs`
-  instead and falls back to its own "data pending" tile from
-  `_bar_chart` if that's empty too.
+- **HOS data dependency.** Both surfaces depend on `HOS_DailyLogs`.
+  If the sheet is missing or its driver/date columns can't be
+  resolved by `_find_col`, the tile renders as "—" and the bar chart
+  falls back to its "data pending" tile from `_bar_chart`.
 
-- **Working day ≠ DVIR-required day exactly.** The 7-day tile proxies
-  "driving day" with any HOS day where drive or on-duty exceeded zero
-  (can over-count drivers with on-duty-not-driving time who never
-  operated a CMV — rare in X-Trux's pattern). The 6-month trend
-  proxies it with "submitted at least one DVIR that day" — *under*-counts
-  when a driver drove but filed zero DVIRs (those days disappear from
-  the trend's denominator). Both proxies skew small and in opposite
-  directions, so the live tile and the trend bars triangulate
-  reality rather than agree exactly.
+- **Working day ≠ DVIR-required day exactly.** We proxy "driving day"
+  with any HOS day where drive or on-duty exceeded zero. That can
+  over-count drivers with on-duty-not-driving time who never operated
+  a CMV (rare in X-Trux's pattern), inflating the denominator
+  slightly and pulling % down. The drift is small and conservative
+  (under-states compliance).
 
-- **HOS_DailyLogs fetch window is 7 days, not configurable per-source.**
-  Set in `samsara_main.py` (`_dlog_start = now - timedelta(days=7)`).
-  If a longer monthly trend ever becomes the priority, widen that
-  fetch and switch `_dvir_compliance_monthly` back to the HOS-based
-  denominator — the function is structured so the two backends are
-  swappable.
+- **HOS_DailyLogs fetch window.** Set in `samsara_main.py` to
+  `start_safety` (`SAMSARA_SAFETY_DAYS_BACK`, default 190d) so all 6
+  monthly buckets have data. If you ever shorten that window, the
+  older bars will read 0% — `_dvir_compliance_monthly` doesn't have a
+  fallback path.

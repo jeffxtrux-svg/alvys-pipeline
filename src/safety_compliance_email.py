@@ -1188,68 +1188,68 @@ def _dvir_compliance_monthly(samsara_sheets: dict | None
                               ) -> tuple[list[str], list[float]]:
     """6-month fleet-wide DVIR compliance % bucketed by month.
 
-    Working-day source is the DVIRs sheet itself (unique driver+date
-    combinations per month), NOT HOS_DailyLogs — the daily-logs sheet
-    only fetches the last 7 days (samsara_main.py), so it can't fill
-    the older monthly buckets. DVIRs go back SAMSARA_SAFETY_DAYS_BACK
-    (default 190d / ~6 months), giving the trend its full window.
+    Working-day source: HOS_DailyLogs (drive or on-duty > 0). Requires
+    samsara_main.py's HOS-daily-logs fetch window to cover the full 6
+    months (it does — uses `start_safety`, default 190d). This is the
+    same source the live 7-day tile uses, so the two reconcile: the
+    tile = a subset of the latest month's bar.
 
     For each month:
-      expected  = unique (driver, date) DVIR-active days × 4
+      expected  = sum across drivers of (working_days × 4)
                   (tractor + trailer × pre + post, FMCSA 396.11/.13)
-      completed = vehicle-present rows + trailer-present rows
+      completed = vehicle-present DVIR rows + trailer-present rows
                   (mirrors compute_inspection_compliance's done_total)
-      pct       = completed / expected × 100, capped at 100
-
-    Caveat: a day where a driver drove but submitted ZERO DVIRs won't
-    appear in either side — full no-DVIR days are silent in the trend.
-    The live 7-day tile (_dvir_compliance_current) still uses HOS for
-    its denominator so full no-shows DO show up in the current period."""
+      pct       = completed / expected × 100, capped at 100"""
     if not samsara_sheets:
         return ([], [])
-    dvirs = samsara_sheets.get("DVIRs")
-    if dvirs is None or dvirs.empty:
+    hos = samsara_sheets.get("HOS_DailyLogs")
+    if hos is None or hos.empty:
         return ([], [])
 
-    dv_driver = _find_col(dvirs, [
-        "driver.name", "driver name",
-        "authorsignature.signatoryuser.name",
-        "submittedby.name", "createdby.name",
-    ])
-    dv_time = _find_col(dvirs, ["starttime", "start time",
-                                  "createdattime", "submittedattime"])
-    dv_veh = _find_col(dvirs, ["vehicle.name", "vehicle name"])
-    dv_trl = _find_col(dvirs, ["trailer.name", "trailer name",
-                                 "asset.name"])
-    if not (dv_driver and dv_time):
+    hos_name_col = _find_col(hos, ["driver name", "driver.name"])
+    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
+                                     "logmetadata.logdate"])
+    hos_drive_col = _find_col(hos, ["dutystatusdurations.drivedurationms",
+                                       "drivedurationms"])
+    hos_onduty_col = _find_col(hos, ["dutystatusdurations.ondutydurationms",
+                                        "ondutydurationms"])
+    if not (hos_name_col and hos_date_col):
         return ([], [])
 
-    dv_dt = _to_naive_dt(dvirs[dv_time])
-    df = dvirs.assign(_dt=dv_dt).copy()
-    df = df[df["_dt"].notna()]
-    df["_month"] = df["_dt"].dt.to_period("M")
-    df["_drv"] = df[dv_driver].astype(str).str.strip()
-    df = df[~df["_drv"].str.lower().isin(["", "nan", "none"])]
-    df["_date"] = df["_dt"].dt.date.astype(str)
-
-    # Working days proxy: unique (driver, date) tuples per month.
-    wd_by_month = (df.drop_duplicates(["_month", "_drv", "_date"])
-                   .groupby("_month").size().to_dict())
+    hos_dt = _to_naive_dt(hos[hos_date_col])
+    drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
+             if hos_drive_col else pd.Series(0, index=hos.index))
+    onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
+              if hos_onduty_col else pd.Series(0, index=hos.index))
+    active = (drive > 0) | (onduty > 0)
+    hos_active = hos[active].copy()
+    hos_active["_month"] = hos_dt[active].dt.to_period("M")
+    wd_by_month = hos_active.groupby("_month").size().to_dict()
 
     done_by_month: dict = {}
-    for month, group in df.groupby("_month"):
-        count = 0
-        if dv_veh:
-            count += int((group[dv_veh].notna()
-                          & (group[dv_veh].astype(str).str.strip() != "")
-                          ).sum())
-        if dv_trl:
-            count += int((group[dv_trl].notna()
-                          & (group[dv_trl].astype(str).str.strip() != "")
-                          ).sum())
-        if not dv_veh and not dv_trl:
-            count = len(group)
-        done_by_month[month] = count
+    dvirs = samsara_sheets.get("DVIRs")
+    if dvirs is not None and not dvirs.empty:
+        dv_time = _find_col(dvirs, ["starttime", "start time",
+                                      "createdattime", "submittedattime"])
+        dv_veh = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+        dv_trl = _find_col(dvirs, ["trailer.name", "trailer name",
+                                     "asset.name"])
+        if dv_time:
+            dv_dt = _to_naive_dt(dvirs[dv_time])
+            df = dvirs.assign(_month=dv_dt.dt.to_period("M"))
+            for month, group in df.groupby("_month"):
+                count = 0
+                if dv_veh:
+                    count += int((group[dv_veh].notna()
+                                  & (group[dv_veh].astype(str).str.strip() != "")
+                                  ).sum())
+                if dv_trl:
+                    count += int((group[dv_trl].notna()
+                                  & (group[dv_trl].astype(str).str.strip() != "")
+                                  ).sum())
+                if not dv_veh and not dv_trl:
+                    count = len(group)
+                done_by_month[month] = count
 
     now = pd.Timestamp.now()
     months_back = [(now - pd.DateOffset(months=i)).to_period("M")

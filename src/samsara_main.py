@@ -597,9 +597,13 @@ def main() -> int:
 
     # HOS daily logs — per-driver per-day summary with cert status
     # (Samsara's "Missing Certifications" tab in the dashboard).
-    # Bounded to last 7d, matching the dashboard's default view.
+    # Use the safety window (default 190d) so the Safety brief's
+    # 6-month DVIR-compliance trend can derive working days from HOS
+    # instead of from DVIRs themselves (which makes no-DVIR days
+    # invisible). The "Missing Certifications" use case still works
+    # — it filters on isCertified per row, not on window length.
     try:
-        _dlog_start = now - datetime.timedelta(days=7)
+        _dlog_start = start_safety
         raw_hos_daily = client.fetch_hos_daily_logs(_dlog_start, now)
     except Exception as e:
         log.warning("HOS daily-logs fetch failed: %s", e)
