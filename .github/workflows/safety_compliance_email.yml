@@ -3,6 +3,8 @@
 # Samsara_Master.xlsx from OneDrive (same source as the executive
 # brief) and emails an HTML body + PDF attachment.
 #
+# Trigger: 2026-06-15 — bar-chart bottom-anchor + snapshot tile shrink.
+#
 # Currently in test mode: SAFETY_TO_EMAILS defaults to jeff@xfreight.net
 # only. Flip the default below to the wider standing list once the
 # report has been reviewed and signed off.
