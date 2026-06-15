@@ -815,6 +815,33 @@ def _risk_watch_block(signals: list[dict]) -> str:
     return f"<tr><td style='padding:0 18px 0;'>{strip}</td></tr>"
 
 
+def _coaching_action_monthly(samsara: dict | None, state: str
+                              ) -> tuple[list[str], list[int]]:
+    """6-month bar-chart data for coaching-action counts (coached /
+    dismissed / recognized). Bins samsara.coached_events by
+    coached_at month — same month labels (Jun*) the existing trend
+    charts use so the bars line up visually.
+
+    `state` is one of "coached" / "dismissed" / "recognized" — matches
+    the lowercase value stored on each coached_events row."""
+    rows = (samsara or {}).get("coached_events") or []
+    state = state.lower().strip()
+    dates: list[pd.Timestamp] = []
+    for r in rows:
+        if (r.get("state") or "").lower().strip() != state:
+            continue
+        ca = r.get("coached_at") or ""
+        # coached_at is a "YYYY-MM-DD HH:MM" string or "&mdash;" /
+        # blank — pd.to_datetime("&mdash;") returns NaT which the
+        # _monthly_counts helper drops.
+        ts = pd.to_datetime(ca, errors="coerce")
+        if pd.notna(ts):
+            dates.append(ts)
+    if not dates:
+        return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
+    return _monthly_counts(pd.Series(dates))
+
+
 def _safety_summary_block_inline(samsara: dict | None) -> str:
     """The executive brief's page-1 safety section, lifted whole into
     the safety brief — Audra's brief was missing the 24h/7d/MTD tile
@@ -825,7 +852,15 @@ def _safety_summary_block_inline(samsara: dict | None) -> str:
     _bar_chart (6-month bars), _tile (fleet score), and
     _safety_detail_tables (events / HOS / missing logs / DVIR /
     coaching). Returns a <tr> chain ready to drop into the page-1
-    body table."""
+    body table.
+
+    6-month-trend layout (per latest user direction):
+      Row 1: Safety events | HOS violations | DVIR defects | Coached
+      Row 2: Dismissed     | Recognized     | (empty)      | Fleet avg
+                                                              safety score
+                                                              (from Samsara)
+    Coached / Dismissed / Recognized bars come from binning
+    samsara.coached_events by state + coached_at month."""
     if not samsara:
         return ""
     sw = samsara.get("windows", {}) or {}
@@ -852,16 +887,39 @@ def _safety_summary_block_inline(samsara: dict | None) -> str:
         return _bar_chart(title, ml[0] if ml else [],
                           ml[1] if ml else [], sub)
 
+    # New coaching-action 6-month series (coached / dismissed / recognized).
+    coached_ml = _coaching_action_monthly(samsara, "coached")
+    dismissed_ml = _coaching_action_monthly(samsara, "dismissed")
+    recognized_ml = _coaching_action_monthly(samsara, "recognized")
+
     fleet_score = (samsara.get("fleet") or {}).get("fleet_score")
     fleet_score_tile = _tile(
         "Fleet avg safety score",
         (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
-        _pill("0&ndash;100 &middot; higher better", "mute"),
+        _pill("Samsara &middot; 0&ndash;100 &middot; higher better", "mute"),
     )
-    safety_charts = (chart("events", "Safety events", "per month &middot; *MTD")
-                     + chart("hos", "HOS violations", "per month &middot; *MTD")
-                     + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
-                     + fleet_score_tile)
+
+    # Row 1: the existing events/hos/dvir trio, plus Coached in the
+    # slot that used to hold Fleet Avg Safety Score (now moved down).
+    safety_charts_row1 = (
+        chart("events", "Safety events", "per month &middot; *MTD")
+        + chart("hos", "HOS violations", "per month &middot; *MTD")
+        + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
+        + _bar_chart("Coached events", coached_ml[0], coached_ml[1],
+                     "manager-reviewed / mo &middot; *MTD")
+    )
+
+    # Row 2: the two new coaching-action series + an empty spacer +
+    # the relocated Fleet Avg Safety Score tile with Samsara
+    # attribution in the sub-pill.
+    safety_charts_row2 = (
+        _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
+                   "no-action-needed / mo &middot; *MTD")
+        + _bar_chart("Recognized events", recognized_ml[0], recognized_ml[1],
+                     "positive-driving / mo &middot; *MTD")
+        + "<td class='tile-empty' width='25%' style='padding:6px;'></td>"
+        + fleet_score_tile
+    )
 
     # Drop into a colspan=4 row so the 4-tile grid lines up with the
     # page's 4-col layout. _safety_detail_tables already emits its own
@@ -872,7 +930,8 @@ def _safety_summary_block_inline(samsara: dict | None) -> str:
         f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}"
         f"<tr>{safety_tiles}</tr>"
         f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}"
-        f"<tr>{safety_charts}</tr>"
+        f"<tr>{safety_charts_row1}</tr>"
+        f"<tr>{safety_charts_row2}</tr>"
         f"{_safety_detail_tables(samsara)}"
         f"</table></td></tr>"
     )
@@ -1664,7 +1723,15 @@ def _build_html_report(*,
         "<style>"
         "body{margin:0;background:#fff;font-family:Helvetica,Arial,sans-serif;color:" + INK + ";}"
         ".page-break{page-break-after:always;break-after:page;height:0;}"
-        "@page{size:letter;margin:0.45in 0.35in 0.55in;}"
+        # WeasyPrint page counters — adds a true per-PDF-page footer on
+        # every physical page (auto-paginated continuations included).
+        # Inline 'Page X of N' counters in the per-page headers stay
+        # hidden in print (.pg-of below) so we don't double up; the
+        # @page footer is the single source of truth in the PDF.
+        "@page{size:letter;margin:0.45in 0.35in 0.7in;"
+        "@bottom-center{content:'Page ' counter(page) ' of ' counter(pages);"
+        f"font-family:Helvetica,Arial,sans-serif;font-size:9px;color:{MUTE};"
+        "letter-spacing:0.5px;}}"
         "@media print{.pg-of{display:none;}}"
         "table.tbl{border-collapse:collapse;width:100%;}"
         "</style></head><body>"
