@@ -119,6 +119,7 @@ alvys-pipeline/
 | [automation-and-secrets.md](./automation-and-secrets.md) | Understand the GitHub Actions schedules and every secret/env var |
 | [powerbi.md](./powerbi.md) | Understand how Power BI consumes the data (both paths) |
 | [rate-per-mile-goal.md](./rate-per-mile-goal.md) | Understand or tune the X-Trux rate-per-mile cost-out goal on the daily brief |
+| [dvir-compliance.md](./dvir-compliance.md) | Understand the DVIR compliance % math (page-2 tile + 6-month trend on the Safety brief) |
 | [operations.md](./operations.md) | Run a job locally, debug a failure, or onboard a new company |
 
 ---
