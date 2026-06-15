@@ -2254,15 +2254,20 @@ def main() -> int:
     pdf = _render_pdf(html)
 
     subj = f"XFreight Safety & Compliance Report — {today.strftime('%B %-d, %Y')}"
-    attachments = None
-    if pdf:
-        log.info("Generated PDF (%.1f KB)", len(pdf) / 1024)
-        attachments = [{
-            "name": f"safety-compliance-{today.isoformat()}.pdf",
-            "content_bytes": pdf,
-            "mime": "application/pdf",
-        }]
-    send_email(tok, upn, to_emails, subj, html, attachments=attachments)
+    if not pdf:
+        log.error("PDF render failed — email not sent (no point sending without attachment).")
+        return 1
+    log.info("Generated PDF (%.1f KB)", len(pdf) / 1024)
+    brief_html = (
+        f"<p>Please see the attached Safety &amp; Compliance Report for "
+        f"{today.strftime('%B %-d, %Y')}.</p>"
+    )
+    attachments = [{
+        "name": f"safety-compliance-{today.isoformat()}.pdf",
+        "content_bytes": pdf,
+        "mime": "application/pdf",
+    }]
+    send_email(tok, upn, to_emails, subj, brief_html, attachments=attachments)
 
     _write_marker(tok, upn, today,
                   f"sent={len(to_emails)} pdf={'yes' if pdf else 'no'}")
