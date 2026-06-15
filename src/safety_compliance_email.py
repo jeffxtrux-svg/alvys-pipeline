@@ -960,9 +960,8 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     days in the window are omitted."""
     if not samsara_sheets:
         return []
-    dvirs = samsara_sheets.get("DVIRs")
     hos = samsara_sheets.get("HOS_DailyLogs")
-    if dvirs is None or dvirs.empty or hos is None or hos.empty:
+    if hos is None or hos.empty:
         return []
 
     window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
@@ -993,70 +992,83 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
         .to_dict()
     )
 
-    # DVIR completion per driver, split tractor vs trailer.
-    dvir_driver_col = _find_col(dvirs, ["driver.name", "driver name"])
-    dvir_time_col = _find_col(dvirs, ["starttime", "start time",
-                                        "createdattime", "submittedattime"])
-    dvir_vehicle_col = _find_col(dvirs, ["vehicle.name", "vehicle name"])
-    dvir_trailer_col = _find_col(dvirs, ["trailer.name", "trailer name"])
-    if not (dvir_driver_col and dvir_time_col):
-        return []
-
-    dvir_dt = _to_naive_dt(dvirs[dvir_time_col])
-    dvirs_window = dvirs[dvir_dt >= window_start].copy()
-
+    # DVIR completion per driver, split tractor vs trailer. Best-effort —
+    # if the DVIRs sheet is missing or the columns aren't where we expect,
+    # we leave the done counts at 0 and surface the compliance gap rather
+    # than blanking the whole page. A driver who worked 5 days but has 0
+    # tracked DVIRs is the COMPLIANCE FAILURE we want to highlight.
     done_tractor: dict[str, int] = {}
     done_trailer: dict[str, int] = {}
-    if not dvirs_window.empty:
-        for nm, group in dvirs_window.groupby(
-            dvirs_window[dvir_driver_col].astype(str).str.strip()
-        ):
-            if not nm or nm.lower() == "nan":
-                continue
-            # Tractor DVIRs: vehicle.name populated.
-            if dvir_vehicle_col:
-                tractor_mask = (group[dvir_vehicle_col].notna()
-                                & (group[dvir_vehicle_col].astype(str).str.strip() != ""))
-                done_tractor[nm] = int(tractor_mask.sum())
-            # Trailer DVIRs: trailer.name populated.
-            if dvir_trailer_col:
-                trailer_mask = (group[dvir_trailer_col].notna()
-                                & (group[dvir_trailer_col].astype(str).str.strip() != ""))
-                done_trailer[nm] = int(trailer_mask.sum())
+    dvirs = samsara_sheets.get("DVIRs")
+    if dvirs is not None and not dvirs.empty:
+        # Driver name could be in any of these flattened-JSON paths
+        # depending on whether the DVIR was a tractor pre/post-trip (driver
+        # field) or a trailer DVIR (authorSignature.signatoryUser).
+        dvir_driver_col = _find_col(dvirs, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        dvir_time_col = _find_col(dvirs, ["starttime", "start time",
+                                            "createdattime", "submittedattime"])
+        dvir_vehicle_col = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+        dvir_trailer_col = _find_col(dvirs, ["trailer.name", "trailer name",
+                                                "asset.name"])
+        if dvir_driver_col and dvir_time_col:
+            dvir_dt = _to_naive_dt(dvirs[dvir_time_col])
+            dvirs_window = dvirs[dvir_dt >= window_start].copy()
+            if not dvirs_window.empty:
+                for nm, group in dvirs_window.groupby(
+                    dvirs_window[dvir_driver_col].astype(str).str.strip()
+                ):
+                    if not nm or nm.lower() == "nan":
+                        continue
+                    if dvir_vehicle_col:
+                        tractor_mask = (group[dvir_vehicle_col].notna()
+                                        & (group[dvir_vehicle_col].astype(str).str.strip() != ""))
+                        done_tractor[nm] = int(tractor_mask.sum())
+                    if dvir_trailer_col:
+                        trailer_mask = (group[dvir_trailer_col].notna()
+                                        & (group[dvir_trailer_col].astype(str).str.strip() != ""))
+                        done_trailer[nm] = int(trailer_mask.sum())
+                    # Fallback: if neither asset column found, count every
+                    # DVIR as a tractor inspection (default fleet shape).
+                    if not dvir_vehicle_col and not dvir_trailer_col:
+                        done_tractor[nm] = len(group)
+        else:
+            log.warning(
+                "compute_inspection_compliance: DVIRs sheet missing driver "
+                "or time column (driver_col=%r time_col=%r). Available: %s",
+                dvir_driver_col, dvir_time_col, list(dvirs.columns)[:20],
+            )
 
-    # Defect counts per driver from the exploded DVIR_Defects sheet.
+    # Defect counts per driver from the exploded DVIR_Defects sheet —
+    # also best-effort.
     defects_tractor: dict[str, int] = {}
     defects_trailer: dict[str, int] = {}
     df_defects = samsara_sheets.get("DVIR_Defects")
     if df_defects is not None and not df_defects.empty:
         d_driver = _find_col(df_defects, ["driver"])
         d_time = _find_col(df_defects, ["reported", "createdat"])
-        d_dvir_type = _find_col(df_defects, ["dvir type"])
-        d_unit = _find_col(df_defects, ["unit"])
         if d_driver and d_time:
             d_dt = _to_naive_dt(df_defects[d_time])
             d_window = df_defects[d_dt >= window_start].copy()
-            # Heuristic for tractor vs trailer when DVIR Type isn't set:
-            # unit names containing TR / TRL / a leading digit ≤ 9999 are
-            # tractors; longer unit numbers + names with T### / TR### lean
-            # trailer. We default to tractor since the fleet is mostly
-            # tractor-driven and trailer DVIRs are less common. Total is
-            # always the sum so accuracy on the split isn't critical for
-            # the bottom-line action item.
+            # Default everything to tractor — trailer defect attribution
+            # needs a unit→fleet lookup that doesn't exist yet. Total
+            # column is the actionable headline anyway.
             for nm, group in d_window.groupby(
                 d_window[d_driver].astype(str).str.strip()
             ):
                 if not nm or nm.lower() == "nan":
                     continue
-                n = len(group)
-                # Default everything to tractor unless we can distinguish.
-                defects_tractor[nm] = n
+                defects_tractor[nm] = len(group)
 
     rows: list[dict] = []
-    all_drivers = set(working_days_by_driver) | set(done_tractor) | set(done_trailer)
-    for nm in all_drivers:
-        wd = int(working_days_by_driver.get(nm, 0))
-        if wd == 0:
+    # Iterate ALL drivers with working days. A driver with working days
+    # but no DVIRs surfaces as the compliance gap we want to act on.
+    for nm, wd in working_days_by_driver.items():
+        wd = int(wd)
+        if wd == 0 or not nm or nm.lower() == "nan":
             continue
         exp_t = wd * 2
         exp_tr = wd * 2
@@ -1164,13 +1176,27 @@ def _coaching_action_monthly(samsara: dict | None, state: str
 
 
 def _onduty_uncert_block(samsara_sheets: dict | None) -> str:
-    """Render the On Duty + Uncertified table — drivers actively working
-    (drive or on-duty time > 0) with logs NOT yet certified. Returns ""
-    when nothing's open. Designed to be injected above the Missing Log
-    Certifications section for at-a-glance comparison."""
+    """Render the On-duty Today + Prior-day Uncertified table.
+
+    Always rendered (with an "all clear" placeholder when no offenders)
+    so the reader can see the check ran. Designed to be injected above
+    the Missing Log Certifications section for at-a-glance comparison."""
     rows = compute_onduty_uncertified(samsara_sheets)
     if not rows:
-        return ""
+        # All-clear placeholder so the reader sees the check was made.
+        return (
+            _section('On-duty today &mdash; uncertified prior-day logs &middot; '
+                     'started this shift without certifying yesterday')
+            + f"<tr><td colspan='4' style='padding:0 6px;'>"
+            f"<div style='border:1px solid {LINE};border-left:4px solid {GOOD};"
+            f"border-radius:6px;padding:12px 16px;background:{GOODBG};'>"
+            f"<div style='font-size:10px;letter-spacing:1.5px;font-weight:800;"
+            f"color:{GOOD};margin-bottom:4px;'>&#10003;&nbsp;ALL CLEAR</div>"
+            f"<div style='font-size:12.5px;color:{INK};'>Every driver working "
+            f"today has certified their prior-day logs &mdash; no audit risk "
+            f"from missed start-of-shift certifications.</div>"
+            f"</div></td></tr>"
+        )
     body_rows = "".join(
         _tr(
             [r["driver"], str(r["on_duty_days"]),
