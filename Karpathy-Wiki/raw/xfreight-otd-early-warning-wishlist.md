@@ -77,15 +77,20 @@ explained after the fact.
      `mileage`, `location`, `lastLocationAt` — if found, wire into
      those five placeholder columns AND into the OTD page.
 
-4. **Brief vs dashboard.** Brief page (not a standalone dashboard). And
-   specifically: ship the page on **two** briefs once the second one
-   exists —
+4. **Brief vs dashboard.** Brief page (not a standalone dashboard).
+   Ship on **exactly two** briefs — Executive + Operations — and
+   nowhere else. Jeff reconfirmed the scope explicitly 2026-06-15.
    - **Phase 1 — Executive brief.** Jeff's primary surface; add the OTD
      page there now.
    - **Phase 2 — Operations brief.** Doesn't exist yet (planned —
      Jackson + Dan primary owners per the responsibility map). When
      that brief is built, the OTD page also lands there so the people
      who can act on it own its delivery channel.
+   - **Explicitly NOT on:** the Safety brief (Audra; OTD isn't safety),
+     the Financial brief (Audra; OTD isn't financial), the MTD upload
+     (JB; that's a financial-forecast surface), the driver report
+     (drivers aren't the audience for a fleet-wide OTD view). **Two
+     briefs only.**
    - Both surfaces render the **same** OTD compute; only the framing /
      accompanying pages differ. (Note: this is the rare forecast page
      Jeff explicitly wants on the executive brief even though his
