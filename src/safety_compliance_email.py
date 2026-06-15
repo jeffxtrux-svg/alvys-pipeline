@@ -1170,6 +1170,96 @@ def _inject_onduty_section(detail_html: str,
     return detail_html[:sec_start] + block + detail_html[sec_start:]
 
 
+def _dvir_compliance_current(samsara_sheets: dict | None,
+                              days: int = 7) -> float | None:
+    """Fleet-wide DVIR completion % for the last `days` days. Returns
+    None when there's no data to compute against."""
+    rows = compute_inspection_compliance(samsara_sheets, days=days)
+    if not rows:
+        return None
+    tot_exp = sum(r["expected_total"] for r in rows)
+    tot_done = sum(r["done_total"] for r in rows)
+    if tot_exp <= 0:
+        return None
+    return 100.0 * tot_done / tot_exp
+
+
+def _dvir_compliance_monthly(samsara_sheets: dict | None
+                              ) -> tuple[list[str], list[float]]:
+    """6-month fleet-wide DVIR compliance % bucketed by month.
+
+    For each month: expected = sum(working_days × 4) across drivers
+    (tractor + trailer × pre + post per FMCSA 396.11/396.13); completed
+    counts vehicle-present rows + trailer-present rows from the DVIRs
+    sheet (mirrors compute_inspection_compliance's done_total logic so
+    the current % and the monthly trend reconcile)."""
+    if not samsara_sheets:
+        return ([], [])
+    hos = samsara_sheets.get("HOS_DailyLogs")
+    if hos is None or hos.empty:
+        return ([], [])
+
+    hos_name_col = _find_col(hos, ["driver name", "driver.name"])
+    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
+                                     "logmetadata.logdate"])
+    hos_drive_col = _find_col(hos, ["dutystatusdurations.drivedurationms",
+                                       "drivedurationms"])
+    hos_onduty_col = _find_col(hos, ["dutystatusdurations.ondutydurationms",
+                                        "ondutydurationms"])
+    if not (hos_name_col and hos_date_col):
+        return ([], [])
+
+    hos_dt = _to_naive_dt(hos[hos_date_col])
+    drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
+             if hos_drive_col else pd.Series(0, index=hos.index))
+    onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
+              if hos_onduty_col else pd.Series(0, index=hos.index))
+    active = (drive > 0) | (onduty > 0)
+    hos_active = hos[active].copy()
+    hos_active["_month"] = hos_dt[active].dt.to_period("M")
+    wd_by_month = hos_active.groupby("_month").size().to_dict()
+
+    done_by_month: dict = {}
+    dvirs = samsara_sheets.get("DVIRs")
+    if dvirs is not None and not dvirs.empty:
+        dv_time = _find_col(dvirs, ["starttime", "start time",
+                                      "createdattime", "submittedattime"])
+        dv_veh = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+        dv_trl = _find_col(dvirs, ["trailer.name", "trailer name",
+                                     "asset.name"])
+        if dv_time:
+            dv_dt = _to_naive_dt(dvirs[dv_time])
+            df = dvirs.assign(_month=dv_dt.dt.to_period("M"))
+            for month, group in df.groupby("_month"):
+                count = 0
+                if dv_veh:
+                    count += int((group[dv_veh].notna()
+                                  & (group[dv_veh].astype(str).str.strip() != "")
+                                  ).sum())
+                if dv_trl:
+                    count += int((group[dv_trl].notna()
+                                  & (group[dv_trl].astype(str).str.strip() != "")
+                                  ).sum())
+                if not dv_veh and not dv_trl:
+                    count = len(group)
+                done_by_month[month] = count
+
+    now = pd.Timestamp.now()
+    months_back = [(now - pd.DateOffset(months=i)).to_period("M")
+                   for i in range(5, -1, -1)]
+    labels = [m.strftime("%b") for m in months_back]
+    values: list[float] = []
+    for m in months_back:
+        wd = int(wd_by_month.get(m, 0))
+        expected = wd * 4  # tractor + trailer × pre + post
+        done = int(done_by_month.get(m, 0))
+        pct = (done / expected * 100.0) if expected > 0 else 0.0
+        # Cap display at 100% — over-counting (multiple vehicles per
+        # session) shouldn't show as 150% on the trend bar.
+        values.append(min(pct, 100.0))
+    return (labels, values)
+
+
 def _safety_summary_block_inline(samsara: dict | None,
                                    samsara_sheets: dict | None = None) -> str:
     """The executive brief's page-1 safety section, lifted whole into
@@ -1242,15 +1332,11 @@ def _safety_summary_block_inline(samsara: dict | None,
     # mirrors where the bar-chart bars sit. Title at the top, value at the
     # bottom — gives the grid a consistent visual rhythm.
     def _snap_tile(label: str, value: str, sub: str,
-                    value_color: str = INK) -> str:
+                    value_color: str = INK, width: str = "25%") -> str:
         # Shorter than the bar-chart tiles below — there's only one number
-        # to show, no point in matching the full ~180px chart height. The
-        # big value is bottom-right-anchored via position:absolute so it
-        # truly sits at the bottom of the tile (WeasyPrint doesn't honor
-        # td valign='bottom' reliably when the row has no explicit height —
-        # same fix as the bar-chart bars).
+        # to show, no point in matching the full ~180px chart height.
         return (
-            f"<td class='tile' width='33%' valign='top' style='padding:6px;'>"
+            f"<td class='tile' width='{width}' valign='top' style='padding:6px;'>"
             f"<div style='border:1px solid {LINE};border-radius:10px;"
             f"padding:10px 14px 10px;height:96px;text-align:center;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};"
@@ -1296,22 +1382,51 @@ def _safety_summary_block_inline(samsara: dict | None,
         uncert_worst or "all daily logs certified",
         value_color=BAD if uncert_count else GOOD,
     )
+    # DVIR compliance % snapshot tile — fleet-wide completion rate
+    # for the last 7 days. Pairs visually with the 6-month trend bar
+    # directly below it (row 2).
+    dvir_pct = _dvir_compliance_current(samsara_sheets, days=7)
+    if dvir_pct is None:
+        dvir_pct_val = "&mdash;"
+        dvir_pct_color = MUTE
+    else:
+        dvir_pct_val = f"{dvir_pct:.0f}%"
+        dvir_pct_color = (GOOD if dvir_pct >= 90 else
+                          (WARN if dvir_pct >= 50 else BAD))
+    dvir_pct_tile = _snap_tile(
+        "DVIR compliance",
+        dvir_pct_val,
+        "completed / required &middot; last 7d",
+        value_color=dvir_pct_color,
+    )
 
-    # Row 1: snapshot tiles (3 at 33% each) — all "right now"
+    # 6-month DVIR compliance trend bars — paired with the tile above.
+    dvir_pct_labels, dvir_pct_vals = _dvir_compliance_monthly(samsara_sheets)
+    dvir_pct_chart = _bar_chart(
+        "DVIR compliance",
+        dvir_pct_labels,
+        dvir_pct_vals,
+        "% completed / required &middot; *MTD",
+        fmt=lambda v: f"{v:.0f}%" if v else "0%",
+    )
+
+    # Row 1: snapshot tiles (4 at 25% each) — all "right now"
     # indicators paired together at the top of the trend section.
-    safety_charts_row1 = fleet_score_tile + dvir_open_tile + miss_log_tile
+    safety_charts_row1 = (fleet_score_tile + dvir_open_tile
+                          + miss_log_tile + dvir_pct_tile)
 
-    # Row 2: 3 bars at 33% each — HOS, DVIR, Coached.
+    # Row 2: 4 bars at 25% each — HOS, DVIR defects, Coached, DVIR compliance %.
     safety_charts_row2 = (
         chart("hos", "HOS violations", "per month &middot; *MTD")
         + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
         + _bar_chart("Coached events", coached_ml[0], coached_ml[1],
                      "manager-reviewed / mo &middot; *MTD")
+        + dvir_pct_chart
     )
 
-    # Row 3: 3 bars at 33% each — Safety events, Dismissed, Speed
-    # over limit. Speed uses a percentage formatter since its values
-    # are %s rather than raw event counts.
+    # Row 3: 3 bars + 1 spacer cell at 25% each — Safety events,
+    # Dismissed, Speed over limit. Speed uses a percentage formatter
+    # since its values are %s rather than raw event counts.
     safety_charts_row3 = (
         chart("events", "Safety events", "per month &middot; *MTD")
         + _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
@@ -1319,6 +1434,7 @@ def _safety_summary_block_inline(samsara: dict | None,
         + _bar_chart("Speed over limit", spd_labels, spd_vals,
                      "% drive time &middot; fleet avg",
                      fmt=lambda v: f"{v:.1f}%" if v else "0%")
+        + f"<td width='25%' style='padding:6px;'>&nbsp;</td>"
     )
 
     # Separate <table> elements for the 4-col metrics row and 3-col trend
@@ -1336,10 +1452,10 @@ def _safety_summary_block_inline(samsara: dict | None,
         f"{_section('Current period &mdash; 24h / 7d / month-to-date')}"
         f"<tr>{safety_tiles}</tr>"
         f"</table>"
-        # 3-column 6-month trend grid (33% each — separate table for clean widths)
+        # 4-column 6-month trend grid (25% each — separate table for clean widths)
         f"<table width='100%' cellpadding='0' cellspacing='0' "
         f"style='table-layout:fixed;margin-top:4px;'>"
-        f"{_section('6-month trend &mdash; rolling window &middot; * = month-to-date', span=3)}"
+        f"{_section('6-month trend &mdash; rolling window &middot; * = month-to-date', span=4)}"
         f"<tr>{safety_charts_row1}</tr>"
         f"<tr>{safety_charts_row2}</tr>"
         f"<tr>{safety_charts_row3}</tr>"
