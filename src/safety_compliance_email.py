@@ -816,34 +816,86 @@ def _risk_watch_block(signals: list[dict]) -> str:
     return f"<tr><td style='padding:0 18px 0;'>{strip}</td></tr>"
 
 
-def _speeding_events_monthly(samsara_sheets: dict | None
-                              ) -> tuple[list[str], list[int]]:
-    """6-month bar-chart data for speeding events. Reads SafetyEvents
-    directly so the trend uses the per-event timestamps (vs the
-    aggregated 6mo/3mo/MTD windows on DriverSafetyScores, which are
-    nested and would mislead as a trend). Filter: any safety event
-    whose event_type contains "speed" — matches the same convention
-    compute_samsara uses for the page-4 speeders leaderboard."""
+def _unverified_onduty_logs(samsara_sheets: dict | None) -> tuple[int, str]:
+    """Count daily logs the driver never certified AND on which they
+    were on-duty or driving (any non-zero on-duty / drive duration).
+    Distinct from Missing Log Certs: that's any uncertified day;
+    this filter narrows to days the driver was actually working,
+    which is the FMCSA exposure window — uncertified off-duty days
+    are a paperwork nit, uncertified on-duty days can fail an audit.
+
+    Reads HOS_DailyLogs (driver-day rows from Samsara's daily-log
+    feed). Returns (count, worst_driver_label). Worst-driver label
+    shows the driver with the most unverified on-duty days so the
+    tile sub-text mirrors the Missing Log Certs format."""
     if not samsara_sheets:
-        return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
-    events = samsara_sheets.get("SafetyEvents")
-    if events is None or events.empty:
-        return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
-    et_col = _find_col(events, ["event type"])
-    if not et_col:
-        return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
-    # Reuse the executive brief's _dates helper convention: try the
-    # standard SafetyEvents date columns and the parser drops invalid.
-    date_col = _find_col(events, ["happened at", "happenedat", "happened",
-                                    "datetime", "timestamp", "date"])
-    if not date_col:
-        return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
-    spd_mask = events[et_col].astype(str).str.lower().str.contains(
-        "speed", na=False)
-    sub = events[spd_mask]
-    if sub.empty:
-        return _monthly_counts(pd.Series(dtype="datetime64[ns]"))
-    return _monthly_counts(pd.to_datetime(sub[date_col], errors="coerce"))
+        return 0, ""
+    df = samsara_sheets.get("HOS_DailyLogs")
+    if df is None or df.empty:
+        return 0, ""
+    cert_col = _find_col(df, ["logmetadata.iscertified", "iscertified"])
+    drive_col = _find_col(df, ["dutystatusdurations.drivedurationms",
+                                 "drivedurationms"])
+    onduty_col = _find_col(df, ["dutystatusdurations.ondutydurationms",
+                                  "ondutydurationms"])
+    name_col = _find_col(df, ["driver name", "driver.name"])
+    if not cert_col:
+        return 0, ""
+
+    # `isCertified` arrives as boolean True/False (or strings). False =
+    # not yet certified.
+    cert_series = df[cert_col]
+    if cert_series.dtype == object:
+        cert_norm = cert_series.astype(str).str.strip().str.lower()
+        uncert_mask = cert_norm.isin(["false", "0", "no", ""])
+    else:
+        uncert_mask = ~cert_series.fillna(False).astype(bool)
+
+    drive = (pd.to_numeric(df[drive_col], errors="coerce").fillna(0)
+             if drive_col else pd.Series(0, index=df.index))
+    onduty = (pd.to_numeric(df[onduty_col], errors="coerce").fillna(0)
+              if onduty_col else pd.Series(0, index=df.index))
+    active_mask = (drive > 0) | (onduty > 0)
+
+    sub = df[uncert_mask & active_mask]
+    count = int(len(sub))
+    worst = ""
+    if count and name_col:
+        worst_series = sub[name_col].astype(str).str.strip().value_counts()
+        if len(worst_series):
+            nm = worst_series.index[0]
+            n = int(worst_series.iloc[0])
+            worst = f"Worst: {nm} ({n}d)"
+    return count, worst
+
+
+def _speed_window_trend(samsara: dict | None
+                          ) -> tuple[list[str], list[float]]:
+    """Fleet-avg speed-over-limit % for the three windows Samsara
+    reports — 6mo / 3mo / MTD — rendered as a 3-bar trend. We don't
+    show 6 monthly bars because Samsara's DriverSafetyScores
+    aggregates speed-over-limit at the window level; there's no
+    per-month breakdown of time-over-limit ms. A SafetyEvents filter
+    on event_type containing "speed" returned 0 matches in practice
+    (Samsara tracks speed as a continuous metric on the score, not
+    as a discrete event type), so this is the right data source.
+
+    Pairs with page 4's per-driver Speed Over Limit detail: page 1
+    answers "is fleet speeding trending up/down" (3-bar shape), page
+    4 answers "which driver."
+    """
+    scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
+    if not scores_all:
+        return (["6 mo", "3 mo", "MTD*"], [0, 0, 0])
+
+    def _avg(key: str) -> float:
+        vals = [r.get(key) for r in scores_all if _isnum(r.get(key))]
+        return (sum(vals) / len(vals)) if vals else 0.0
+
+    p_6mo = round(_avg("speed_pct"), 1)
+    p_3mo = round(_avg("speed_pct_3mo"), 1)
+    p_mtd = round(_avg("speed_pct_mtd"), 1)
+    return (["6 mo", "3 mo", "MTD*"], [p_6mo, p_3mo, p_mtd])
 
 
 def _coaching_action_monthly(samsara: dict | None, state: str
@@ -887,20 +939,23 @@ def _safety_summary_block_inline(samsara: dict | None,
     body table.
 
     6-month-trend layout (per latest user direction):
-      Row 1: Fleet avg     | HOS violations | DVIR defects | Coached
-             safety score  |                |              |
-             (Samsara)     |                |              |
-      Row 2: Safety events | Dismissed      | Recognized   | Speeding
-                                                              events
-    Safety events moved to row 2 so the second row is all bar charts
-    that resemble the safety-event 6-month visual; Fleet Avg Safety
-    Score (the only tile) sits in row 1's lead slot. Coached /
-    Dismissed / Recognized bars come from binning
-    samsara.coached_events by state + coached_at month.
-    Speeding events come from filtering samsara_sheets.SafetyEvents
-    on event_type contains "speed" — pairs with page 4's per-driver
-    Speed Over Limit table so Audra can see "is fleet speeding
-    trending up/down" before drilling into who."""
+      Row 1: Fleet avg     | DVIR Open      | HOS violations | DVIR
+             safety score  | Defects        | (6-mo bar)     | defects
+             (Samsara tile)| (snapshot tile)|                | (6-mo bar)
+      Row 2: Coached       | Safety events  | Dismissed      | Speed over
+             events (bar)  | (bar)          | (bar)          | limit %
+                                                              (3-window)
+    DVIR Open Defects is the snapshot tile (current open count) that
+    Audra requested next to the Safety Score — both are "right now"
+    indicators. The DVIR 6-month bar in row 1 stays so the trend is
+    visible alongside the snapshot. Speeding switched from an event-
+    count chart to a 3-window % drive-time-over-limit chart because
+    Samsara records speed as a continuous metric on DriverSafetyScores,
+    not as discrete SafetyEvents — the old SafetyEvents filter
+    returned 0 matches. Recognized dropped from the visible set; it
+    runs all-zero in our data (no manager recognitions in the period).
+    Coached / Dismissed bars still bin samsara.coached_events by
+    state + coached_at month."""
     if not samsara:
         return ""
     sw = samsara.get("windows", {}) or {}
@@ -927,14 +982,13 @@ def _safety_summary_block_inline(samsara: dict | None,
         return _bar_chart(title, ml[0] if ml else [],
                           ml[1] if ml else [], sub)
 
-    # New coaching-action 6-month series (coached / dismissed / recognized).
+    # 6-month coaching-action series (coached / dismissed).
     coached_ml = _coaching_action_monthly(samsara, "coached")
     dismissed_ml = _coaching_action_monthly(samsara, "dismissed")
-    recognized_ml = _coaching_action_monthly(samsara, "recognized")
-    # Speeding-events 6-month series — derived from SafetyEvents on
-    # event_type contains "speed". Drives the page-1 trend that pairs
-    # with page 4's per-driver Speed Over Limit detail.
-    speeding_ml = _speeding_events_monthly(samsara_sheets)
+    # Speed-over-limit 3-window trend (6mo / 3mo / MTD) — replaces the
+    # prior SafetyEvents-derived bar that returned 0 (Samsara records
+    # speed as a continuous metric, not as discrete events).
+    spd_labels, spd_vals = _speed_window_trend(samsara)
 
     fleet_score = (samsara.get("fleet") or {}).get("fleet_score")
     fleet_score_tile = _tile(
@@ -942,30 +996,77 @@ def _safety_summary_block_inline(samsara: dict | None,
         (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
         _pill("Samsara &middot; 0&ndash;100 &middot; higher better", "mute"),
     )
-
-    # Row 1: Fleet Avg Safety Score lead, then HOS / DVIR / Coached.
-    # Safety Events moved to row 2 per latest user direction so row 2
-    # is uniformly bar-chart-shaped.
-    safety_charts_row1 = (
-        fleet_score_tile
-        + chart("hos", "HOS violations", "per month &middot; *MTD")
-        + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
-        + _bar_chart("Coached events", coached_ml[0], coached_ml[1],
-                     "manager-reviewed / mo &middot; *MTD")
+    # DVIR Open Defects snapshot tile — current open count (MTD on the
+    # 24h/7d/MTD window). User wanted this next to the Safety Score so
+    # both "right now" indicators sit together at the top of the trend
+    # section.
+    dvir_open_mtd = swv("dvir", "mtd")
+    dvir_open_tile = _tile(
+        "DVIR open defects",
+        str(dvir_open_mtd),
+        _pill("pending mechanic resolution",
+              "bad" if dvir_open_mtd else "mute"),
     )
 
-    # Row 2: all bar charts so the styling matches across the row —
-    # Safety Events (relocated here) leads, then the two coaching-
-    # action series, then Speeding events (replaces the prior spacer
-    # so the row is a uniform 4-col band of bars).
+    # Row 1: snapshot tiles (Fleet Score + DVIR Open) lead, followed
+    # by HOS and DVIR 6-month bars. Both indicators of "right now"
+    # state sit together; the bars to the right give the trend
+    # context.
+    safety_charts_row1 = (
+        fleet_score_tile
+        + dvir_open_tile
+        + chart("hos", "HOS violations", "per month &middot; *MTD")
+        + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
+    )
+
+    # Row 2: all bar charts so the styling matches across the row.
+    # Coached / Safety events / Dismissed are 6-month per-month bars;
+    # Speeding uses 3 windows (6mo / 3mo / MTD) because Samsara doesn't
+    # expose monthly speed time-over-limit. Format the bar values as
+    # percentages so the unit is unambiguous.
     safety_charts_row2 = (
-        chart("events", "Safety events", "per month &middot; *MTD")
+        _bar_chart("Coached events", coached_ml[0], coached_ml[1],
+                   "manager-reviewed / mo &middot; *MTD")
+        + chart("events", "Safety events", "per month &middot; *MTD")
         + _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
                      "no-action-needed / mo &middot; *MTD")
-        + _bar_chart("Recognized events", recognized_ml[0], recognized_ml[1],
-                     "positive-driving / mo &middot; *MTD")
-        + _bar_chart("Speeding events", speeding_ml[0], speeding_ml[1],
-                     "event type = speed* / mo &middot; *MTD")
+        + _bar_chart("Speed over limit", spd_labels, spd_vals,
+                     "% drive time &middot; fleet avg",
+                     fmt=lambda v: f"{v:.1f}%" if v else "0%")
+    )
+
+    # Log-certification snapshot tiles — sit directly under the
+    # 6-month trend, before the detail tables. Missing Log Certs is
+    # the legacy "any uncertified day" count from compute_metrics;
+    # Unverified On-Duty/Driving is the narrower (and more audit-
+    # relevant) "uncertified day AND driver was working" count.
+    uncert_drivers = ((samsara.get("detail") or {}).get("hos_uncert") or [])
+    uncert_count = len(uncert_drivers)
+    uncert_worst = ""
+    if uncert_drivers:
+        worst = max(uncert_drivers, key=lambda r: r.get("days_missing", 0))
+        uncert_worst = (f"Worst: {worst.get('driver')} "
+                         f"({int(worst.get('days_missing', 0))}d)")
+    miss_log_tile = _tile(
+        "Missing log certs",
+        str(uncert_count),
+        _pill(uncert_worst or "all daily logs certified",
+              "bad" if uncert_count else "good"),
+        width="50%",
+    )
+    unver_count, unver_worst = _unverified_onduty_logs(samsara_sheets)
+    unver_log_tile = _tile(
+        "Unverified on-duty / driving logs",
+        str(unver_count),
+        _pill(unver_worst or "all on-duty days certified",
+              "bad" if unver_count else "good"),
+        width="50%",
+    )
+    log_tiles_row = (
+        f"<tr><td colspan='4' style='padding:8px 0 0;'>"
+        f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
+        f"{miss_log_tile}{unver_log_tile}"
+        f"</tr></table></td></tr>"
     )
 
     # Drop into a colspan=4 row so the 4-tile grid lines up with the
@@ -979,6 +1080,7 @@ def _safety_summary_block_inline(samsara: dict | None,
         f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}"
         f"<tr>{safety_charts_row1}</tr>"
         f"<tr>{safety_charts_row2}</tr>"
+        f"{log_tiles_row}"
         f"{_safety_detail_tables(samsara)}"
         f"</table></td></tr>"
     )
@@ -1032,44 +1134,6 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
     def _fmt(v):
         return "&mdash;" if v is None else str(v)
 
-    score = metrics.get("fleet_score")
-    score_sub = "Lower = more incidents per mile"
-    if metrics.get("events_trend_change") is not None:
-        d = metrics["events_trend_change"]
-        if d == 0:
-            score_sub = "Events vs prior month: flat"
-        else:
-            arrow = "&#9650;" if d > 0 else "&#9660;"
-            score_sub = f"Events vs prior month: {arrow} {abs(d)}"
-
-    uc_sub = (
-        f"Worst: {metrics['uncert_worst_name']} ({metrics['uncert_worst_days']}d)"
-        if metrics.get("uncert_worst_name")
-        else "All daily logs certified"
-    )
-
-    tiles_row1 = (
-        "<table width='100%' cellpadding='0' cellspacing='0'><tr>"
-        + _tile("Fleet Safety Score", _fmt(int(round(score)) if score is not None else None),
-                score_sub, width="25%")
-        + _tile("Safety Events (7d)", _fmt(metrics["events_7d"]),
-                f"{metrics['events_24h']} in last 24h", width="25%")
-        + _tile("HOS Violations (7d)", _fmt(metrics["hos_7d"]),
-                "Driving-rule breaches only", width="25%")
-        + _tile("DVIR Open Defects", _fmt(metrics["dvir_open"]),
-                "Pending mechanic resolution", width="25%")
-        + "</tr></table>"
-    )
-
-    tiles_row2 = (
-        "<table width='100%' cellpadding='0' cellspacing='0'><tr>"
-        + _tile("Missing Log Certs", _fmt(metrics["uncert_drivers"]),
-                uc_sub, width="50%")
-        + _tile("Safety Events (30d)", _fmt(metrics["events_30d"]),
-                "Rolling 30-day rollup", width="50%")
-        + "</tr></table>"
-    )
-
     bottom_line_block = (
         f"<tr><td style='padding:18px 24px 6px;'>"
         f"<div style='font-size:10px;letter-spacing:2px;color:{MUTE};"
@@ -1079,19 +1143,16 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
         f"</td></tr>"
     )
 
+    # The exec-brief inline block carries the full safety stack now
+    # (24h/7d/MTD tiles, 6-month trend bars + the two log-cert
+    # snapshot tiles below the trend, then the detail tables). The
+    # legacy compute_metrics-driven KPI tiles row was duplicating
+    # those numbers in a thinner format, so it's been dropped.
     body = (
         bottom_line_block
         + _urgent_banner(urgent_items)
         + _risk_watch_block(risk_signals)
-        # Executive-brief safety summary lifted whole (24h/7d/MTD tiles,
-        # 6-month trend bars, safety events / HOS / missing logs / DVIR /
-        # coaching needs-assigned tables). Placed directly under Risk
-        # Watch so Audra sees the safety pulse before scrolling to
-        # action items. samsara_sheets needed for the 6-mo Speeding
-        # bar (derived from SafetyEvents directly).
         + _safety_summary_block_inline(samsara, samsara_sheets)
-        + f"<tr><td style='padding:14px 18px 8px;'>{tiles_row1}</td></tr>"
-        + f"<tr><td style='padding:0 18px 14px;'>{tiles_row2}</td></tr>"
         + _action_items_block(action_items)
     )
 
