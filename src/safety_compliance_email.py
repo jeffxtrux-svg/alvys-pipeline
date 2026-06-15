@@ -631,22 +631,13 @@ def compute_action_items(*, samsara, samba, alvys_drivers, equipment,
             })
 
     # PRIORITY 2 — equipment past 120d company policy (>30 days).
-    # TRACTORS ONLY on Audra's brief. Per the responsibility map,
-    # trailer inspections are Jackson + Dan's lane (they own trailer
-    # maintenance); they'll see trailers on the operational/maintenance
-    # brief. Ownership split by fleet:
-    #   - X-Trux owner-operator tractors: Audra solo (safety + compliance).
-    #   - Truk-Way fleet tractors: shared — Audra (safety/CSA Maintenance
-    #     BASIC) plus Jackson + Dan (Truk-Way tractor maintenance, per
-    #     the responsibility map).
-    # The owner label below reflects that split. TODO once main.py adds
-    # Fleet.Name to the Trucks sheet, split the tractor list into
-    # per-fleet action items so each owner sees only their slice.
-    # `policy_days` counts down from the 120d window after
-    # LastInspectionDate (negative = past policy). `annual_days` is the
-    # 365d federal date — we don't gate on that here because anything
-    # past company policy gets flagged for inspection long before the
-    # federal OOS line.
+    # Tractor AND trailer inspections are jointly owned by Audra,
+    # Dan, and Jackson. Dan + Jackson specifically own Truk-Way
+    # fleet tractor maintenance. `policy_days` counts down from the
+    # 120d window after LastInspectionDate (negative = past policy).
+    # `annual_days` is the 365d federal date — we don't gate on that
+    # here because anything past company policy gets flagged for
+    # inspection long before the federal OOS line.
     if equipment:
         od_t = [t for t in (equipment.get("tractors") or [])
                 if isinstance(t.get("policy_days"), int) and t["policy_days"] < -30]
@@ -655,13 +646,26 @@ def compute_action_items(*, samsara, samba, alvys_drivers, equipment,
             more = f" (+{len(od_t) - 5} more)" if len(od_t) > 5 else ""
             items.append({
                 "priority": 2,
-                "owner": "Audra (Truk-Way tractors: shared w/ Jackson + Dan)",
+                "owner": "Audra + Dan + Jackson (Truk-Way fleet tractors: Dan + Jackson lead)",
                 "action": f"Schedule tractor inspection: {units}{more}.",
                 "why": (f"{len(od_t)} tractor(s) past 120d company policy "
                         f"by >30d. Flagged for inspection; still in service. "
-                        f"Federal 365d is the OOS line. X-Trux owner-operator "
-                        f"tractors: Audra owns. Truk-Way fleet tractors: "
-                        f"co-owned with Jackson + Dan (maintenance)."),
+                        f"Federal 365d is the OOS line."),
+                "kb_link": "xfreight-playbook-equipment-inspection-backlog.md",
+            })
+
+        od_tr = [t for t in (equipment.get("trailers") or [])
+                 if isinstance(t.get("policy_days"), int) and t["policy_days"] < -30]
+        if od_tr:
+            units = ", ".join(str(t.get("unit") or "?") for t in od_tr[:5])
+            more = f" (+{len(od_tr) - 5} more)" if len(od_tr) > 5 else ""
+            items.append({
+                "priority": 2,
+                "owner": "Audra + Dan + Jackson",
+                "action": f"Schedule trailer inspection: {units}{more}.",
+                "why": (f"{len(od_tr)} trailer(s) past 120d company policy "
+                        f"by >30d. Flagged for inspection; still in service. "
+                        f"Federal 365d is the OOS line."),
                 "kb_link": "xfreight-playbook-equipment-inspection-backlog.md",
             })
 
@@ -717,26 +721,15 @@ def safety_relevant_signals(results: list[dict]) -> list[dict]:
     (one source of truth in risk-signals.yml) while letting each role
     see only their slice.
 
-    Trailer-inspection counts are Jackson + Dan's responsibility per
-    the org responsibility map, so the equipment-inspection-backlog
-    signal is rewritten in-place to strip its paired trailer values
-    before rendering. The same signal still ships unmodified to the
-    operational brief; we mutate a copy so we don't poison the cache."""
+    Tractor AND trailer inspections are jointly owned by Audra, Dan,
+    and Jackson, so the equipment-inspection-backlog signal ships with
+    its paired trailer values intact — the strip shows both counts."""
     safety_ids = {
         "equipment-inspection-backlog",
         "equipment-registration-backlog",
         "csa-near-intervention",
     }
-    out: list[dict] = []
-    for r in (results or []):
-        if r.get("id") not in safety_ids:
-            continue
-        if r.get("id") == "equipment-inspection-backlog":
-            # Shallow copy + zero the paired-trailer keys so the strip
-            # renderer omits the "+ N trailers" suffix.
-            r = {**r, "paired_value": None, "paired_tripped_text": None}
-        out.append(r)
-    return out
+    return [r for r in (results or []) if r.get("id") in safety_ids]
 
 
 # ----------------------------------------------------------------------
