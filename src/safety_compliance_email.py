@@ -1317,16 +1317,15 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
                           action_items: list[dict] | None = None,
                           risk_signals: list[dict] | None = None,
                           samsara_sheets: dict | None = None) -> str:
-    """Bottom line at the top + URGENT banner + Risk Watch strip + KPI tiles
-    + Action items list. Page-1 is the "what changed and what to do"
-    page; the detail tables on pages 2+ are the supporting evidence."""
+    """Executive summary — bottom line + URGENT banner + Risk Watch strip
+    + Action items. The dense metrics view (24h/7d/MTD tiles, 6-month
+    trend bars, detail tables) moved to its own logical page 2 so page 1
+    stays a clean "what changed and what to do" page; the metrics on page
+    2 are the supporting evidence."""
     urgent_items = urgent_items or []
     action_items = action_items or []
     risk_signals = risk_signals or []
     bl = build_bottom_line(metrics)
-
-    def _fmt(v):
-        return "&mdash;" if v is None else str(v)
 
     bottom_line_block = (
         f"<tr><td style='padding:20px 24px 8px;'>"
@@ -1339,20 +1338,31 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
         f"</td></tr>"
     )
 
-    # The exec-brief inline block carries the full safety stack now
-    # (24h/7d/MTD tiles, 6-month trend bars + the two log-cert
-    # snapshot tiles below the trend, then the detail tables). The
-    # legacy compute_metrics-driven KPI tiles row was duplicating
-    # those numbers in a thinner format, so it's been dropped.
     body = (
         bottom_line_block
         + _urgent_banner(urgent_items)
         + _risk_watch_block(risk_signals)
-        + _safety_summary_block_inline(samsara, samsara_sheets)
         + _action_items_block(action_items)
     )
 
     return _page_header("Overview", pg, total) + _wrap_page(body)
+
+
+def build_page2_metrics(samsara: dict | None, samsara_sheets: dict | None,
+                          pg: int, total: int) -> str:
+    """Page 2 — Safety & compliance metrics. Carries the 24h/7d/MTD tiles
+    row, the 6-month trend grid (snapshot tiles + bar charts), and the
+    detail tables (events, HOS, on-duty + uncertified, missing log certs,
+    DVIR, coaching).
+
+    Split off from page 1 (executive summary) so the dense metrics view
+    starts on a fresh page with its own page header rather than flowing
+    continuously from the bottom line. The reader sees a clear two-page
+    overview structure: page 1 = what to do, page 2 = the supporting
+    numbers."""
+    body = _safety_summary_block_inline(samsara, samsara_sheets)
+    return _page_header("Safety metrics", pg, total,
+                         section=_SEC_EVENTS) + _wrap_page(body)
 
 
 # Section banners — keep them centralized so the page-order block in
@@ -2093,20 +2103,23 @@ def _build_html_report(*,
     # detail pages then progress topically so Audra can scan or read.
     #
     #   1. Overview                  — bottom line, urgent, risk-watch,
-    #                                  exec-brief safety summary (tiles +
-    #                                  6mo trend + detail tables), action items
-    #   2. Driver compliance         — DRIVERS: who can't/shouldn't drive
-    #   3. Driver safety scores      — DRIVERS: exec-brief build_page2b
+    #                                  action items (executive summary)
+    #   2. Safety metrics            — EVENTS: 24h/7d/MTD tiles, 6-month
+    #                                  trend grid, detail tables (events,
+    #                                  HOS, on-duty + uncertified, missing
+    #                                  log certs, DVIR, coaching)
+    #   3. Driver compliance         — DRIVERS: who can't/shouldn't drive
+    #   4. Driver safety scores      — DRIVERS: exec-brief build_page2b
     #                                  (per-driver score + harsh accel/brake/
     #                                  turn + speed + crashes)
-    #   4. Safety & compliance detail— EVENTS: exec-brief build_page2
+    #   5. Safety & compliance detail— EVENTS: exec-brief build_page2
     #                                  (Speed Over Limit + Coaching tiles)
-    #   5. Inspection compliance     — EQUIPMENT: per-driver DVIR
+    #   6. Inspection compliance     — EQUIPMENT: per-driver DVIR
     #                                  completion vs FMCSA-required 2/day
     #                                  (pre + post trip), tractor / trailer
     #                                  / total + defects logged
-    #   6. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
-    #   7. Coached Events audit trail— SAFETY: exec-brief build_page_coached
+    #   7. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
+    #   8. Coached Events audit trail— SAFETY: exec-brief build_page_coached
     #                                  (190-day every-coach/dismiss/recognize)
     #
     # Vehicle Compliance was dropped 2026-06-15 — its Open DVIR defects
@@ -2121,19 +2134,20 @@ def _build_html_report(*,
     # batch admin. The two ship at different times of day to match
     # when the work actually happens.
     today_label = _today_label()
-    total = 7
+    total = 8
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
                               action_items=(action_items or []),
                               risk_signals=(risk_signals or []),
                               samsara_sheets=samsara_sheets),
-        build_page_driver_compliance(samba, alvys_drivers, 2, total),
-        _exec_build_page2b(samsara, today_label, pg=3),
-        _exec_build_page2(samsara, today_label, pg=4),
-        build_page_inspection_compliance(samsara_sheets, 5, total),
-        build_page_csa_scorecard(csa, 6, total),
-        _exec_build_page_coached(samsara, today_label, pg=7),
+        build_page2_metrics(samsara, samsara_sheets, 2, total),
+        build_page_driver_compliance(samba, alvys_drivers, 3, total),
+        _exec_build_page2b(samsara, today_label, pg=4),
+        _exec_build_page2(samsara, today_label, pg=5),
+        build_page_inspection_compliance(samsara_sheets, 6, total),
+        build_page_csa_scorecard(csa, 7, total),
+        _exec_build_page_coached(samsara, today_label, pg=8),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
