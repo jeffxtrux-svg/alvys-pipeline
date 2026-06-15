@@ -1440,7 +1440,7 @@ def _safety_summary_block_inline(samsara: dict | None,
                      "no-action-needed / mo &middot; *MTD")
         + _bar_chart("Speed over limit", spd_labels, spd_vals,
                      "% drive time &middot; fleet avg",
-                     fmt=lambda v: f"{v:.1f}%" if v else "0%")
+                     fmt=lambda v: f"{v:.2f}%" if v else "0%")
         + f"<td width='25%' style='padding:6px;'>&nbsp;</td>"
     )
 
