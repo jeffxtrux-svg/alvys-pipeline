@@ -25,7 +25,7 @@ XFreight serves a mix of dedicated daily-rate customers, regional South Dakota a
 
 | Customer | Status | Notes |
 |---|---|---|
-| **Billion Auto Parts** | Rate agreement **expired 06/01/2026** — renewal status unknown | 2-lane SF↔RC + SF→Worthington→Mason City. ~$2,150/day total. See [[Billion Auto]]. |
+| **Billion Auto Parts** | **Renewed June 2026** — both lanes maintained + FSC added | 2-lane SF↔RC + SF→Worthington→Mason City. ~$2,150/day total (~$47K/mo). See [[Billion Auto]]. |
 | **Berry Global** | Active 2026 | Fortune-500 packaging. Dan Heeren handling. Detailed accessorial charge schedule. |
 | **Lanter Distributing (CNH)** | Active/recent | Logistics provider for CNH Industrial (Case New Holland ag equipment). Linehaul rates on file. |
 | **Dakotaland Autoglass** | Active/recent | Rate sheet dated May 2025. Regional SD chain. |
@@ -82,7 +82,7 @@ XFreight serves a mix of dedicated daily-rate customers, regional South Dakota a
 
 ## Strategic Observations
 
-- **Billion Auto** contract expired June 1, 2026. As of June 5, 2026, renewal status is unknown. This is the most time-sensitive action item in the customer portfolio.
+- **Billion Auto** contract **renewed** June 2026 — both Rapid City and Mason City lanes maintained, fuel surcharge added. The immediate revenue risk is secured.
 - **AGCO** won't be in the revenue picture until the next bid cycle (likely late 2026/early 2027).
 - **JW Logistics de-emphasis** likely contributed to the X-Linx revenue collapse from ~$185K/mo (2024) to ~$60K/mo (2026).
 

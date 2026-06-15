@@ -12,17 +12,15 @@ A consolidated watch list of open business issues as of June 5, 2026, seeded fro
 
 ## Summary
 
-Six open issues ranging from an active billing dispute with Acrisure, a just-expired customer contract (Billion Auto), a closed-but-unresolved legal/rate situation with JW Logistics, a lost RFP (AGCO), a collapsing brokerage segment (X-Linx), and fleet shrinkage. The most time-sensitive is the Billion Auto contract expiration — that's $47K/month in revenue at stake.
+Seeded June 5, 2026 with seven issues. As of June 13, 2026: **Acrisure dispute resolved** at $18K (paid), **Billion Auto renewed** (both lanes + FSC), and **SBA 504 shelved**. Remaining open: JW Logistics relationship, X-Linx brokerage revenue collapse, and fleet shrinkage. AGCO RFP is closed (not awarded, door open for next cycle).
 
-## 1. Acrisure Insurance Dispute — ACTIVE
+## 1. Acrisure Insurance Dispute — RESOLVED (2026-06-13)
 
-**Status:** Unresolved as of June 5, 2026.
+**Status:** ✅ Resolved. Negotiated from the ~$95K ask to **$18,000, paid** — below the ~$31K mid-estimate and near the ~$13K floor. The credits-first approach (leading with the $43,739 unapplied credits) delivered ~$77K of savings vs. the ask.
 
-Acrisure claims ~$95,461 owed; Jeff's reconciliation shows ~$31,266 is the likely liability, leveraging $43,739 in unapplied credits that sit on both parties' books. An invoice for account X-TRINC-01 arrived June 1, 2026.
+**Residual:** The higher 2026 premium (+~$0.08–0.10/mi) remains a permanent margin drag. Evaluate an alternative broker/carrier before the next renewal.
 
-**Action:** Apply the April 27 negotiation script (open with the credits). Confirm resolution with Acrisure.
-
-→ See [[Acrisure Dispute]] for the full item-by-item breakdown and negotiating scenarios.
+→ See [[Acrisure Dispute]] for the full negotiation history and item-by-item breakdown.
 
 ## 2. JW Logistics — Disputed Relationship + Exclusion Policy
 
@@ -34,13 +32,9 @@ JWL is excluded from all XFreight reports by a hardened policy. The `03 - Financ
 
 → See [[JW Logistics]] for the carrier agreement terms, exclusion policy, and dispute context.
 
-## 3. Billion Auto Contract — JUST EXPIRED (06/01/2026)
+## 3. Billion Auto Contract — RENEWED (June 2026)
 
-**Status:** Contract term was 06/01/2025 – 06/01/2026. As of June 5, 2026, the agreement has expired.
-
-This is daily-revenue freight (~$2,150/day across two dedicated lanes). $47K/month if maintained. Either a renewal has been signed (not yet captured), renegotiation is in progress, or the relationship is being wound down.
-
-**Action: Confirm Billion Auto contract status immediately.** This is the highest-priority customer action item in the portfolio.
+**Status:** ✅ Renewed. Both the **Rapid City** and **Mason City** dedicated lanes maintained, and a **fuel surcharge added** for protection. Secures ~$47K/month of daily-volume revenue.
 
 → See [[Billion Auto]] for lane details and rate structure.
 
@@ -77,15 +71,9 @@ X-Trux is actively recruiting via the Owner-Operator Program. `XFreight Goals.xl
 
 → See [[Owner-Operator Program]] for recruiting terms and [[Financial Performance]] for the fleet-size trend data.
 
-## 7. SBA 504 Capital Plan — Under Evaluation
+## 7. SBA 504 Capital Plan — SHELVED (2026-06-13)
 
-**Status:** Under review. Jeff's Feb 2026 email: *"We are still reviewing things at the moment... trying to confirm there is enough cash flow."*
-
-Requires: $230K cash injection / $180K SBA 504 portion. 2026 YTD net income ≈ $30–35K/month — math is tight but workable. The $43,739 Acrisure credit (if applied) directly improves the cash position for the down payment.
-
-**Action:** Confirm SBA 504 decision timeline with JB and Mike Flint (First Dakota).
-
-→ See [[SBA 504 Financing]] for the full capital plan and [[Acrisure Dispute]] for the credit that affects the cash calculation.
+**Status:** Not currently on the table (Jeff, 2026-06-13). Removed from the active watch list. Context retained in [[SBA 504 Financing]] if it returns.
 
 ## Connections
 

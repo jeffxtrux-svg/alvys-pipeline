@@ -19,16 +19,16 @@ Every workflow runs at fixed Central wall-clock times year-round. GitHub Actions
 | Central Time | Job | Workflow file |
 |---|---|---|
 | **2:30am** | SambaSafety merge (CSVs → `SambaSafety_Master.xlsx`) | `sambasafety_refresh.yml` |
-| **4:00am** | Alvys + Samsara + QB pulls (concurrent) | `refresh.yml`, `samsara_refresh.yml`, `qb_refresh.yml` |
+| **4am, 6am, 8am, 10am, 12pm, 2pm, 4pm, 6pm** | Alvys + Samsara + QB pulls (every 2 hours, concurrent) | `refresh.yml`, `samsara_refresh.yml`, `qb_refresh.yml` |
 | **4:30am** | Google Sheets KPI dashboard (morning) | `sheets_refresh.yml` |
 | **5:00am** | Scorecard email primary (13-page PDF) | `scorecard_email.yml` |
 | 5:15 / 5:30 / 6:00am | Scorecard email backups (only fire if primary dropped) | `scorecard_email.yml` |
 | **7:15am** | Karpathy-Wiki librarian (morning) | `karpathy_compile.yml` |
-| **11:00am** | Alvys + Samsara + QB pulls (midday) | same as 4am |
 | **1:00pm** | Google Sheets KPI dashboard (midday) | `sheets_refresh.yml` |
 | **1:00pm** | Karpathy-Wiki librarian (afternoon) | `karpathy_compile.yml` |
-| **5:00pm** | Alvys + Samsara + QB pulls (evening) | same as 4am |
 | **5:30pm** | Google Sheets KPI dashboard (evening) | `sheets_refresh.yml` |
+
+> **Cadence change (June 2026):** The three source-data pulls (Alvys / Samsara / QB) were bumped from 3x/day (4am / 11am / 5pm) to **every 2 hours, 4am–6pm CT** (eight runs/day per source). See [[Refresh Cadence]] for the full rationale and cost breakdown.
 
 ## Why This Ordering
 
@@ -76,12 +76,12 @@ The wrong-season cron fires but the gate exits it cleanly. **DST flip in early-N
 
 | Workflow | Target CT times | Gate accepts |
 |---|---|---|
-| `refresh.yml` (Alvys) | 4am / 11am / 5pm | `{4, 11, 17}` |
-| `samsara_refresh.yml` | 4am / 11am / 5pm | `{4, 11, 17}` |
-| `qb_refresh.yml` | 4am / 11am / 5pm | `{4, 11, 17}` |
-| `sambasafety_refresh.yml` | 2:30am | `{2}` |
+| `refresh.yml` (Alvys) | Every 2h, 4am–6pm | `{4, 6, 8, 10, 12, 14, 16, 18}` |
+| `samsara_refresh.yml` | Every 2h, 4am–6pm | `{4, 6, 8, 10, 12, 14, 16, 18}` |
+| `qb_refresh.yml` | Every 2h, 4am–6pm | `{4, 6, 8, 10, 12, 14, 16, 18}` |
+| `sambasafety_refresh.yml` | Hourly (multi-hour gate to catch delayed fires) | `{1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18}` |
 | `sheets_refresh.yml` | 4:30am / 1pm / 5:30pm | `{4, 13, 17}` |
-| `scorecard_email.yml` | 5am + backups through ~6am | `≥ 5` |
+| `scorecard_email.yml` | 5am + backups through ~6am | `≥ 5`, skip `6` |
 | `karpathy_compile.yml` | 7:15am / 1pm | `{7, 13}` |
 
 ## Failure Handling
@@ -103,15 +103,16 @@ The wrong-season cron fires but the gate exits it cleanly. **DST flip in early-N
 | Morning | Audra: MVR approvals, applicant processing. Dan: load planning, equipment list. Jeff: customer/sales. JB: strategic/financial. |
 | Throughout day | Available Equipment List updated as loads move |
 | Monday AM | X-Trux weekly fuel reports emailed (~$7K/week average) |
-| 11:00am | Midday pulls (auto) |
+| Every 2h 4am–6pm | Alvys + Samsara + QB pulls (auto) |
 | 1:00pm | Sheets + librarian (auto) |
-| 5:00pm | Evening pulls + Sheets (auto) |
+| 5:30pm | Evening Sheets (auto) |
 | Overnight | Drivers run loads; safety events flow to Samsara |
 
 ## Connections
 
 - [[Data Pipeline Architecture]] — what each job pulls and writes.
 - [[Daily Scorecard Email]] — the 5am job described in detail.
+- [[Refresh Cadence]] — rationale and detail for the June 2026 bump from 3x/day to every 2 hours.
 - [[OneDrive]] — where all job outputs land.
 
 ## Sources

@@ -4,7 +4,7 @@ type: register
 tags: [risk, compliance, finance, operations, decision-support]
 sources: ["raw/xfreight-risk-register.md"]
 related: ["[[Decision Journal]]", "[[Safety Program]]", "[[FMCSA CSA Scorecard]]", "[[Acrisure Dispute]]", "[[Active Disputes and Open Issues]]", "[[Customer Portfolio]]", "[[Factoring]]", "[[Data Pipeline Architecture]]", "[[SBA 504 Financing]]"]
-last_reviewed: "2026-06-13"
+last_reviewed: "2026-06-15"
 ---
 
 # Risk Register
@@ -33,7 +33,7 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 ## High severity
 
 ### Equipment inspection backlog
-**What it is.** As of 2026-06-13 the fleet carries **4 tractors and 13 trailers** past due on the federal 365-day annual inspection. **Exposure:** roadside out-of-service orders, a climbing FMCSA Maintenance BASIC, lost truck utilization. **Mitigation:** the [[Daily Scorecard Email]] Equipment Compliance pages now flag past-due units in red. **Watch:** any unit past due. **Owner:** Audra (Safety) + Dan (Logistics). See [[Safety Program]], [[FMCSA CSA Scorecard]].
+**What it is.** As of 2026-06-13 the fleet carries **4 tractors and 13 trailers** past due on the **120-day company policy** (corrected 2026-06-14 — the prior framing said "federal 365-day annual" which was wrong; the 365d federal rule is the out-of-service threshold, and a unit would need to be 245+ days past the company 120d policy to reach it). **Exposure:** drift toward the federal 365d limit, worsening Maintenance BASIC if a roadside inspection finds a defect, lost truck utilization once units are pulled for inspection. **Mitigation:** the [[Daily Scorecard Email]] Equipment Compliance pages show both the 120d company-policy pill and the 365d federal pill so the operator can tell at a glance which threshold is crossed. **Watch:** any unit past the 120d company policy. **Owner:** Audra (Safety) + Dan (Logistics). See [[Safety Program]], [[FMCSA CSA Scorecard]], [[Playbook — Equipment Inspection Backlog]].
 
 ### CSA BASIC near intervention
 **What it is.** FMCSA flags intervention when a BASIC crosses the 65th percentile (Unsafe Driving, Crash Indicator) or 80th (all others). Tracked on brief page 10 from the SambaSafety CSA scorecard. **Exposure:** intervention, audit, higher insurance cost. **Watch:** any BASIC crossing its threshold. **Owner:** Audra. See [[FMCSA CSA Scorecard]], [[Safety Program]].

@@ -4,7 +4,7 @@ type: register
 tags: [decisions, finance, operations, decision-support]
 sources: ["raw/xfreight-decision-journal.md"]
 related: ["[[Risk Register]]", "[[Recent Decisions 2026-06-05]]", "[[Rate-Per-Mile Goal]]", "[[Brokerage X-Linx]]", "[[Owner-Operator Program]]", "[[AGCO RFP]]", "[[Safety Program]]", "[[Daily Scorecard Email]]"]
-last_reviewed: "2026-06-13"
+last_reviewed: "2026-06-15"
 ---
 
 # Decision Journal
@@ -17,6 +17,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 
 | Date | Decision | Predicted outcome | Status |
 |------|----------|-------------------|:------:|
+| 2026-06-14 | Role-focused brief delivery | Faster accountability per area | Pending |
 | 2026-06-13 | Acrisure billing settled at $18K (paid) | $95K ask → $18K, near floor | **Confirmed** |
 | 2026-06 | Billion Auto renewed (lanes + FSC) | Secures ~$47K/mo + fuel protection | **Confirmed** |
 | 2026-06 | Factoring: selected Triumph | Cash-flow relief once onboarded | Pending — ~6/16–17 |
@@ -56,6 +57,33 @@ A running log of XFreight's consequential decisions — each with the **rational
 
 ## 2026-05-01 — Renewed insurance with Acrisure (+$0.08–0.10/mi)
 **Decision.** Renew X-Trux / X-Linx insurance with Acrisure (Great West Casualty underwriter) effective May 1, 2026, accepting a ~$0.08–0.10/mi premium increase. **Rationale.** Keep coverage continuity through the renewal; no better-priced option lined up in time. **Predicted outcome.** The higher premium is absorbed into the cost-out so the rate-per-mile goal stays whole. **Actual.** Renewal completed 5/1/26; the increase is figured into the costing (overhead pin $0.98 — confirm it fully reflects $0.08–0.10/mi; see [[Risk Register]]). **Forward.** Evaluate an alternative broker/carrier before the next renewal — a different option may be needed down the road. Outcome **confirmed** (renewal done, cost absorbed). See [[Insurance and Banking]], [[Acrisure Dispute]], [[Rate-Per-Mile Goal]].
+
+## 2026-06-14 — Role-focused brief delivery (org accountability map)
+
+**Decision.** Restructure brief delivery from a single 13-page Executive brief that everyone receives into role-focused daily briefs aimed at the owner of each area, with Jeff + JB cc'd on everything for governance visibility. The executive brief stays as the consolidated leadership view.
+
+**Distribution plan** (canon also in [[Employee Responsibilities]] and repo-root `CLAUDE.md`):
+- **Executive** → Dan, JB, Jeff (existing — already live).
+- **Safety & Compliance** → Audra; Jeff, JB cc. (`safety_compliance_email.py` already built; in jeff-only test mode.)
+- **Operational / Maintenance** → Jackson, Dan; Jeff, JB cc. (Not yet built.)
+- **Accounting / Financial** → Jeff, JB. (Not yet built.)
+- **Sales** (weekly Monday) → Jeff; JB cc. (Not yet built.)
+- **Recruiting** (weekly Monday) → Jeff; JB cc. (Not yet built.)
+
+**Responsibility assignments** (canonical — must match playbook + risk-register `owner:` fields):
+- **Audra** — Safety, Compliance, invoice closeout.
+- **Jackson + Dan** — On-time delivery, truck coverage/return loads, drivers ≥2,750 mi/wk average.
+- **Jeff + JB** — Accounting/financial, sales, recruiting.
+
+**Rationale.** A single 13-page brief everyone receives gets skimmed — people don't read the parts that aren't theirs and miss the parts that are. Role-specific briefs drive accountability; cc'ing leadership keeps visibility.
+
+**Assumption.** Owners actually engage with their brief instead of filing it. If a role's brief isn't read consistently for 2+ weeks, the format is wrong before more is added on top.
+
+**Predicted outcome.** Sharper accountability per area; faster action cycles on safety, operational, and AR items; less "everyone read it, no one acted" diffusion.
+
+**Actual.** _TBD — review after new briefs land + run for 30 days. Grading signals: are tripped Risk Watch items getting acked/closed faster? Are equipment-inspection backlog items cleared within the 14-day playbook window? Is AR aging dropping or holding?_ See [[Risk Register]], [[Playbook — Equipment Inspection Backlog]].
+
+---
 
 ## 2026-01 — AGCO 2026 truckload RFP (closed loop)
 **Decision.** Bid the AGCO 2026 truckload RFP. **Outcome.** **Not awarded** (Jan 2026). Graded **wrong** (lost). Lessons for the next cycle are in [[AGCO RFP]] — kept here as an example of a decision with a known result, so the journal shows the full loop. See [[Customer Portfolio]].
