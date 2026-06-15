@@ -1838,21 +1838,48 @@ def _build_html_report(*,
     )
 
 
+def _accountability_key(item: dict) -> str:
+    """Stable cross-day identity key for matching items across runs.
+
+    DVIR defects key on category+driver+defect so different defects on
+    the same driver don't collapse. Everything else keys on category+
+    driver-or-unit, which is stable as long as the underlying issue
+    persists in the source data (Samsara / Alvys).
+    """
+    cat  = (item.get("category") or "").lower().strip()
+    drv  = (item.get("driver") or "").lower().strip()
+    unit = (item.get("unit") or "").lower().strip()
+    if "dvir defect" in cat:
+        detail = (item.get("detail") or "").lower().strip()
+        return f"{cat}|{drv or unit}|{detail}"
+    return f"{cat}|{drv or unit}"
+
+
 def _write_accountability_json(
     today: datetime.date,
     samsara: dict | None,
     samba: dict | None,
     alvys_drivers: dict | None,
     equipment: dict | None,
+    tok: str | None = None,
+    upn: str | None = None,
 ) -> Path:
-    """Extract per-owner accountability items and write to output/.
+    """Extract per-owner accountability items, enrich with carry-forward
+    counters, write to output/, and upload to OneDrive.
 
     Called from main() after all data dicts are computed. The Teams
     notification step reads this file and posts two separate messages —
-    one for Audra (all safety items), one for Jackson + Dan (trailers).
+    one for Audra (all safety items), one for Jackson + Dan
+    (DVIR defects + trailer inspections).
 
-    Each item: {category, severity, detail, prompt, driver?, unit?}
-    severity: "critical" | "high" | "medium"
+    Carry-forward: downloads yesterday's JSON from OneDrive/Safety/,
+    matches items by stable key, and increments days_open for items
+    that persist. Items that fall off today's list were resolved in the
+    source system — they disappear automatically without manual action.
+    Items open 3+ days escalate to severity "critical" in the card.
+
+    Each item: {category, severity, days_open, first_seen, detail,
+                prompt, driver?, unit?}
     """
     import json
 
@@ -2054,6 +2081,44 @@ def _write_accountability_json(
             "prompt":   "Inspection scheduled? When?",
         })
 
+    # ── Carry-forward: load previous day's JSON from OneDrive ─────────
+    # Try up to 3 days back (handles weekends / skipped runs).
+    prev_lookup: dict[str, dict] = {}
+    if tok and upn:
+        for days_back in range(1, 4):
+            prev_date = today - datetime.timedelta(days=days_back)
+            prev_path = f"Safety/accountability-{prev_date.isoformat()}.json"
+            try:
+                raw = download_file(tok, upn, prev_path)
+                prev_data = json.loads(raw)
+                for item in prev_data.get("audra", []) + prev_data.get("ops", []):
+                    k = _accountability_key(item)
+                    prev_lookup[k] = item
+                log.info("Carry-forward: %d items loaded from %s",
+                         len(prev_lookup), prev_date)
+                break
+            except Exception:
+                log.debug("No accountability JSON at %s", prev_path)
+
+    # ── Enrich items with days_open + first_seen ───────────────────────
+    def _enrich(items: list[dict]) -> None:
+        for item in items:
+            prev = prev_lookup.get(_accountability_key(item))
+            if prev:
+                item["days_open"]  = (prev.get("days_open") or 1) + 1
+                item["first_seen"] = prev.get("first_seen") or str(
+                    today - datetime.timedelta(days=1))
+                # Escalate to critical after 3+ days open with no fix.
+                if item["days_open"] >= 3:
+                    item["severity"] = "critical"
+            else:
+                item["days_open"]  = 1
+                item["first_seen"] = str(today)
+
+    _enrich(audra)
+    _enrich(ops)
+
+    # ── Write locally and upload to OneDrive ──────────────────────────
     result = {
         "date":  today.isoformat(),
         "audra": audra,
@@ -2062,6 +2127,18 @@ def _write_accountability_json(
     path.write_text(json.dumps(result, indent=2, default=str))
     log.info("Accountability JSON: %s (%d Audra, %d ops)",
              path, len(audra), len(ops))
+
+    if tok and upn:
+        try:
+            ensure_folder(tok, upn, "Safety")
+            upload_file(tok, upn,
+                        folder_path="Safety",
+                        filename=f"accountability-{today.isoformat()}.json",
+                        file_path=path)
+            log.info("Accountability JSON uploaded → OneDrive/Safety/")
+        except Exception as exc:
+            log.warning("Failed to upload accountability JSON: %s", exc)
+
     return path
 
 
@@ -2165,7 +2242,8 @@ def main() -> int:
         carrier_backlog=None, csa=csa,
     )
 
-    _write_accountability_json(today, samsara, samba, alvys_drivers, equipment)
+    _write_accountability_json(today, samsara, samba, alvys_drivers, equipment,
+                               tok=tok, upn=upn)
 
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
