@@ -190,7 +190,7 @@ Canon: `Karpathy-Wiki/raw/xfreight-employee-responsibilities.md`.
 
 | Person(s) | Owns | Primary brief |
 |---|---|---|
-| **Audra** | Safety + Compliance · invoice closeout (loads invoiced timely + carrier invoices entered into Alvys) | Safety & Compliance (daily) |
+| **Audra** | Safety + Compliance · invoice closeout (loads invoiced timely + carrier invoices entered into Alvys) | Safety & Compliance (5am daily) + Financial Brief (7am daily) |
 | **Jackson + Dan** | On-time delivery · truck coverage / return loads · drivers hitting 2,750 mi/wk avg · driver dispatching · maintenance on trailers + Truk-Way tractors · overall brokerage (X-Linx) operations | Operational / Maintenance (daily) |
 | **Jeff + JB** | Accounting / financial · sales · recruiting | Accounting / Financial (daily); Sales + Recruiting (weekly, Jeff primary, JB cc) |
 | **Dan + JB + Jeff** | Consolidated leadership view | Executive (daily) |

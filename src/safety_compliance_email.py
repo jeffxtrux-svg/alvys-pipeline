@@ -1787,10 +1787,6 @@ def _build_html_report(*,
                         csa: dict | None,
                         alvys_drivers: dict | None,
                         alvys_sheets: dict | None,
-                        uninvoiced: dict | None,
-                        carrier_backlog: dict | None,
-                        qb_ar: dict | None,
-                        alvys_ar: dict | None,
                         risk_signals: list[dict] | None,
                         action_items: list[dict] | None) -> str:
     metrics = compute_metrics(samsara)
@@ -1812,21 +1808,14 @@ def _build_html_report(*,
     #   6. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
     #   7. Coached Events audit trail— SAFETY: exec-brief build_page_coached
     #                                  (190-day every-coach/dismiss/recognize)
-    #   8. Invoice closeout          — CLOSEOUT: un-invoiced + carrier-bill backlog
     #
-    # Banner grouping (eyebrow in _page_header) makes the structure
-    # readable without a TOC. The events / HOS / missing-log tables that
-    # used to be standalone pages 4 + 5 now live in the page-1 safety
-    # summary block — the exec-brief format is denser and Audra wanted
-    # them visible up front. Driver Safety Scores + Speed Over Limit +
-    # Coached Events come straight from the exec brief so the visual is
-    # pixel-identical (those pages use _header / SAFETY tag style).
-    # CSA sits late as strategic standing; Coached Events sits last in
-    # the SAFETY group as the long audit-trail tail; closeout sits last
-    # as the topic shift from safety to billing — Audra's second
-    # accountability area.
+    # Invoice Closeout + AR Reconciliation moved to the separate
+    # Financial Brief (src/financial_email.py) so each report stays
+    # scoped to one cognitive mode: safety = vigilance, financial =
+    # batch admin. The two ship at different times of day to match
+    # when the work actually happens.
     today_label = _today_label()
-    total = 9
+    total = 7
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
@@ -1839,13 +1828,6 @@ def _build_html_report(*,
         build_page5_vehicles(samsara, samsara_sheets, 5, total),
         build_page_csa_scorecard(csa, 6, total),
         _exec_build_page_coached(samsara, today_label, pg=7),
-        build_page_invoice_closeout(uninvoiced, carrier_backlog, alvys_sheets, 8, total),
-        # AR Reconciliation by Customer (exec brief pp 26-27 in the
-        # PDF — long table that auto-paginates). End of the safety
-        # brief so the QB-vs-Alvys variance is available alongside
-        # Audra's invoice-closeout work without burying the safety
-        # narrative behind it.
-        _exec_build_page7(qb_ar, alvys_ar, today_label, pg=9),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
@@ -1927,18 +1909,6 @@ def main() -> int:
     alvys_path = os.environ.get("ALVYS_PIPELINE_ONEDRIVE_PATH",
                                 "Alvys Pipeline.xlsx")
     alvys_sheets = _safe_read(tok, upn, alvys_path, missing, "Alvys Pipeline")
-    # QB Bills (X-Linx + others, paid + unpaid, last 180d) — cross-
-    # reference so the carrier-invoice-backlog page doesn't false-
-    # positive on bills that landed in QB but never got the Alvys
-    # Carrier Invoice Number write-back.
-    qb_bills_path = os.environ.get("QB_BILLS_ONEDRIVE_PATH",
-                                    "QuickBooks/QB_Bills.xlsx")
-    qb_bills_sheets = _safe_read(tok, upn, qb_bills_path, missing, "QB Bills")
-    # QB AR aging detail — needed for the AR Reconciliation by Customer
-    # page at the end of the brief (matches exec-brief build_page7).
-    qb_ar_path = os.environ.get("QB_AR_ONEDRIVE_PATH",
-                                 "QuickBooks/QB_AgedReceivableDetail.xlsx")
-    qb_ar_sheets = _safe_read(tok, upn, qb_ar_path, missing, "QB AR aging")
     if missing:
         log.info("Optional sources missing (page(s) will soft-skip): %s",
                  ", ".join(missing))
@@ -1947,18 +1917,6 @@ def main() -> int:
     samba = compute_sambasafety(samba_sheets) if samba_sheets else None
     csa = compute_csa_scorecard(samba_sheets) if samba_sheets else None
     alvys_drivers = compute_alvys_drivers(alvys_sheets) if alvys_sheets else None
-    uninvoiced = compute_alvys_uninvoiced(alvys_sheets) if alvys_sheets else None
-    qb_billed_loads = compute_qb_xlinx_bill_loads(qb_bills_sheets)
-    log.info("QB X-Linx bill cross-reference: %d load #s indexed (last 180d)",
-             len(qb_billed_loads))
-    carrier_backlog = compute_carrier_invoice_backlog(
-        alvys_sheets, qb_billed_load_ids=qb_billed_loads
-    )
-    # AR shapes for the AR-by-customer reconciliation page (end of brief).
-    # Both soft-fail to {} so the page renders with whatever's available.
-    qb_ar = (compute_qb_ar_detail(next(iter(qb_ar_sheets.values())))
-             if qb_ar_sheets else {})
-    alvys_ar = compute_alvys_ar(alvys_sheets) if alvys_sheets else {}
 
     # Equipment compute — needed only for the action-items engine here
     # (the equipment detail pages live on the executive brief). Import
@@ -1986,18 +1944,19 @@ def main() -> int:
         log.warning("Risk Watch evaluation failed: %s", e)
         risk_signals = []
 
+    # Safety-only action items. Invoice closeout + carrier-bill backlog
+    # action items moved to the Financial Brief; pass None for those
+    # so compute_action_items skips the P3 financial rows.
     action_items = compute_action_items(
         samsara=samsara, samba=samba, alvys_drivers=alvys_drivers,
-        equipment=equipment, uninvoiced=uninvoiced,
-        carrier_backlog=carrier_backlog, csa=csa,
+        equipment=equipment, uninvoiced=None,
+        carrier_backlog=None, csa=csa,
     )
 
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
         samba=samba, csa=csa, alvys_drivers=alvys_drivers,
         alvys_sheets=alvys_sheets,
-        uninvoiced=uninvoiced, carrier_backlog=carrier_backlog,
-        qb_ar=qb_ar, alvys_ar=alvys_ar,
         risk_signals=risk_signals, action_items=action_items,
     )
     pdf = _render_pdf(html)
