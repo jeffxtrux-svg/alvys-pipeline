@@ -6185,13 +6185,30 @@ def _safety_detail_tables(samsara) -> str:
              None])
         for r in detail.get("events", []))
 
+    # De-duplicate DVIR rows. Samsara emits one row per defect line on
+    # an inspection form, so if "Left inside tail light dim" is logged
+    # multiple times in one inspection it surfaces as duplicate rows.
+    # Collapse on (unit, defect, type, date, time) so each open defect
+    # appears once per unit.
+    _dvir_seen: set[tuple] = set()
+    _dvir_dedup: list[dict] = []
+    for r in detail.get("dvir", []):
+        k = (str(r.get("unit") or "").strip().lower(),
+             str(r.get("defect") or "").strip().lower(),
+             str(r.get("defect type") or "").strip().lower(),
+             str(r.get("date") or "").strip(),
+             str(r.get("time") or "").strip())
+        if k in _dvir_seen:
+            continue
+        _dvir_seen.add(k)
+        _dvir_dedup.append(r)
     dvir_rows = "".join(
         _tr([r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
              (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
              r.get("defect", ""), r.get("defect type", ""), "Open"],
             ["left", "left", "left", "left", "left", "left"],
             [None, None, None, None, "warn", "bad"])
-        for r in detail.get("dvir", []))
+        for r in _dvir_dedup)
 
     # Coaching needs assigned — per-driver list over the last 7 days. Every
     # driver with any safety event in the window stays on the list; the

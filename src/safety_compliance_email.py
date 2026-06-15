@@ -1049,21 +1049,51 @@ def _safety_summary_block_inline(samsara: dict | None,
     # speed as a continuous metric, not as discrete events).
     spd_labels, spd_vals = _speed_window_trend(samsara)
 
+    # Snapshot tiles for row 1 — same overall tile geometry as the bar
+    # charts so all 9 cells of the 3x3 grid baseline-align. The big value
+    # is bottom-anchored via a nested table cell with valign=bottom, which
+    # mirrors where the bar-chart bars sit. Title at the top, value at the
+    # bottom — gives the grid a consistent visual rhythm.
+    def _snap_tile(label: str, value: str, sub: str,
+                    value_color: str = INK) -> str:
+        return (
+            f"<td class='tile' width='33%' valign='top' style='padding:6px;'>"
+            f"<div style='border:1px solid {LINE};border-radius:10px;"
+            f"padding:12px 12px 10px;height:184px;'>"
+            # Title at top
+            f"<div style='font-size:12px;font-weight:800;color:{NAVY};"
+            f"margin-bottom:2px;'>{label}</div>"
+            f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
+            # Bottom-anchored big number — uses a table cell with valign=bottom
+            # to push the value to the bottom of the remaining tile space.
+            f"<table width='100%' cellpadding='0' cellspacing='0' "
+            f"style='height:128px;'>"
+            f"<tr><td valign='bottom' align='center' style='padding-bottom:6px;'>"
+            f"<div style='{FONT_SERIF}font-size:48px;font-weight:400;"
+            f"color:{value_color};letter-spacing:-1px;line-height:1;'>{value}</div>"
+            f"</td></tr></table>"
+            f"</div>"
+            f"</td>"
+        )
+
     fleet_score = (samsara.get("fleet") or {}).get("fleet_score")
-    fleet_score_tile = _tile(
+    fs_val = f"{fleet_score:.0f}" if _isnum(fleet_score) else "&mdash;"
+    fs_color = INK
+    if _isnum(fleet_score):
+        fs_color = GOOD if fleet_score >= 90 else (WARN if fleet_score >= 75 else BAD)
+    fleet_score_tile = _snap_tile(
         "Fleet avg safety score",
-        (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
-        _pill("Samsara &middot; 0&ndash;100 &middot; higher better", "mute"),
-        width="33%",
+        fs_val,
+        "Samsara &middot; 0&ndash;100 &middot; higher is better",
+        value_color=fs_color,
     )
     # DVIR Open Defects snapshot tile — current open count.
     dvir_open_mtd = swv("dvir", "mtd")
-    dvir_open_tile = _tile(
+    dvir_open_tile = _snap_tile(
         "DVIR open defects",
         str(dvir_open_mtd),
-        _pill("pending mechanic resolution",
-              "bad" if dvir_open_mtd else "mute"),
-        width="33%",
+        "pending mechanic resolution",
+        value_color=BAD if dvir_open_mtd else INK,
     )
     # Missing Log Certs snapshot tile — moves into the snapshot lead
     # row so the layout reads as a 3x3 grid with no half-empty rows.
@@ -1072,14 +1102,13 @@ def _safety_summary_block_inline(samsara: dict | None,
     uncert_worst = ""
     if uncert_drivers:
         worst = max(uncert_drivers, key=lambda r: r.get("days_missing", 0))
-        uncert_worst = (f"Worst: {worst.get('driver')} "
+        uncert_worst = (f"worst: {worst.get('driver')} "
                          f"({int(worst.get('days_missing', 0))}d)")
-    miss_log_tile = _tile(
+    miss_log_tile = _snap_tile(
         "Missing log certs",
         str(uncert_count),
-        _pill(uncert_worst or "all daily logs certified",
-              "bad" if uncert_count else "good"),
-        width="33%",
+        uncert_worst or "all daily logs certified",
+        value_color=BAD if uncert_count else GOOD,
     )
 
     # Row 1: snapshot tiles (3 at 33% each) — all "right now"
@@ -1112,13 +1141,18 @@ def _safety_summary_block_inline(samsara: dict | None,
     # gets its own table wrapper.
     return (
         f"<tr><td colspan='4' style='padding:8px 24px 0;'>"
-        # 4-column metrics snapshot (25% each)
-        f"<table width='100%' cellpadding='0' cellspacing='0'>"
+        # 4-column metrics snapshot (25% each) — table-layout:fixed forces
+        # the 25%-width cells to honor their widths even when the COACHING
+        # DUE label is longer than the other labels, so all 4 tiles stay
+        # the same size and the row doesn't overflow.
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='table-layout:fixed;'>"
         f"{_section('Current period &mdash; 24h / 7d / month-to-date')}"
         f"<tr>{safety_tiles}</tr>"
         f"</table>"
         # 3-column 6-month trend grid (33% each — separate table for clean widths)
-        f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:4px;'>"
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='table-layout:fixed;margin-top:4px;'>"
         f"{_section('6-month trend &mdash; rolling window &middot; * = month-to-date', span=3)}"
         f"<tr>{safety_charts_row1}</tr>"
         f"<tr>{safety_charts_row2}</tr>"
@@ -1360,6 +1394,26 @@ def build_page5_vehicles(samsara: dict | None, samsara_sheets: dict | None,
     """Open DVIR defects + vehicle inspections due in the next 30 days."""
     detail = (samsara or {}).get("detail", {}) or {}
     dvirs = detail.get("dvir", []) or []
+    # De-duplicate DVIR rows. Samsara reports one row per defect line on
+    # an inspection form — if the same defect ("Left inside tail light
+    # dim") appears multiple times in one inspection, it surfaces here as
+    # duplicate rows. We collapse rows with identical (unit, defect, type,
+    # date, time) so the table reads as one row per open defect on one
+    # unit, regardless of how many times the inspector logged it.
+    seen: set[tuple] = set()
+    deduped_dvirs: list[dict] = []
+    for r in dvirs:
+        key = (
+            str(r.get("unit") or "").strip().lower(),
+            str(r.get("defect") or "").strip().lower(),
+            str(r.get("defect type") or "").strip().lower(),
+            str(r.get("date") or "").strip(),
+            str(r.get("time") or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_dvirs.append(r)
     dvir_rows = "".join(
         _tr(
             [r.get("unit", "&mdash;"),
@@ -1371,7 +1425,7 @@ def build_page5_vehicles(samsara: dict | None, samsara_sheets: dict | None,
             ["left", "left", "left", "left", "left", "left"],
             [None, None, None, None, None, "bad"],
         )
-        for r in dvirs
+        for r in deduped_dvirs
     )
     if not dvir_rows:
         dvir_rows = (
@@ -1836,10 +1890,16 @@ def _build_html_report(*,
     #                                  turn + speed + crashes)
     #   4. Safety & compliance detail— EVENTS: exec-brief build_page2
     #                                  (Speed Over Limit + Coaching tiles)
-    #   5. Vehicle compliance        — EQUIPMENT: DVIRs + inspections due
-    #   6. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
-    #   7. Coached Events audit trail— SAFETY: exec-brief build_page_coached
+    #   5. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
+    #   6. Coached Events audit trail— SAFETY: exec-brief build_page_coached
     #                                  (190-day every-coach/dismiss/recognize)
+    #
+    # Vehicle Compliance was dropped 2026-06-15 — its Open DVIR defects
+    # table already lives on page 1's _safety_detail_tables block, and
+    # the inspections-due section was a permanent placeholder (Samsara
+    # doesn't expose due-dates). Net effect: the standalone page was
+    # duplicated data, and removing it tightens the brief from 7 → 6
+    # pages with no information loss.
     #
     # Invoice Closeout + AR Reconciliation moved to the separate
     # Financial Brief (src/financial_email.py) so each report stays
@@ -1847,7 +1907,7 @@ def _build_html_report(*,
     # batch admin. The two ship at different times of day to match
     # when the work actually happens.
     today_label = _today_label()
-    total = 7
+    total = 6
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
@@ -1857,9 +1917,8 @@ def _build_html_report(*,
         build_page_driver_compliance(samba, alvys_drivers, 2, total),
         _exec_build_page2b(samsara, today_label, pg=3),
         _exec_build_page2(samsara, today_label, pg=4),
-        build_page5_vehicles(samsara, samsara_sheets, 5, total),
-        build_page_csa_scorecard(csa, 6, total),
-        _exec_build_page_coached(samsara, today_label, pg=7),
+        build_page_csa_scorecard(csa, 5, total),
+        _exec_build_page_coached(samsara, today_label, pg=6),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
