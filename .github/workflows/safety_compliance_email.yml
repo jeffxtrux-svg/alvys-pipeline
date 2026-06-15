@@ -91,11 +91,15 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
-          # TEST MODE — recipients defaults to jeff only while the
-          # report content is being iterated on. The 'recipients' input
-          # on workflow_dispatch still overrides for previews.
-          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net' }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          # TEST MODE: jeff-only on every trigger (scheduled, push,
+          # dispatch). The production routing per
+          # xfreight-employee-responsibilities.md is Audra primary +
+          # Jeff/JB cc, but the flip to that audience is on hold
+          # pending explicit owner approval. Until then ONEDRIVE_USER_UPN
+          # (jeff@xfreight.net) is the only recipient. A dispatch with
+          # the `recipients` input still overrides for one-shot previews.
+          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.ONEDRIVE_USER_UPN }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # marker so the on-demand resend actually sends. The
           # skip_idempotency dispatch input does the same on demand.
@@ -108,8 +112,8 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
-          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net' }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.ONEDRIVE_USER_UPN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'

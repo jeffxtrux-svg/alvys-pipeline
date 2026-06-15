@@ -2,8 +2,8 @@
 # to the current calendar month, splits into All / Customer / Spot tabs,
 # uploads a dated copy back to OneDrive, and emails the workbook.
 #
-# Year-round 5am Central via the dual-cron + CT-hour-gate pattern. Same
-# pattern as scorecard_email.yml so the DST flip needs no code changes.
+# Year-round 4:30am Central via the dual-cron + CT-hour-gate pattern.
+# Fires 30 min after the 4am Alvys pull — only needs Alvys data, not QB/Samsara.
 #
 # Required GitHub Secrets (shared with the rest of the pipeline):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
@@ -18,10 +18,10 @@ on:
         required: false
         default: ''
   schedule:
-    # Year-round 5am Central. CDT (UTC-5) + CST (UTC-6) both armed; the
-    # CT-hour-gate step rejects the off-season slot.
-    - cron: '0 10 * * *'   # 5:00am CDT primary / 4:00am CST (gated)
-    - cron: '0 11 * * *'   # 6:00am CDT (gated) / 5:00am CST primary
+    # Year-round 4:30am Central. CDT (UTC-5) + CST (UTC-6) both armed; the
+    # CT-hour-gate step (hour 4) rejects the off-season slot.
+    - cron: '30 9 * * *'   # 4:30am CDT primary / 3:30am CST (gated)
+    - cron: '30 10 * * *'  # 5:30am CDT (gated) / 4:30am CST primary
 
 permissions:
   contents: read
@@ -32,17 +32,17 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Gate to 5am CT
+      - name: Gate to 4:30am CT
         id: ct_gate
         if: github.event_name == 'schedule'
         run: |
           CT_HOUR=$(TZ=America/Chicago date +%-H)
           echo "Central-time hour: $CT_HOUR"
-          if [ "$CT_HOUR" -ne 5 ]; then
+          if [ "$CT_HOUR" -ne 4 ]; then
             echo "Off-target hour — skipping."
             echo "skip=1" >> "$GITHUB_OUTPUT"
           else
-            echo "5am CT slot — proceeding."
+            echo "4am CT slot — proceeding."
           fi
 
       - name: Checkout repo
@@ -69,10 +69,10 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
-          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.DAILY_UPLOAD_RECIPIENTS }}
           # Same share URL as the scorecard so both feeds read the same workbook.
-          DAILY_UPLOAD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+          DAILY_UPLOAD_ALVYS_SHARE_URL: ${{ secrets.ALVYS_SHARE_URL }}
           # Empty string = drop the file in OneDrive root. Override here if
           # you want it tucked into a subfolder like "Daily Uploads".
           DAILY_UPLOAD_FOLDER: ""
@@ -84,8 +84,8 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
-          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || 'jeff@xfreight.net,jb@xfreight.net' }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          DAILY_UPLOAD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.DAILY_UPLOAD_RECIPIENTS }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'

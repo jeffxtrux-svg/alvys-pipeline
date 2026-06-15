@@ -1,0 +1,93 @@
+# Risk Watch signal definitions — Phase 2B (active loop, risk side)
+#
+# Companion file to wiki/risk-register.md and raw/xfreight-risk-register.md.
+# The brief reads this file each morning and evaluates each signal against
+# live data, producing the "Risk Watch" strip on page 1.
+#
+# Schema per signal:
+#   id              short kebab-case identifier (used in logs)
+#   title           human-readable name (matches risk register heading)
+#   page            wiki page anchor (so the brief can link back)
+#   severity        baseline severity: high | medium | low
+#   metric          dot path into the brief's data dicts (e.g. equipment.tractors_overdue_annual)
+#   threshold       numeric value the metric is compared against
+#   direction       one of: >= > <= < ==
+#   format          how to format the value in the strip: int | money | days | pct
+#   ok_text         what to show when below threshold (no value substitution)
+#   tripped_text    template for when threshold is crossed; supports {value}
+#   paired          optional second metric/threshold; both must trip together
+#                   (e.g. tractors AND trailers overdue → one combined alert)
+#
+# Adding a new signal:
+#   1. Append a block here with the dot path into the brief's data.
+#   2. Add or update the matching entry in raw/xfreight-risk-register.md
+#      so the human-readable risk + the machine-readable signal stay paired.
+#   3. The librarian compile + next scorecard run picks it up automatically.
+
+risks:
+  - id: equipment-inspection-backlog
+    title: Equipment inspection backlog (120d company policy)
+    page: risk-register#equipment-inspection-backlog
+    severity: high
+    metric: equipment.tractors_overdue_annual
+    threshold: 1
+    direction: ">="
+    format: int
+    ok_text: "All tractors current on 120d company-policy inspection"
+    tripped_text: "{value} tractors flagged for inspection (120d company policy)"
+    paired:
+      metric: equipment.trailers_overdue_annual
+      threshold: 1
+      direction: ">="
+      format: int
+      tripped_text: "+ {value} trailers"
+
+  - id: equipment-registration-backlog
+    title: Equipment registration backlog
+    page: risk-register#equipment-inspection-backlog
+    severity: medium
+    metric: equipment.tractors_overdue_reg
+    threshold: 1
+    direction: ">="
+    format: int
+    ok_text: "All tractors current on registration"
+    tripped_text: "{value} tractors past registration expiration"
+    paired:
+      metric: equipment.trailers_overdue_reg
+      threshold: 1
+      direction: ">="
+      format: int
+      tripped_text: "+ {value} trailers"
+
+  - id: csa-near-intervention
+    title: CSA BASIC near intervention
+    page: risk-register#csa-near-intervention
+    severity: high
+    metric: csa.n_alert
+    threshold: 1
+    direction: ">="
+    format: int
+    ok_text: "No CSA BASIC at intervention threshold"
+    tripped_text: "{value} CSA BASIC(s) at FMCSA intervention threshold"
+
+  - id: ar-91plus
+    title: AR 91+ days
+    page: risk-register#ar-aging
+    severity: medium
+    metric: qb_ar.d91plus
+    threshold: 15000
+    direction: ">="
+    format: money
+    ok_text: "AR 91+ days under $15K threshold"
+    tripped_text: "${value:,.0f} in AR over 91 days"
+
+  - id: ar-overdue-total
+    title: AR overdue total
+    page: risk-register#ar-aging
+    severity: medium
+    metric: qb_ar.overdue
+    threshold: 75000
+    direction: ">="
+    format: money
+    ok_text: "Total overdue AR under $75K threshold"
+    tripped_text: "${value:,.0f} total overdue AR (31+ days)"

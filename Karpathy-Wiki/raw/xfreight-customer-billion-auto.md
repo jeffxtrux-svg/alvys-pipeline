@@ -1,5 +1,7 @@
 # XFreight customer — Billion Auto Parts (seeded 2026-06-05 from OneDrive)
 
+> **Update (2026-06-13, Jeff):** the contract **RENEWED** in June 2026 — both the Rapid City and Mason City dedicated lanes maintained, and a **fuel surcharge added** for fuel-price protection this year. Supersedes the "expired June 1, 2026" status below.
+
 > Source: `XFreight - Claude Working Files/08 - Sales/Customers/Billion Auto/Billion Auto.docx`
 > (rate agreement, last modified 2025-05-09).
 

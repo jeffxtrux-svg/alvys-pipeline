@@ -273,6 +273,150 @@ class AlvysClient:
         log.info("Total trailers fetched: %d", len(items))
         return items
 
+    def fetch_trailer_detail(self, trailer_id: str) -> dict | None:
+        """One-shot schema probe — the list endpoint /trailers returns a
+        13-field summary that omits InspectionExpirationDate /
+        LicenseExpirationDate (visible in the Alvys UI's Trailers list).
+        Tries a few detail-endpoint shapes and returns the first that
+        works so the discovered field set can be logged."""
+        candidates = [
+            f"/trailers/{trailer_id}",
+            f"/trailer/{trailer_id}",
+            f"/trailers/{trailer_id}/details",
+            f"/trailers/details/{trailer_id}",
+        ]
+        for path in candidates:
+            try:
+                url = f"{BASE_URL}{path}"
+                resp = self._session.get(url, headers=self._headers(), timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    # Some endpoints wrap the record in {"Items": [...]} or similar.
+                    if isinstance(payload, dict) and isinstance(payload.get("Items"), list):
+                        payload = payload["Items"][0] if payload["Items"] else None
+                    log.info("  ✓ trailer detail via %s — %d keys",
+                             path, len(payload) if isinstance(payload, dict) else 0)
+                    return payload
+                else:
+                    log.info("  %s → HTTP %d", path, resp.status_code)
+            except Exception as e:
+                log.info("  %s → %s", path, e)
+        return None
+
+    def probe_trailer_field_set(self, trailer_id: str) -> None:
+        """Cast-wide probe — Alvys's export tool returns Inspection Exp. for
+        31 of 36 trailers, but our /trailers and /trailers/{id} responses
+        only carry 13 fields and never include inspection/expiration keys.
+        Try every endpoint shape + query-param expansion we can think of so
+        we can compare field counts and confirm whether the richer
+        response is reachable via the public API."""
+        log.info("---- Trailer field-set probe (id=%s) ----", trailer_id)
+        first_dump_done = False
+        # GET /trailers/{id} with various ?expand= / ?include= variants
+        for qs in ["", "?expand=all", "?expand=*", "?include=all",
+                   "?include=inspection", "?include=inspections",
+                   "?fields=all", "?fields=*", "?detail=full"]:
+            path = f"/trailers/{trailer_id}{qs}"
+            try:
+                resp = self._session.get(f"{BASE_URL}{path}",
+                                          headers=self._headers(), timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, dict) and isinstance(payload.get("Items"), list):
+                        payload = payload["Items"][0] if payload["Items"] else {}
+                    n = len(payload) if isinstance(payload, dict) else 0
+                    insp = [k for k in (payload.keys() if isinstance(payload, dict) else [])
+                            if any(t in k.lower() for t in ("inspect", "expir"))]
+                    log.info("  GET %s → %d keys, inspect/expir keys: %s",
+                             path, n, insp)
+                    # Dump full key list + a values sample on the first
+                    # successful response so we can see what's available
+                    # beyond just inspect/expir-shaped fields.
+                    if isinstance(payload, dict) and not first_dump_done:
+                        first_dump_done = True
+                        log.info("  full keys: %s", sorted(payload.keys()))
+                        # Show values for any *Expires* / *Expiration* field
+                        rel = {k: payload[k] for k in payload
+                               if any(t in k.lower() for t in ("expir", "licen", "regist", "insur"))}
+                        log.info("  expir/licen/regist/insur values: %s", rel)
+                else:
+                    log.info("  GET %s → HTTP %d", path, resp.status_code)
+            except Exception as e:
+                log.info("  GET %s → %s", path, e)
+        # POST /trailers/search with various body shapes — list endpoint
+        # might return a thinner projection than the search endpoint.
+        for body in [
+            {"status": ["Active"]},
+            {"status": ["Active"], "expand": "all"},
+            {"status": ["Active"], "include": "inspections"},
+            {"status": ["Active"], "fields": "all"},
+            {"status": ["Active"], "detail": True},
+            {"trailerIds": [trailer_id]},
+        ]:
+            try:
+                resp = self._session.post(f"{BASE_URL}/trailers/search",
+                                           headers=self._headers(),
+                                           json={**body, "page": 0, "pageSize": 5},
+                                           timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    items = (payload.get("Items") or payload.get("items") or
+                              payload.get("data") or payload if isinstance(payload, list) else [])
+                    if items and isinstance(items[0], dict):
+                        first = items[0]
+                        n = len(first)
+                        insp = [k for k in first if any(t in k.lower() for t in ("inspect", "expir"))]
+                        log.info("  POST /trailers/search body=%s → %d keys, "
+                                 "inspect/expir keys: %s", body, n, insp)
+                    else:
+                        log.info("  POST /trailers/search body=%s → empty/non-dict items",
+                                 body)
+                else:
+                    log.info("  POST /trailers/search body=%s → HTTP %d",
+                             body, resp.status_code)
+            except Exception as e:
+                log.info("  POST /trailers/search body=%s → %s", body, e)
+        # Last-ditch: maintenance-style endpoints that might be trailer-scoped
+        for path in [f"/trailers/{trailer_id}/maintenance",
+                      f"/trailers/{trailer_id}/inspections",
+                      f"/trailers/{trailer_id}/compliance"]:
+            try:
+                resp = self._session.get(f"{BASE_URL}{path}",
+                                          headers=self._headers(), timeout=60)
+                log.info("  GET %s → HTTP %d (body: %s)", path,
+                         resp.status_code, resp.text[:200] if resp.text else "")
+            except Exception as e:
+                log.info("  GET %s → %s", path, e)
+        log.info("---- end trailer probe ----")
+
+    def fetch_truck_detail(self, truck_id: str) -> dict | None:
+        """Symmetric probe for trucks — the list endpoint returns 24 keys
+        including InspectionExpirationDate, but the values are blank on
+        most records. The detail endpoint may carry richer per-asset
+        compliance data (last-inspection date, etc.)."""
+        candidates = [
+            f"/trucks/{truck_id}",
+            f"/truck/{truck_id}",
+            f"/trucks/{truck_id}/details",
+            f"/trucks/details/{truck_id}",
+        ]
+        for path in candidates:
+            try:
+                url = f"{BASE_URL}{path}"
+                resp = self._session.get(url, headers=self._headers(), timeout=60)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, dict) and isinstance(payload.get("Items"), list):
+                        payload = payload["Items"][0] if payload["Items"] else None
+                    log.info("  ✓ truck detail via %s — %d keys",
+                             path, len(payload) if isinstance(payload, dict) else 0)
+                    return payload
+                else:
+                    log.info("  %s → HTTP %d", path, resp.status_code)
+            except Exception as e:
+                log.info("  %s → %s", path, e)
+        return None
+
     def fetch_maintenance(self, lookback_days: int = 365) -> list[dict]:
         """Fetch maintenance/inspection records from POST /maintenance/search.
         Returns raw list; field names are logged on first run for schema discovery."""
@@ -401,4 +545,173 @@ class AlvysClient:
                 continue
         log.warning("  invoices: all attempts failed")
         return []
+
+    # ------------------------------------------------------------------
+    # Driver-pay / settlement endpoint probe
+    # ------------------------------------------------------------------
+    def probe_driver_pay_endpoints(self, start_date: str = "") -> dict:
+        """Probe every plausible driver-pay / settlement endpoint path and
+        return a structured report of what the API accepts and what it returns.
+
+        Run this after Alvys announces new API capabilities, or whenever the
+        manual TMS export contains driver-pay fields we can't yet read via API.
+
+        Returns a dict keyed by path/attempt with status, sample keys, and
+        any driver-pay-looking fields found.
+        """
+        import json as _json
+
+        results: dict = {}
+
+        def _probe_get(label: str, path: str) -> None:
+            url = f"{BASE_URL}{path}"
+            try:
+                resp = self._session.get(url, headers=self._headers(), timeout=30)
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = resp.text[:500]
+                results[label] = {
+                    "method": "GET",
+                    "path": path,
+                    "status": resp.status_code,
+                    "response_type": type(body).__name__,
+                    "keys": list(body.keys()) if isinstance(body, dict) else None,
+                    "sample": body if not isinstance(body, (list, dict)) else (
+                        body[:2] if isinstance(body, list) else body
+                    ),
+                }
+                log.info("PROBE GET %-45s → HTTP %d  keys=%s",
+                         path, resp.status_code,
+                         list(body.keys()) if isinstance(body, dict) else "(list or str)")
+            except Exception as e:
+                results[label] = {"method": "GET", "path": path, "error": str(e)}
+                log.info("PROBE GET %-45s → ERROR: %s", path, e)
+
+        def _probe_post(label: str, path: str, body: dict) -> None:
+            url = f"{BASE_URL}{path}"
+            try:
+                resp = self._session.post(
+                    url, headers=self._headers(), json=body, timeout=30,
+                )
+                try:
+                    rb = resp.json()
+                except Exception:
+                    rb = resp.text[:500]
+                items = []
+                if isinstance(rb, list):
+                    items = rb[:2]
+                elif isinstance(rb, dict):
+                    for k in ("Items", "items", "data", "results"):
+                        if k in rb and isinstance(rb[k], list):
+                            items = rb[k][:2]
+                            break
+                # Collect any driver-pay-looking field names from sample records
+                pay_fields = []
+                for record in items:
+                    if isinstance(record, dict):
+                        for k in record.keys():
+                            kl = k.lower()
+                            if any(x in kl for x in ("rate", "pay", "settle", "wage",
+                                                       "driver", "carrier", "cost",
+                                                       "amount", "mileage", "period")):
+                                if k not in pay_fields:
+                                    pay_fields.append(k)
+                results[label] = {
+                    "method": "POST",
+                    "path": path,
+                    "request_body": body,
+                    "status": resp.status_code,
+                    "response_type": type(rb).__name__,
+                    "top_level_keys": list(rb.keys()) if isinstance(rb, dict) else None,
+                    "sample_record_count": len(items),
+                    "pay_related_fields_in_sample": pay_fields,
+                    "sample": items,
+                }
+                log.info("PROBE POST %-44s → HTTP %d  pay_fields=%s",
+                         path, resp.status_code, pay_fields or "(none)")
+            except Exception as e:
+                results[label] = {"method": "POST", "path": path, "error": str(e)}
+                log.info("PROBE POST %-44s → ERROR: %s", path, e)
+
+        log.info("=" * 60)
+        log.info("DRIVER PAY ENDPOINT PROBE — base %s", BASE_URL)
+        log.info("=" * 60)
+
+        # --- Plausible new settlement / driver-pay endpoints ---
+        _probe_get("settlements_list",      "/settlements")
+        _probe_get("driver_settlements",    "/driver-settlements")
+        _probe_get("driver_pay",            "/driver-pay")
+        _probe_get("payroll",               "/payroll")
+        _probe_get("pay_periods",           "/pay-periods")
+        _probe_get("driver_wages",          "/driver-wages")
+        _probe_get("carrier_pay",           "/carrier-pay")
+        _probe_get("trip_settlements",      "/trip-settlements")
+
+        _probe_post("settlements_search",      "/settlements/search",      {})
+        _probe_post("driver_settlements_srch", "/driver-settlements/search", {})
+        _probe_post("driver_pay_search",       "/driver-pay/search",       {})
+        _probe_post("payroll_search",          "/payroll/search",          {})
+        _probe_post("pay_periods_search",      "/pay-periods/search",      {})
+        _probe_post("carrier_pay_search",      "/carrier-pay/search",      {})
+        _probe_post("trip_settlements_search", "/trip-settlements/search", {})
+        _probe_post("driver_wages_search",     "/driver-wages/search",     {})
+
+        # --- Also probe a single live trip to check for new pay fields ---
+        # Fetch one trip (just one page) and inventory ALL top-level field names
+        # and any nested path containing "rate", "pay", "settle", "cost" etc.
+        if start_date:
+            log.info("Probing live trip record for new pay fields …")
+            try:
+                resp = self._session.post(
+                    f"{BASE_URL}/trips/search",
+                    headers=self._headers(),
+                    json={"Statuses": ["Completed", "Invoiced"],
+                          "updatedAtRange": {"from": start_date, "to": "2099-01-01"},
+                          "page": 0, "pageSize": 1},
+                    timeout=30,
+                )
+                rb = resp.json()
+                trips_sample = []
+                if isinstance(rb, list):
+                    trips_sample = rb[:1]
+                elif isinstance(rb, dict):
+                    for k in ("Items", "items", "data", "results"):
+                        if k in rb and isinstance(rb[k], list):
+                            trips_sample = rb[k][:1]
+                            break
+                if trips_sample:
+                    t = trips_sample[0]
+                    all_keys = list(t.keys())
+                    pay_keys = [k for k in all_keys
+                                if any(x in k.lower() for x in
+                                       ("rate", "pay", "settle", "wage", "cost",
+                                        "amount", "driver", "carrier", "mileage"))]
+                    # Check for new nested pay objects
+                    nested_pay: dict = {}
+                    for k in pay_keys:
+                        v = t.get(k)
+                        if isinstance(v, dict):
+                            nested_pay[k] = list(v.keys())
+                        elif isinstance(v, list) and v and isinstance(v[0], dict):
+                            nested_pay[k] = list(v[0].keys())
+                    results["live_trip_schema"] = {
+                        "all_top_level_keys": all_keys,
+                        "pay_related_keys": pay_keys,
+                        "nested_pay_shapes": nested_pay,
+                        "Driver1_keys": list(t.get("Driver1", {}).keys()) if isinstance(t.get("Driver1"), dict) else None,
+                        "Carrier_keys": list(t.get("Carrier", {}).keys()) if isinstance(t.get("Carrier"), dict) else None,
+                    }
+                    log.info("Live trip top-level keys: %s", all_keys)
+                    log.info("Pay-related keys: %s", pay_keys)
+                    if nested_pay:
+                        log.info("Nested pay shapes: %s", nested_pay)
+            except Exception as e:
+                results["live_trip_schema"] = {"error": str(e)}
+                log.info("Live trip probe failed: %s", e)
+
+        log.info("=" * 60)
+        log.info("PROBE COMPLETE — %d endpoints tested", len(results))
+        log.info("=" * 60)
+        return results
 

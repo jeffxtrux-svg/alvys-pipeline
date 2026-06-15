@@ -8,7 +8,7 @@ related: ["[[Key People]]", "[[Financial Performance]]", "[[SBA 504 Financing]]"
 
 # Acrisure Dispute
 
-An active billing reconciliation dispute between X-Trux and Acrisure (current insurance broker), as of April/May 2026. Acrisure claims ~$95,461 owed; Jeff Hannahs's analysis puts the likely liability at ~$31,266. Unresolved as of seed date (June 5, 2026).
+A billing reconciliation dispute between X-Trux and Acrisure (insurance broker). Acrisure claimed ~$95,461; Jeff's analysis put the likely liability at ~$31,266. **Settled at $18,000 and paid — resolved 2026-06-13.**
 
 ## Summary
 
@@ -68,11 +68,11 @@ Acrisure issued a breakdown claiming ~$95K in unpaid premiums on April 24, 2026.
 - **RPM cost-out:** If dispute resolves favorably, effective insurance cost is lower than the current overhead pin.
 - **2026 Truk-Way** WC audit (Inv 29033 = $11,024) is part of this — Truk-Way is the employer of record for W-2 staff.
 
-## Status
+## Status — RESOLVED
 
-**UNRESOLVED as of June 5, 2026.** The April 27 analysis was prep for the negotiation — no follow-up email confirming resolution found in the source files.
+**Renewal — RESOLVED: went through May 1, 2026** (+~$0.08–0.10/mi, now in the cost-out). See [[Rate-Per-Mile Goal]] and [[Risk Register]]. A different broker/carrier may be evaluated before the next renewal.
 
-Track: Has the $43,739 been applied? What was the final settlement?
+**Billing reconciliation — RESOLVED: negotiated to $18,000, paid** (Jeff, 2026-06-13). Landed **below** the ~$31K mid-estimate and near the ~$13K floor — well under Acrisure's ~$95K ask (~$77K saved). The credits-first script (lead with the $43,739 unapplied credits, challenge the "could not find" invoices) delivered the result.
 
 ## Contacts
 

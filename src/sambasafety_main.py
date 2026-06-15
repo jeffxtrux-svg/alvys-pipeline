@@ -285,9 +285,12 @@ def _build_from_csv(token: str, user_upn: str, folder: str) -> bytes:
                                "violationsReport.csv")
     csa_file = os.environ.get("SAMBASAFETY_CSA_FILE",
                               "CSA2010 Preview Scorecard.csv")
+    invalid_file = os.environ.get("SAMBASAFETY_INVALID_FILE",
+                                  "InvalidLicenseReport.csv")
     risk_path = f"{folder}/{risk_file}"
     viol_path = f"{folder}/{viol_file}"
     csa_path = f"{folder}/{csa_file}"
+    invalid_path = f"{folder}/{invalid_file}"
     log.info("Downloading %s ...", risk_path)
     risk_bytes = download_file(token, user_upn, risk_path)
     log.info("  -> %d bytes", len(risk_bytes))
@@ -301,7 +304,15 @@ def _build_from_csv(token: str, user_upn: str, folder: str) -> bytes:
         log.info("  -> %d bytes", len(csa_bytes))
     except Exception as e:
         log.warning("  CSA scorecard CSV not found (%s) — CSA Scorecard sheet will be omitted", e)
-    return combine_to_workbook(risk_bytes, viol_bytes, csa_csv=csa_bytes)
+    invalid_bytes = None
+    log.info("Downloading %s ...", invalid_path)
+    try:
+        invalid_bytes = download_file(token, user_upn, invalid_path)
+        log.info("  -> %d bytes", len(invalid_bytes))
+    except Exception as e:
+        log.warning("  Invalid License Report not found (%s) — Invalid Licenses sheet will be empty", e)
+    return combine_to_workbook(risk_bytes, viol_bytes, csa_csv=csa_bytes,
+                               invalid_csv=invalid_bytes)
 
 
 # ----------------------------------------------------------------------
@@ -371,7 +382,12 @@ def main() -> int:
                     "  3. The token hasn't expired (SambaSafety bearer "
                     "tokens live ~1 hour from /oauth2/v1/token; envelope "
                     "tokens may be longer-lived).", err)
-            raise
+            # A dead/expired token shouldn't kill the refresh while the
+            # CSV drops are sitting in OneDrive — fall back to CSV mode
+            # (the API endpoints return 401/403, or 404 "Forbidden" for
+            # retired accounts) and let the workbook build from those.
+            log.warning("API mode failed (%s) — falling back to CSV-drop mode.", err)
+            xlsx_bytes = _build_from_csv(od_token, user_upn, folder)
     else:
         xlsx_bytes = _build_from_csv(od_token, user_upn, folder)
 

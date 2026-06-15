@@ -12,7 +12,51 @@ For every Samsara safety event where a manager has taken action, show
 the manager's first name (or full name) on the scorecard so the reader
 can see *who* is doing the coaching, not just that it happened.
 
-## RESOLUTION ATTEMPT (2026-06-08) — still blocked
+## DEFINITIVE ANSWER (2026-06-09) — product gap, not a bug
+
+After we sent the probe evidence back to Samsara support, they confirmed:
+
+1. **`assignedCoach` is the only coach field** exposed on
+   `/fleet/safety-events`. The `coachedBy` object is **not** returned
+   on this endpoint and isn't planned to be.
+2. **`assignedCoach` only populates when a coach is actually assigned
+   through the dashboard's Coaching workflow** — that's a separate
+   action from someone clicking *Coach* / *Dismiss* / *Recognize* on
+   an event. The state-change buttons flip `coachingState`; they do
+   **not** stamp the actor into `assignedCoach`.
+3. **Not a token-scope issue.** Our token retrieves events fine; the
+   field is simply absent because no coaches have been assigned.
+4. **Not a tier/tenant enablement issue.** This is how the field works
+   on every account today.
+5. **The audit-log feed has the same gap.** Coaching-state changes
+   appear (event id + timestamp + type) but never carry the acting
+   user. There is no Samsara API today that exposes who clicked
+   *Coach* / *Dismiss* / *Recognize* on a specific event.
+
+**Bottom line:** showing the *acting user* per event ("Audra coached
+this") requires Samsara to add the field to the API. Support offered
+to log that as product feedback and we accepted.
+
+### Workarounds available today
+
+| Path | What it surfaces | Trade-off |
+|---|---|---|
+| **Use the dashboard Coaching workflow** to pre-assign each event to a coach | `assignedCoach` populates → our existing wiring fills the Coach column | Requires the *Coach* role to assign events explicitly, not just click *Coach*. Operational discipline change. |
+| Track coaching outside Samsara (e.g. a small sheet) | Whatever fields we want | Defeats the automation; manual data entry. |
+| Wait for Samsara to ship `coachedBy` | Auto-populated by the API | Indefinite — depends on roadmap priority. |
+
+### Pipeline status
+
+The `assignedCoach → coachedBy.{id,name}` merge in `samsara_main.py`
+and the scorecard's column probes are unchanged — both light up
+automatically the moment any event in our tenant has `assignedCoach`
+populated (i.e., the dashboard workflow gets used) or Samsara ships
+the API enhancement. No code change needed when either of those
+unblocks. The diagnostic probe in `samsara_client.fetch_safety_events`
+also stays — it'll flip from `0 / 97` to a non-zero count the moment
+it starts working, visible in the next 4am samsara run log.
+
+## RESOLUTION ATTEMPT (2026-06-08) — superseded, see above
 
 Samsara support pointed to **`assignedCoach`** on `/fleet/safety-events`
 ([v2 reference](https://developers.samsara.com/reference/getsafetyeventsv2))

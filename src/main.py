@@ -40,14 +40,19 @@ def _build_equipment_df(records: list[dict], kind: str):
     # Candidate lists — Alvys may use any of these names.
     _NAME_KEYS  = ["TruckNumber", "TruckNum", "TrailerNumber", "TrailerNum",
                    "UnitNumber", "Number", "Name"]
-    _ANNUAL_KEYS = ["InspectionExpirationDate",  # actual Alvys field name
+    # Trucks expose ...ExpirationDate; trailers expose ...ExpiresAt — same
+    # field, two naming conventions across the two endpoints. Both
+    # variants kept here so _pick() finds whichever the source returns.
+    _ANNUAL_KEYS = ["InspectionExpirationDate",  # trucks endpoint
+                    "InspectionExpiresAt",       # trailers endpoint
                     "AnnualInspectionDate", "AnnualInspectionDueDate",
                     "AnnualDueDate", "NextAnnualDate", "InspectionDueDate",
                     "DOTInspectionDueDate", "DOTInspectionDate",
                     "AnnualInspection", "NextInspectionDate"]
-    _REG_KEYS    = ["LicenseExpirationDate",  # actual Alvys field name (plate/tag)
-                    "RegistrationExpirationDate", "RegistrationExpDate",
-                    "RegistrationExpiration", "RegExpDate",
+    _REG_KEYS    = ["LicenseExpirationDate",     # trucks endpoint (plate/tag)
+                    "LicenseExpiresAt",          # trailers endpoint
+                    "RegistrationExpirationDate", "RegistrationExpiresAt",
+                    "RegistrationExpDate", "RegistrationExpiration", "RegExpDate",
                     "PlateExpirationDate", "PlateExpDate", "PlateExpiration"]
     _VIN_KEYS    = ["VinNumber", "VinNum", "VIN", "Vin"]
     # Trucks only — last known mileage / odometer reading.
@@ -105,6 +110,28 @@ def _build_equipment_df(records: list[dict], kind: str):
         "found" if found_annual else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
         "found" if found_reg else f"NOT FOUND — check sample_{kind.lower()}s.json for field names",
     )
+    # Precise populated counts so we can see the data-availability picture
+    # at a glance instead of just "found / not found". The brief shows
+    # em-dashes for any row where AnnualInspectionDue is null.
+    n_annual = int(df["AnnualInspectionDue"].notna().sum())
+    n_reg = int(df["RegistrationExpires"].notna().sum())
+    log_main.info("  %s populated: AnnualInspectionDue=%d/%d, RegistrationExpires=%d/%d",
+                   kind, n_annual, len(df), n_reg, len(df))
+    # Raw-API-shape probe: how many of the input records carry the
+    # candidate field keys at all? If the list endpoint omits the field
+    # when null (vs returning it as null), the record count and the
+    # populated count will diverge — meaning the list endpoint may be
+    # returning a thin response per-record and we need to hit /trailers/{id}
+    # per trailer to get the full schema.
+    if records:
+        annual_present = sum(1 for r in records
+                              if isinstance(r, dict)
+                              and any(k in r for k in _ANNUAL_KEYS))
+        reg_present = sum(1 for r in records
+                           if isinstance(r, dict)
+                           and any(k in r for k in _REG_KEYS))
+        log_main.info("  %s raw API keys present: any-annual=%d/%d, any-reg=%d/%d",
+                       kind, annual_present, len(records), reg_present, len(records))
     if kind == "Truck":
         found_mi      = any(df["LastMileage"].notna())
         found_oil_dt  = any(df["LastOilChangeDate"].notna())
@@ -332,6 +359,29 @@ def main() -> int:
     fuel_df = transform_records(raw_fuel, FUEL_COLUMNS)
     report_blank_columns(fuel_df, "Fuel")
 
+    # --- Any Trip Open flag ---
+    # TRUE when any trip leg for a load is in Open or Quoted status.
+    # Allows Power BI to exclude partially-settled multi-leg X-Trux loads
+    # from margin calculations until all legs have driver pay entered.
+    if ("Load #" in loads_df.columns and "Load #" in trips_df.columns
+            and "Trip Status" in trips_df.columns and not trips_df.empty):
+        _t = trips_df[["Load #", "Trip Status"]].copy()
+        _t["__load_key"] = _t["Load #"].astype(str).str.strip()
+        _t["__open"] = _t["Trip Status"].astype(str).str.strip().str.lower().isin(
+            {"open", "quoted"}
+        )
+        _open_flags = _t.groupby("__load_key")["__open"].any().rename("Any Trip Open")
+        loads_df["__load_key"] = loads_df["Load #"].astype(str).str.strip()
+        loads_df = loads_df.merge(_open_flags, left_on="__load_key",
+                                  right_index=True, how="left")
+        loads_df["Any Trip Open"] = loads_df["Any Trip Open"].fillna(False)
+        loads_df = loads_df.drop(columns=["__load_key"])
+        n_open = int(loads_df["Any Trip Open"].sum())
+        log.info("Any Trip Open: %d of %d loads have at least one open/quoted leg",
+                 n_open, len(loads_df))
+    else:
+        log.info("Any Trip Open: skipped (Trip Status column absent or no trip data)")
+
     # --- Build Drivers sheet from cached driver records ---
     drivers_df = _build_drivers_df(lookups.raw_drivers)
     log.info("Drivers: %d records → %d active",
@@ -343,6 +393,52 @@ def main() -> int:
     # Field candidates are tried in order; debug JSON shows the actual keys.
     trucks_df   = _build_equipment_df(lookups.raw_trucks,   "Truck")
     trailers_df = _build_equipment_df(lookups.raw_trailers, "Trailer")
+
+    # --- Schema discovery: trailer/truck detail endpoint ---
+    # The list endpoint /trailers returns a 13-field summary that omits
+    # InspectionExpirationDate / LicenseExpirationDate even though those
+    # fields are visible in the Alvys UI's Trailers list. Probe the per-
+    # asset detail endpoint to see if it carries the richer compliance
+    # fields. One-shot diagnostic — picks the first trailer + first truck
+    # and logs the discovered key set.
+    log.info("=" * 60)
+    log.info("Schema probe: trailer/truck detail endpoints")
+    log.info("=" * 60)
+    if lookups.raw_trailers:
+        first = lookups.raw_trailers[0]
+        if isinstance(first, dict) and first.get("Id"):
+            detail = client.fetch_trailer_detail(str(first["Id"]))
+            if isinstance(detail, dict):
+                keys = sorted(detail.keys())
+                log.info("Trailer detail keys (%d): %s", len(keys), ", ".join(keys))
+                insp_like = [k for k in keys
+                             if any(t in k.lower() for t in ("inspect", "expir", "registr", "plate", "licen"))]
+                log.info("Trailer detail inspect/expir/licen keys: %s", insp_like)
+                # Dump full record (truncated) so we can see the actual
+                # values for the relevant fields.
+                import json as _json
+                full = _json.dumps({k: detail.get(k) for k in insp_like}, default=str)
+                log.info("Trailer detail relevant-field values: %s", full[:600])
+            # Pick a trailer KNOWN to have Inspection Exp. populated (per the
+            # 6/9 export, trailer 2453231 has inspection date 2026-04-30).
+            # Find its Id from the raw list so the probe runs against a row
+            # that actually has the field set in Alvys.
+            target = next((t for t in lookups.raw_trailers
+                           if isinstance(t, dict)
+                           and str(t.get("TrailerNum", "")).strip() == "2453231"),
+                          first)
+            if isinstance(target, dict) and target.get("Id"):
+                client.probe_trailer_field_set(str(target["Id"]))
+    if lookups.raw_trucks:
+        first = lookups.raw_trucks[0]
+        if isinstance(first, dict) and first.get("Id"):
+            detail = client.fetch_truck_detail(str(first["Id"]))
+            if isinstance(detail, dict):
+                keys = sorted(detail.keys())
+                log.info("Truck detail keys (%d): %s", len(keys), ", ".join(keys))
+                insp_like = [k for k in keys
+                             if any(t in k.lower() for t in ("inspect", "expir", "registr", "plate", "licen"))]
+                log.info("Truck detail inspect/expir/licen keys: %s", insp_like)
 
     # --- Fetch Maintenance records (inspection events) ---
     # Schema (confirmed from first run):
@@ -405,32 +501,38 @@ def main() -> int:
 
     # Overlay DOT inspection dates onto trailers_df AND trucks_df.
     # LastInspectionDate = actual last DOT/Annual inspection (from maintenance records).
-    # AnnualInspectionDue = last + 365 days (federal DOT rule). The scorecard layers
-    # the 120-day company policy on top of LastInspectionDate.
+    # AnnualInspectionDue = API InspectionExpiresAt/InspectionExpirationDate is
+    # authoritative — only fall back to maintenance-derived (last + 365d) when
+    # the API field is empty. The scorecard layers the 120-day company policy
+    # on top of LastInspectionDate.
     if _last_dot and trailers_df is not None and not trailers_df.empty:
         trailers_df["LastInspectionDate"] = trailers_df["Id"].map(
             lambda aid: _last_dot[aid].strftime("%Y-%m-%d") if aid in _last_dot else None
         )
-        trailers_df["AnnualInspectionDue"] = trailers_df["Id"].map(
+        before = int(trailers_df["AnnualInspectionDue"].notna().sum())
+        api_mask = trailers_df["AnnualInspectionDue"].notna()
+        trailers_df.loc[~api_mask, "AnnualInspectionDue"] = trailers_df.loc[~api_mask, "Id"].map(
             lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
             if aid in _last_dot else None
         )
-        n_filled = trailers_df["AnnualInspectionDue"].notna().sum()
-        log.info("Trailers: %d of %d have LastInspectionDate from maintenance records",
-                 n_filled, len(trailers_df))
+        after = int(trailers_df["AnnualInspectionDue"].notna().sum())
+        log.info("Trailers: %d API + %d maintenance-derived = %d of %d AnnualInspectionDue populated",
+                 before, after - before, after, len(trailers_df))
     # Same treatment for tractors so the 120-day company policy applies to the
     # whole fleet (the executive brief calls it out at the bottom-line level).
     if _last_dot and trucks_df is not None and not trucks_df.empty and "Id" in trucks_df.columns:
         trucks_df["LastInspectionDate"] = trucks_df["Id"].map(
             lambda aid: _last_dot[aid].strftime("%Y-%m-%d") if aid in _last_dot else None
         )
-        trucks_df["AnnualInspectionDue"] = trucks_df["Id"].map(
+        before = int(trucks_df["AnnualInspectionDue"].notna().sum())
+        api_mask = trucks_df["AnnualInspectionDue"].notna()
+        trucks_df.loc[~api_mask, "AnnualInspectionDue"] = trucks_df.loc[~api_mask, "Id"].map(
             lambda aid: (_last_dot[aid] + timedelta(days=365)).strftime("%Y-%m-%d")
             if aid in _last_dot else None
         )
-        n_filled = trucks_df["AnnualInspectionDue"].notna().sum()
-        log.info("Trucks: %d of %d have LastInspectionDate from maintenance records",
-                 n_filled, len(trucks_df))
+        after = int(trucks_df["AnnualInspectionDue"].notna().sum())
+        log.info("Trucks: %d API + %d maintenance-derived = %d of %d AnnualInspectionDue populated",
+                 before, after - before, after, len(trucks_df))
 
     maintenance_df = pd.DataFrame(raw_maintenance) if raw_maintenance else pd.DataFrame()
 

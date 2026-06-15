@@ -1,11 +1,11 @@
 """Regression tests for the scorecard's Alvys KPIs.
 
 These lock in the contract that matches the Power BI XFreight Report:
-  - cost / "Driver Rate" = SUM(Loads[Driver Rate])  (Carrier Rate is NOT added)
-  - margin = Customer Revenue - Driver Rate
-  - margin_pct = Margin / Revenue = (Revenue - Driver Rate) / Revenue
-                                     (same formula for both entities,
-                                      matches Power BI)
+  - X-Trux cost = SUM(Loads[Driver Rate])  (settled loads only, Driver Rate > 0)
+  - X-Linx cost = SUM(Loads[Driver Rate] + Loads[Carrier Rate])
+                  (brokered: carrier payout lands in Carrier Rate, Driver Rate = 0)
+  - margin = Customer Revenue - cost
+  - margin_pct = Margin / Revenue  (same formula for both entities, matches Power BI)
   - entities are grouped by the Office slicer, not the Invoice As billing column
   - "Loads" counts every non-cancelled load in the window, not just revenue ones
 
@@ -19,7 +19,8 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_alvys_entities, _alvys_health, compute_alvys_drivers  # noqa: E402
+from src.scorecard_email import (compute_alvys_entities, _alvys_health,  # noqa: E402
+                                 compute_alvys_drivers, _own_fleet_mask)
 
 APR_START = pd.Timestamp(2026, 4, 1)
 APR_END = pd.Timestamp(2026, 5, 1)
@@ -33,10 +34,10 @@ def _loads():
              "Driver Rate": 300, "Carrier Rate": 0, "Total Dispatch Mileage": 100,
              "Empty Dispatch Mileage": 10, "Scheduled Pickup": pd.Timestamp(2026, 4, 10),
              "Load Status": "Delivered"}),
-        # brokered load: Office is X-Linx but it is invoiced under XFreight, and it
-        # carries a Carrier Rate that must be ignored (payout lives in Driver Rate).
+        # brokered load: Office is X-Linx, invoiced as XFreight. Carrier payout
+        # is in Carrier Rate (Driver Rate = 0 — no owner-op on brokered loads).
         dict(Office="X-Linx, Inc.", **{"Invoice As": "XFreight"}, **{"Customer Revenue": 500,
-             "Driver Rate": 400, "Carrier Rate": 999, "Total Dispatch Mileage": 80,
+             "Driver Rate": 0, "Carrier Rate": 400, "Total Dispatch Mileage": 80,
              "Empty Dispatch Mileage": 0, "Scheduled Pickup": pd.Timestamp(2026, 4, 12),
              "Load Status": "Delivered"}),
         # zero-revenue but settled (driver paid) — e.g. a positioning / deadhead
@@ -87,10 +88,11 @@ def test_grouping_by_office_not_invoice_as():
     assert round(e["X-Trux"]["revenue"]) == 1000     # L2 not folded into X-Trux
 
 
-def test_carrier_rate_is_not_added():
-    # L2 has Carrier Rate 999; cost must be the Driver Rate (400), not 400+999.
+def test_carrier_rate_adds_to_xlinx_cost():
+    # X-Linx brokered loads have Driver Rate = 0 and Carrier Rate = 400 (the
+    # carrier payout). Cost must be Driver Rate + Carrier Rate = 400.
     e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
-    assert round(e["X-Linx"]["cost"]) == 400
+    assert round(e["X-Linx"]["cost"]) == 400         # DR 0 + CR 400
     assert round(e["X-Linx"]["margin"]) == 100       # 500 - 400
 
 
@@ -101,22 +103,110 @@ def test_counts_all_loads_including_zero_revenue():
 
 
 def test_unsettled_loads_excluded_from_pnl():
-    """Booked-but-not-yet-dispatched loads (revenue > 0, Driver Rate = 0) must NOT
-    contribute to revenue/cost/margin (which would inflate margin % mid-month
-    relative to the Power BI report). They surface separately via `unsettled`."""
+    """Booked-but-not-yet-dispatched loads (Load Status = "Open") must NOT
+    contribute to revenue/cost/margin (which would inflate revenue mid-month
+    relative to the Power BI report, which excludes Open loads). They surface
+    separately via `unsettled`. This is a STATUS rule — note the Open load below
+    carries revenue but is still excluded, and a DR=0 non-Open load (e.g.
+    "Covered") would still count."""
     sheets = _loads()
     booked_unsettled = pd.DataFrame([dict(
         Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
         **{"Customer Revenue": 2665, "Driver Rate": 0, "Carrier Rate": 0,
            "Total Dispatch Mileage": 0, "Empty Dispatch Mileage": 0,
-           "Scheduled Pickup": pd.Timestamp(2026, 4, 28), "Load Status": "Delivered"})])
+           "Scheduled Pickup": pd.Timestamp(2026, 4, 28), "Load Status": "Open"})])
     sheets["Loads"] = pd.concat([sheets["Loads"], booked_unsettled], ignore_index=True)
     e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
     xt = e["X-Trux"]
-    # Same totals as without the unsettled load — it's excluded.
+    # Same totals as without the Open load — it's excluded from P&L.
     assert round(xt["revenue"]) == 1000 and round(xt["cost"]) == 500
     assert round(xt["margin"]) == 500
     assert xt["loads"] == 2 and xt["unsettled"] == 1
+
+
+def test_xtrux_awaiting_driver_pay_excluded():
+    """An X-Trux asset load whose driver pay is implausibly low for the revenue
+    (Corrected Margin % >= 80%) is "awaiting driver pay" — e.g. a "Covered" load
+    brokered to a carrier (Driver Rate = 0, 100% margin). Its revenue and partial
+    cost are held OUT of the P&L and surfaced as `unsettled`, so it can't inflate
+    X-Trux margin. Power BI applies the same Corrected Margin % threshold."""
+    sheets = _loads()
+    covered = pd.DataFrame([dict(
+        Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
+        **{"Customer Revenue": 1420, "Driver Rate": 0, "Carrier Rate": 1212,
+           "Total Dispatch Mileage": 0, "Empty Dispatch Mileage": 0,
+           "Scheduled Pickup": pd.Timestamp(2026, 4, 20), "Load Status": "Covered"})])
+    sheets["Loads"] = pd.concat([sheets["Loads"], covered], ignore_index=True)
+    e = compute_alvys_entities(sheets, start=APR_START, end=APR_END)
+    xt = e["X-Trux"]
+    # Covered load (100% margin) is excluded from P&L; revenue/cost unchanged.
+    assert round(xt["revenue"]) == 1000 and round(xt["cost"]) == 500
+    assert xt["loads"] == 2 and xt["unsettled"] == 1
+
+
+def test_xtrux_holdout_margin_threshold():
+    """X-Trux loads with Corrected Margin % ((Revenue - Driver Rate) / Revenue)
+    at or above the 74% hold-out threshold are held out of P&L (driver pay too
+    low for the revenue — e.g. brokered to a carrier whose cost isn't in Driver
+    Rate). Loads below the threshold count normally. X-Trux only."""
+    pk = pd.Timestamp(2026, 4, 14)
+
+    def xt(rev, dr):
+        return dict(Office="X-Trux, Inc", **{"Invoice As": "X-Trux, Inc"},
+                    **{"Customer Revenue": rev, "Driver Rate": dr, "Carrier Rate": 0,
+                       "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 0,
+                       "Scheduled Pickup": pk, "Load Status": "In Transit"})
+    rows = [
+        xt(1000, 50),    # 95% margin -> held out
+        xt(1000, 260),   # 74% margin -> held out (threshold is inclusive)
+        xt(1000, 400),   # 60% margin -> counts
+    ]
+    e = compute_alvys_entities({"Loads": pd.DataFrame(rows)}, start=APR_START, end=APR_END)
+    xt_out = e["X-Trux"]
+    # Only the 60%-margin load is in P&L: revenue 1000, cost 400.
+    assert round(xt_out["revenue"]) == 1000 and round(xt_out["cost"]) == 400
+    assert xt_out["loads"] == 1 and xt_out["unsettled"] == 2
+
+
+def test_xtrux_holdout_does_not_apply_to_xlinx():
+    """The Corrected Margin % hold-out is X-Trux only. An X-Linx brokered load
+    with a thin driver rate and high (Rev - DR)/Rev still counts — its real cost
+    is the Carrier Rate, captured separately."""
+    pk = pd.Timestamp(2026, 4, 14)
+    rows = [dict(Office="X-Linx, Inc.", **{"Invoice As": "XFreight"},
+                 **{"Customer Revenue": 4000, "Driver Rate": 0, "Carrier Rate": 3600,
+                    "Total Dispatch Mileage": 80, "Empty Dispatch Mileage": 0,
+                    "Scheduled Pickup": pk, "Load Status": "Invoiced"})]
+    e = compute_alvys_entities({"Loads": pd.DataFrame(rows)}, start=APR_START, end=APR_END)
+    xl = e["X-Linx"]
+    # Counts despite (4000-0)/4000 = 100% "margin" on Driver Rate alone.
+    assert round(xl["revenue"]) == 4000 and round(xl["cost"]) == 3600
+    assert xl["loads"] == 1 and xl["unsettled"] == 0
+
+
+def test_xlinx_brokered_dr_zero_load_still_counts():
+    """By contrast, an X-Linx brokered load legitimately has Driver Rate = 0 (no
+    company driver) — its cost is the Carrier Rate. As long as it is not "Open",
+    it MUST count. The awaiting-driver-pay exclusion is X-Trux-only."""
+    e = compute_alvys_entities(_loads(), start=APR_START, end=APR_END)
+    xl = e["X-Linx"]
+    assert round(xl["revenue"]) == 500          # the DR=0 brokered load counts
+    assert round(xl["cost"]) == 400             # cost = Carrier Rate
+    assert xl["loads"] == 1 and xl["unsettled"] == 0
+
+
+def test_own_fleet_mask_drops_brokered_keeps_own_and_zero_rev():
+    """Asset metrics (deadhead/RPM/mileage) must exclude brokered X-Trux loads
+    (carrier-driven) the same way X-Linx is excluded — their miles aren't our
+    trucks'. _own_fleet_mask drops loads with Corrected Margin % >= the 74%
+    hold-out; keeps normal-margin loads and revenue-0 loads (e.g. deadhead moves)."""
+    df = pd.DataFrame([
+        {"Customer Revenue": 1000, "Driver Rate": 300},   # 70% margin -> own fleet (keep)
+        {"Customer Revenue": 4000, "Driver Rate": 80},     # 98% margin -> brokered (drop)
+        {"Customer Revenue": 2000, "Driver Rate": 520},    # 74% margin -> brokered (drop, inclusive)
+        {"Customer Revenue": 0,    "Driver Rate": 200},    # no revenue -> keep
+    ])
+    assert list(_own_fleet_mask(df)) == [True, False, False, True]
 
 
 def test_health_flags_missing_driver_rate():

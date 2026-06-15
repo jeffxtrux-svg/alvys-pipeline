@@ -12,12 +12,12 @@ XFreight's insurance program, banking relationships, and entity identifiers. The
 
 ## Summary
 
-X-Trux and X-Linx carry commercial auto, cargo, GL, and workers' comp insurance through Acrisure (broker) / Great West Casualty (underwriter). A 2026 liability-insurance rate hike was absorbed into the overhead cost-per-mile pin. Banking is through First Dakota National Bank, officer Mike Flint. Both entities were incorporated January 19, 1999 in South Dakota.
+X-Trux and X-Linx carry commercial auto, cargo, GL, and workers' comp insurance through Acrisure (broker) / Great West Casualty (underwriter). The 2026 renewal went through May 1, 2026 with a ~$0.08–0.10/mi premium increase, absorbed into the overhead cost-per-mile pin. Banking is through First Dakota National Bank, officer Mike Flint. Both entities were incorporated January 19, 1999 in South Dakota.
 
 ## Key Ideas
 
 - Acrisure's underwriter (Great West Casualty) is effectively a **co-decision-maker on driver hiring** — no hire unless Great West approves the driver's MVR/PSP.
-- The 2026 rate hike pushed the overhead pin from $0.92 → $0.98/mi. See [[Rate-Per-Mile Goal]].
+- The **2026 renewal went through May 1, 2026** with a **~$0.08–0.10/mi premium increase**, already figured into the cost-out. The overhead pin was set $0.92 → $0.98/mi for the hike — confirm it fully reflects the $0.08–0.10/mi figure (looks ~$0.02–0.04/mi short). A different broker/carrier may be evaluated before the next renewal. See [[Rate-Per-Mile Goal]], [[Risk Register]].
 - X-Linx's Federal Tax ID is 45-0452444. X-Trux's is not yet captured in the source files.
 - Both X-Trux and X-Linx share the same Sioux Falls address and incorporated on the same date.
 

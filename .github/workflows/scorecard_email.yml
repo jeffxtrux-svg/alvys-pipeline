@@ -10,6 +10,10 @@
 # trigger: 2026-06-07 — re-fire after restoring 9 scorecard fixes that were
 # lost when the karpathy branch was force-pushed (coaching ack from
 # SafetyEvents, BL speed key, RPM chart/tile parity, MTD idle gallons, etc.).
+# trigger: 2026-06-13 — one-shot to Jeff after the X-Trux Corrected Margin %
+# (>= 80%) hold-out rule; X-Trux should read ~$225,078.85.
+# trigger: 2026-06-13 — re-fire after lowering the X-Trux hold-out to >= 74%
+# (catches Valley Play at 75.51%); X-Trux should read ~$222,915.89.
 #
 # Reads only (no API pulls) so it never touches the QuickBooks token rotation.
 # Runs after the morning data refresh.
@@ -31,7 +35,16 @@ on:
   # source refreshes succeed. The script bypasses its "sent today" marker
   # whenever GITHUB_EVENT_NAME is workflow_dispatch, including when called
   # via workflow_call from a manual Refresh All run.
+  # `recipients` MUST be declared here too: the job env references
+  # inputs.recipients, and a reusable workflow is invalid (startup failure when
+  # called) if it references an input not declared under workflow_call.
   workflow_call:
+    inputs:
+      recipients:
+        description: 'Comma-separated recipient override; empty = on-demand default (jeff only).'
+        required: false
+        type: string
+        default: ''
   # Editing this file fires the workflow on push — handy for triggering a
   # run from mobile when the Actions UI's "Run workflow" button isn't
   # reachable. The job step below sets SCORECARD_SKIP_IDEMPOTENCY=1 for
@@ -40,29 +53,31 @@ on:
   push:
     paths:
       - .github/workflows/scorecard_email.yml
+  # trigger: 2026-06-13c — Equipment Compliance page: inspection Days stay
+  # neutral (normal color) until actually past due — red only for overdue, no
+  # amber on upcoming dates (tractors + trailers). Tractor page also shows
+  # current mileage (live Samsara OBD odometer), last oil change date (from the
+  # Alvys Maintenance tab), and an estimated next-oil-due mileage (current
+  # odometer → next 25k mark, "est" until Alvys logs the odometer at each oil
+  # change).
   schedule:
     # Defense in depth against GitHub Actions schedule drops — GitHub's cron
     # is documented as best-effort, and during high load runs are silently
     # dropped (e.g. 2026-06-02 lost both the 11:30 and 11:45 UTC triggers).
-    # We arm five staggered attempts; the scorecard script itself checks a
-    # "sent today" marker in OneDrive at startup and exits clean if today's
-    # brief already landed, so only the first cron that fires actually
-    # emails — the rest exit in seconds. Manual workflow_dispatch bypasses
-    # the marker check.
+    # We arm staggered attempts; the scorecard script checks a "sent today"
+    # marker in OneDrive at startup and exits clean if today's brief already
+    # landed, so only the first slot that fires actually emails.
     #
-    # GitHub cron is fixed UTC and ignores DST. Target: 5:00am Central
-    # year-round, in both CDT (mid-Mar → early Nov) and CST (early Nov →
-    # mid-Mar). We arm both the CDT 5am slot (10 UTC) and the CST 5am slot
-    # (11 UTC), plus ~1h of backup retries in each. The "Gate to 5am CT or
-    # later" step at the top of the job rejects the slots that map to
-    # BEFORE 5am Central in the current season (so the CDT-shaped slots
-    # don't send an hour early in winter), and the script's same-day
-    # idempotency marker makes sure only the first un-gated slot emails.
-    - cron: '0 10 * * *'    # 5:00am CDT  primary  / 4:00am CST  (skipped by gate)
-    - cron: '15 10 * * *'   # 5:15am CDT  backup 1 / 4:15am CST  (skipped by gate)
-    - cron: '30 10 * * *'   # 5:30am CDT  backup 2 / 4:30am CST  (skipped by gate)
-    - cron: '0 11 * * *'    # 6:00am CDT  backup 3 / 5:00am CST  primary
-    - cron: '30 11 * * *'   # 6:30am CDT  last     / 5:30am CST  backup 1
+    # Target: 4:45am Central year-round — 45 min after the 4am data pull,
+    # giving Alvys/Samsara/QB time to complete before the brief reads them.
+    # Gate uses total-minutes since midnight (285 = 4h45m) so it works at
+    # sub-hour precision for both CDT and CST.
+    - cron: '45 9 * * *'    # 4:45am CDT  primary  / 3:45am CST  (gated)
+    - cron: '0 10 * * *'    # 5:00am CDT  backup 1 / 4:00am CST  (gated)
+    - cron: '15 10 * * *'   # 5:15am CDT  backup 2 / 4:15am CST  (gated)
+    - cron: '45 10 * * *'   # 5:45am CDT  backup 3 / 4:45am CST  primary
+    - cron: '15 11 * * *'   # 6:15am CDT  backup 4 / 5:15am CST  backup 1
+    - cron: '45 11 * * *'   # 6:45am CDT  last     / 5:45am CST  backup 2
     - cron: '0 12 * * *'    # 7:00am CDT  (none)   / 6:00am CST  last resort
 
 permissions:
@@ -73,28 +88,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Gate to 5am CT or later (skip 6am)
-        # Cron is fixed UTC, so the 10 UTC slots map to 5am CDT in summer
-        # but only 4am CST in winter. Skip the run when Central time hasn't
-        # reached 5am yet — the next 11 UTC slot will pick it up at 5am CST.
-        # ALSO skip 6am CT specifically: the scorecard healthcheck now
-        # fires at 6:00am and would collide with this backup slot,
-        # potentially double-sending the brief on dropped-cron mornings.
-        # Manual / workflow_call / push runs bypass the gate so on-demand
-        # triggers always work regardless of the time of day.
+      - name: Gate to 4:45am CT or later (skip 6am)
+        # Uses total-minutes since midnight for sub-hour precision.
+        # 285 = 4*60+45 = 4:45am. Skip before 4:45am (CDT-shaped crons that
+        # fire at 3:45am–4:30am CST are gated here). Also skip 6am CT: the
+        # scorecard healthcheck fires then and would collide on drop mornings.
+        # Manual / workflow_call / push runs bypass so on-demand triggers
+        # always work regardless of time.
         id: ct_gate
         if: github.event_name == 'schedule'
         run: |
           CT_HOUR=$(TZ=America/Chicago date +%-H)
-          echo "Central-time hour: $CT_HOUR"
-          if [ "$CT_HOUR" -lt 5 ]; then
-            echo "Before 5am CT — skipping this slot."
+          CT_MIN=$(TZ=America/Chicago date +%-M)
+          CT_TOTAL=$(( CT_HOUR * 60 + CT_MIN ))
+          echo "Central time: ${CT_HOUR}:$(printf '%02d' $CT_MIN) (${CT_TOTAL} mins)"
+          if [ "$CT_TOTAL" -lt 285 ]; then
+            echo "Before 4:45am CT — skipping this slot."
             echo "skip=1" >> "$GITHUB_OUTPUT"
           elif [ "$CT_HOUR" -eq 6 ]; then
-            echo "6am CT slot reserved for the healthcheck — skipping."
+            echo "6am CT reserved for healthcheck — skipping."
             echo "skip=1" >> "$GITHUB_OUTPUT"
           else
-            echo "5am CT or 7am+ CT — proceeding."
+            echo "4:45am CT or later — proceeding."
           fi
 
       - name: Checkout repo
@@ -124,24 +139,43 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Recipient policy:
-          #   workflow_dispatch with empty recipients input → jeff only
-          #     (one-shot/manual sends default to a quiet single-mailbox
-          #     test send so they don't fan out to the whole team).
+          #   workflow_dispatch / push with empty recipients input → jeff only
+          #     (manual + mobile-escape-hatch sends default to a quiet
+          #     single-mailbox test send so a verification run doesn't fan out
+          #     to the whole team).
           #   workflow_dispatch with recipients input set    → that list.
-          #   any other trigger (schedule / push / workflow_call) → the
-          #     standing list (jeff + jb).
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && 'jeff@xfreight.net' || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
-          # Push-triggered runs (mobile escape hatch) bypass the same-day
-          # idempotency marker so the on-demand resend actually sends.
-          # Empty string for cron/dispatch leaves the marker check in force.
-          SCORECARD_SKIP_IDEMPOTENCY: ${{ github.event_name == 'push' && '1' || '' }}
-          # Read the exact workbook the Power BI report uses, by its OneDrive sharing
-          # URL — there is a second file of the same name, so reading by name picked
-          # the wrong (un-settled) one. The sharing URL resolves to the right item.
-          SCORECARD_ALVYS_SHARE_URL: "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
-          SCORECARD_ALVYS_PATH: "Alvys Master 2026.xlsx"
+          #   scheduled / workflow_call → the standing list (jeff + jb).
+          # Final `||` fallback hardcodes Dan + JB + Jeff so the standing
+          # list survives even if the SCORECARD_RECIPIENTS secret is unset.
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
+          # Push and manual dispatch bypass the same-day idempotency marker so
+          # on-demand re-sends always fire. Cron slots leave the marker in force
+          # so only the first scheduled slot each day actually emails.
+          SCORECARD_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && '1' || '' }}
+          # Read the EXACT workbook the Power BI report uses, by its OneDrive
+          # sharing URL (resolves the specific item, immune to duplicate names).
+          # The ALVYS_SHARE_URL secret points at the correct no-space
+          # "Alvys Master2026.xlsx" (3 tabs Fuel/Loads/Trips, re-uploaded every
+          # afternoon) — verified 2026-06-13 that this read reproduces the PBI
+          # numbers to the penny. The fallback name below is the same no-space
+          # file; the WITH-space "Alvys Master 2026.xlsx" is a different workbook
+          # and must NOT be used.
+          SCORECARD_ALVYS_SHARE_URL: ${{ secrets.ALVYS_SHARE_URL }}
+          SCORECARD_ALVYS_PATH: "Alvys Master2026.xlsx"
+          # Read-only token for the brief's final "Data refresh status" page, which
+          # queries the GitHub Actions API for each refresh workflow's latest run.
+          # Reuses the GH_PAT already used by the upload-status digest. Fail-soft:
+          # if absent, the run column just shows blanks.
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          # Power BI XFreight Report last-refresh row on that page. Needs the Azure
+          # app granted Power BI API access (service principal added to the
+          # workspace) plus these IDs. Until both secrets are set, the row reads
+          # "not configured" and everything else is unaffected. Uses the AZURE_*
+          # creds above for the Power BI token.
+          PBI_WORKSPACE_ID: ${{ secrets.PBI_WORKSPACE_ID }}
+          PBI_DATASET_ID: ${{ secrets.PBI_DATASET_ID }}
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive
@@ -177,10 +211,12 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: jeff@xfreight.net
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Mirror the send step's recipient policy so a one-shot dispatch
           # to a single mailbox doesn't fan its failure notice out.
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || (github.event_name == 'workflow_dispatch' && 'jeff@xfreight.net' || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
+          # Final `||` fallback hardcodes Dan + JB + Jeff so the standing
+          # list survives even if the SCORECARD_RECIPIENTS secret is unset.
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'

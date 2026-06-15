@@ -123,15 +123,16 @@ def upload_file(
             "name": filename,
         }
     }
-    # OneDrive occasionally returns 409 nameAlreadyExists when a prior
-    # upload session for the same filename hasn't fully closed yet (the
-    # session lock typically clears within 30–90s). Retry with backoff
-    # before failing the whole run.
+    # OneDrive occasionally returns 409 nameAlreadyExists when a prior upload
+    # session for the same filename hasn't fully closed yet (clears in 30–90s).
+    # Microsoft Graph also returns transient 429/500/503 under load — retry all.
+    import time
     s_resp = None
     for attempt, delay in enumerate((0, 15, 30, 60, 120)):
         if delay:
-            log.warning("Upload session lock — retrying in %ds (attempt %d)…", delay, attempt + 1)
-            import time; time.sleep(delay)
+            log.warning("Upload session [%s] — retrying in %ds (attempt %d)…",
+                        s_resp.status_code if s_resp else "?", delay, attempt + 1)
+            time.sleep(delay)
         s_resp = requests.post(
             session_url,
             headers={**headers, "Content-Type": "application/json"},
@@ -141,7 +142,9 @@ def upload_file(
         if s_resp.status_code == 200:
             break
         if s_resp.status_code == 409 and "nameAlreadyExists" in (s_resp.text or ""):
-            continue  # transient — retry
+            continue  # session lock — retry
+        if s_resp.status_code in (429, 500, 503):
+            continue  # transient Graph outage — retry
         break  # non-retryable error
     if s_resp.status_code != 200:
         log.error("Create upload session failed [%s]: %s",
@@ -160,11 +163,23 @@ def upload_file(
                 "Content-Length": str(len(chunk)),
                 "Content-Range": f"bytes {uploaded}-{chunk_end}/{file_size}",
             }
-            cresp = requests.put(upload_url, headers=chunk_headers,
-                                  data=chunk, timeout=120)
-            if cresp.status_code not in (200, 201, 202):
-                log.error("Chunk upload failed [%s]: %s",
-                          cresp.status_code, cresp.text[:500])
+            for chunk_attempt in range(1, 4):
+                cresp = requests.put(upload_url, headers=chunk_headers,
+                                     data=chunk, timeout=120)
+                if cresp.status_code in (200, 201, 202):
+                    break
+                if cresp.status_code in (429, 500, 503) and chunk_attempt < 3:
+                    wait = 10 * chunk_attempt
+                    log.warning("Chunk upload [%s] — retrying in %ds (attempt %d/3)…",
+                                cresp.status_code, wait, chunk_attempt)
+                    time.sleep(wait)
+                    continue
+                if cresp.status_code == 423:
+                    log.error("Upload blocked (423 Locked): the file is open in Excel or "
+                              "another app. Close the file on OneDrive/SharePoint and retry.")
+                else:
+                    log.error("Chunk upload failed [%s]: %s",
+                              cresp.status_code, cresp.text[:500])
                 cresp.raise_for_status()
             uploaded += len(chunk)
             pct = uploaded / file_size * 100

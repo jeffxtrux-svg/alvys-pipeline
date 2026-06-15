@@ -21,6 +21,12 @@ Revenue has held roughly steady at ~$5M/year (X-Trux) despite a fleet reduction 
 - **X-Linx revenue has collapsed**: $185K/mo (2024) → $60K/mo (2026). Material gap worth investigating.
 - **Empty-mile %** has improved every year: 8.1% (2024) → 7.0% (2025) → 6.7% (2026 YTD) vs. 7.5% goal.
 
+## Recent Capital Events (June 2026)
+
+- **$40K owner capital injection** — Jeff and JB each added $20,000 ($40K total) to the business.
+- **Operating loan paid off** — required to onboard [[Factoring]] with Triumph (the factor takes first position on AR). The **trailer was refinanced** to cover the difference and move the deal forward.
+- Net effect: working capital freed for the factoring transition; new trailer-refi debt service added in exchange. See [[Factoring]], [[Risk Register]].
+
 ## Monthly Targets (Jeff's Worksheet)
 
 | Metric | Target |

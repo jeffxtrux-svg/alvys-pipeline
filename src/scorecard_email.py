@@ -110,6 +110,14 @@ RPM_GOAL_OVERHEAD_ALLOC = 1.0
 # surcharge is zeroed so it doesn't double-count.  Re-enable if you ever
 # decouple insurance from overhead again.
 RPM_GOAL_INSURANCE_SURCHARGE = 0.0
+# Driver pay floor: the known contract rate ($/mi). The 10-day blended average
+# can land below the actual contract rate when recent loads skew toward high-
+# mileage deadhead runs or when the load mix is thin. Set this to the current
+# O/O contract rate so load-mix noise can't understate the cost. The computed
+# average is still logged so drift is visible; the floor just stops it from
+# moving the goal below what the contract actually costs.
+# Override with RPM_GOAL_DRIVER_PAY_FLOOR env var (set to 0 to disable floor).
+RPM_GOAL_DRIVER_PAY_FLOOR = 1.76
 # Office overhead per mile is pinned to a hand-set value while the costing
 # algorithm is being validated against the books. Set to None (or empty the
 # RPM_GOAL_OVERHEAD_PIN env var) to let the live QB-derived calculation flow
@@ -132,6 +140,25 @@ SAMBA_HIGH_RISK_SCORE = 70        # fallback high-risk cutoff when no risk categ
 VIOLATION_WINDOW_DAYS = 90        # MVR violations: surface the last 90d so the tile/page reflect recent risk, not the full year of historical record
                                   # alerts — a year matches how SambaSafety surfaces them
 
+# Canonical Alvys Master workbook — the exact OneDrive file the Power BI
+# XFreight Report reads ("Alvys Master2026.xlsx", no space before 2026).
+# Both the scorecard and the daily upload default to this sharing URL so all
+# reporting surfaces read the same data. Override via SCORECARD_ALVYS_SHARE_URL
+# / DAILY_UPLOAD_ALVYS_SHARE_URL if the file ever moves.
+ALVYS_MASTER_SHARE_URL = (
+    "https://xfreightnet-my.sharepoint.com/:x:/g/personal/jeff_xfreight_net/"
+    "IQCS8VN_Oxb9S7p2e4lYfePXAetRrCNH351gIGbZ5c53J1U"
+)
+
+# Fingerprint of the CORRECT workbook. The canonical "Alvys Master2026.xlsx"
+# (no space, in the "API Feeds and Updated XLXS" subfolder, re-uploaded every
+# afternoon) has exactly these three tabs. A same-named un-settled duplicate
+# ("Alvys Master 2026.xlsx", WITH a space, in the Documents root) has been read
+# by mistake several times and silently ships inflated revenue. main() aborts
+# the brief if the workbook it read is missing any of these tabs, so a wrong
+# file fails loudly (failure email) instead of emailing wrong numbers.
+ALVYS_EXPECTED_TABS = {"fuel", "loads", "trips"}
+
 # Power BI's XFreight Report filters by Scheduled Pickup, so match that for MTD/window math.
 ALVYS_DATE_CANDIDATES = [
     "Scheduled Pickup", "Dispatched Date", "Invoiced Date", "Delivered",
@@ -153,6 +180,11 @@ def _isnum(x) -> bool:
 
 def money(x) -> str:
     return f"${x:,.0f}" if _isnum(x) else "n/a"
+
+
+def money2(x) -> str:
+    """Like money() but shows cents — for tables that must match PBI to the penny."""
+    return f"${x:,.2f}" if _isnum(x) else "n/a"
 
 
 def money_m(x) -> str:
@@ -199,6 +231,15 @@ def _col_any(df: pd.DataFrame, names: list[str]) -> pd.Series:
         if n in df.columns:
             return pd.to_numeric(df[n], errors="coerce")
     return pd.Series([float("nan")] * len(df), index=df.index)
+
+
+def _load_cost(df: pd.DataFrame) -> pd.Series:
+    """Effective cost per load = Driver Rate + Carrier Rate.
+    For X-Trux company-driver loads, Driver Rate > 0 and Carrier Rate = 0.
+    For X-Linx brokered loads, Driver Rate = 0 and Carrier Rate > 0.
+    Only one is populated per load in the Alvys TMS export, so summing them
+    gives the correct total cost without double-counting."""
+    return _col(df, "Driver Rate").fillna(0) + _col(df, "Carrier Rate").fillna(0)
 
 
 def _find_col(df: pd.DataFrame, needles: list[str]) -> str | None:
@@ -363,9 +404,10 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
     loaded = _col_any(sub, ["Loaded Miles", "Loaded Mileage", "Loaded Dispatch Mileage"]).sum()
     empty = _col_any(sub, ["Empty Miles", "Empty Mileage", "Empty Dispatch Mileage"]).sum()
     total = loaded + empty
-    # Margin = Customer Revenue - Driver Rate, matching Power BI. Carrier Rate is
-    # NOT added: the Driver Rate column is the full payout per load already.
-    cost = float(_col(sub, "Driver Rate").fillna(0).sum())
+    # Margin = Customer Revenue - cost. For X-Trux loads the cost is Driver Rate
+    # (company driver mileage pay); for X-Linx brokered loads the cost is Carrier
+    # Rate. Only one is populated per load in the TMS export, so we sum both.
+    cost = float(_load_cost(sub).sum())
     margin = revenue - cost
     return {
         "loads": len(sub),
@@ -378,6 +420,22 @@ def _alvys_metrics(sub: pd.DataFrame) -> dict:
         "margin": margin if margin else None,
         "margin_pct": (margin / revenue) if revenue else None,
     }
+
+
+def _own_fleet_mask(loads: pd.DataFrame) -> pd.Series:
+    """Boolean mask dropping X-Trux loads brokered to an outside carrier (Corrected
+    Margin % = (Revenue - Driver Rate)/Revenue >= the hold-out). Their miles are the
+    carrier's, not our trucks', so they're excluded from asset metrics (deadhead /
+    RPM / mileage) — same reason X-Linx is excluded. Keeps the brief's asset deadhead
+    on own-fleet loads only, matching the PBI In-P&L view to the decimal."""
+    rev = _col_any(loads, ["Customer Revenue", "Revenue"]).fillna(0)
+    dr = (_col(loads, "Driver Rate").fillna(0)
+          if "Driver Rate" in loads.columns else pd.Series(0.0, index=loads.index))
+    margin = pd.Series(0.0, index=loads.index)
+    pos = rev > 0
+    margin[pos] = (rev[pos] - dr[pos]) / rev[pos]
+    holdout = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
+    return ~(pos & (margin >= holdout))
 
 
 def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
@@ -397,17 +455,15 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
         _n_excl = _n_before - len(loads)
         if _n_excl:
             log.info("Excluded %d Cancelled loads to match Power BI view", _n_excl)
-    # Power BI's monthly table only sums loads with Driver Rate > 0 (settled).
-    # Pre-booked / unsettled loads carry Loaded Miles but no Empty Miles and no
-    # Driver Rate, which is why our June trend showed 55 loads / 43,475 loaded
-    # while PBI shows 36 / 22,596. Filter to settled here so all asset metrics
-    # (tile + trend + entity P&L) operate on the same set as PBI.
-    if "Driver Rate" in loads.columns:
+    # Power BI's monthly table only sums settled loads. For X-Trux loads
+    # "settled" means Driver Rate > 0; for X-Linx brokered loads it means
+    # Carrier Rate > 0. We use the combined cost to catch both cases.
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
         _n_before = len(loads)
-        loads = loads[_col(loads, "Driver Rate").fillna(0) > 0]
+        loads = loads[_load_cost(loads) > 0]
         _n_excl = _n_before - len(loads)
         if _n_excl:
-            log.info("Excluded %d unsettled loads (Driver Rate = 0) — matches Power BI view",
+            log.info("Excluded %d unsettled loads (Driver Rate + Carrier Rate = 0) — matches Power BI view",
                      _n_excl)
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     _date_col_used = next(
@@ -462,8 +518,12 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
     # variant (exclude X-Linx brokerage) for those tiles.
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
-        is_asset = loads[office_col].map(_entity_group) == "X-Trux"
-        a_loads, a_dates = loads[is_asset], dates[is_asset]
+        # Own-fleet only for the asset deadhead/RPM/mileage tiles: X-Trux/XFreight
+        # AND not brokered to a carrier. Brokered X-Trux loads (high Corrected
+        # Margin %) are carrier-driven — including their miles understated June
+        # dead-head as 4.90% vs PBI's own-fleet 5.45%.
+        is_own = (loads[office_col].map(_entity_group) == "X-Trux") & _own_fleet_mask(loads)
+        a_loads, a_dates = loads[is_own], dates[is_own]
         out["asset"] = {key: _alvys_metrics(a_loads[(a_dates >= start) & (a_dates <= now)])
                         for key, start in capped_specs}
         # MTD: full calendar month including future-scheduled (matches PBI).
@@ -538,6 +598,27 @@ def compute_alvys(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 # all reporting; X-Linx (brokerage) is reported separately.
 ENTITY_ORDER = ["X-Trux", "X-Linx"]
 
+# Loads in these statuses are pre-dispatch (booked but not started). The Power BI
+# XFreight Report excludes them from revenue AND cost until they progress — they
+# are surfaced separately as "unsettled". "Cancelled" is dropped from the universe
+# entirely upstream; "Open" is the booked-not-dispatched bucket. Verified
+# 2026-06-13 against Alvys Master2026.xlsx: excluding {open} makes both X-Trux and
+# X-Linx match PBI to the penny (revenue and cost). This replaced an older
+# "Driver Rate > 0" proxy that wrongly dropped DR=0 statuses like "Covered".
+ALVYS_OPEN_STATUSES = {"open"}
+
+# Hold-out threshold for X-Trux asset loads (the "variable", set by Jeff
+# 2026-06-13 at 0.74, raised to 0.80 on 2026-06-15 to match the Power BI
+# change). A load whose Corrected Margin % = (Customer Revenue - Driver Rate)
+# / Customer Revenue is AT OR ABOVE this is treated as not-yet-fully-costed —
+# the recorded driver pay is implausibly low for the revenue (e.g. a load
+# brokered to a carrier whose real cost isn't in Driver Rate), which would
+# inflate margin. Such loads are held out of BOTH revenue and cost until
+# they settle, surfaced as `unsettled`. X-Trux ONLY — X-Linx brokerage
+# legitimately runs thin and is exempt. Override at runtime via
+# ALVYS_XTRUX_HOLDOUT_MARGIN.
+ALVYS_XTRUX_HOLDOUT_MARGIN = 0.80
+
 
 def _entity_group(office) -> str | None:
     s = str(office).upper()
@@ -548,22 +629,190 @@ def _entity_group(office) -> str | None:
     return None
 
 
+def _entities_from_pipeline(pipeline_sheets: dict, window_key: str = "mtd",
+                             start=None, end=None) -> dict:
+    """Pipeline-Trips source path (matches the Power BI computation exactly).
+
+    PBI reports compute Driver Rate and Customer Revenue at the **trip**
+    level then aggregate up to the load via a Load # join. The Loads sheet
+    of the manual `Alvys Master 2026.xlsx` carries load-level snapshots that
+    drift from the trip-level truth (Carrier Rate quoted vs invoiced,
+    Driver Rate not populated on brokered loads, etc.). Reading
+    `Alvys Pipeline.xlsx` Trips → aggregating by Load # gives us the same
+    figures PBI shows.
+
+    Returns the same shape as compute_alvys_entities so callers can swap.
+    """
+    if not pipeline_sheets:
+        return {}
+    loads = pipeline_sheets.get("Loads")
+    trips = pipeline_sheets.get("Trips")
+    if loads is None or loads.empty or trips is None or trips.empty:
+        return {}
+    if "Load #" not in trips.columns:
+        # Older pipeline output didn't expose Load # on Trips — fall back
+        # to the Master-Loads path so we don't silently zero out the table.
+        log.warning("compute_alvys_entities: Pipeline Trips sheet missing 'Load #' column — "
+                    "falling back to Master Loads sheet. Refresh Alvys to pick up the new column.")
+        return None
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if not office_col:
+        return {}
+    dates = _dates(loads, ALVYS_DATE_CANDIDATES)
+    mask = pd.Series(True, index=loads.index)
+    if "Load Status" in loads.columns:
+        mask &= loads["Load Status"].astype(str).str.lower() != "cancelled"
+    if start is None and window_key == "mtd":
+        mtd_start = _windows()["mtd"]
+        _rev_mtd = _col_any(loads[dates >= mtd_start], ["Customer Revenue", "Revenue"]).fillna(0)
+        rollover, lm_start, lm_end, _ = _rollover_state(int((_rev_mtd > 0).sum()))
+        if rollover:
+            start, end = lm_start, lm_end
+    if start is None:
+        start = _windows()[window_key]
+    mask &= dates >= start
+    if end is not None:
+        mask &= dates < end if end < _windows()["now"] else dates <= end
+    sub_loads = loads[mask].copy()
+    if "Load #" not in sub_loads.columns:
+        return {}
+    sub_loads["__load_id"] = sub_loads["Load #"].astype(str).str.strip()
+    sub_loads["__entity"] = sub_loads[office_col].map(_entity_group)
+
+    # Aggregate trips by Load #: sum Driver Rate + Carrier Rate per load,
+    # track whether any trip is still in 'Open' status.
+    t = trips.copy()
+    t["__load_id"] = t["Load #"].astype(str).str.strip()
+    rate_col_dr = _col(t, "Driver Rate").fillna(0) if "Driver Rate" in t.columns else pd.Series(0.0, index=t.index)
+    rate_col_cr = pd.Series(0.0, index=t.index)
+    for cname in ("Carrier Rate", "Posted Carrier Rate"):
+        if cname in t.columns:
+            rate_col_cr = _col(t, cname).fillna(0)
+            break
+    t["__dr"] = rate_col_dr
+    t["__cr"] = rate_col_cr
+    status_col = "Trip Status" if "Trip Status" in t.columns else _find_col(t, ["trip status", "status"])
+    if status_col:
+        t["__open"] = t[status_col].astype(str).str.strip().str.lower() == "open"
+    else:
+        t["__open"] = False
+    # PBI joins Loads → Trips with Table.First — one trip per load, not
+    # a sum across all trips. Match that semantic so multi-trip loads don't
+    # double/triple-count their carrier rate vs PBI's tile. Skip cancelled
+    # trips before picking "first" (PBI's join effectively does this since
+    # the API returns active trips first), and sort by Trip # so the choice
+    # is deterministic across runs. any_trip_open still aggregates across
+    # ALL trips since the user's spec gates on ANY leg being still open.
+    open_flags = t.groupby("__load_id")["__open"].any().rename("any_trip_open")
+    t_active = t
+    if status_col:
+        t_active = t[t[status_col].astype(str).str.strip().str.lower() != "cancelled"]
+    sort_cols = ["__load_id"]
+    if "Trip #" in t_active.columns:
+        t_active = t_active.copy()
+        t_active["__trip_sort"] = pd.to_numeric(t_active["Trip #"], errors="coerce").fillna(10**9)
+        sort_cols.append("__trip_sort")
+    t_active = t_active.sort_values(sort_cols)
+    rate_agg = t_active.groupby("__load_id").agg(
+        trip_driver_rate=("__dr", "first"),
+        trip_carrier_rate=("__cr", "first"),
+    )
+    agg = rate_agg.join(open_flags, how="outer").reset_index()
+    agg["trip_driver_rate"] = agg["trip_driver_rate"].fillna(0)
+    agg["trip_carrier_rate"] = agg["trip_carrier_rate"].fillna(0)
+    agg["any_trip_open"] = agg["any_trip_open"].fillna(False)
+
+    merged = sub_loads.merge(agg, on="__load_id", how="left")
+    merged["any_trip_open"] = merged["any_trip_open"].fillna(False)
+    merged["trip_driver_rate"] = merged["trip_driver_rate"].fillna(0)
+    merged["trip_carrier_rate"] = merged["trip_carrier_rate"].fillna(0)
+
+    out: dict[str, dict] = {}
+    for ent in ENTITY_ORDER:
+        rows = merged[merged["__entity"] == ent]
+        if rows.empty:
+            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                        "loads": 0, "unsettled": 0,
+                        "estimated_cost": 0.0, "estimated_loads": 0}
+            continue
+        if ent == "X-Trux":
+            n_dropped = int(rows["any_trip_open"].sum())
+            rows = rows[~rows["any_trip_open"]]
+            if n_dropped:
+                log.info("_entities_from_pipeline[X-Trux]: dropped %d loads with any trip in 'Open' status",
+                         n_dropped)
+            if rows.empty:
+                out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
+                            "loads": 0, "unsettled": 0,
+                            "estimated_cost": 0.0, "estimated_loads": 0}
+                continue
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            # X-Trux: trip-level Driver Rate IS the asset cost. Carrier Rate
+            # on asset trips is typically 0.
+            cost = float(rows["trip_driver_rate"].sum())
+            n_loads = len(rows)
+            n_unsettled = int((rows["trip_driver_rate"] <= 0).sum())
+            log.info("_entities_from_pipeline[X-Trux]: %d loads | cost (trip Driver Rate sum) $%s",
+                     n_loads, f"{cost:,.0f}")
+        else:  # X-Linx
+            revenue = _col_any(rows, ["Customer Revenue", "Revenue"]).sum()
+            # X-Linx: brokered, cost = trip Carrier Rate (Driver Rate ≈ 0).
+            # Sum both to be safe — they're mutually exclusive in practice.
+            cost = float(rows["trip_driver_rate"].sum() + rows["trip_carrier_rate"].sum())
+            n_loads = len(rows)
+            n_unsettled = 0
+            log.info("_entities_from_pipeline[X-Linx]: %d loads | Driver Rate sum $%s + Carrier Rate sum $%s = $%s cost",
+                     n_loads, f"{float(rows['trip_driver_rate'].sum()):,.0f}",
+                     f"{float(rows['trip_carrier_rate'].sum()):,.0f}", f"{cost:,.0f}")
+            # Per-load dump so we can line each row up against the PBI
+            # X-Linx Inc tab and see exactly where the carrier-rate gap is.
+            rev_col_name = next((c for c in ("Customer Revenue", "Revenue") if c in rows.columns), None)
+            for _, r in rows.iterrows():
+                log.info("  X-Linx load %s | rev $%s | trip Driver $%s | trip Carrier $%s",
+                         str(r.get("__load_id", "?")),
+                         f"{float(r.get(rev_col_name, 0) or 0):,.2f}" if rev_col_name else "?",
+                         f"{float(r['trip_driver_rate']):,.2f}",
+                         f"{float(r['trip_carrier_rate']):,.2f}")
+        margin = revenue - cost
+        out[ent] = {
+            "revenue": revenue or None,
+            "cost": cost or None,
+            "margin": margin if revenue else None,
+            "margin_pct": (margin / revenue) if revenue else None,
+            "loads": n_loads,
+            "unsettled": n_unsettled,
+            "estimated_cost": 0.0,
+            "estimated_loads": 0,
+        }
+    return out
+
+
 def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: str = "mtd",
-                           start=None, end=None) -> dict:
+                           start=None, end=None,
+                           pipeline_sheets: dict[str, pd.DataFrame] | None = None) -> dict:
     """Revenue / cost / margin by entity (X-Trux incl. XFreight, X-Linx).
 
-    Defaults to the open-ended window starting at `window_key`. Pass explicit
-    `start`/`end` (Timestamps) to bound a closed period — used by the parity
-    check and tests to compare a single finished month against Power BI.
+    The Alvys Master workbook (`sheets`) is the canonical source — it is the
+    exact file the Power BI XFreight Report reads, so the brief's entity
+    table matches the report by construction. The API pipeline join
+    (`pipeline_sheets`) is only a FALLBACK when the master isn't readable:
+    its trip join lags new loads and drops dual-cost rates (e.g. it showed
+    14 X-Linx June loads / $22,282 cost vs the master's 17 / $27,034).
     """
+    loads = (sheets or {}).get("Loads")
+    if (loads is None or loads.empty) and pipeline_sheets:
+        result = _entities_from_pipeline(pipeline_sheets, window_key, start, end)
+        if result is not None:
+            return result
     if not sheets:
         return {}
-    loads = sheets.get("Loads")
     if loads is None or loads.empty:
         return {}
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if not office_col:
         return {}
+    log.info("compute_alvys_entities: office_col=%r  available=[%s]",
+             office_col, ", ".join(c for c in loads.columns if any(n in c.lower() for n in ["office", "invoice"])))
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     mask = pd.Series(True, index=loads.index)
     if "Load Status" in loads.columns:
@@ -579,12 +828,17 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             start, end = lm_start, lm_end
     if start is None:
         start = _windows()[window_key]
+    # Cap MTD at end-of-current-month so the entity table uses the same load
+    # universe as PBI's monthly slicer (6/1 → 6/30 → exact penny match).
+    if end is None and window_key == "mtd":
+        end = (start + pd.offsets.MonthEnd(1)).replace(hour=23, minute=59, second=59)
     mask &= dates >= start
     if end is not None:
         mask &= dates < end if end < _windows()["now"] else dates <= end
     sub = loads[mask]
     groups = sub[office_col].map(_entity_group)
 
+    holdout = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
     out: dict[str, dict] = {}
     for ent in ENTITY_ORDER:
         rows = sub[groups == ent]
@@ -592,33 +846,59 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
                         "loads": 0, "unsettled": 0}
             continue
-        # Match Power BI: P&L tiles are computed on **settled** loads only (those
-        # with Driver Rate > 0). Booked-but-not-yet-dispatched loads carry full
-        # customer revenue and $0 driver pay, which inflates margin % during MTD
-        # until driver pay lands; excluding them keeps the brief in sync with the
-        # Power BI XFreight Report instead of running high mid-month.
-        if "Driver Rate" in rows.columns:
-            settled_mask = _col(rows, "Driver Rate").fillna(0) > 0
-            settled = rows[settled_mask]
+        # Power BI recognizes a load once it progresses past "Open" (booked but
+        # not dispatched — no revenue/cost recognized yet). Exclude Open loads
+        # from P&L for BOTH entities and surface them as `unsettled`; every other
+        # non-cancelled status (Covered/Dispatched/In Transit/Completed/Invoiced/
+        # Released/Queued) counts. Verified to match the PBI XFreight Report to
+        # the penny for X-Trux and X-Linx (2026-06-13). Cost mirrors the PBI
+        # Total Load Cost DAX: X-Trux = SUM(Driver Rate); X-Linx (brokerage) =
+        # SUM(Driver Rate + Carrier Rate), since brokered carrier payout lands in
+        # Carrier Rate (Driver Rate ~0).
+        status = (rows["Load Status"].astype(str).str.strip().str.lower()
+                  if "Load Status" in rows.columns else pd.Series("", index=rows.index))
+        open_mask = status.isin(ALVYS_OPEN_STATUSES)
+        dr_all = (_col(rows, "Driver Rate").fillna(0)
+                  if "Driver Rate" in rows.columns else pd.Series(0.0, index=rows.index))
+        if ent == "X-Linx":
+            # Brokerage: no company driver, so Driver Rate is ~0 by design and the
+            # real cost is the Carrier Rate. A load counts once it leaves "Open"
+            # (booked, not dispatched). Cost = Driver Rate + Carrier Rate.
+            counted = rows[~open_mask]
+            n_unsettled = int(open_mask.sum())
+            revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
+            dr_cost = float(_col(counted, "Driver Rate").fillna(0).sum()) if "Driver Rate" in counted.columns else 0.0
+            cr_cost = float(_col(counted, "Carrier Rate").fillna(0).sum()) if "Carrier Rate" in counted.columns else 0.0
+            cost = dr_cost + cr_cost
+            n_loads = len(counted)
+            log.info("compute_alvys_entities[X-Linx]: %d loads (%d open/unsettled) | "
+                     "DR $%.2f + CR $%.2f = $%.2f cost | revenue $%.2f",
+                     n_loads, n_unsettled, dr_cost, cr_cost, cost, float(revenue))
         else:
-            settled = rows
-        n_unsettled = len(rows) - len(settled)
-        if settled.empty:
-            out[ent] = {"revenue": None, "cost": None, "margin": None, "margin_pct": None,
-                        "loads": 0, "unsettled": n_unsettled}
-            continue
-        revenue = _col_any(settled, ["Customer Revenue", "Revenue"]).sum()
-        # Cost = SUM(Loads[Driver Rate]); margin = Customer Revenue - Driver Rate,
-        # matching Power BI. The Loads "Driver Rate" column already holds each load's
-        # full settled payout, so Carrier Rate is not added separately.
-        cost = float(_col(settled, "Driver Rate").fillna(0).sum())
+            # X-Trux asset side: a load enters the P&L only once it is properly
+            # costed. A load is HELD OUT (awaiting driver pay) when it is still
+            # "Open" (pre-dispatch) OR its Corrected Margin %
+            # — (Customer Revenue - Driver Rate) / Customer Revenue — is at/above
+            # the hold-out threshold, i.e. the recorded driver pay is implausibly
+            # low for the revenue (e.g. a load brokered to a carrier whose real
+            # cost isn't in Driver Rate). Held-out loads contribute NO revenue and
+            # NO cost and are surfaced as `unsettled`, so an under-costed load
+            # can't inflate margin. X-Trux ONLY. NOTE: Power BI's X-Trux measures
+            # must apply the same Corrected Margin % >= threshold filter to match.
+            rev_all = _col_any(rows, ["Customer Revenue", "Revenue"]).fillna(0)
+            margin_pct = pd.Series(0.0, index=rows.index)
+            pos = rev_all > 0
+            margin_pct[pos] = (rev_all[pos] - dr_all[pos]) / rev_all[pos]
+            held = open_mask | (pos & (margin_pct >= holdout))
+            counted = rows[~held]
+            n_unsettled = int(held.sum())
+            revenue = _col_any(counted, ["Customer Revenue", "Revenue"]).sum()
+            cost = float(_col(counted, "Driver Rate").fillna(0).sum()) if "Driver Rate" in counted.columns else 0.0
+            n_loads = len(counted)
+            log.info("compute_alvys_entities[%s]: %d loads (%d held: open or >=%.0f%% margin) | "
+                     "revenue $%.2f | cost (DR) $%.2f",
+                     ent, n_loads, n_unsettled, holdout * 100, float(revenue), cost)
         margin = revenue - cost
-        # n_loads matches Power BI's Load Count (non-cancelled, settled).
-        n_loads = len(settled)
-        # Margin % matches the Power BI XFreight Report exactly:
-        # Margin ÷ Revenue = (Revenue − Driver Rate) ÷ Revenue. Both
-        # entities use this formula so the scorecard table and Power BI
-        # tile read identically.
         out[ent] = {
             "revenue": revenue or None,
             "cost": cost or None,
@@ -626,6 +906,8 @@ def compute_alvys_entities(sheets: dict[str, pd.DataFrame] | None, window_key: s
             "margin_pct": (margin / revenue) if revenue else None,
             "loads": n_loads,
             "unsettled": n_unsettled,
+            "estimated_cost": 0.0,
+            "estimated_loads": 0,
         }
     return out
 
@@ -647,9 +929,9 @@ def _alvys_health(sheets: dict[str, pd.DataFrame] | None) -> list[str]:
     if not ({"Customer Revenue", "Revenue"} & cols):
         warns.append("Loads tab has no Customer Revenue column — revenue and margin will be blank.")
     if "Driver Rate" not in cols:
-        warns.append("Loads tab has no 'Driver Rate' column — driver cost reads $0 and margin is overstated.")
+        warns.append("Loads tab has no Driver Rate column — load cost reads $0 and margin is overstated.")
     elif float(_col(loads, "Driver Rate").fillna(0).abs().sum()) == 0:
-        warns.append("Loads 'Driver Rate' column is entirely empty — driver cost reads $0 and margin is overstated.")
+        warns.append("Loads Driver Rate column is entirely empty — load cost reads $0 and margin is overstated.")
     if not _find_col(loads, OFFICE_COL_NEEDLES):
         warns.append("Loads tab has no Office / Invoice As column — the X-Trux vs X-Linx split is unavailable.")
     if not (set(ALVYS_DATE_CANDIDATES) & cols):
@@ -917,13 +1199,16 @@ def compute_dh_trend(alvys_sheets: dict | None) -> dict:
     _status_col = _find_col(loads, ["load status", "status"])
     if _status_col:
         loads = loads[loads[_status_col].astype(str).str.strip().str.lower() != "cancelled"]
-    # Match PBI's monthly view: settled loads only (Driver Rate > 0). Same
-    # filter as compute_alvys / compute_alvys_entities. See compute_alvys.
-    if "Driver Rate" in loads.columns:
-        loads = loads[_col(loads, "Driver Rate").fillna(0) > 0]
+    # Match PBI's monthly view: settled loads only. Same filter as
+    # compute_alvys / compute_alvys_entities — see compute_alvys for rationale.
+    if "Driver Rate" in loads.columns or "Carrier Rate" in loads.columns:
+        loads = loads[_load_cost(loads) > 0]
     office_col = _find_col(loads, OFFICE_COL_NEEDLES)
     if office_col:
         loads = loads[loads[office_col].map(_entity_group) == "X-Trux"]
+    # Own-fleet only — drop brokered X-Trux loads (carrier-driven), so the trend
+    # matches the dead-head tile and PBI's In-P&L view.
+    loads = loads[_own_fleet_mask(loads)]
     dates = _dates(loads, ALVYS_DATE_CANDIDATES)
     # Use the billed Loads-sheet columns (same as _alvys_metrics) because the
     # workbook's "Loaded Dispatch Mileage" is one-row-per-trip and double-counts
@@ -1233,33 +1518,106 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
             "combined": (c_labels, c_values)}
 
 
-def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 90) -> dict:
-    """Estimate full-month settled margin per entity.
+def _us_holidays(year: int) -> set:
+    """Observed US major holiday dates for the given year."""
+    import calendar as _cal
+
+    def _nth(yr, mo, wd, n):
+        d = _dt.date(yr, mo, 1)
+        d += _dt.timedelta(days=(wd - d.weekday()) % 7)
+        return d + _dt.timedelta(weeks=n - 1)
+
+    def _last_mon(yr, mo):
+        _, last = _cal.monthrange(yr, mo)
+        d = _dt.date(yr, mo, last)
+        d -= _dt.timedelta(days=d.weekday())  # back to Monday
+        return d
+
+    def _obs(d):
+        if d.weekday() == 5:
+            return d - _dt.timedelta(days=1)
+        if d.weekday() == 6:
+            return d + _dt.timedelta(days=1)
+        return d
+
+    return {
+        _obs(_dt.date(year, 1, 1)),   # New Year's Day
+        _last_mon(year, 5),            # Memorial Day (last Mon in May)
+        _obs(_dt.date(year, 7, 4)),    # Independence Day
+        _nth(year, 9, 0, 1),           # Labor Day (1st Mon in Sep)
+        _nth(year, 11, 3, 4),          # Thanksgiving (4th Thu in Nov)
+        _obs(_dt.date(year, 12, 25)),  # Christmas Day
+    }
+
+
+def _working_days_back(n: int, from_date=None) -> pd.Timestamp:
+    """Date that is exactly n working days (Mon-Fri, excl. US holidays) before from_date."""
+    d = (from_date.date() if hasattr(from_date, "date") else
+         (from_date or _dt.date.today()))
+    holidays = _us_holidays(d.year) | _us_holidays(d.year - 1)
+    count = 0
+    while count < n:
+        d -= _dt.timedelta(days=1)
+        if d.weekday() < 5 and d not in holidays:
+            count += 1
+    return pd.Timestamp(d)
+
+
+def _working_days_in_month(year: int, month: int) -> int:
+    """Count Mon-Fri working days in month, excluding major US holidays."""
+    import calendar as _cal
+    holidays = _us_holidays(year)
+    _, days_in = _cal.monthrange(year, month)
+    return sum(
+        1 for day in range(1, days_in + 1)
+        if _dt.date(year, month, day).weekday() < 5
+        and _dt.date(year, month, day) not in holidays
+    )
+
+
+def _working_days_elapsed(now=None) -> int:
+    """Count Mon-Fri working days from start-of-month through `now`
+    (today inclusive), excluding US holidays. Used to weight MTD
+    margin vs trailing-window margin in the projection blend."""
+    now = now or pd.Timestamp.now()
+    year, month = now.year, now.month
+    holidays = _us_holidays(year)
+    return sum(
+        1 for day in range(1, now.day + 1)
+        if _dt.date(year, month, day).weekday() < 5
+        and _dt.date(year, month, day) not in holidays
+    )
+
+
+def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int = 80,
+                                alvys_entities: dict | None = None) -> dict:
+    """Estimate full-month settled margin per entity using a working-day run-rate.
 
     Formula per entity:
-        days_remaining    = days_in_month - day_of_month
-        daily_run_rate    = trailing_{days}_revenue / {days}
-        projected_revenue = booked MTD revenue + daily_run_rate * days_remaining
-        projected_margin  = projected_revenue * trailing_{days}_margin_pct
+        trail_start           = date that is `days` working days before today
+        daily_run_rate        = trailing_revenue_over_{days}_wd / {days}
+        working_days_in_month = Mon-Fri days in current month excl. US holidays
+        projected_revenue     = daily_run_rate * working_days_in_month
+        margin_pct            = MTD margin % (current month's actual)
+        projected_margin      = projected_revenue * margin_pct
 
-    The projection is "actuals booked so far + the recent daily pace applied to
-    the rest of the month", which replaces the older naive month-pace
-    extrapolation (booked * days_in_month / day_of_month). That naive form
-    multiplied a single day's bookings by ~30 on day 1 and swung wildly early
-    in the month; the run-rate form is anchored to the trailing daily revenue,
-    so early-month estimates track reality. On the last day days_remaining is 0
-    (and under month-rollover dom is forced to dim), so it collapses to pure
-    actuals — the settled-margin floor below still applies. It is exactly the
-    elapsed-fraction blend of month-pace and trailing run-rate.
+    Why MTD margin (not trailing): the trailing 80-working-day window
+    anchors on ~4 months of history. When recent rate cuts, customer
+    mix shifts, or accessorial changes push current margin below the
+    trailing average, the projection runs high vs reality. Using the
+    current month's actual margin % keeps the projection tracking
+    today's economics. The trailing window is still used for the
+    daily REVENUE run-rate (smoother than MTD revenue early in the
+    month) but not for the margin %.
 
-    Booked MTD revenue = all non-cancelled loads with Scheduled Pickup in the
-    current month — includes loads that haven't yet had driver pay entered, so
-    the forward estimate captures activity the settled-only MTD tile excludes.
+    Trailing margin % is still surfaced on the result dict
+    (`trailing_margin_pct`) for context — the brief subtitle shows
+    "MTD X% (trail Y%)" so the reader can see the historical
+    benchmark alongside what's actually being applied.
 
-    Trailing margin % = settled loads only (Driver Rate > 0), non-cancelled,
-    Scheduled Pickup within the last ``days`` days. Combined = X-Trux + X-Linx,
-    using the combined trailing revenue/cost (revenue-weighted blend), not a
-    simple average of the per-entity rates.
+    Working days exclude weekends and six US federal holidays. The
+    floor below ensures the estimate never reads below already-settled
+    margin (a bad month shouldn't project below what's already booked).
     """
     if not sheets:
         return {}
@@ -1276,92 +1634,163 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
                      if "Load Status" in loads.columns else pd.Series(True, index=loads.index))
 
     now = pd.Timestamp.now()
-    dim, dom = now.days_in_month, now.day
-    factor = (dim / dom) if dom else None
 
-    mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
-    # Month-rollover resilience: on day 1-3 with no revenue-bearing loads yet,
-    # the "EST. MARGIN" tile is meaningless (nothing to project from). Pivot
-    # to last completed month until the first revenue load lands.
-    _mtd_rev = _col_any(loads[mtd_mask], ["Customer Revenue", "Revenue"]).fillna(0)
-    mtd_revenue_loads = int((_mtd_rev > 0).sum())
-    rollover, lm_start, lm_end, mtd_label = _rollover_state(mtd_revenue_loads)
-    if rollover:
-        mtd_mask = (dates >= lm_start) & (dates <= lm_end) & not_cancelled
-        dim = (lm_end.day)   # last completed month had this many days
-        dom = dim            # treat it as "complete" so days_remaining = 0
-        factor = 1.0
-    # Days left in the (current or rolled-over) month — the run-rate projection
-    # fills these remaining days at the recent daily pace. Under rollover dom
-    # was forced to dim, so this is 0 and the projection equals booked actuals.
-    days_remaining = max(dim - dom, 0)
-    # Settled MTD mask: this month (or last month under rollover), non-cancelled,
-    # with driver rate entered. Used to floor the projection at actual settled
-    # margin — at month-end (or any time this month's actual margin% exceeds
-    # the t90 blend) the estimate should never read below what we've actually
-    # earned.
-    settled_mtd_mask = mtd_mask.copy()
-    if "Driver Rate" in loads.columns:
-        settled_mtd_mask = settled_mtd_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
-    trail_start = now - pd.Timedelta(days=days)
-    trail_mask = (dates >= trail_start) & (dates < now) & not_cancelled
-    if "Driver Rate" in loads.columns:
-        trail_mask = trail_mask & (_col(loads, "Driver Rate").fillna(0) > 0)
+    # Trailing window: last `days` working days of non-cancelled loads.
+    # The cost-source filter is applied per-entity below, NOT here, so
+    # X-Trux uses a Driver-Rate-only filter (matching its Driver-Rate-only
+    # cost source) and X-Linx uses a Driver + Carrier Rate filter. Doing
+    # the filter globally with _load_cost (Driver + Carrier) let brokered
+    # XFreight loads (Carrier Rate > 0, Driver Rate = 0) pass into the
+    # X-Trux trailing slice — their revenue inflated t_rev while their
+    # $0 contribution to t_cost made X-Trux margin look ~10pp too high.
+    trail_mask = (dates >= _working_days_back(days, now)) & (dates < now) & not_cancelled
 
-    out: dict = {"days_in_month": dim, "day_of_month": dom, "trailing_days": days}
-    combined_booked = combined_t_rev = combined_t_cost = 0.0
+    # Working days in the current month — the projection multiplier
+    wdim = _working_days_in_month(now.year, now.month)
+
+    # Settled MTD floor: never project below what's already earned this month.
+    # Same per-entity-cost-filter pattern as the trailing window.
+    settled_mtd_mask = (dates >= _windows()["mtd"]) & not_cancelled
+
+    # Diagnostic only — kept for log context. Margin % is taken
+    # straight from MTD (see docstring).
+    wd_elapsed = _working_days_elapsed(now)
+
+    out: dict = {"working_days_in_month": wdim, "trailing_days": days,
+                 "wd_elapsed": wd_elapsed}
+    combined_t_rev = combined_t_cost = 0.0
+    combined_s_rev = combined_s_cost = 0.0
     combined_settled_margin = 0.0
+
+    dr_col = "Driver Rate" if "Driver Rate" in loads.columns else None
+
+    # Per-entity cost-source masks (used to filter both the trailing window
+    # and the MTD-settled slice). Each entity's filter MUST match the cost
+    # source used below: X-Trux costs from Driver Rate only → filter to
+    # Driver Rate > 0. X-Linx costs from Driver + Carrier Rate → filter to
+    # _load_cost > 0. Using the wrong filter lets brokered/un-costed loads
+    # inflate the revenue side without contributing to cost.
+    dr_series = _col(loads, "Driver Rate").fillna(0)
+    cr_series = _col(loads, "Carrier Rate").fillna(0)
+    cost_filter_by_ent = {
+        "X-Trux": dr_series > 0,
+        "X-Linx": _load_cost(loads) > 0,
+    }
+
+    # Diagnostic: identify X-Trux loads excluded by the Driver-Rate-only
+    # filter (these are the brokered XFreight loads that previously
+    # inflated X-Trux trailing margin). Log the load numbers so the
+    # user can verify which specific loads the fix is catching.
+    try:
+        loadno_col = "Load #" if "Load #" in loads.columns else _find_col(loads, ["load #", "load number"])
+        if loadno_col:
+            xtrux_brokered_mask = (
+                (groups_all == "X-Trux")
+                & trail_mask
+                & (dr_series <= 0)
+                & (cr_series > 0)
+            )
+            brokered = loads[xtrux_brokered_mask]
+            if not brokered.empty:
+                rev = _col_any(brokered, ["Customer Revenue", "Revenue"]).fillna(0)
+                excluded_rev = float(rev.sum())
+                excluded_carrier = float(_col(brokered, "Carrier Rate").fillna(0).sum())
+                sample = brokered[loadno_col].astype(str).str.strip().head(15).tolist()
+                log.info("compute_margin_projection: excluded %d brokered XFreight loads "
+                         "from X-Trux trailing window (rev $%s, carrier rate $%s). "
+                         "Sample loads: %s",
+                         len(brokered), f"{excluded_rev:,.0f}",
+                         f"{excluded_carrier:,.0f}", ", ".join(sample))
+    except Exception as exc:
+        log.debug("brokered-XFreight diag skipped: %s", exc)
 
     for ent in ENTITY_ORDER:
         ent_mask = groups_all == ent
-        booked = float(_col_any(loads[mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        t_rev = float(_col_any(loads[trail_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        t_cost = float(_col(loads[trail_mask & ent_mask], "Driver Rate").fillna(0).sum())
-        # Actual settled MTD margin for this entity — used as a floor on the
-        # forward estimate so it never reports below what's already earned.
-        s_rev = float(_col_any(loads[settled_mtd_mask & ent_mask], ["Customer Revenue", "Revenue"]).sum())
-        s_cost = float(_col(loads[settled_mtd_mask & ent_mask], "Driver Rate").fillna(0).sum())
-        settled_margin = s_rev - s_cost
-        m_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
-        daily_run_rate = (t_rev / days) if days else 0.0
-        proj_rev = booked + daily_run_rate * days_remaining
-        proj_rev = proj_rev if proj_rev > 0 else None
-        t90_margin = (proj_rev * m_pct) if (proj_rev and m_pct is not None) else None
-        # Floor at actual settled — handles the end-of-month case (factor=1.0)
-        # where t90 underestimates a hot-running month, and is also correct
-        # mid-month since you can't project less than you've already booked.
-        if t90_margin is not None and settled_margin > t90_margin:
-            proj_margin = settled_margin
+        ent_cost_filter = cost_filter_by_ent.get(ent, pd.Series(True, index=loads.index))
+        trail_sub = loads[trail_mask & ent_mask & ent_cost_filter]
+        settled_sub = loads[settled_mtd_mask & ent_mask & ent_cost_filter]
+        t_rev = float(_col_any(trail_sub, ["Customer Revenue", "Revenue"]).sum())
+        s_rev = float(_col_any(settled_sub, ["Customer Revenue", "Revenue"]).sum())
+        if ent == "X-Trux":
+            t_cost = float(_col(trail_sub, "Driver Rate").fillna(0).sum()) if dr_col else 0.0
+            s_cost = float(_col(settled_sub, "Driver Rate").fillna(0).sum()) if dr_col else 0.0
         else:
-            proj_margin = t90_margin
+            t_cost = float(_load_cost(trail_sub).sum())
+            s_cost = float(_load_cost(settled_sub).sum())
+        settled_margin = s_rev - s_cost
+        trail_pct = ((t_rev - t_cost) / t_rev) if t_rev else None
+        # CRITICAL: MTD margin % MUST come from alvys_entities so the
+        # projection matches the page-1 entity table exactly. Computing
+        # it locally here gave a different number (49.9% vs the entity
+        # table's 35.7% for X-Trux) because the entity table uses the
+        # Pipeline Trips path with the open-trip-drop filter, while a
+        # local calc off the Master Loads sheet doesn't. Fall back to
+        # the local calc only if the entities dict wasn't passed.
+        mtd_pct = None
+        if alvys_entities and ent in alvys_entities:
+            mtd_pct = alvys_entities[ent].get("margin_pct")
+        if mtd_pct is None:
+            mtd_pct = ((s_rev - s_cost) / s_rev) if s_rev else None
+        # MTD margin % drives the projection (matches today's economics).
+        # Fall back to trailing only if MTD has zero revenue (very start
+        # of the month).
+        applied_pct = mtd_pct if mtd_pct is not None else trail_pct
+        daily_run_rate = (t_rev / days) if days else 0.0
+        proj_rev = (daily_run_rate * wdim) if daily_run_rate else None
+        proj_margin_t = (proj_rev * applied_pct) if (proj_rev and applied_pct is not None) else None
+        proj_margin = (settled_margin
+                       if (proj_margin_t is not None and settled_margin > proj_margin_t)
+                       else proj_margin_t)
         out[ent] = {
-            "booked_mtd": booked or None,
             "settled_mtd_margin": settled_margin or None,
-            "trailing_margin_pct": m_pct,
+            "trailing_margin_pct": trail_pct,
+            "mtd_margin_pct": mtd_pct,
+            "applied_margin_pct": applied_pct,
             "projected_revenue": proj_rev,
             "projected_margin": proj_margin,
         }
-        combined_booked += booked
         combined_t_rev += t_rev
         combined_t_cost += t_cost
+        combined_s_rev += s_rev
+        combined_s_cost += s_cost
         combined_settled_margin += settled_margin
 
-    c_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
-    c_daily_run_rate = (combined_t_rev / days) if days else 0.0
-    c_proj_rev = combined_booked + c_daily_run_rate * days_remaining
-    c_proj_rev = c_proj_rev if c_proj_rev > 0 else None
-    _c_t90 = (c_proj_rev * c_pct) if (c_proj_rev and c_pct is not None) else None
-    c_proj_margin = (_c_t90 if (_c_t90 is not None and combined_settled_margin <= _c_t90)
-                     else (combined_settled_margin or _c_t90))
+    c_trail_pct = ((combined_t_rev - combined_t_cost) / combined_t_rev) if combined_t_rev else None
+    # Combined MTD margin from the entity table (sum of per-entity
+    # revenue/cost) — keeps the projection's MTD line in sync with the
+    # page-1 Total row.
+    c_mtd_pct = None
+    if alvys_entities:
+        _e_rev = sum(float(alvys_entities.get(e, {}).get("revenue") or 0) for e in ENTITY_ORDER)
+        _e_cost = sum(float(alvys_entities.get(e, {}).get("cost") or 0) for e in ENTITY_ORDER)
+        if _e_rev > 0:
+            c_mtd_pct = (_e_rev - _e_cost) / _e_rev
+    if c_mtd_pct is None:
+        c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
+    c_applied = c_mtd_pct if c_mtd_pct is not None else c_trail_pct
+    c_daily = (combined_t_rev / days) if days else 0.0
+    c_proj_rev = (c_daily * wdim) if c_daily else None
+    _c_t = (c_proj_rev * c_applied) if (c_proj_rev and c_applied is not None) else None
+    c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
+                     else (combined_settled_margin or _c_t))
     out["combined"] = {
-        "booked_mtd": combined_booked or None,
         "settled_mtd_margin": combined_settled_margin or None,
-        "trailing_margin_pct": c_pct,
+        "trailing_margin_pct": c_trail_pct,
+        "mtd_margin_pct": c_mtd_pct,
+        "applied_margin_pct": c_applied,
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
-    out["rollover"] = rollover
-    out["mtd_label"] = mtd_label
+    log.info("compute_margin_projection: applying MTD margin %% to projection "
+             "(was 80wd blend); wd %d/%d. "
+             "X-Trux: MTD %s, trail %s. X-Linx: MTD %s, trail %s. "
+             "Combined: MTD %s, trail %s.",
+             wd_elapsed, wdim,
+             f"{out['X-Trux'].get('mtd_margin_pct') or 0:.1%}",
+             f"{out['X-Trux'].get('trailing_margin_pct') or 0:.1%}",
+             f"{out['X-Linx'].get('mtd_margin_pct') or 0:.1%}",
+             f"{out['X-Linx'].get('trailing_margin_pct') or 0:.1%}",
+             f"{c_mtd_pct or 0:.1%}", f"{c_trail_pct or 0:.1%}")
     return out
 
 
@@ -1421,16 +1850,39 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         overhead_companies = ([c.strip() for c in env_co.split(",") if c.strip()]
                               if env_co else list(RPM_GOAL_OVERHEAD_COMPANIES))
 
-    # X-Trux asset fleet only (fold XFreight in, drop X-Linx brokerage and cancellations).
+    # X-Trux asset fleet: includes X-Trux Inc + XFreight for revenue/mileage
+    # reporting, but driver pay is scoped to X-Trux Inc owner-ops only.
+    # XFreight drivers may have a different pay structure; mixing them into the
+    # pay average pulls it below the X-Trux O/O contract rate.
     sub = loads.copy()
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
     sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
     if sub.empty:
         return None
+    # Owner-op pay uses X-Trux Inc loads only (all X-Trux O/Os on same contract rate)
+    xtrux_only = sub[sub[office_col].astype(str).str.upper().str.contains("TRUX")]
+    # Flag loads brokered out to a carrier so the driver-pay/mi reflects only loads
+    # actually DRIVEN BY an X-Trux driver. A brokered load carries a placeholder
+    # Driver Rate (the real cost is the Carrier Rate), so its big mileage with tiny
+    # driver pay would drag the blended $/mi below the contract floor. Same hold-out
+    # as the entity P&L: Corrected Margin % ((Revenue - Driver Rate)/Revenue) >= the
+    # threshold marks a brokered/under-costed load. Excluded from the pay window
+    # (numerator and denominator) below — but NOT from YTD miles, since a genuinely
+    # unsettled own-driver load (pay pending) still operated those truck miles.
+    # (Lifts the 10d blend from ~$1.72 to ~$1.81/mi — above the floor.)
+    _xo_rev = _col_any(xtrux_only, ["Customer Revenue", "Revenue"]).fillna(0)
+    _xo_dr = _col(xtrux_only, "Driver Rate").fillna(0)
+    _xo_margin = pd.Series(0.0, index=xtrux_only.index)
+    _xo_pos = _xo_rev > 0
+    _xo_margin[_xo_pos] = (_xo_rev[_xo_pos] - _xo_dr[_xo_pos]) / _xo_rev[_xo_pos]
+    _xo_holdout = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
+    brokered_mask = _xo_pos & (_xo_margin >= _xo_holdout)
     dates = _dates(sub, ALVYS_DATE_CANDIDATES)
-    pay = _col(sub, "Driver Rate").fillna(0)
+    dates_xt = _dates(xtrux_only, ALVYS_DATE_CANDIDATES)
+    pay = _col(xtrux_only, "Driver Rate").fillna(0)
     miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
+    miles_xt = _col_any(xtrux_only, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
 
     now = pd.Timestamp.now()
@@ -1444,29 +1896,47 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     # Try the configured window first, then widen through the fallback windows until
     # there are enough settled loads + miles; if none qualify, use the widest as a
     # best-effort read and flag it (pay_window_fallback) so the brief can warn.
+    # Pay window uses X-Trux Inc driver loads only (brokered loads excluded so the
+    # blended driver pay reflects actual X-Trux drivers); fallback thresholds check
+    # those miles.
     def _window_mask(days):
-        return (dates >= (now.normalize() - pd.Timedelta(days=days))) & (pay > 0)
+        return ((dates_xt >= (now.normalize() - pd.Timedelta(days=days)))
+                & (pay > 0) & (~brokered_mask))
+    # Revenue/actual-RPM uses X-Trux Inc only to match the pay-window scope
+    def _rev_mask(days):
+        return dates_xt >= (now.normalize() - pd.Timedelta(days=days))
     candidate_windows = [pay_window_days] + [w for w in RPM_GOAL_FALLBACK_WINDOWS if w > pay_window_days]
     pay_window_used, recent, pay_window_fallback = pay_window_days, _window_mask(pay_window_days), False
     for w in candidate_windows:
         m = _window_mask(w)
-        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
+        if int(m.sum()) >= RPM_GOAL_MIN_SETTLED_LOADS and float(miles_xt[m].sum()) >= RPM_GOAL_MIN_WINDOW_MILES:
             pay_window_used, recent = w, m
             pay_window_fallback = (w != pay_window_days)
             break
     else:
-        # Nothing met the threshold — widen to the largest window we tried.
         pay_window_used = candidate_windows[-1]
         recent = _window_mask(pay_window_used)
         pay_window_fallback = True
+    rev_recent = _rev_mask(pay_window_used)
+    rev_xt = _col_any(xtrux_only, ["Customer Revenue", "Revenue"]).fillna(0)
     pay_loads = int(recent.sum())
-    pay_miles = float(miles[recent].sum())
-    pay_per_mile = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
-    actual_rpm = (float(rev[recent].sum()) / pay_miles) if pay_miles else None
+    pay_miles = float(miles_xt[recent].sum())
+    pay_per_mile_raw = (float(pay[recent].sum()) / pay_miles) if pay_miles else None
+    rev_miles = float(miles_xt[rev_recent].sum())
+    actual_rpm = (float(rev_xt[rev_recent].sum()) / rev_miles) if rev_miles else None
 
-    # Fiscal-YTD X-Trux miles, to match QuickBooks' "This Fiscal Year" P&L window.
-    ytd = dates >= now.normalize().replace(month=1, day=1)
-    ytd_miles = float(miles[ytd].sum())
+    # Apply driver-pay floor (current O/O contract rate). The blended average
+    # can land below the actual rate when recent loads skew toward deadhead or
+    # high-mileage runs. The raw value is preserved for logging/display.
+    driver_pay_floor = _env_float("RPM_GOAL_DRIVER_PAY_FLOOR", RPM_GOAL_DRIVER_PAY_FLOOR)
+    pay_per_mile_floored = (driver_pay_floor > 0
+                            and pay_per_mile_raw is not None
+                            and pay_per_mile_raw < driver_pay_floor)
+    pay_per_mile = (driver_pay_floor if pay_per_mile_floored else pay_per_mile_raw)
+
+    # Fiscal-YTD X-Trux Inc miles for the overhead/mi denominator.
+    ytd_xt = dates_xt >= now.normalize().replace(month=1, day=1)
+    ytd_miles = float(miles_xt[ytd_xt].sum())
 
     # Shared office overhead from QuickBooks (X-Trux + X-Linx Total Expenses).
     # The allocation factor is the fraction of that combined pool the X-Trux miles
@@ -1511,6 +1981,9 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
 
     return {
         "pay_per_mile": pay_per_mile,
+        "pay_per_mile_raw": pay_per_mile_raw,
+        "pay_per_mile_floored": pay_per_mile_floored,
+        "driver_pay_floor": driver_pay_floor or None,
         "overhead_per_mile": overhead_per_mile,
         "overhead_per_mile_live": overhead_per_mile_live,
         "overhead_pin": overhead_pin or None,
@@ -1549,6 +2022,13 @@ def _rpm_goal_health(goal: dict | None) -> list[str]:
             f"Rate-per-mile: only {goal.get('pay_loads', 0)} settled X-Trux load(s) in the "
             f"last {goal.get('pay_window_days')}d &mdash; widened the pay window to "
             f"{goal.get('pay_window_used')}d for a stable read.")
+    if goal.get("pay_per_mile_floored"):
+        _raw = goal.get("pay_per_mile_raw")
+        _floor = goal.get("driver_pay_floor")
+        out.append(
+            f"Rate-per-mile: 10d blended driver pay {rpm(_raw)}/mi is below the "
+            f"{rpm(_floor)}/mi contract floor &mdash; using floor for costing. "
+            f"Check Alvys loads for low-rate or high-deadhead runs in the window.")
     if goal.get("cost_plausible") is False:
         lo, hi = RPM_GOAL_PLAUSIBLE_BAND
         out.append(
@@ -1588,6 +2068,9 @@ def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: d
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.lower() != "cancelled"]
     sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    # Mirror compute_rpm_goal: X-Trux Inc only (excludes XFreight) so the
+    # trend's monthly cost aligns with the point-in-time cost/goal figures.
+    sub = sub[sub[office_col].astype(str).str.upper().str.contains("TRUX")]
     if sub.empty:
         return empty
     dates = _dates(sub, ALVYS_DATE_CANDIDATES)
@@ -1595,19 +2078,32 @@ def compute_rpm_goal_trend(alvys_sheets: dict[str, pd.DataFrame] | None, goal: d
     miles = _col_any(sub, ["Total Dispatch Mileage", "Dispatch Mileage", "Total Miles", "Total Mileage"]).fillna(0)
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
     settled = pay > 0
+    # Cost (driver-pay) leg excludes loads brokered out to a carrier, mirroring
+    # compute_rpm_goal — a brokered load's placeholder Driver Rate isn't X-Trux
+    # driver pay, so it would understate cost/mi. Same hold-out as the entity P&L
+    # (Corrected Margin % >= threshold). The revenue (actual) leg keeps all settled
+    # X-Trux Inc loads, so cards and chart stay aligned.
+    _pos_t = rev > 0
+    _margin_t = pd.Series(0.0, index=sub.index)
+    _margin_t[_pos_t] = (rev[_pos_t] - pay[_pos_t]) / rev[_pos_t]
+    _holdout_t = _env_float("ALVYS_XTRUX_HOLDOUT_MARGIN", ALVYS_XTRUX_HOLDOUT_MARGIN)
+    settled_pay = settled & ~(_pos_t & (_margin_t >= _holdout_t))
 
     labels, cost_s, goal_s, actual_s = [], [], [], []
     months = _last_6_months()
     for i, (yy, mm) in enumerate(months):
-        m = settled & (dates.dt.year == yy) & (dates.dt.month == mm)
+        in_month = (dates.dt.year == yy) & (dates.dt.month == mm)
+        m = settled & in_month            # actual: all settled X-Trux Inc loads
+        mp = settled_pay & in_month       # cost: X-Trux driver loads only
         mi = float(miles[m].sum())
+        mi_pay = float(miles[mp].sum())
         lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
         if i == len(months) - 1:
             lab += "*"
         labels.append(lab)
         actual_s.append((float(rev[m].sum()) / mi) if mi else 0.0)
-        if mi and overhead is not None:
-            cpm = float(pay[m].sum()) / mi + overhead
+        if mi_pay and overhead is not None:
+            cpm = float(pay[mp].sum()) / mi_pay + overhead
             cost_s.append(cpm)
             goal_s.append(cpm / target_or if target_or else cpm)
         else:
@@ -1747,13 +2243,114 @@ def compute_qb_ar_detail(df: pd.DataFrame) -> dict:
                 continue
             by_customer.setdefault(_norm_name(name), {"name": name, "amount": 0.0})["amount"] += float(amt)
             open_invoices.append({"invoice": str(r.get(num_col, "")) if num_col else "",
-                                  "customer": name, "amount": float(amt)})
+                                  "customer": name, "amount": float(amt),
+                                  # Include due + date so realign_alvys_aging_to_qb
+                                  # can pick the QB-side due date for CURRENT QB
+                                  # invoices too (qb_ar.rows only has 31+ past due).
+                                  "due": str(r.get(due_col, "")) if due_col else "",
+                                  "date": str(r.get(date_col, "")) if date_col else ""})
 
     return {"rows": rows, "rows_past_due": rows_past_due,
             "totals": totals, "total31": sum(totals.values()),
             "total_past_due": past_due_total,
             "total_ar": float(total_ar) if _isnum(total_ar) else None,
             "by_customer": by_customer, "open_invoices": open_invoices}
+
+
+def realign_alvys_aging_to_qb(alvys_ar: dict | None, qb_ar: dict | None) -> dict | None:
+    """Re-age every matched Alvys open invoice using the QB due date.
+
+    Alvys ages off its own `Customer Due Date` field (may be invoice date
+    + 15d depending on the load) while QuickBooks ages off whatever the
+    AP team typed into the invoice. When the two disagree, Alvys often
+    flags loads as past due before QB does — and the page 1 AR PAST DUE
+    tile's Alvys total includes that early-aging while page 7's
+    QB-keyed table can't show it. The brief looked like there was a
+    \$9K unexplained gap that no drilldown surfaced.
+
+    Fix: QB is the AR system of record. For any Alvys open invoice that
+    matches a QB invoice (by invoice number or Load # via _norm_inv),
+    overwrite `days` with the QB-derived aging. Un-matched (orphan)
+    Alvys invoices keep their Alvys aging — that's the true "Alvys
+    saw it before QB" set since there's no QB authority to defer to.
+
+    Returns a new dict shaped exactly like compute_alvys_ar's output so
+    callers can swap. Mutates nothing.
+    """
+    if not alvys_ar or not qb_ar:
+        return alvys_ar
+    open_inv = alvys_ar.get("open_invoices") or []
+    if not open_inv:
+        return alvys_ar
+    today = pd.Timestamp.now().normalize()
+    # Build key -> QB due date (Timestamp). Use open_invoices (every
+    # open QB invoice, all aging buckets) NOT qb_ar.rows (which only
+    # contains 31+ past-due). The bug we're closing is precisely
+    # Alvys-past-due / QB-CURRENT invoices — they live in the current
+    # bucket on the QB side and were invisible to the old map.
+    qb_due_by_key: dict[str, pd.Timestamp] = {}
+    for src in ((qb_ar.get("open_invoices") or []),
+                (qb_ar.get("rows") or [])):
+        for r in src:
+            k = _norm_inv(r.get("invoice"))
+            if not k or k in qb_due_by_key:
+                continue
+            due_raw = r.get("due") or r.get("date")
+            if not due_raw:
+                continue
+            ts = pd.to_datetime(due_raw, errors="coerce")
+            if pd.notna(ts):
+                qb_due_by_key[k] = ts.normalize()
+
+    if not qb_due_by_key:
+        return alvys_ar
+
+    realigned: list[dict] = []
+    n_aligned = 0
+    for a in open_inv:
+        a2 = dict(a)
+        for field in ("invoice", "load"):
+            k = _norm_inv(a.get(field))
+            if k and k in qb_due_by_key:
+                qb_days = int((today - qb_due_by_key[k]).days)
+                a2["days"] = max(0, qb_days)
+                a2["aging_source"] = "qb"
+                n_aligned += 1
+                break
+        else:
+            a2.setdefault("aging_source", "alvys")
+        realigned.append(a2)
+
+    # Recompute bucket totals from realigned `days`.
+    current = d1_30 = d31_60 = d61_90 = d91plus = 0.0
+    for a in realigned:
+        days = int(a.get("days") or 0)
+        amt = float(a.get("amount") or 0)
+        if days <= 0:
+            current += amt
+        elif days <= 30:
+            d1_30 += amt
+        elif days <= 60:
+            d31_60 += amt
+        elif days <= 90:
+            d61_90 += amt
+        else:
+            d91plus += amt
+
+    out = dict(alvys_ar)
+    out["open_invoices"] = realigned
+    out["current"] = current
+    out["d1_30"] = d1_30
+    out["d31_60"] = d31_60
+    out["d61_90"] = d61_90
+    out["d91plus"] = d91plus
+    out["overdue"] = d1_30 + d31_60 + d61_90 + d91plus
+    out["realigned"] = True
+    out["realigned_count"] = n_aligned
+    out["realigned_total"] = len(realigned)
+    log.info("realign_alvys_aging_to_qb: aligned %d of %d Alvys invoices to QB due dates "
+             "(new overdue: $%.2f)", n_aligned, len(realigned), out["overdue"])
+    return out
 
 
 def compute_ar_reconciliation(qb_ar: dict | None, alvys_ar: dict | None) -> dict:
@@ -3193,12 +3790,17 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     if not sheets:
         return None
     now = now or pd.Timestamp.now()
-    drivers_df = viol_df = None
+    drivers_df = viol_df = invalid_df = None
     for name, df in sheets.items():
         if df is None or df.empty:
             continue
         ln = str(name).lower()
-        if viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
+        # "Invalid Licenses" must be claimed before the drivers-sheet check
+        # below — its name contains "license" and would be mistaken for the
+        # driver roster otherwise.
+        if invalid_df is None and ("invalid" in ln or "disqualif" in ln):
+            invalid_df = df
+        elif viol_df is None and any(k in ln for k in ("violation", "mvr", "alert", "conviction")):
             viol_df = df
         elif drivers_df is None and any(k in ln for k in ("driver", "license", "monitor", "roster", "risk")):
             drivers_df = df
@@ -3206,6 +3808,44 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         drivers_df = next((df for df in sheets.values() if df is not None and not df.empty), None)
     if drivers_df is None or drivers_df.empty:
         return None
+
+    # --- Invalid License Report (DISQUALIFIED / SUSPENDED etc.) ----------
+    # Parsed first so the driver loop below can re-stamp matching rosters
+    # rows — the Risk Index export keeps reporting VALID after SambaSafety
+    # has flagged the driver, so the invalid report wins.
+    def _norm_lic(num) -> str:
+        return re.sub(r"[^A-Z0-9]", "", str(num or "").upper()).lstrip("0")
+
+    invalid_licenses = []
+    if invalid_df is not None and not invalid_df.empty:
+        iname_c = _find_col(invalid_df, ["driver name", "driver", "name"])
+        istat_c = _find_col(invalid_df, ["license status", "status"])
+        iact_c = _find_col(invalid_df, ["latest action", "action"])
+        iactd_c = _find_col(invalid_df, ["latest action date", "action date"])
+        imvrd_c = _find_col(invalid_df, ["mvr date"])
+        ilic_c = _find_col(invalid_df, ["license number", "license #"])
+        istate_c = _find_col(invalid_df, ["license state", "state"])
+        itype_c = _find_col(invalid_df, ["license type", "type"])
+        iscore_c = _find_col(invalid_df, ["mvr score", "score"])
+        inote_c = _find_col(invalid_df, ["note", "latest note"])
+        for _, r in invalid_df.iterrows():
+            nm = str(r[iname_c]).strip() if iname_c and pd.notna(r[iname_c]) else ""
+            if not nm or nm.lower() == "nan" or _is_excluded_driver(nm):
+                continue
+            invalid_licenses.append({
+                "name": nm,
+                "status": (str(r[istat_c]).strip().upper() if istat_c and pd.notna(r[istat_c]) else "INVALID"),
+                "action": (str(r[iact_c]).strip() if iact_c and pd.notna(r[iact_c]) else ""),
+                "action_date": (pd.to_datetime(r[iactd_c], errors="coerce") if iactd_c else pd.NaT),
+                "mvr_date": (pd.to_datetime(r[imvrd_c], errors="coerce") if imvrd_c else pd.NaT),
+                "license": (str(r[ilic_c]).strip() if ilic_c and pd.notna(r[ilic_c]) else ""),
+                "state": (str(r[istate_c]).strip() if istate_c and pd.notna(r[istate_c]) else ""),
+                "type": (str(r[itype_c]).strip() if itype_c and pd.notna(r[itype_c]) else ""),
+                "score": (pd.to_numeric(r[iscore_c], errors="coerce") if iscore_c else float("nan")),
+                "note": (str(r[inote_c]).strip() if inote_c and pd.notna(r[inote_c]) else ""),
+            })
+    invalid_by_lic = {_norm_lic(d["license"]): d for d in invalid_licenses if _norm_lic(d["license"])}
+    invalid_by_name = {d["name"].lower(): d for d in invalid_licenses}
 
     name_c = _find_col(drivers_df, ["driver name", "driver", "employee", "name"])
     status_c = _find_col(drivers_df, ["license status", "licensestatus", "cdl status", "status"])
@@ -3230,7 +3870,13 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         lic = (str(r[lic_c]).strip() if lic_c and pd.notna(r[lic_c]) else "")
         score = pd.to_numeric(r[score_c], errors="coerce") if score_c else float("nan")
         cat = (str(r[cat_c]).strip() if cat_c and pd.notna(r[cat_c]) else "")
-        ok = status.lower() in _LICENSE_OK
+        # Invalid License Report overrides the roster status (the Risk
+        # Index export lags — it can still say VALID after a DISQUALIFIED
+        # action). Belt-and-suspenders with the combine-time overlay.
+        inv = invalid_by_lic.get(_norm_lic(lic)) or invalid_by_name.get(name.lower())
+        if inv:
+            status = inv["status"]
+        ok = status.lower() in _LICENSE_OK and not inv
         days_to_exp = int((exp.normalize() - now.normalize()).days) if pd.notna(exp) else None
         expiring = days_to_exp is not None and 0 <= days_to_exp <= LICENSE_EXPIRY_WARN_DAYS
         expired_by_date = days_to_exp is not None and days_to_exp < 0
@@ -3242,6 +3888,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
             "license": lic, "exp": exp, "days_to_exp": days_to_exp,
             "score": float(score) if pd.notna(score) else None, "category": cat,
             "ok": ok, "expiring": expiring, "expired": (not ok) or expired_by_date, "high": high,
+            "invalid": bool(inv),
         })
 
     license_issues = [d for d in drivers if (not d["ok"]) or d["expiring"]]
@@ -3277,6 +3924,7 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
         "monitored": len(drivers),
         "drivers": drivers,
         "license_issues": license_issues,
+        "invalid_licenses": invalid_licenses,
         "high_risk": high_risk,
         "ranked": ranked,
         "avg_score": (sum(scores) / len(scores)) if scores else None,
@@ -3461,11 +4109,116 @@ def compute_alvys_drivers(sheets, now: pd.Timestamp | None = None) -> dict | Non
     }
 
 
-_EQUIP_WARN_DAYS     = 60   # orange flag when due within 60 days
-_EQUIP_CRITICAL_DAYS = 30   # red flag when due within 30 days
+# Oil-change service interval (miles). Next-oil-due mileage = the odometer
+# logged at the last oil change + this interval. The Alvys maintenance feed
+# does not currently capture the odometer at each oil change, so this stays a
+# tunable constant until that data exists. 25k is a typical OTR semi interval.
+OIL_CHANGE_INTERVAL_MI = 25000
 
 
-def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | None:
+def _samsara_odometer_map(samsara_sheets, now: pd.Timestamp | None = None,
+                          max_age_days: int = 120) -> dict:
+    """Map normalized tractor unit -> (current_miles:int, read_ts) from Samsara.
+
+    Reads VehicleStats' obdOdometerMeters (the OBD odometer; the GPS odometer is
+    unreliable for our fleet — it reports impossible 1M+ mile values on several
+    units). Meters -> miles. Reads older than max_age_days are dropped so a
+    sold/out-of-service truck's stale (e.g. 2-year-old) odometer is never shown
+    as 'current'. Unit names are reduced to their digit run ("X - 40179",
+    "x43195", "X-OOS38166" -> "40179"/"43195"/"38166") to match Alvys unit #s.
+    """
+    if not samsara_sheets:
+        return {}
+    vs = samsara_sheets.get("VehicleStats")
+    if vs is None or getattr(vs, "empty", True):
+        return {}
+    now = now or pd.Timestamp.now()
+    cutoff = now.normalize() - pd.Timedelta(days=max_age_days)
+    odo_col  = next((c for c in vs.columns if c.startswith("obdOdometerMeters") and c.endswith(".value")), None)
+    t_col    = next((c for c in vs.columns if c.startswith("obdOdometerMeters") and c.endswith(".time")),  None)
+    if not odo_col or "name" not in vs.columns:
+        return {}
+    out: dict = {}
+    for _, r in vs.iterrows():
+        unit = re.sub(r"\D", "", str(r.get("name", "")))
+        if not unit:
+            continue
+        meters = pd.to_numeric(r.get(odo_col), errors="coerce")
+        if pd.isna(meters):
+            continue
+        read_ts = None
+        if t_col:
+            read_ts = pd.to_datetime(r.get(t_col), errors="coerce")
+            if pd.notna(read_ts):
+                if getattr(read_ts, "tz", None) is not None:
+                    read_ts = read_ts.tz_localize(None)
+            else:
+                read_ts = None
+        if read_ts is not None and read_ts < cutoff:
+            continue  # stale read -> treat as no current mileage
+        miles = int(round(float(meters) / 1609.344))
+        prev = out.get(unit)
+        if prev is None or (read_ts is not None and (prev[1] is None or read_ts > prev[1])):
+            out[unit] = (miles, read_ts)
+    return out
+
+
+def _alvys_oil_change_map(sheets, now: pd.Timestamp | None = None) -> dict:
+    """Map normalized truck unit -> latest oil-change date from the Alvys
+    Pipeline 'Maintenance' sheet.
+
+    The Trucks sheet's LastOilChangeDate isn't populated by the feed, but the
+    raw Maintenance records are: each carries a RelatedAsset ({AssetNumber,
+    AssetType}), a Category/Description naming the service, and CreatedAt. Keep
+    Truck-asset records whose category or description mentions oil, drop the
+    1970 epoch placeholder dates, and take the most recent per unit.
+    """
+    if not sheets:
+        return {}
+    M = sheets.get("Maintenance")
+    if M is None or getattr(M, "empty", True):
+        return {}
+
+    def _as_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str) and v.strip().startswith("{"):
+            try:
+                return json.loads(v)
+            except Exception:
+                try:
+                    return ast.literal_eval(v)
+                except Exception:
+                    return {}
+        return {}
+
+    out: dict = {}
+    for _, r in M.iterrows():
+        asset = _as_dict(r.get("RelatedAsset"))
+        if str(asset.get("AssetType", "")).lower() not in ("", "truck"):
+            continue  # skip trailer maintenance
+        unit = re.sub(r"\D", "", str(asset.get("AssetNumber", "")))
+        if not unit:
+            continue
+        cat  = str(_as_dict(r.get("Category")).get("Name", "") or "")
+        desc = str(r.get("Description", "") or "")
+        if "oil" not in cat.lower() and "oil" not in desc.lower():
+            continue
+        dt = pd.to_datetime(r.get("CreatedAt"), errors="coerce")
+        if pd.isna(dt):
+            continue
+        if getattr(dt, "tz", None) is not None:
+            dt = dt.tz_localize(None)
+        if dt.year < 2000:        # 1970 epoch placeholder -> not a real date
+            continue
+        prev = out.get(unit)
+        if prev is None or dt > prev:
+            out[unit] = dt
+    return out
+
+
+def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None,
+                            samsara_sheets=None) -> dict | None:
     """Read Trucks and Trailers sheets from Alvys Pipeline.xlsx.
 
     Returns a dict with:
@@ -3483,6 +4236,19 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
     trailers_df = sheets.get("Trailers")
     if (trucks_df is None or trucks_df.empty) and (trailers_df is None or trailers_df.empty):
         return None
+    # Diagnostic: confirm how many rows the scorecard actually sees with
+    # AnnualInspectionDue populated. If this diverges from main.py's
+    # populated count after a fresh refresh, OneDrive is serving a stale
+    # copy of Alvys Pipeline.xlsx and we need to bust the read-side cache.
+    for name, df in (("Trucks", trucks_df), ("Trailers", trailers_df)):
+        if df is None or df.empty:
+            log.info("compute_alvys_equipment: %s sheet empty/missing", name)
+            continue
+        n = len(df)
+        n_annual = int(df["AnnualInspectionDue"].notna().sum()) if "AnnualInspectionDue" in df.columns else 0
+        n_reg = int(df["RegistrationExpires"].notna().sum()) if "RegistrationExpires" in df.columns else 0
+        log.info("compute_alvys_equipment: %s sheet has %d rows, AnnualInspectionDue=%d/%d, RegistrationExpires=%d/%d",
+                 name, n, n_annual, n, n_reg, n)
     now = now or pd.Timestamp.now()
 
     def _days_until(val):
@@ -3570,22 +4336,54 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None) -> dict | N
                 "oil_change_date":  oil_dt,
                 "oil_change_days":  oil_days,
                 "oil_change_miles": oil_mi_int,
+                # Overlaid below for tractors from Samsara / the oil interval.
+                "current_mileage":    None,
+                "current_mileage_ts": None,
+                "next_oil_miles":     None,
+                "next_oil_est":       False,
             })
-        # Soonest urgency first. For trailers, the 120-day company policy fires
-        # before the 365-day federal rule, so sort by policy_days when present
-        # and fall back to annual_days.
+        # Soonest annual inspection first (the 120-day company policy is
+        # tracked in the data but no longer rendered on the page).
         def _urgency(r):
-            pd_v = r.get("policy_days")
             ad_v = r.get("annual_days")
+            pd_v = r.get("policy_days")
             return (
-                pd_v if isinstance(pd_v, int) else 9999,
                 ad_v if isinstance(ad_v, int) else 9999,
+                pd_v if isinstance(pd_v, int) else 9999,
             )
         rows.sort(key=_urgency)
         return rows
 
     tractors = _parse_sheet(trucks_df,   exclude=_TRUCK_EXCLUDE)
     trailers = _parse_sheet(trailers_df, exclude=_TRAILER_EXCLUDE)
+
+    # Current mileage (tractors): overlay the live Samsara OBD odometer, matched
+    # by digit-normalized unit #. Next oil-change-due mileage:
+    #   - REAL basis (preferred): odometer logged at the last oil change +
+    #     OIL_CHANGE_INTERVAL_MI. The Alvys feed does not yet capture the
+    #     odometer at each oil change, so this path is dormant until populated.
+    #   - ESTIMATE (next_oil_est=True): when only the current odometer is known,
+    #     round it UP to the next OIL_CHANGE_INTERVAL_MI boundary. A rough proxy
+    #     (not tied to the actual last service) — rendered with an "est" tag.
+    odo = _samsara_odometer_map(samsara_sheets, now=now)
+    oil_map = _alvys_oil_change_map(sheets, now=now)
+    for r in tractors:
+        key = re.sub(r"\D", "", str(r.get("unit", "")))
+        cm = odo.get(key)
+        if cm:
+            r["current_mileage"], r["current_mileage_ts"] = cm
+        # Real last oil-change date from the Maintenance tab when the Trucks
+        # sheet didn't carry one (it currently never does).
+        if r.get("oil_change_date") is None and oil_map.get(key) is not None:
+            r["oil_change_date"] = oil_map[key]
+        lom = r.get("oil_change_miles")
+        if isinstance(lom, int):
+            r["next_oil_miles"] = lom + OIL_CHANGE_INTERVAL_MI
+            r["next_oil_est"]   = False
+        elif isinstance(r.get("current_mileage"), int):
+            cur = r["current_mileage"]
+            r["next_oil_miles"] = (cur // OIL_CHANGE_INTERVAL_MI + 1) * OIL_CHANGE_INTERVAL_MI
+            r["next_oil_est"]   = True
 
     def _counts(rows, key):
         overdue = sum(1 for r in rows if isinstance(r.get(key), int) and r[key] < 0)
@@ -3645,17 +4443,19 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         return header + pending_note
 
     def _badge(days):
+        # Days stay neutral (normal color) until the inspection is actually past
+        # due. Only an expired/overdue date turns red — no color emphasis on
+        # upcoming dates, however close. Wording is "Needs Insp · Xd past"
+        # (not "OVERDUE Xd") because for company-policy past-due the unit is
+        # flagged for inspection, NOT out of service. See CLAUDE.md core
+        # memory + xfreight-dot-inspection-policy.md for the canonical
+        # 120d company policy vs 365d federal distinction.
         if days is None:
             return f"<span style='color:{MUTE};'>—</span>"
         if days < 0:
             return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
-                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE {abs(days)}d</span>")
-        if days <= _EQUIP_CRITICAL_DAYS:
-            return (f"<span style='background:{BADBG};color:{BAD};font-size:11px;"
-                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
-        if days <= _EQUIP_WARN_DAYS:
-            return (f"<span style='background:{WARNBG};color:{WARN};font-size:11px;"
-                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>{days}d</span>")
+                    f"padding:2px 6px;border-radius:4px;font-weight:700;'>"
+                    f"Needs Insp &middot; {abs(days)}d past</span>")
         return f"<span style='color:{MUTE};font-size:12px;'>{days}d</span>"
 
     def _date_str(ts):
@@ -3672,30 +4472,50 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
                     f"No {kind} records found.</div>")
 
         show_annual  = any(isinstance(r.get("annual_days"), int) for r in rows)
-        show_policy  = any(isinstance(r.get("policy_days"), int) for r in rows)
         show_reg     = any(isinstance(r.get("reg_days"),    int) for r in rows)
         show_mileage = any(isinstance(r.get("last_mileage"), int) for r in rows)
         show_oil     = any(r.get("oil_change_date") is not None
                            or isinstance(r.get("oil_change_miles"), int)
                            for r in rows)
+        show_current  = any(isinstance(r.get("current_mileage"), int) for r in rows)
+        show_next_oil = any(isinstance(r.get("next_oil_miles"),  int) for r in rows)
 
         th = f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>{{t}}</th>"
         head_cols = [th.format(t="Unit")]
         if any(r.get("year") or r.get("make") for r in rows):
             head_cols.append(th.format(t="Year/Make"))
-        if show_policy:
-            head_cols.append(th.format(t="Last DOT Insp"))
-            head_cols.append(th.format(t="120d Policy"))
         if show_annual:
-            head_cols.append(th.format(t="Annual Insp Due"))
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"120 Day Insp Due"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>Company Policy</div></th>"
+            )
             head_cols.append(th.format(t="Days"))
         if show_reg:
             head_cols.append(th.format(t="Reg Expires"))
             head_cols.append(th.format(t="Days"))
+        if show_current:
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"Current Mileage"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>Samsara odometer</div></th>"
+            )
         if show_mileage:
             head_cols.append(th.format(t="Last Mileage"))
         if show_oil:
             head_cols.append(th.format(t="Last Oil Change"))
+        if show_next_oil:
+            head_cols.append(
+                f"<th style='text-align:left;padding:6px 8px;font-size:11px;letter-spacing:.4px;"
+                f"text-transform:uppercase;color:{MUTE};border-bottom:2px solid {LINE};'>"
+                f"Next Oil Due"
+                f"<div style='font-size:9px;text-transform:none;letter-spacing:0;font-weight:400;"
+                f"color:{MUTE};margin-top:1px;'>+{OIL_CHANGE_INTERVAL_MI // 1000}k mi interval</div></th>"
+            )
 
         tbody = ""
         for i, r in enumerate(rows):
@@ -3708,15 +4528,21 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             if any(r.get("year") or r.get("make") for r in rows):
                 ym = " ".join(filter(None, [r.get("year"), r.get("make"), r.get("model")])) or "—"
                 cols_td.append(td.format(v=f"<span style='color:{MUTE};font-size:12px;'>{ym}</span>"))
-            if show_policy:
-                cols_td.append(td.format(v=_date_str(r.get("last_inspection"))))
-                cols_td.append(td.format(v=_badge(r.get("policy_days"))))
             if show_annual:
                 cols_td.append(td.format(v=_date_str(r.get("annual_due"))))
                 cols_td.append(td.format(v=_badge(r.get("annual_days"))))
             if show_reg:
                 cols_td.append(td.format(v=_date_str(r.get("reg_due"))))
                 cols_td.append(td.format(v=_badge(r.get("reg_days"))))
+            if show_current:
+                cm = r.get("current_mileage")
+                ts = r.get("current_mileage_ts")
+                if isinstance(cm, int):
+                    sub = (f"<div style='color:{MUTE};font-size:10px;'>as of {_date_str(ts)}</div>"
+                           if ts is not None else "")
+                    cols_td.append(td.format(v=f"{cm:,}{sub}"))
+                else:
+                    cols_td.append(td.format(v="—"))
             if show_mileage:
                 mi = r.get("last_mileage")
                 cols_td.append(td.format(v=f"{mi:,}" if isinstance(mi, int) else "—"))
@@ -3729,30 +4555,44 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
                 if isinstance(miles, int):
                     parts.append(f"<span style='color:{MUTE};font-size:11px;'>@ {miles:,} mi</span>")
                 cols_td.append(td.format(v=" ".join(parts) if parts else "—"))
+            if show_next_oil:
+                no = r.get("next_oil_miles")
+                if isinstance(no, int):
+                    tag = (f" <span style='color:{MUTE};font-size:10px;font-style:italic;'>est</span>"
+                           if r.get("next_oil_est") else "")
+                    cols_td.append(td.format(v=f"{no:,} mi{tag}"))
+                else:
+                    cols_td.append(td.format(v="—"))
             tbody += f"<tr style='background:{bg};'>{''.join(cols_td)}</tr>"
 
         return (f"<table width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse;'>"
                 f"<thead><tr>{''.join(head_cols)}</tr></thead>"
                 f"<tbody>{tbody}</tbody></table>")
 
-    def _summary_pill(overdue, warn30, warn60, label):
+    def _summary_pill(overdue, warn30, warn60, label, *, overdue_word="need insp"):
         parts = []
         if overdue:
-            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} OVERDUE</span>")
+            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;font-weight:700;margin-right:4px;'>{overdue} {overdue_word}</span>")
         if warn30:
-            parts.append(f"<span style='background:{BADBG};color:{BAD};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn30} within 30d</span>")
+            parts.append(f"<span style='background:#eef2f7;color:{MUTE};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn30} within 30d</span>")
         elif warn60:
-            parts.append(f"<span style='background:{WARNBG};color:{WARN};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
+            parts.append(f"<span style='background:#eef2f7;color:{MUTE};font-size:11px;padding:2px 7px;border-radius:4px;margin-right:4px;'>{warn60} within 60d</span>")
         if not parts:
             parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
 
-    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r,
-                       overdue_p=None, w30_p=None):
-        parts = [_summary_pill(overdue_a, w30_a, w60_a, "Annual inspection (365d federal):")]
-        if overdue_p is not None:
-            parts.append(_summary_pill(overdue_p, w30_p, 0, "DOT inspection (120d policy):"))
-        parts.append(_summary_pill(overdue_r, w30_r, w60_r, "Registration:"))
+    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
+        # The primary inspection pill describes the **120-day company policy**
+        # — that's the threshold XFreight tracks against and what the
+        # `Needs Insp · Xd past` badges measure. The federal 365-day rule
+        # is the legal backstop (out-of-service threshold), not what we
+        # operationally flag against. Reg keeps "OVERDUE" wording — a
+        # past-due registration tag IS a hard problem.
+        parts = [_summary_pill(overdue_a, w30_a, w60_a,
+                                "DOT inspection (120d company policy):",
+                                overdue_word="need insp")]
+        parts.append(_summary_pill(overdue_r, w30_r, w60_r, "Registration:",
+                                    overdue_word="OVERDUE"))
         summary = (f"<div style='padding:10px 0 6px;'>"
                    + "&nbsp;&nbsp;".join(parts)
                    + "</div>")
@@ -3771,15 +4611,18 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             equipment["trailers"], "Trailers",
             equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
             equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
-            overdue_p=equipment.get("trailers_overdue_policy", 0),
-            w30_p=equipment.get("trailers_warn30_policy", 0),
         )
-    sort_note = ("Sort: soonest 120-day company policy first (trailers); soonest annual inspection first (tractors)."
-                 if kind == "trailers"
-                 else "Sort: soonest annual inspection first.")
+    sort_note = "Sort: soonest 120d company-policy date first."
     body += (f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
-             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets, populated from Alvys POST /maintenance/search "
-             f"(Category = DOT/Annual). Red = overdue or &le;30d. Orange = 31&ndash;60d. {sort_note}</div>")
+             f"Source: Alvys Pipeline.xlsx Trucks + Trailers sheets (InspectionExpirationDate / InspectionExpiresAt set "
+             f"per XFreight's 120-day company policy); current mileage (tractors) from the Samsara OBD odometer. "
+             f"<span style='color:{BAD};font-weight:700;'>Red = past 120d company policy</span> &mdash; unit is flagged "
+             f"for inspection and remains in service while scheduling. Federal 365d is the boundary that would actually "
+             f"warrant out-of-service (a unit would have to be 245+ days past company policy to hit federal). "
+             f"All DOT inspections covered by X-Trux Inc. {sort_note} "
+             f"Next Oil Due marked <span style='font-style:italic;'>est</span> is the current odometer rounded up to the next "
+             f"{OIL_CHANGE_INTERVAL_MI // 1000}k mark &mdash; a rough estimate until the odometer at each oil change is logged in Alvys. "
+             f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
@@ -3897,7 +4740,7 @@ def _mwtile(label, v24, v7, vmtd, hk="mute"):
             f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{c('24h', v24, True)}{c('7d', v7)}{c('MTD', vmtd)}</tr></table></div></td>")
 
 
-def _bar_chart(title, months, values, sub="", fmt=str):
+def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False):
     if not months:
         return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;"
                 f"padding:14px;color:{MUTE};font-size:12px;'>{title}: data pending</div></td>")
@@ -3935,10 +4778,59 @@ def _bar_chart(title, months, values, sub="", fmt=str):
         lcol = INK if last else MUTE
         lbl += (f"<td align='center' width='{col_w}' style='font-size:9px;color:{lcol};font-weight:{'700' if last else '400'};"
                 f"padding-top:4px;white-space:nowrap;'>{m}</td>")
+    # Optional trend-line overlay: linear regression on (i, value) pairs,
+    # rendered as an SVG polyline absolutely-positioned over the bars
+    # table. Disabled by default to keep the exec brief unchanged; the
+    # safety brief's 6-mo trend bars opt in.
+    trend_svg = ""
+    bars_wrap_open = ""
+    bars_wrap_close = ""
+    if trend_line and len(values) >= 2:
+        n = len(values)
+        xs = list(range(n))
+        sx = sum(xs)
+        sy = sum(values)
+        sxy = sum(xi * yi for xi, yi in zip(xs, values))
+        sx2 = sum(xi * xi for xi in xs)
+        denom = n * sx2 - sx * sx
+        if denom != 0:
+            slope = (n * sxy - sx * sy) / denom
+            intercept = (sy - slope * sx) / n
+            # SVG viewBox coords: 0..100 wide, 0..100 tall (matches the
+            # bars table's relative dimensions). The bar tops live at
+            # roughly y = label_band_pct + (H_band_pct * (1 - v/maxv)),
+            # where the value-label band takes ~14% of the table height
+            # and the bar band takes the remaining ~86%.
+            label_band = 14.0
+            bar_band = 100.0 - label_band
+            pts = []
+            for xi in xs:
+                tv = slope * xi + intercept
+                tv = max(0.0, min(tv, maxv * 1.1))
+                bar_height_pct = (tv / maxv) * bar_band if maxv else 0
+                y = label_band + (bar_band - bar_height_pct)
+                x = (xi + 0.5) * 100.0 / n
+                pts.append(f"{x:.2f},{y:.2f}")
+            polyline = " ".join(pts)
+            trend_svg = (
+                f"<svg width='100%' height='100%' viewBox='0 0 100 100' "
+                f"preserveAspectRatio='none' "
+                f"style='position:absolute;top:0;left:0;pointer-events:none;'>"
+                f"<polyline points='{polyline}' stroke='{ACCENT}' "
+                f"stroke-width='1.5' fill='none' stroke-dasharray='3,2' "
+                f"stroke-linecap='round' vector-effect='non-scaling-stroke' "
+                f"opacity='0.85'/>"
+                f"</svg>"
+            )
+            bars_wrap_open = "<div style='position:relative;'>"
+            bars_wrap_close = "</div>"
     return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;overflow:hidden;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
+            f"{bars_wrap_open}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;table-layout:fixed;'><tr>{bar}</tr></table>"
+            f"{trend_svg}"
+            f"{bars_wrap_close}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='table-layout:fixed;'><tr>{lbl}</tr></table></div></td>")
 
 
@@ -4373,6 +5265,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
                 ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
+                risk_watch_html: str = "", decision_grades_html: str = "",
                 part: str = "all") -> str:
     """Executive overview page. `part` controls split rendering so build_page8
     (bill-by-bill matching) can land on physical PDF page 5 between the AR
@@ -4525,26 +5418,26 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
           + _tile("Gross margin &middot; MTD", pct(_co_mpct), ""))
     # Row 2: loads + estimated month-end margin per entity. The projection
     # equation comes from compute_margin_projection():
-    #   projected_revenue = booked MTD revenue * (days_in_month / day_of_month)
-    #   projected_margin  = projected_revenue * trailing-90 settled margin %
-    # Pill shows the day ratio and trailing margin % so the basis is visible.
+    #   daily_run_rate    = trailing-80-working-day revenue / 80
+    #   projected_revenue = daily_run_rate * working_days_in_month
+    #   margin_pct        = MTD margin % (this month's actual)
+    #   projected_margin  = projected_revenue * margin_pct
+    # Pill shows working days in month, the MTD margin % being applied,
+    # and a (trail X%) hint so the historical benchmark is still visible.
     _mp = margin_projection or {}
-    _dim = _mp.get("days_in_month", 0)
-    _de = _mp.get("day_of_month", 0)
-    _td = _mp.get("trailing_days", 90)
+    _wdim = _mp.get("working_days_in_month", 0)
+    _td = _mp.get("trailing_days", 80)
     _month_lbl = pd.Timestamp.now().strftime("%B")
-    # Under month-rollover, the "estimate" is just last completed month's
-    # actual settled margin — relabel so the tile doesn't read "Est. June"
-    # while showing May's final number.
-    _est_prefix = "May" if False else "Est."  # placeholder, set below
-    if _mp.get("rollover"):
-        _tile_label = f"{_mp.get('mtd_label', 'Prior month')} margin &middot; final"
-    else:
-        _tile_label = f"Est. {_month_lbl} margin"
+    _tile_label = f"Est. {_month_lbl} margin"
     def _proj_tile(ent_key, pill_text):
         ent = _mp.get(ent_key) or {}
+        applied = ent.get("applied_margin_pct")
+        trail = ent.get("trailing_margin_pct")
         sub = (_pill(pill_text, "mute")
-               + f" &middot; {_de}/{_dim}d &middot; t{_td} {pct(ent.get('trailing_margin_pct'))}")
+               + f" &middot; {_wdim}wd &middot; MTD {pct(applied)}")
+        if trail is not None and applied is not None and abs(trail - applied) >= 0.005:
+            sub += (f" <span style='color:{MUTE};font-size:11px;'>"
+                    f"(trail {pct(trail)})</span>")
         return _tile(_tile_label, money(ent.get("projected_margin")), sub)
     # Order: Combined projection in the leftmost slot (visually anchors the
     # row's lead number), per-entity projections in the middle, and the plain
@@ -4622,7 +5515,14 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         _win = g.get("pay_window_used") or g.get("pay_window_days")
         parts = []
         if _isnum(_pp):
-            parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
+            _pp_raw = g.get("pay_per_mile_raw")
+            _floored = g.get("pay_per_mile_floored")
+            if _floored and _isnum(_pp_raw):
+                parts.append(
+                    f"driver/owner-op pay {rpm(_pp)}/mi (contract floor; "
+                    f"10d blended avg {rpm(_pp_raw)}/mi)")
+            else:
+                parts.append(f"driver/owner-op pay {rpm(_pp)}/mi (last {_win}d)")
         if _isnum(_oh):
             _pin = g.get("overhead_pin")
             _live = g.get("overhead_per_mile_live")
@@ -4784,7 +5684,20 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             # Alvys-side total back to the AR PAST DUE · Alvys tile on page 1
             # (the QB-keyed total above only counts Alvys amounts that have a
             # QB anchor).
-            _qb_keys = {_norm_inv(r["invoice"]) for r in _pd_rows if r.get("invoice")}
+            # Match against ALL open QB invoices, not just past-due ones. A load
+            # can be past due in Alvys while its QB invoice is still "Current"
+            # (due today) — it's invoiced, so it's NOT an Alvys-only orphan. Using
+            # only past-due QB rows here wrongly flagged e.g. T1008720 (QB due 6/13)
+            # against Alvys load 1008720 "1d past due".
+            _qb_keys = {_norm_inv(r.get("invoice"))
+                        for r in (qb_ar.get("open_invoices") or []) if r.get("invoice")}
+            # Keys of QB invoices that ARE past due — used below to find
+            # invoices that match QB on key but where QB hasn't aged them
+            # past due yet (different due date / payment terms between
+            # systems). Those are the silent contributors to the page 1
+            # tile's higher Alvys total vs page 7's QB-keyed total.
+            _qb_pd_keys = {_norm_inv(r.get("invoice"))
+                           for r in _pd_rows if r.get("invoice")}
             _BUCKET_ORDER = {"1&ndash;30": 0, "31&ndash;60": 1, "61&ndash;90": 2, "91+": 3}
             def _bucket_from_days(d: int) -> str:
                 if d <= 30: return "1&ndash;30"
@@ -4792,65 +5705,107 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 if d <= 90: return "61&ndash;90"
                 return "91+"
             _orphans: list[dict] = []
+            _discrepancies: list[dict] = []
             for _a in _al_open:
                 days = int(_a.get("days") or 0)
                 if days <= 0:
                     continue
                 inv_key = _norm_inv(_a.get("invoice"))
                 load_key = _norm_inv(_a.get("load"))
-                if (inv_key and inv_key in _qb_keys) or (load_key and load_key in _qb_keys):
-                    continue
+                matched_qb_key = None
+                if inv_key and inv_key in _qb_keys:
+                    matched_qb_key = inv_key
+                elif load_key and load_key in _qb_keys:
+                    matched_qb_key = load_key
                 amt = float(_a.get("amount") or 0)
                 if abs(amt) < 1.0:
                     continue
-                _orphans.append({
+                row = {
                     "customer": _cell(_a.get("customer")),
                     "invoice": _cell(_a.get("invoice")) or _cell(_a.get("load")) or "",
                     "amount": amt,
                     "days": days,
                     "bucket": _bucket_from_days(days),
-                })
+                }
+                if matched_qb_key is None:
+                    # Alvys past due with no QB invoice — un-billed loads.
+                    _orphans.append(row)
+                elif matched_qb_key not in _qb_pd_keys:
+                    # QB has the invoice but doesn't age it past due —
+                    # due-date discrepancy between systems.
+                    _discrepancies.append(row)
+                # else: matched + QB also past due → already in main table.
             _orphans.sort(key=lambda x: (_BUCKET_ORDER[x["bucket"]], -x["amount"]))
-            if _orphans:
-                _orph_body = ""
-                _g_orph = 0.0
-                for o in _orphans:
-                    _g_orph += o["amount"]
-                    _orph_body += _tr(
-                        [o["customer"], o["invoice"], f"{o['days']}d",
-                         money(o["amount"]), o["bucket"]],
+            _discrepancies.sort(key=lambda x: (_BUCKET_ORDER[x["bucket"]], -x["amount"]))
+
+            def _extra_table(title: str, rows: list[dict], total_label: str) -> tuple[str, float]:
+                """Render a sub-table identical in shape to the orphan table.
+                Returns (html, total_amount) so the caller can roll the
+                grand reconciliation total."""
+                if not rows:
+                    return "", 0.0
+                body = ""
+                running = 0.0
+                for r in rows:
+                    running += r["amount"]
+                    body += _tr(
+                        [r["customer"], r["invoice"], f"{r['days']}d",
+                         money(r["amount"]), r["bucket"]],
                         ["left", "left", "right", "right", "left"],
-                        [None, None, None, None, _bkt_kind.get(o["bucket"])],
+                        [None, None, None, None, _bkt_kind.get(r["bucket"])],
                     )
-                _orph_total = (
+                tot = (
                     f"<tr><td colspan='3' style='padding:9px 8px;font-weight:800;color:{INK};"
-                    f"border-top:2px solid {LINE};'>Total Alvys-only past due</td>"
+                    f"border-top:2px solid {LINE};'>{total_label}</td>"
                     f"<td align='right' style='padding:9px 8px;font-weight:800;color:{BAD};"
-                    f"border-top:2px solid {LINE};'>{money(_g_orph)}</td>"
+                    f"border-top:2px solid {LINE};'>{money(running)}</td>"
                     f"<td style='border-top:2px solid {LINE};'></td></tr>"
                 )
-                # Combined-reconciliation caption stays inside the table as
-                # its final row — outside the table the stray <tr> rendered
-                # on its own page. pgref-70 (tail anchor for the page-4
-                # tile reference) is inlined inside this same caption so
-                # it resolves to the orphan section's last physical page
-                # without consuming any extra vertical space.
-                _combined = _g_al + _g_orph
-                _pg70_anchor = "<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a>"
-                _orph_caption = (
-                    f"<tr><td colspan='5' style='padding:8px 8px;color:{MUTE};"
-                    f"font-size:11px;background:#fafafa;border-top:1px solid {LINE};'>"
-                    f"{_pg70_anchor}Combined Alvys past due (matched + orphans): "
+                html = (
+                    f"{_section(title)}"
+                    f"{_table(['Customer', 'Invoice / Load', 'Alvys days past', 'Alvys amount', 'Alvys bucket'], ['left', 'left', 'right', 'right', 'left'], body + tot)}"
+                )
+                return html, running
+
+            _disc_html, _g_disc = _extra_table(
+                "Past due in Alvys, current in QB &middot; due-date discrepancy between systems &middot; these bills drive the page 1 gap",
+                _discrepancies,
+                "Total Alvys-past-due / QB-current",
+            )
+            _orph_html, _g_orph = _extra_table(
+                "Alvys past-due with no QB invoice &middot; un-billed loads (need a QB invoice to close the gap)",
+                _orphans,
+                "Total Alvys-only past due (no QB invoice)",
+            )
+
+            _qb_overdue_html += _disc_html + _orph_html
+
+            # Reconciliation caption — fires whenever there's anything to
+            # reconcile (extras present OR a non-trivial QB-side total).
+            # Contains pgref-70 so the page 1 tile's "thru" pointer lands
+            # on the last physical page of this section.
+            _combined = _g_al + _g_orph + _g_disc
+            _pg70_anchor = "<a id='pgref-70' style='display:inline-block;width:0;height:0;'></a>"
+            if _disc_html or _orph_html:
+                _recon_parts = [f"matched ${_g_al:,.0f}"]
+                if _g_disc:
+                    _recon_parts.append(f"+ Alvys-past/QB-current ${_g_disc:,.0f}")
+                if _g_orph:
+                    _recon_parts.append(f"+ un-billed orphans ${_g_orph:,.0f}")
+                _recon_caption_html = (
+                    f"<div style='padding:8px 18px 0;'>"
+                    f"<div style='padding:8px 12px;color:{MUTE};font-size:11px;"
+                    f"background:#fafafa;border:1px solid {LINE};border-radius:6px;'>"
+                    f"{_pg70_anchor}<b style='color:{INK};'>Combined Alvys past due:</b> "
+                    f"{' '.join(_recon_parts)} = "
                     f"<b style='color:{INK};'>{money(_combined)}</b> &mdash; "
-                    f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1.</td></tr>"
+                    f"reconciles to the AR PAST DUE &middot; Alvys tile on page 1."
+                    f"</div></div>"
                 )
-                _qb_overdue_html += (
-                    f"{_section('Alvys past-due with no QB invoice &middot; un-billed loads behind the QB-vs-Alvys gap')}"
-                    f"{_table(['Customer', 'Invoice / Load', 'Days past due', 'Alvys amount', 'Bucket'], ['left', 'left', 'right', 'right', 'left'], _orph_body + _orph_total + _orph_caption)}"
-                )
+                _qb_overdue_html += _recon_caption_html
             else:
-                # No orphans this run — still need a pgref-70 target so the
-                # page-4 tile reference resolves. Inline it on the QB-keyed
+                # No extras this run — still need a pgref-70 target so the
+                # page-1 tile reference resolves. Inline it on the QB-keyed
                 # table's _section header (same place as pgref-60).
                 _qb_overdue_html = _qb_overdue_html.replace(
                     "id='pgref-60'",
@@ -4892,6 +5847,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                      + _fleet_score_tile)
 
     # Revenue / cost / margin by entity (Alvys 2026, MTD). XFreight folded into X-Trux.
+    # Actuals only — same scope and formula as PBI so these figures match to the penny.
     entity_rows = ""
     tot_rev = tot_cost = tot_marg = 0.0
     for ent in ENTITY_ORDER:
@@ -4899,7 +5855,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         mk = e.get("margin")
         label = ent + (" (incl. XFreight)" if ent == "X-Trux" else " (brokerage)")
         entity_rows += _tr(
-            [label, money(e.get("revenue")), money(e.get("cost")), money(mk), pct(e.get("margin_pct"))],
+            [label, money2(e.get("revenue")), money2(e.get("cost")), money2(mk), pct(e.get("margin_pct"))],
             ["left", "right", "right", "right", "right"],
             [None, None, None, ("bad" if (_isnum(mk) and mk < 0) else "good"), None])
         if _isnum(e.get("revenue")):
@@ -4911,9 +5867,9 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     total_pct = (tot_marg / tot_rev) if tot_rev else None
     entity_total = (
         f"<tr><td style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>Total</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_rev or None)}</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_cost or None)}</td>"
-        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money(tot_marg or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money2(tot_rev or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money2(tot_cost or None)}</td>"
+        f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{money2(tot_marg or None)}</td>"
         f"<td align='right' style='padding:8px;font-weight:800;color:{INK};border-top:2px solid {LINE};'>{pct(total_pct)}</td></tr>")
 
     # Alvys AR aging tiles — 5 buckets wrapped in a nested 5-column table.
@@ -5028,14 +5984,21 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
 
     # Data-check banner: surface any structural problems with the source workbook.
     warn_row = (_brief("Data check &mdash; " + "; ".join(warnings), "bad") if warnings else "")
-    # MTD P&L tiles include only settled loads (Driver Rate > 0) to match the
-    # Power BI XFreight Report. Surface the count of booked-but-not-yet-settled
-    # loads so the deferred work isn't invisible.
+    # Entity P&L actuals for the current month. A load enters the P&L only once
+    # it is fully costed: an X-Trux asset load is held out while it is "Open" or
+    # its Corrected Margin % ((Revenue - Driver Rate)/Revenue) is >= the hold-out
+    # threshold (driver pay too low for the revenue — e.g. brokered to a carrier).
+    # X-Linx brokered loads only require dispatch (status past "Open"). Held-out
+    # loads contribute no revenue and no cost so they can't inflate margin, and
+    # are surfaced as the count below. (Power BI applies the same Corrected
+    # Margin % threshold on X-Trux to match.) Figures shown to the penny.
     _unsettled = sum((alvys_entities or {}).get(ent, {}).get("unsettled", 0) for ent in ENTITY_ORDER)
-    _mtd_msg = ("MTD revenue / cost / margin tiles include only settled loads "
-                "(driver pay entered), matching the Power BI report.")
+    _mtd_msg = ("MTD revenue / cost / margin. Cost = Driver Rate (X-Trux), "
+                "Driver Rate + Carrier Rate (X-Linx). X-Trux loads awaiting driver "
+                "pay (driver pay too low for the revenue) are held out of revenue "
+                "and cost until they settle, so they can't inflate margin.")
     if _unsettled:
-        _mtd_msg += f" {_unsettled} additional load{'s' if _unsettled != 1 else ''} booked this month are awaiting driver pay and will appear once settled."
+        _mtd_msg += f" {_unsettled} load{'s' if _unsettled != 1 else ''} held out (open / awaiting driver pay)."
     mtd_note = _brief(_mtd_msg, "mute")
     asof = ""
     if data_asof is not None:
@@ -5127,8 +6090,22 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
              f"{action_items_html}"
              f"{coaching_html}")
     _table_open = f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+    # Risk Watch strip (Phase 2B). The renderer returns a <div>; wrap it
+    # in a colspan row so it slots into the page-1 table without breaking
+    # the 4-column tile grid below. Empty string when no signals defined
+    # OR all underlying metrics are missing — silent in that case.
+    _risk_watch_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{risk_watch_html}</td></tr>"
+        if risk_watch_html else ""
+    )
+    _decision_grades_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{decision_grades_html}</td></tr>"
+        if decision_grades_html else ""
+    )
     _overview_rows = (
         f"{warn_row}"
+        f"{_risk_watch_row}"
+        f"{_decision_grades_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
         f"{_section(_entity_section)}"
@@ -5287,10 +6264,12 @@ def _safety_detail_tables(samsara) -> str:
     )
 
 
-def build_page2(samsara, date_str) -> str:
+def build_page2(samsara, date_str, pg: int = 3) -> str:
     # Driver safety scores table (moved here from the Fleet Operations page
     # so all safety content lives on one page). All drivers ranked
     # worst-to-best; lowest scores get the red treatment so they pop.
+    # `pg` defaults to 3 for executive-brief compatibility; the safety
+    # brief imports this function and passes its own page number.
     fleet = (samsara or {}).get("fleet", {}) or {}
     scores_all = fleet.get("scores_all") or []
     def _score_kind(s: int) -> str:
@@ -5496,7 +6475,7 @@ def build_page2(samsara, date_str) -> str:
     )
 
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', pg, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
             f"{_spd_tbl}"
@@ -6111,7 +7090,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
             f"JW Logistics excluded throughout. Source: QuickBooks + Alvys API.</div>")
 
 
-def build_page7(qb_ar, alvys_ar, date_str) -> str:
+def build_page7(qb_ar, alvys_ar, date_str, pg: int = 12) -> str:
     rec = compute_ar_customer_reconciliation(qb_ar, alvys_ar) or {}
     rows = rec.get("rows", [])
     LIMIT = 30
@@ -6143,7 +7122,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 12, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', pg, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -6273,6 +7252,29 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
                      (f"avg score {avg:.0f} " if avg is not None else "")
                      + _pill("elevated", "bad" if n_high else "good")))
 
+    invalid = samba.get("invalid_licenses") or []
+    if invalid:
+        irows = ""
+        for d in invalid:
+            irows += _tr(
+                [d["name"], d.get("type") or "&mdash;", d["status"],
+                 d.get("action") or "&mdash;", _md(d.get("action_date")),
+                 _md(d.get("mvr_date")),
+                 (d.get("state") or "&mdash;") + " " + _mask_license(d.get("license"))],
+                ["left", "left", "left", "left", "left", "left", "left"],
+                [None, None, "bad", "bad", "bad", None, None])
+        invalid_block = (
+            _section('Invalid / disqualified licenses &middot; pull from dispatch')
+            + _table(["Driver", "Type", "Status", "Latest action", "Action date",
+                      "MVR date", "License"],
+                     ["left", "left", "left", "left", "left", "left", "left"], irows)
+            + _brief("Per SambaSafety's Invalid License Report &mdash; these drivers "
+                     "cannot legally operate until the state clears the action. "
+                     "The Risk Index export may still show VALID; the invalid "
+                     "report is the authoritative signal.", "bad"))
+    else:
+        invalid_block = ""
+
     if issues:
         lrows = ""
         for d in issues:
@@ -6322,6 +7324,7 @@ def build_page9(samba, date_str, alvys_drivers=None) -> str:
 
     return (f"{header}<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
+            f"{invalid_block}"
             f"{_section('License status &middot; action needed')}{license_block}"
             + _alvys_medical_block(alvys_drivers)
             + f"{_section('Recent violations &amp; MVR alerts &middot; last ' + str(samba['window_days']) + ' days')}{viol_block}"
@@ -6425,7 +7428,7 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     )
 
 
-def build_page_coached(samsara, date_str) -> str:
+def build_page_coached(samsara, date_str, pg: int = 14) -> str:
     """End-of-brief audit trail: every Samsara safety event in the
     190-day window whose coachingState is coached / dismissed /
     recognized. The COACH column is intentionally blank ("—") —
@@ -6436,7 +7439,7 @@ def build_page_coached(samsara, date_str) -> str:
     automatically the moment Samsara enables it."""
     rows = (samsara or {}).get("coached_events") or []
     head = _header("Coached Events &mdash; all coaching actions, last 190 days",
-                   14, date_str, section='SAFETY')
+                   pg, date_str, section='SAFETY')
     # Tiles: total, by state
     _by_state: dict[str, int] = {}
     for r in rows:
@@ -6489,13 +7492,361 @@ def build_page_coached(samsara, date_str) -> str:
             f"enables the field this column auto-populates.</div>")
 
 
+# ----------------------------------------------------------------------
+# Data refresh status (final brief page) — when each source last updated
+# and whether its refresh workflow ran clean. compute_refresh_status() does
+# the network gathering (called from main); build_refresh_status_page() is a
+# pure renderer.
+# ----------------------------------------------------------------------
+REFRESH_SOURCES = [
+    # label, refresh workflow file (for the Actions run status), kind, and the
+    # expected-fresh window in hours (None = no staleness flag).
+    #   kind: share = Alvys (read by sharing URL); file = OneDrive file mtime;
+    #         run = workflow run only; wiki = run + knowledge-base file count;
+    #         pbi = Power BI — Desktop .pbix last-saved time on OneDrive, or the
+    #               Service dataset refresh (Power BI REST API) if its IDs are set.
+    {"label": "Alvys Master",             "wf": None,                           "kind": "share", "max_h": 30, "feed": "Manual upload"},
+    {"label": "QuickBooks",               "wf": "qb_refresh.yml",               "kind": "file",  "max_h": 8,  "feed": "API"},
+    {"label": "Samsara",                  "wf": "samsara_refresh.yml",          "kind": "file",  "max_h": 30, "feed": "API"},
+    {"label": "SambaSafety",              "wf": "sambasafety_refresh.yml",      "kind": "file",  "max_h": 60, "feed": "CSV combine"},
+    {"label": "Google Sheets KPI",        "wf": "sheets_refresh.yml",           "kind": "run",   "max_h": 30, "feed": "Google API"},
+    {"label": "Daily MTD Upload",         "wf": "daily_upload.yml",             "kind": "run",   "max_h": 30, "feed": "Excel upload"},
+    {"label": "Knowledge Base Wiki",      "wf": "karpathy_compile.yml",         "kind": "wiki",  "max_h": 48},
+    {"label": "Upload Health Check",      "wf": "daily_upload_healthcheck.yml", "kind": "run",   "max_h": 30},
+    {"label": "Scorecard Health Check",   "wf": "scorecard_healthcheck.yml",    "kind": "run",   "max_h": 30},
+    {"label": "Power BI XFreight Report", "wf": None,                           "kind": "pbi",   "max_h": 30},
+]
+
+
+def _wiki_file_count(wiki_dir="Karpathy-Wiki"):
+    """Knowledge-base size from the repo checkout: {total, wiki, raw} file counts,
+    or None if the dir is absent. The brief runs from the repo root in CI."""
+    import glob as _glob
+    try:
+        files = [f for f in _glob.glob(f"{wiki_dir}/**/*", recursive=True) if os.path.isfile(f)]
+        if not files:
+            return None
+        norm = [f.replace(os.sep, "/") for f in files]
+        return {"total": len(files),
+                "wiki": sum(1 for f in norm if "/wiki/" in f),
+                "raw":  sum(1 for f in norm if "/raw/" in f)}
+    except Exception:
+        return None
+
+
+def _pbi_token():
+    """Azure AD client-credentials token for the Power BI REST API (different
+    resource scope than Graph). Reuses the scorecard's Azure app creds. None on
+    any failure."""
+    import requests as _rq
+    tenant = os.environ.get("AZURE_TENANT_ID")
+    client = os.environ.get("AZURE_CLIENT_ID")
+    secret = os.environ.get("AZURE_CLIENT_SECRET")
+    if not (tenant and client and secret):
+        return None
+    try:
+        r = _rq.post(
+            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+            data={"grant_type": "client_credentials", "client_id": client,
+                  "client_secret": secret,
+                  "scope": "https://analysis.windows.net/powerbi/api/.default"},
+            timeout=20)
+        r.raise_for_status()
+        return r.json().get("access_token")
+    except Exception:
+        return None
+
+
+def _pbi_last_refresh():
+    """(endTime_datetime, status) of the configured Power BI dataset's last
+    refresh, or None. Requires PBI_WORKSPACE_ID + PBI_DATASET_ID and the Azure app
+    granted Power BI API access (service principal added to the workspace).
+    Fail-soft — returns None when unconfigured or the call fails."""
+    from datetime import datetime
+    import requests as _rq
+    ws = os.environ.get("PBI_WORKSPACE_ID")
+    ds = os.environ.get("PBI_DATASET_ID")
+    if not (ws and ds):
+        return None
+    try:
+        tok = _pbi_token()
+        if not tok:
+            return None
+        r = _rq.get(
+            f"https://api.powerbi.com/v1.0/myorg/groups/{ws}/datasets/{ds}/refreshes?$top=1",
+            headers={"Authorization": f"Bearer {tok}"}, timeout=20)
+        r.raise_for_status()
+        items = r.json().get("value", [])
+        if not items:
+            return None
+        it = items[0]
+        end = it.get("endTime") or it.get("startTime")
+        dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else None
+        return (dt, it.get("status"))
+    except Exception:
+        return None
+
+
+def compute_refresh_status(token, upn, *, alvys_share=None, qb_dir="QuickBooks",
+                           samsara_path="Samsara/Samsara Master.xlsx",
+                           samba_path="SambaSafety/SambaSafety_Master.xlsx",
+                           wiki_dir="Karpathy-Wiki",
+                           pbix_path="XFreight - Claude Working Files/02 - Power BI/XFreight Report.pbix",
+                           now=None):
+    """Gather per-source freshness for the brief's final page: each source's "when"
+    (OneDrive file mtime, workflow run time, or Power BI refresh time) plus a
+    fresh/stale flag and the latest refresh-workflow run from the GitHub Actions
+    API. Fail-soft throughout — a missing token, file, GH_TOKEN, or Power BI
+    config just leaves that cell blank.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = now or datetime.now(timezone.utc)
+    repo = os.environ.get("GITHUB_REPOSITORY", "jeffxtrux-svg/alvys-pipeline")
+    gh_token = os.environ.get("GH_TOKEN", "")
+    try:
+        from src.upload_status_email import _recent_runs, _status_icon
+    except Exception:
+        _recent_runs = _status_icon = None
+
+    def _latest_run(wf):
+        if not (_recent_runs and gh_token and wf):
+            return None
+        try:
+            runs = _recent_runs(repo, wf, now - timedelta(hours=72))
+            return runs[0] if runs else None
+        except Exception:
+            return None
+
+    def _run_cells(run):
+        # returns (icon, detail, run_datetime, run_ok)
+        if run is None:
+            return (("&mdash;", "&mdash;", None, None) if not gh_token
+                    else ("&#10067;", "no run in 72h", None, None))
+        icon = "&mdash;"
+        if _status_icon:
+            icon, _ = _status_icon(run.get("conclusion"), run.get("status"))
+        raw = (run.get("conclusion") or run.get("status") or "").lower()
+        run_ok = (True if raw == "success"
+                  else (False if raw in ("failure", "timed_out", "startup_failure") else None))
+        concl = (run.get("conclusion") or run.get("status") or "unknown").replace("_", " ")
+        started = (run.get("created_at") or "")[:16].replace("T", " ")
+        try:
+            rdt = datetime.fromisoformat((run.get("created_at") or "").replace("Z", "+00:00"))
+        except Exception:
+            rdt = None
+        return (icon, concl + (f" &middot; {started} UTC" if started else ""), rdt, run_ok)
+
+    paths = {
+        "QuickBooks":  f"{qb_dir.strip('/')}/QB_ProfitAndLoss.xlsx",
+        "Samsara":     samsara_path,
+        "SambaSafety": samba_path,
+    }
+    out = []
+    for src in REFRESH_SOURCES:
+        label, kind = src["label"], src.get("kind")
+        run_icon, run_detail, run_dt, run_ok = _run_cells(_latest_run(src.get("wf")))
+        when = measure = None
+        feed = src.get("feed")
+        if kind == "share" and alvys_share:
+            try: when = get_shared_modified(token, alvys_share)
+            except Exception: when = None
+        elif kind == "file" and paths.get(label):
+            try: when = get_file_modified(token, upn, paths[label])
+            except Exception: when = None
+        elif kind in ("run", "wiki"):
+            when = run_dt   # the workflow run is the refresh event
+            if kind == "wiki":
+                measure = _wiki_file_count(wiki_dir)
+        elif kind == "pbi":
+            # Prefer the Power BI Service API (exact dataset refresh) when it's
+            # configured; otherwise fall back to the Desktop .pbix file's last-saved
+            # time on OneDrive — works with no setup, matching Jeff's Desktop flow.
+            pbi = _pbi_last_refresh()
+            if pbi:
+                feed = "Power BI Service"
+                when, status = pbi
+                s = (status or "").lower()
+                if s == "completed":
+                    run_icon, run_detail, run_ok = "&#9989;", "completed &middot; Power BI API", True
+                elif s in ("failed", "disabled"):
+                    run_icon, run_detail, run_ok = "&#10060;", f"{status} &middot; Power BI API", False
+                else:
+                    run_icon, run_detail, run_ok = "&#10067;", f"{status or 'unknown'} &middot; Power BI API", None
+            else:
+                feed = "Power BI Desktop"
+                if pbix_path:
+                    try: when = get_file_modified(token, upn, pbix_path)
+                    except Exception: when = None
+                run_icon, run_detail, run_ok = "&mdash;", "&mdash;", None
+        stale_h = fresh = None
+        if when is not None:
+            try:
+                stale_h = (now - when).total_seconds() / 3600.0
+                if src.get("max_h") is not None:
+                    fresh = stale_h <= src["max_h"]
+            except Exception:
+                pass
+        out.append({"label": label, "kind": kind, "wf": src.get("wf"), "modified": when,
+                    "stale_h": stale_h, "fresh": fresh, "max_h": src.get("max_h"),
+                    "run_icon": run_icon, "run_detail": run_detail, "run_ok": run_ok,
+                    "measure": measure, "feed": feed})
+    return out
+
+
+def _suggest_action(s):
+    """Short imperative fix when a source needs attention, else None (no action).
+    Priority: unconfigured Power BI -> failed run -> stale data -> missing file ->
+    no recent run."""
+    kind = s.get("kind")
+    if kind == "pbi":
+        if s.get("run_ok") is False:
+            return "Power BI refresh failed &mdash; check the dataset"
+        if s.get("modified") is None:
+            return "Report not found &mdash; save XFreight Report.pbix to OneDrive (or set Service API IDs)"
+        if s.get("fresh") is False:
+            return "Open the report in Power BI Desktop, refresh &amp; save"
+        return None
+    if s.get("feed") == "Manual upload":
+        if s.get("modified") is None:
+            return "File not found &mdash; upload the workbook to OneDrive"
+        if s.get("fresh") is False:
+            return "Stale &mdash; upload a fresh copy to OneDrive"
+        return None
+    if s.get("run_ok") is False:
+        return "Refresh failed &mdash; check the run &amp; re-run it"
+    if s.get("fresh") is False:
+        return "Data is stale &mdash; re-run the refresh"
+    if kind in ("share", "file") and s.get("modified") is None:
+        return "Source file not found &mdash; check the upload"
+    if kind in ("run", "wiki") and s.get("modified") is None and s.get("wf"):
+        return "No recent run &mdash; trigger the workflow"
+    return None
+
+
+def build_refresh_status_page(refresh_status, date_str) -> str:
+    """Final brief page: data refresh status — when each source last updated and
+    whether its refresh workflow ran clean, so the reader can trust the brief is
+    built on current data."""
+    head = _header("Data refresh status &mdash; when each source last updated",
+                   15, date_str, section='DATA')
+    rows_html = ""
+    for s in (refresh_status or []):
+        label = s.get("label", "")
+        modified = s.get("modified")
+        max_h = s.get("max_h")
+        if modified is not None:
+            try:
+                t = pd.Timestamp(modified).tz_convert("America/Chicago")
+            except Exception:
+                t = pd.Timestamp(modified)
+            dt_str = t.strftime("%b %d, %Y &middot; %I:%M %p") + " CT"
+            ago = s.get("stale_h")
+            age_str = ("&mdash;" if ago is None
+                       else ("&lt;1h ago" if ago < 1 else f"{int(ago)}h ago"))
+        else:
+            dt_str = age_str = "&mdash;"
+        # Knowledge-base size measurement (wiki/raw file counts) shown inline.
+        measure = s.get("measure")
+        if measure:
+            mstr = f"{measure.get('wiki', 0)} wiki / {measure.get('raw', 0)} raw files"
+            dt_str = mstr if dt_str == "&mdash;" else f"{dt_str} &middot; {mstr}"
+        if max_h is None:
+            badge = _pill("run-status only", "mute")
+        elif s.get("fresh") is True:
+            badge = _pill("Fresh", "good")
+        elif s.get("fresh") is False:
+            badge = _pill(f"Stale (&gt;{max_h}h)", "bad")
+        else:
+            badge = _pill("unknown", "mute")
+        run = f"{s.get('run_icon', '&mdash;')} {s.get('run_detail', '&mdash;')}"
+        feed = s.get("feed")   # source-type tag, e.g. "CSV combine" (not an API feed)
+        if feed:
+            run += f" &middot; <span style='color:{MUTE};font-style:italic;'>{feed}</span>"
+        action = _suggest_action(s)
+        action_cell = (f"<span style='color:{MUTE};'>&mdash;</span>" if not action
+                       else f"<span style='color:{WARN};font-weight:700;'>{action}</span>")
+        _td = f"padding:7px 9px;border-top:1px solid {LINE};font-size:11px;vertical-align:top;"
+        rows_html += (
+            f"<tr>"
+            f"<td style='{_td}font-weight:700;color:{INK};'>{label}</td>"
+            f"<td style='{_td}color:{INK};'>{dt_str}</td>"
+            f"<td style='{_td}color:{MUTE};white-space:nowrap;'>{age_str}</td>"
+            f"<td style='{_td}'>{badge}</td>"
+            f"<td style='{_td}color:{MUTE};'>{run}</td>"
+            f"<td style='{_td}'>{action_cell}</td>"
+            f"</tr>")
+    table = _table(["Source", "Date &amp; time", "Age", "Fresh?", "Latest refresh run", "Suggested action"],
+                   ["left", "left", "left", "left", "left", "left"], rows_html)
+    note = _brief(
+        "Last refreshed: OneDrive file time for Alvys/QuickBooks/Samsara/SambaSafety; "
+        "the workflow run time for Google Sheets KPI, the knowledge-base wiki, and the "
+        "health checks; and the dataset refresh time for Power BI. The run column is the "
+        "latest workflow outcome from GitHub Actions (last 72h). Knowledge Base Wiki also "
+        "shows its size (compiled wiki pages + raw inbox files). Stale = older than the "
+        "source's expected cadence. Suggested action is blank when a source is healthy and "
+        "shows a short fix when one is needed. Power BI XFreight Report shows the Desktop "
+        "report's last-saved time on OneDrive (set the Service API IDs for exact dataset "
+        "refresh status instead).", "mute")
+    return head + _section("Data refresh status &middot; as of " + date_str) + table + note
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None, csa=None) -> str:
+               customer_rpm=None, csa=None, refresh_status=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
+    # Phase 2B — Risk Watch strip: read the machine-readable signal
+    # definitions from Karpathy-Wiki/wiki/risk-signals.yml, evaluate each
+    # against the live compute dicts, and render a small status strip near
+    # the top of page 1. Fails soft: any exception silences the strip
+    # rather than crashing the brief.
+    risk_watch_html = ""
+    decision_grades_html = ""
+    _watch_data = {
+        "equipment": equipment or {},
+        "qb_ar": qb_ar or {},
+        "csa": csa or {},
+        "alvys_entities": alvys_entities or {},
+        "samsara": samsara or {},
+        "alvys": alvys or {},
+        "samba": samba or {},
+        "alvys_ar": alvys_ar or {},
+        "uninvoiced": uninvoiced or {},
+    }
+    try:
+        from src import risk_watch as _risk_watch
+        _watch_results = _risk_watch.evaluate(_watch_data)
+        if _watch_results:
+            log.info("risk_watch: evaluated %d signals (%d tripped)",
+                     len(_watch_results),
+                     sum(1 for r in _watch_results if r.get("tripped")))
+        risk_watch_html = _risk_watch.render_strip_html(
+            _watch_results, red=BAD, redbg=BADBG, green=GOOD, greenbg=GOODBG,
+            mute=MUTE, line=LINE,
+        )
+        _risk_watch.write_signals_snapshot(_watch_results)
+    except Exception as exc:
+        log.warning("risk_watch render skipped (%s: %s)", type(exc).__name__, exc)
+    # Phase 2C — Decision Grader: evaluate each tracked decision's
+    # predicted outcome against live data, render a compact summary
+    # chip, and write a grades snapshot the librarian uses on its next
+    # compile to stamp ✓/✗/⏳ badges into wiki/decision-journal.md.
+    try:
+        from src import decision_grader as _decision_grader
+        _grades = _decision_grader.evaluate(_watch_data)
+        if _grades:
+            log.info("decision_grader: graded %d decisions (%s)",
+                     len(_grades),
+                     ", ".join(f"{k}={v}" for k, v in
+                                _decision_grader.summary_counts(_grades).items() if v))
+        decision_grades_html = _decision_grader.render_summary_html(
+            _grades, red=BAD, green=GOOD, mute=MUTE, line=LINE,
+        )
+        _decision_grader.write_grades_snapshot(_grades)
+    except Exception as exc:
+        log.warning("decision_grader render skipped (%s: %s)", type(exc).__name__, exc)
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
@@ -6606,7 +7957,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
             f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
@@ -6639,8 +7990,13 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
             f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
             f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
-            # -- CSA SCORECARD --
-            f"{wrap(_strip(10) + build_csa_scorecard_page(csa, date_str))}{pb}"
+            # -- CSA SCORECARD -- Skipped entirely when the CSA2010 Preview
+            # Scorecard CSV is absent (per Jeff 2026-06-12: don't ship a
+            # "data unavailable" placeholder page). The page re-appears
+            # automatically once the CSV lands in OneDrive/SambaSafety/.
+            + ((wrap(_strip(10) + build_csa_scorecard_page(csa, date_str)) + pb)
+               if (csa and csa.get("basics")) else "")
+            +
             # -- ACCOUNTING --
             # build_page_ar_accounting (standalone "AR Overdue & Alvys
             # Accounting" page) was dropped per user — its 31+ overdue
@@ -6657,7 +8013,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # safety event in the last 190 days, sorted newest-coached
             # first. Coach name column is a placeholder until Samsara
             # exposes user attribution — see build_page_coached docstring.
-            f"{wrap(build_page_coached(samsara, date_str))}"
+            f"{wrap(build_page_coached(samsara, date_str))}{pb}"
+            # FINAL PAGE — data refresh status: when each source last updated and
+            # whether its refresh workflow ran clean.
+            f"{wrap(build_refresh_status_page(refresh_status, date_str))}"
             f"</body></html>")
 
 
@@ -6666,21 +8025,33 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                  alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None,
-                 dso_hist_sheets=None) -> str:
+                 dso_hist_sheets=None, refresh_status=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
-    alvys_entities = compute_alvys_entities(alvys_sheets) if alvys_sheets else {}
+    alvys_entities = compute_alvys_entities(
+        alvys_sheets, pipeline_sheets=alvys_pipeline_sheets
+    ) if (alvys_sheets or alvys_pipeline_sheets) else {}
     qb_pnl = compute_qb_pnl(next(iter(pnl_sheets.values()))) if pnl_sheets else {}
     qb_ar = compute_qb_ar_detail(next(iter(ar_sheets.values()))) if ar_sheets else {}
     ar_hist = compute_balance_history(next(iter(ar_hist_sheets.values())), "Total_AR", _AR_COMPANIES) if ar_hist_sheets else ([], [])
     ap_hist = compute_balance_history(next(iter(ap_hist_sheets.values())), "Total_AP") if ap_hist_sheets else ([], [])
     samsara = compute_samsara(samsara_sheets) if samsara_sheets else None
     alvys_ar = compute_alvys_ar(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
+    # Realign Alvys aging to QB due dates so the two systems' past-due
+    # totals match for any matched invoice — closes the "Alvys saw it
+    # past due before QB did" gap that was driving the unexplained
+    # delta on the page 1 AR PAST DUE tile.
+    alvys_ar = realign_alvys_aging_to_qb(alvys_ar, qb_ar) or alvys_ar
     mileage = compute_driver_mileage(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     uninvoiced = compute_alvys_uninvoiced(alvys_pipeline_sheets) if alvys_pipeline_sheets else {}
     rpm_trend = compute_rpm_trend(alvys_sheets) if alvys_sheets else None
     rpm_goal = compute_rpm_goal(alvys_sheets, qb_pnl) if alvys_sheets else None
     rpm_goal_trend = compute_rpm_goal_trend(alvys_sheets, rpm_goal) if alvys_sheets else None
-    margin_projection = compute_margin_projection(alvys_sheets) if alvys_sheets else None
+    # Pass alvys_entities so the projection's MTD margin % matches the
+    # page-1 entity table exactly (entity table uses Pipeline Trips with
+    # open-trip-drop; local-calc would diverge).
+    margin_projection = compute_margin_projection(
+        alvys_pipeline_sheets, alvys_entities=alvys_entities,
+    ) if alvys_pipeline_sheets else None
     warnings = _alvys_health(alvys_sheets) if alvys_sheets else []
     warnings += _rpm_goal_health(rpm_goal)
     for w in warnings:
@@ -6691,7 +8062,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     # Read from the same Alvys Pipeline.xlsx as everything else — the
     # `Drivers` sheet is added by src.main when the pipeline writes it.
     alvys_drivers = compute_alvys_drivers(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
-    equipment = compute_alvys_equipment(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    equipment = compute_alvys_equipment(alvys_pipeline_sheets, samsara_sheets=samsara_sheets) if alvys_pipeline_sheets else None
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
     # DSO history: filter to X-Trux only (asset fleet — same scope the user sees in QB).
@@ -6708,7 +8079,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
                       avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm, csa=csa)
+                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
@@ -7029,10 +8400,16 @@ def main() -> int:
     from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
     to_emails = [e.strip() for e in os.environ.get("SCORECARD_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
 
-    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master 2026.xlsx")
-    # If set, read the Alvys workbook from this exact OneDrive sharing URL instead of
-    # by name — avoids reading the wrong file when a duplicate of the same name exists.
-    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", "").strip()
+    # Power BI reads the no-space "Alvys Master2026.xlsx" (3 tabs Fuel/Loads/Trips,
+    # re-uploaded every afternoon). NOTE the duplicate WITH a space
+    # ("Alvys Master 2026.xlsx") is a different, fuller workbook — do not read it.
+    # The primary read is the share URL below; this name is only a fallback.
+    alvys_path = os.environ.get("SCORECARD_ALVYS_PATH", "Alvys Master2026.xlsx")
+    # Read the Alvys workbook from this exact OneDrive sharing URL instead of by
+    # name — avoids reading the wrong file when a duplicate of the same name
+    # exists. Default is the canonical "Alvys Master2026.xlsx" the Power BI
+    # XFreight Report reads, so brief and report always see the same data.
+    alvys_share = os.environ.get("SCORECARD_ALVYS_SHARE_URL", ALVYS_MASTER_SHARE_URL).strip()
     alvys_pipeline_path = os.environ.get("SCORECARD_ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
     qb_dir = os.environ.get("SCORECARD_QB_DIR", "QuickBooks").strip("/")
     samsara_path = os.environ.get("SCORECARD_SAMSARA_PATH", "Samsara/Samsara Master.xlsx")
@@ -7077,6 +8454,22 @@ def main() -> int:
     if alvys_sheets is None:
         alvys_sheets = _safe_read(token, upn, alvys_path, missing, "Alvys Master 2026")
         data_asof = get_file_modified(token, upn, alvys_path)
+    # Wrong-file canary (non-fatal). The correct Alvys Master2026.xlsx has
+    # Fuel/Loads/Trips tabs. Log the tabs every run so the Actions log shows
+    # exactly which workbook was read, and flag it loudly on the email if the
+    # expected tabs are missing — but do NOT abort (a hard fail here once blanked
+    # the whole brief). The share URL is the source of truth; this just surfaces
+    # a surprise instead of silently shipping it.
+    if alvys_sheets is not None:
+        tabs = sorted(alvys_sheets.keys())
+        got = {str(s).strip().lower() for s in alvys_sheets.keys()}
+        log.info("Alvys workbook tabs read: %s", tabs)
+        missing_tabs = ALVYS_EXPECTED_TABS - got
+        if missing_tabs:
+            warn = (f"Alvys workbook is missing expected tab(s) {sorted(missing_tabs)} "
+                    f"(got {tabs}) — this may be the WRONG file; numbers could be off.")
+            log.warning(warn)
+            missing.append("Alvys workbook (unexpected tabs — verify it's Alvys Master2026.xlsx)")
     alvys_pipeline_sheets = _safe_read(token, upn, alvys_pipeline_path, missing, "Alvys Pipeline")
     pnl_sheets = _safe_read(token, upn, f"{qb_dir}/QB_ProfitAndLoss.xlsx", missing, "QB P&L")
     ar_sheets = _safe_read(token, upn, f"{qb_dir}/QB_AgedReceivableDetail.xlsx", missing, "QB AR aging")
@@ -7112,9 +8505,14 @@ def main() -> int:
     if missing:
         log.warning("Required files missing: %s — those sections will be blank.", ", ".join(missing))
 
+    # Data refresh status for the brief's final page: when each source last
+    # updated (OneDrive file mtime) + its latest refresh-workflow run. Fail-soft.
+    refresh_status = compute_refresh_status(token, upn, alvys_share=alvys_share, qb_dir=qb_dir,
+                                            samsara_path=samsara_path, samba_path=samba_path)
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
-                        sambasafety_sheets=samba_sheets, dso_hist_sheets=dso_hist_sheets)
+                        sambasafety_sheets=samba_sheets, dso_hist_sheets=dso_hist_sheets,
+                        refresh_status=refresh_status)
     # Pre-send review — two layers:
     #   1. scorecard_lint  — rule-based, always on, catches known regressions
     #   2. scorecard_review — LLM-based (Claude), opt-in via ANTHROPIC_API_KEY,

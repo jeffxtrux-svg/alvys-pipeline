@@ -8,18 +8,18 @@ related: ["[[Customer Portfolio]]", "[[Financial Performance]]"]
 
 # Billion Auto
 
-Billion Auto Parts is XFreight's largest confirmed dedicated-lane customer, generating ~$2,150/day across two lanes in Sioux Falls and the regional circuit. The rate agreement ran June 1, 2025 – June 1, 2026 and **has just expired** as of the seed date (June 5, 2026).
+Billion Auto Parts is XFreight's largest confirmed dedicated-lane customer, generating ~$2,150/day across two lanes in Sioux Falls and the regional circuit. The rate agreement **renewed in June 2026** — both dedicated lanes maintained, with a **fuel surcharge added** for fuel-price protection this year.
 
 ## Summary
 
-X-Trux holds a daily rate agreement with Billion Auto for two specific lanes: a round-trip between Sioux Falls and Rapid City, and a daily circuit through Worthington MN and Mason City IA. Combined daily revenue: $2,150. Status as of June 5, 2026: the agreement expired — renewal/renegotiation status unknown.
+X-Trux holds a daily rate agreement with Billion Auto for two specific lanes: a round-trip between Sioux Falls and Rapid City, and a daily circuit through Worthington MN and Mason City IA. Combined daily revenue: $2,150. Status: **renewed June 2026** — both lanes maintained, fuel surcharge added for protection.
 
 ## Key Ideas
 
 - **$47K/month** in daily-volume revenue when both lanes are active (~$2,150/day × ~22 operating days).
 - Both lanes are bundled: if Billion removes one lane, either party can exit the whole agreement.
 - Early-morning pickup windows, spotted-trailer operation, no freight-volume guarantee.
-- **Action item:** Confirm renewal status — this is the most immediate revenue risk in the portfolio.
+- **Renewed June 2026** (both lanes maintained + fuel surcharge added) — the portfolio's most immediate revenue risk is now secured.
 
 ## Lanes
 
@@ -47,19 +47,14 @@ X-Trux holds a daily rate agreement with Billion Auto for two specific lanes: a 
 | Carrier | X-Trux Inc (MC #375851) |
 | Customer contact | Matthew Carpenter |
 | X-Trux contact | Jeff Hannahs |
-| Term | June 1, 2025 – **June 1, 2026** (expired) |
+| Term | **Renewed June 2026** (both lanes maintained) |
 | Combined-lane provision | Yes — if one lane removed, either party can exit |
-| FSC adjustment | Rates can be reviewed if fuel surcharge moves materially |
+| Fuel surcharge | **Added in the 2026 renewal** for fuel-price protection (was review-only before) |
 | Volume guarantee | None — rate agreement only |
 
-## Status as of June 5, 2026
+## Status — RENEWED (June 2026)
 
-**EXPIRED.** The agreement lapsed on June 1, 2026. Three scenarios:
-1. A renewal has been signed (not yet captured in OneDrive).
-2. Renegotiation in progress.
-3. The relationship is being wound down.
-
-At ~$47K/month, this is material daily-volume revenue. Jeff Hannahs (signed the agreement) is the point of contact for renewal.
+**RENEWED** (Jeff, 2026-06-13). Both dedicated lanes were **maintained** — the Sioux Falls ↔ Rapid City round trip and the Worthington / Mason City circuit — and a **fuel surcharge was added to the agreement for protection this year**, hedging fuel-price swings. At ~$47K/month this is material daily-volume revenue; it was the portfolio's most immediate revenue risk and is now secured. Jeff Hannahs is the point of contact.
 
 ## Connections
 

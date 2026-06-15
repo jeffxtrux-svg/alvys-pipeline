@@ -229,6 +229,22 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
     if samba:
         n_high = len(samba.get("high_risk") or [])
         lic_issues = samba.get("license_issues") or []
+        # Invalid License Report — a disqualified/suspended CDL grounds the
+        # driver immediately; name each one with the state action and date.
+        for d in samba.get("invalid_licenses") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            status = str(d.get("status", "INVALID")).upper()
+            act_date = d.get("action_date")
+            try:
+                # NaT raises on strftime — the except keeps the sentence dateless.
+                when = (f" effective {act_date.strftime('%b %d, %Y')}"
+                        if act_date is not None else "")
+            except Exception:
+                when = ""
+            parts.append(
+                f"URGENT: {name}'s license is {status} per SambaSafety's "
+                f"Invalid License Report{when} — pull from dispatch until "
+                f"cleared {_pgref(2)}.")
         if n_high:
             parts.append(
                 f"Driver compliance: {n_high} driver"
@@ -285,27 +301,34 @@ def bottom_line(*, alvys: dict | None, qb_pnl: dict | None,
                 f"{name} CDL will expire on {date_str}, and that is "
                 f"{int(d['license_days'])} days from expiration {_pgref(2)}.")
 
-    # Equipment compliance — surface overdue inspections at the executive
-    # level so they don't get buried on the Equipment Compliance pages.
-    # Both tractors and trailers use the 120-day company DOT policy (fires
-    # before the federal 365-day annual rule). Requires LastInspectionDate
-    # to be populated by src/main.py.
+    # Equipment compliance — surface units flagged for inspection at the
+    # executive level so they don't get buried on the Equipment Compliance
+    # pages. Keyed on the 120-day company policy (what XFreight tracks
+    # against; field is `annual_days` in the equipment dict but for
+    # tractors the user-entered InspectionExpirationDate IS the 120d
+    # company-policy date, not the federal 365d). Federal 365d is the
+    # legal backstop; see CLAUDE.md core memory + xfreight-dot-inspection-policy.md.
     if equipment:
         od_tractors = [t for t in (equipment.get("tractors") or [])
-                       if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < -30]
         if od_tractors:
             units = ", ".join(str(t.get("unit") or "?") for t in od_tractors[:8])
             more = f" and {len(od_tractors) - 8} more" if len(od_tractors) > 8 else ""
+            # 120d company policy is the operational threshold XFreight
+            # tracks against. Past-policy units are flagged for inspection
+            # (still in service); federal 365d is the legal backstop that
+            # would actually trigger out-of-service (245+ days past
+            # company policy). See xfreight-dot-inspection-policy.md.
             parts.append(
-                f"Tractors overdue on 120-day company DOT policy: "
+                f"Tractors flagged for inspection (past 120d company policy): "
                 f"{units}{more} {_pgref(5)}.")
         od_trailers = [t for t in (equipment.get("trailers") or [])
-                       if isinstance(t.get("policy_days"), int) and t["policy_days"] < 0]
+                       if isinstance(t.get("annual_days"), int) and t["annual_days"] < -30]
         if od_trailers:
             units = ", ".join(str(t.get("unit") or "?") for t in od_trailers[:8])
             more = f" and {len(od_trailers) - 8} more" if len(od_trailers) > 8 else ""
             parts.append(
-                f"Trailers overdue on 120-day company DOT policy: "
+                f"Trailers flagged for inspection (past 120d company policy): "
                 f"{units}{more} {_pgref(6)}.")
 
     # Speed-over-limit escalations — name the drivers whose page-4
@@ -459,7 +482,28 @@ def action_items(*, alvys: dict | None, qb_ar: dict | None,
     # 'warn' for the 30-day horizon.
     if samba:
         lic_issues = samba.get("license_issues") or []
-        expired = [d for d in lic_issues if d.get("expired")]
+        # Invalid License Report — disqualification/suspension is the most
+        # severe license state; it gets its own card, and those drivers are
+        # excluded from the generic CDL EXPIRED card so the wording stays
+        # accurate (a DISQUALIFIED license isn't "expired").
+        for d in samba.get("invalid_licenses") or []:
+            name = str(d.get("name", "")).strip() or "Driver"
+            status = str(d.get("status", "INVALID")).upper()
+            action = str(d.get("action", "")).strip()
+            act_date = d.get("action_date")
+            try:
+                when = (f" {act_date.strftime('%m/%d/%y')}"
+                        if act_date is not None else "")
+            except Exception:
+                when = ""
+            detail = (f"State action: {action}{when}. " if action else "")
+            items.append((
+                "bad",
+                f"CDL {status} · {name.upper()}",
+                f"{detail}Driver cannot legally operate — pull from "
+                f"dispatch until cleared. See {_pgref(2, paren=False)}."))
+        expired = [d for d in lic_issues
+                   if d.get("expired") and not d.get("invalid")]
         soon_7 = [d for d in lic_issues
                   if isinstance(d.get("days_to_exp"), int)
                   and 0 <= d["days_to_exp"] <= 7]
@@ -605,6 +649,10 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
     # Page 2 — SambaSafety (MVR + license)
     if samba and samba.get("monitored"):
         bits = [f"{int(samba['monitored'])} drivers monitored"]
+        n_invalid = len(samba.get("invalid_licenses") or [])
+        if n_invalid:
+            bits.append(f"{n_invalid} license{'s' if n_invalid != 1 else ''} "
+                        f"INVALID/DISQUALIFIED")
         n_lic = len(samba.get("license_issues") or [])
         if n_lic:
             bits.append(f"{n_lic} license issue{'s' if n_lic != 1 else ''}")
@@ -642,8 +690,10 @@ def page_strips(*, alvys: dict | None, qb_ar: dict | None,
 
     # === SAFETY (continued) ===
     # Pages 5+6 — Equipment Compliance (tractors / trailers)
-    out[5] = "Tractor annual inspections and registration deadlines. Red = overdue or ≤30 days."
-    out[6] = "Trailer annual inspections and registration deadlines. Red = overdue or ≤30 days."
+    out[5] = ("Tractor 120-day company-policy inspection and registration deadlines. "
+              "Red = past 120d policy (flagged for inspection, remains in service).")
+    out[6] = ("Trailer 120-day company-policy inspection and registration deadlines. "
+              "Red = past 120d policy (flagged for inspection, remains in service).")
 
     # === OPERATIONAL ===
     # Page 7 — Driver Mileage

@@ -1,0 +1,76 @@
+# Weekly Risk & Decisions Report — a SECONDARY email, separate from the daily
+# executive brief. Renders the knowledge base's risk-register + decision-journal
+# pages into a branded email with "Discuss with Claude" links.
+#
+# Independent of scorecard_email.yml — the daily brief is untouched. Sent to
+# Jeff only for now.
+
+name: Weekly Risk & Decisions Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipients:
+        description: 'Comma-separated recipient override (default: Jeff only).'
+        required: false
+        default: ''
+  # Editing this file fires the report on push — an on-demand send (to Jeff),
+  # handy from mobile when the Actions "Run workflow" button isn't reachable.
+  push:
+    paths:
+      - .github/workflows/decision_report.yml
+  # trigger: 2026-06-13 — initial build of the weekly Risk & Decisions report.
+  schedule:
+    # Monday 7:00am Central year-round (DST-proof dual cron + CT gate).
+    # 7am CDT = 12:00 UTC; 7am CST = 13:00 UTC. The gate passes only the cron
+    # whose fire lands on 7am CT, so exactly one runs each Monday.
+    - cron: '0 12 * * 1'   # 7:00am CDT Mon / 6:00am CST Mon (gated out under CST)
+    - cron: '0 13 * * 1'   # 8:00am CDT Mon (gated out under CDT) / 7:00am CST Mon
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Gate to 7am CT Monday
+        # Only the DST-correct cron passes (CT hour == 7), so exactly one of the
+        # two scheduled slots sends each Monday. Manual / push runs bypass.
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          CT_DOW=$(TZ=America/Chicago date +%u)   # 1 = Monday
+          echo "Central time: hour=${CT_HOUR} dow=${CT_DOW}"
+          if [ "$CT_HOUR" -ne 7 ] || [ "$CT_DOW" -ne 1 ]; then
+            echo "Not 7am CT Monday — skipping this slot."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Build and send Risk & Decisions report
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          # Jeff only for now; the dispatch input overrides when set.
+          DECISION_REPORT_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.ONEDRIVE_USER_UPN }}
+        run: python -m src.decision_report

@@ -39,6 +39,7 @@ Per the rate-per-mile-goal commits earlier this session:
 
 - Liability insurance was previously tracked as a separate $0.07/mi line in the cost-out.
 - In 2026 a rate hike pushed insurance higher, and the office overhead pin was bumped from $0.92 to $0.98/mi to absorb the increase. The separate insurance surcharge constant `RPM_GOAL_INSURANCE_SURCHARGE` was zeroed at that point so insurance isn't double-counted.
+- **Renewal update (Jeff, 2026-06-13):** the 2026 Acrisure renewal **went through May 1, 2026** carrying a **~$0.08–0.10/mi premium increase**, already figured into the costing. NOTE: the pin bump above ($0.92→$0.98 ≈ $0.06/mi) looks ~$0.02–0.04/mi short of the stated $0.08–0.10/mi — confirm the overhead pin / rate-per-mile goal fully reflects it. A different broker/carrier may be needed down the road; evaluate before the next renewal.
 - See `xfreight-rate-per-mile-goal.md` for details.
 
 ## Insurance payments (from Final Insurancee.xlsx, 2025)

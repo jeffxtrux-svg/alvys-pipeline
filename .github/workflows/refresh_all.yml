@@ -25,6 +25,15 @@ on:
           - 'true'
           - 'false'
         default: 'true'
+  # Editing this file fires a full refresh on push — an on-demand escape hatch
+  # for when the Actions "Run workflow" button isn't handy. include_scorecard is
+  # unset on push, so the scorecard child uses its default (sends), to Jeff only.
+  push:
+    paths:
+      - .github/workflows/refresh_all.yml
+  # trigger: 2026-06-13 — one-shot full refresh (clears the QB-only past-due
+  # orphans now that they're invoiced) + deliver the brief with the finished
+  # Data Refresh Status page (10 sources, API labels).
 
 jobs:
   alvys:
@@ -51,5 +60,10 @@ jobs:
     name: Scorecard email
     needs: [alvys, samsara, quickbooks, sambasafety]
     if: inputs.include_scorecard != 'false'
+    # scorecard_email.yml requests contents: write (it commits the Karpathy-Wiki
+    # archive). A called workflow can't request more than the caller grants, and
+    # this caller job otherwise defaults to contents: read — so grant write here.
+    permissions:
+      contents: write
     uses: ./.github/workflows/scorecard_email.yml
     secrets: inherit

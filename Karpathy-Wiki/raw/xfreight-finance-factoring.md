@@ -1,5 +1,7 @@
 # XFreight factoring options (seeded 2026-06-05 from OneDrive)
 
+> **Update (2026-06-13, Jeff):** **Triumph SELECTED**; onboarding ~June 16–17, 2026. Onboarding required paying off the operating loan — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the difference. Supersedes "decision pending" below.
+
 > Source: `XFreight - Claude Working Files/03 - Finance/Factoring/Factoring Companies.xlsx`
 > (factoring vendor comparison, last modified 2025-10-02) + `Understanding Factoring
 > in Alvys | Help Center.pdf` (Alvys factoring setup help, 2026-02-04).

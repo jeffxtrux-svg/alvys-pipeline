@@ -85,13 +85,20 @@ def _from_load(path: str):
 # Computed columns
 # ===========================================================================
 def _gross_margin(record: dict):
-    """Customer Revenue - Trip Value. Works on Load or Trip records."""
+    """Customer Revenue − (Driver Rate + Carrier Rate).
+
+    Matches the master-workbook rule: cost is the SUM of driver pay and
+    outside-carrier pay. Most loads have only one populated, but brokered
+    loads can carry a small driver pay on top of the carrier rate — both
+    are real cost, so both subtract from margin."""
     if "LoadNumber" in record and "Stops" in record and "CustomerRate" in record:
         revenue = _get_nested(record, "CustomerRate.Amount")
-        trip = trip_for_load(record)
-        cost = _get_nested(trip, "TripValue.Amount") if trip else None
+        cost = (_driver_rate_via_trip(record) or 0) + (_carrier_rate_via_trip(record) or 0)
     else:
-        cost = _get_nested(record, "TripValue.Amount")
+        carrier = _get_nested(record, "Carrier.Rate.Amount")
+        if not isinstance(carrier, (int, float)) or carrier < 0:
+            carrier = 0
+        cost = (_driver_rate_from_trip(record) or 0) + carrier
         load = load_for_trip(record)
         revenue = _get_nested(load, "CustomerRate.Amount") if load else None
     if revenue is None or cost is None:
@@ -312,7 +319,12 @@ def _mileage_pay_from_trip(trip: dict) -> float:
 
 
 def _driver_rate_via_trip(record: dict):
-    """For Loads: hop to joined trip, return mileage pay (loaded + empty)."""
+    """For Loads: return mileage pay (loaded + empty) from Driver1.RatesV2.
+
+    Driver Rate is *company-driver pay only*. Brokered loads' outside-carrier
+    cost lives in the separate "Carrier Rate" column — consumers compute
+    effective load cost as Driver Rate + Carrier Rate, so putting the carrier
+    rate here too would double-count it."""
     trip = trip_for_load(record)
     if not trip:
         return 0
@@ -320,8 +332,19 @@ def _driver_rate_via_trip(record: dict):
 
 
 def _driver_rate_from_trip(record: dict):
-    """For Trip records: return mileage pay directly."""
+    """For Trip records: company-driver mileage pay only (see _driver_rate_via_trip)."""
     return _mileage_pay_from_trip(record)
+
+
+def _carrier_rate_via_trip(record: dict):
+    """For Loads: outside-carrier cost from the matched trip's Carrier.Rate.Amount."""
+    trip = trip_for_load(record)
+    if not trip:
+        return 0
+    carrier_rate = _get_nested(trip, "Carrier.Rate.Amount")
+    if isinstance(carrier_rate, (int, float)) and carrier_rate > 0:
+        return carrier_rate
+    return 0
 
 
 # --- Office name resolution -------------------------------------------------
@@ -780,6 +803,7 @@ TRIPS_COLUMNS = [
     ("Pickup Market",                       _from_load("PickupMarket")),
     ("Dropoff Market",                      _from_load("DropoffMarket")),
     ("Trip #",                              "TripNumber"),
+    ("Load #",                              "LoadNumber"),
     ("Order #",                             "OrderNumber"),
     ("Customer Revenue",                    _from_load("CustomerRate.Amount")),
     ("Driver Rate",                         _driver_rate_from_trip),

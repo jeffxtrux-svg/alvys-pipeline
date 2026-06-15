@@ -23,13 +23,35 @@ Total Driver Rate =
 Total Carrier Rate =
     SUM(Loads[Carrier Rate])
 
+// Effective cost per load, keyed off the load's Office (entity):
+//  • X-Linx (brokerage) loads: Driver Rate + Carrier Rate. The carrier
+//    payout is the real cost, and some brokered loads ALSO carry a small
+//    driver pay (e.g. DR $59.69 + CR $1,765.58) — both sum.
+//  • X-Trux / XFreight (asset) loads: Driver Rate ONLY. The Carrier Rate
+//    column on asset loads holds internal revenue allocation (own fleet /
+//    owner-ops), not a cost — counting it overstates cost and flips asset
+//    margins negative. Carrier-name matching is unreliable here (owner-op
+//    and blank carrier labels), so the rule keys off Office.
+Total Load Cost =
+    SUMX(
+        Loads,
+        Loads[Driver Rate]
+            + IF(
+                CONTAINSSTRING(Loads[Office], "LINX"),
+                Loads[Carrier Rate],
+                0
+            )
+    )
+
+// Computed from Total Load Cost so brokered loads include Carrier Rate
+// (not the pre-calculated Gross Margin column, which may be stale).
 Total Gross Margin =
-    SUM(Loads[Gross Margin])
+    [Total Customer Revenue] - [Total Load Cost]
 
 Gross Margin % =
     DIVIDE(
-        SUM(Loads[Gross Margin]),
-        SUM(Loads[Customer Revenue]),
+        [Total Gross Margin],
+        [Total Customer Revenue],
         0
     )
 
@@ -81,7 +103,7 @@ Avg Loaded RPM =
 
 Driver Rate Per Mile =
     DIVIDE(
-        SUM(Loads[Driver Rate]),
+        [Total Load Cost],
         SUM(Loads[Total Dispatch Mileage]),
         0
     )

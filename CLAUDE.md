@@ -119,13 +119,26 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `refresh.yml` (Alvys) | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `samsara_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `qb_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
-| `sambasafety_refresh.yml` | 2:30am | `30 7,8 * * *` | `{2}` |
+| `sambasafety_refresh.yml` (CSV-drop) | 1am + 3am (pre-brief) + every 2h 4am–6pm | `0 0,6-23 * * *` (hourly arms) | `{1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18}` |
 | `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | `30 9,10`, `0 18,19`, `30 22,23 * * *` | `{4, 13, 17}` |
 | `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups at 5:15 / 5:30 / 6:30 / 7am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5`, skip `6` |
 | `scorecard_healthcheck.yml` (recover dropped runs) | 6:00am — checks OneDrive marker; dispatches scorecard if missing | `0 11,12 * * *` | `{6}` |
 | `daily_upload.yml` (MTD load report) | 5:00am | `0 10,11 * * *` | `{5}` |
 | `daily_upload_healthcheck.yml` (recover dropped runs) | 6:00am — checks `DailyUpload/sent-*.txt` marker; dispatches daily upload if missing | `0 11,12 * * *` | `{6}` |
 | `karpathy_compile.yml` (Karpathy-Wiki librarian) | 7:15am / 1:00pm (each with 30-min backup) | `15,45 12,13`, `0,30 18,19 * * *` | `{7, 13}` |
+
+**Off-GitHub backstop (`ops/cron-trigger/`).** All of the above — staggered
+backup crons *and* the 6am healthchecks — are built on GitHub's own `schedule:`
+cron, which is best-effort and silently drops runs under load. On 2026-06-08 it
+dropped the entire morning batch (every scorecard/daily-upload slot **and** both
+healthchecks), so nothing emailed. A small Cloudflare Worker
+(`ops/cron-trigger/worker.js`, runs on Cloudflare's scheduler) is the one layer
+outside GitHub: each morning (5:30am CT — dual UTC crons + an in-Worker
+America/Chicago hour-gate for DST) it dispatches the two **healthcheck**
+workflows via the GitHub API. Because the healthchecks
+are marker-gated, this is idempotent — it no-ops on normal mornings and recovers
+the send on drop mornings. Setup (a fine-grained PAT scoped to Actions:RW on
+this repo, stored as a Cloudflare secret) is in `ops/cron-trigger/README.md`.
 
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
@@ -144,14 +157,14 @@ The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Li
 9. Fleet idle — all trucks ranked by avg idle/wk over 5 settlement weeks, with per-week idle hours, idle %, idle-gallons est. (`idle_hours × 0.8 gph` fallback) and MPG (`build_page_idle`).
 
    *CSA SCORECARD (page 10):*
-10. **FMCSA carrier scorecard** — BASIC percentile ranks for X-Trux, Inc. (DOT #841776) from the SambaSafety CSA2010 Preview Scorecard CSV (`build_csa_scorecard_page`; data shape from `compute_csa_scorecard`). Each BASIC is flagged INTERVENTION LIKELY when its percentile crosses the FMCSA threshold — `65th` for Unsafe Driving and Crash Indicator, `80th` for all others (`_CSA_INTERVENTION`). Fails soft: if `CSA2010 Preview Scorecard.csv` is absent from `OneDrive/SambaSafety/`, the page renders a "data unavailable" notice instead of crashing. See `docs/knowledge-base/connector-sambasafety.md § The CSA Scorecard report`.
+10. **FMCSA carrier scorecard** — BASIC percentile ranks for X-Trux, Inc. (DOT #841776) from the SambaSafety CSA2010 Preview Scorecard CSV (`build_csa_scorecard_page`; data shape from `compute_csa_scorecard`). Each BASIC is flagged INTERVENTION LIKELY when its percentile crosses the FMCSA threshold — `65th` for Unsafe Driving and Crash Indicator, `80th` for all others (`_CSA_INTERVENTION`). Fails soft: if `CSA2010 Preview Scorecard.csv` is absent from `OneDrive/SambaSafety/`, the page is **skipped entirely** (no placeholder ships); it re-appears automatically when the CSV is present. See `docs/knowledge-base/connector-sambasafety.md § The CSA Scorecard report`.
 
    *ACCOUNTING (pages 11–13):*
 11. AR overdue (31+ days) from QuickBooks + Alvys un-invoiced loads + 90+ AR, combined (`build_page_ar_accounting`). Top section is the QB AR overdue list; the lower sections are the un-billed gap behind most of the QB-vs-Alvys variance plus the 90+ collections list.
 12. QB-vs-Alvys reconciliation by customer (`compute_ar_customer_reconciliation`; rows sum to the page-1 variance) (`build_page7`).
 13. Bill-by-bill matching (`compute_bill_reconciliation`) — auto-picks the best key between Alvys invoice # / Load # vs QB `Num`, with `_norm_inv` stripping a leading alpha prefix (handles QuickBooks' "T" + load-number convention) (`build_page8`).
 
-All times are **Central wall-clock year-round** via the dual-cron + CT-hour-gate pattern above. Pulls (Alvys / Samsara / QB) fire concurrently at **4am / 11am / 5pm CT**; SambaSafety lands at **2:30am CT** so its workbook is in OneDrive ahead of the scorecard; the scorecard email primary follows at **5:00am CT** with backup slots through ~6am CT; the Google Sheets KPI dashboard refresh runs at **4:30am / 1:00pm / 5:30pm CT** (three updates per day so the dashboard tracks the same morning / midday / evening cadence as the OneDrive pulls). Manual `workflow_dispatch` / `workflow_call` / `push` triggers all bypass the season gate so on-demand runs work at any hour. The DST flip in early-Nov / mid-Mar requires no code changes.
+All times are **Central wall-clock year-round** via the dual-cron + CT-hour-gate pattern above. `sambasafety_refresh.yml` is armed **hourly** (not just at the target±1 UTC hours) because GitHub delivered its old 2-fires/day crons 2–5 hours late every night of 2026-06-05→12 and the single-hour gate skipped every run while showing green — with hourly arms plus a multi-hour target set, a drift-delayed fire just catches the next slot. SambaSafety is also **CSV-drop only** as of 2026-06-12: the API token expired 2026-06-02 (`Forbidden` on every call) and the owner chose to retire API mode — `SAMBASAFETY_API_TOKEN` is intentionally not passed in the workflow, which makes `src/sambasafety_main.py` read the CSVs that Power Automate drops into `OneDrive/SambaSafety/` several times a day. Pulls (Alvys / Samsara / QB) fire concurrently at **4am / 11am / 5pm CT**; the scorecard email primary follows at **5:00am CT** with backup slots through ~6am CT; the Google Sheets KPI dashboard refresh runs at **4:30am / 1:00pm / 5:30pm CT** (three updates per day so the dashboard tracks the same morning / midday / evening cadence as the OneDrive pulls). Manual `workflow_dispatch` / `workflow_call` / `push` triggers all bypass the season gate so on-demand runs work at any hour. The DST flip in early-Nov / mid-Mar requires no code changes.
 QuickBooks rotation needs `GH_PAT` (→ `GH_TOKEN`) so the job can `gh secret set`
 the new refresh token; without it the run still works but warns and the old
 token lasts ~100 days.
@@ -168,6 +181,62 @@ reads — a shared name would make the pipeline overwrite the manual file.** The
 daily scorecard email reads that same manual `"Alvys Master 2026.xlsx"` (not the
 pipeline output) so its KPIs match the report. The full secret-by-secret
 reference is in `docs/knowledge-base/automation-and-secrets.md`.
+
+## Core operating memory — employee responsibilities (org accountability map)
+
+Role-focused brief delivery. Owners get the brief for their area; Jeff + JB
+are cc'd on everything not directly owned by them for governance visibility.
+Canon: `Karpathy-Wiki/raw/xfreight-employee-responsibilities.md`.
+
+| Person(s) | Owns | Primary brief |
+|---|---|---|
+| **Audra** | Safety + Compliance · invoice closeout (loads invoiced timely + carrier invoices entered into Alvys) | Safety & Compliance (5am daily) + Financial Brief (7am daily) |
+| **Jackson + Dan** | On-time delivery · truck coverage / return loads · drivers hitting 2,750 mi/wk avg · driver dispatching · maintenance on trailers + Truk-Way tractors · overall brokerage (X-Linx) operations | Operational / Maintenance (daily) |
+| **Jeff + JB** | Accounting / financial · sales · recruiting | Accounting / Financial (daily); Sales + Recruiting (weekly, Jeff primary, JB cc) |
+| **Dan + JB + Jeff** | Consolidated leadership view | Executive (daily) |
+
+When writing brief recipient lists, playbook `owner:` fields, or risk-register
+`owner:` fields, route owner-specific items to the person above; cc Jeff + JB
+unless they're the primary. New brief workflows use the same hardcoded literal
+fallback pattern as `scorecard_email.yml` so the right audience is reached
+even if a secret gets emptied.
+
+**Tractor inspections — split ownership by fleet.** *X-Trux* (owner-operator)
+tractors fall under Audra's safety + compliance lane solo. *Truk-Way* fleet
+tractors are a **shared** responsibility: Audra (safety/CSA Maintenance BASIC)
+**plus** Jackson + Dan (Truk-Way tractor maintenance, per the responsibility
+row above). Until `main.py` adds `Truck.Fleet.Name` to the Trucks sheet, action
+items on Audra's brief can't be split per-fleet — the action's `owner` label
+calls out the shared piece explicitly ("Audra (Truk-Way tractors: shared w/
+Jackson + Dan)"). Trailer inspections are Jackson + Dan only (Audra's brief
+filters trailers out of the equipment action item + the Risk Watch strip's
+paired trailer text via `safety_relevant_signals`).
+
+## Core operating memory — read before touching equipment / safety code
+
+- **DOT inspection windows: 120-day company policy ≠ 365-day federal.** The
+  brief's Equipment Compliance pages render TWO distinct pills per fleet type:
+  - *"Annual inspection (365d federal):"* — the FMCSA rule. A unit listed here
+    as OVERDUE is **out of service per federal**. Almost never trips because of
+    the company policy below.
+  - *"DOT inspection (120d policy):"* — XFreight's voluntary, more-conservative
+    120-day window. A unit listed here as OVERDUE is past **company** policy and
+    needs scheduling; it is **still federally legal to run**. To actually be
+    past the federal 365d a unit would have to be **245+ days past the company
+    120d policy** (365 − 120 = 245).
+  - When writing prose / playbooks / risk entries about equipment compliance,
+    a unit past only the 120d company policy is **flagged as needing
+    inspection** — it remains in service. Do not call it "out of service" at
+    all (not "per FMCSA," not "per company policy"). The "out of service"
+    framing is reserved for the federal 365d threshold; default everywhere
+    else to "needs inspection" / "flagged for inspection."
+  - Why XFreight runs the tighter 120d: driver safety, equipment condition /
+    longevity, protecting CSA Maintenance BASIC score, catching issues at the
+    4-month mark vs the 12-month mark.
+  - **DOT inspections are covered by X-Trux Inc** for all equipment regardless
+    of which entity holds title or whether the unit is pulled by a company
+    driver or an OO.
+  - Canon: `Karpathy-Wiki/raw/xfreight-dot-inspection-policy.md`.
 
 ## Documentation map
 

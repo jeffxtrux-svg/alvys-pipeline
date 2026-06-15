@@ -16,6 +16,10 @@
 
 That's a ~$64K negotiating delta if the analysis is right.
 
+## Status update (Jeff, 2026-06-13)
+
+The **insurance renewal went through May 1, 2026** (+~$0.08–0.10/mi, now in the cost-out). The **billing reconciliation is RESOLVED — negotiated to $18,000 and paid**, below the ~$31K mid-estimate and near the ~$13K floor (well under the ~$95K ask). The credits-first negotiation below delivered the result.
+
 ## Item-by-item breakdown
 
 | Item | Amount | Category | Notes |
