@@ -856,11 +856,14 @@ def _safety_summary_block_inline(samsara: dict | None) -> str:
     body table.
 
     6-month-trend layout (per latest user direction):
-      Row 1: Safety events | HOS violations | DVIR defects | Coached
-      Row 2: Dismissed     | Recognized     | (empty)      | Fleet avg
-                                                              safety score
-                                                              (from Samsara)
-    Coached / Dismissed / Recognized bars come from binning
+      Row 1: Fleet avg     | HOS violations | DVIR defects | Coached
+             safety score  |                |              |
+             (Samsara)     |                |              |
+      Row 2: Safety events | Dismissed      | Recognized   | (spacer)
+    Safety events moved to row 2 so the second row is all bar charts
+    that resemble the safety-event 6-month visual; Fleet Avg Safety
+    Score (the only tile) sits in row 1's lead slot. Coached /
+    Dismissed / Recognized bars come from binning
     samsara.coached_events by state + coached_at month."""
     if not samsara:
         return ""
@@ -900,26 +903,27 @@ def _safety_summary_block_inline(samsara: dict | None) -> str:
         _pill("Samsara &middot; 0&ndash;100 &middot; higher better", "mute"),
     )
 
-    # Row 1: the existing events/hos/dvir trio, plus Coached in the
-    # slot that used to hold Fleet Avg Safety Score (now moved down).
+    # Row 1: Fleet Avg Safety Score lead, then HOS / DVIR / Coached.
+    # Safety Events moved to row 2 per latest user direction so row 2
+    # is uniformly bar-chart-shaped.
     safety_charts_row1 = (
-        chart("events", "Safety events", "per month &middot; *MTD")
+        fleet_score_tile
         + chart("hos", "HOS violations", "per month &middot; *MTD")
         + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
         + _bar_chart("Coached events", coached_ml[0], coached_ml[1],
                      "manager-reviewed / mo &middot; *MTD")
     )
 
-    # Row 2: the two new coaching-action series + an empty spacer +
-    # the relocated Fleet Avg Safety Score tile with Samsara
-    # attribution in the sub-pill.
+    # Row 2: all bar charts so the styling matches across the row —
+    # Safety Events (relocated here) leads, then the two coaching-
+    # action series, then a 25% spacer to keep the 4-col grid balanced.
     safety_charts_row2 = (
-        _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
-                   "no-action-needed / mo &middot; *MTD")
+        chart("events", "Safety events", "per month &middot; *MTD")
+        + _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
+                     "no-action-needed / mo &middot; *MTD")
         + _bar_chart("Recognized events", recognized_ml[0], recognized_ml[1],
                      "positive-driving / mo &middot; *MTD")
         + "<td class='tile-empty' width='25%' style='padding:6px;'></td>"
-        + fleet_score_tile
     )
 
     # Drop into a colspan=4 row so the 4-tile grid lines up with the
