@@ -63,6 +63,7 @@ from src.scorecard_email import (
     _find_col,
     _is_ar_excluded,
     _isnum,
+    _last_6_months,
     _monthly_counts,
     _mwtile,
     _pill,
@@ -871,31 +872,55 @@ def _unverified_onduty_logs(samsara_sheets: dict | None) -> tuple[int, str]:
 
 def _speed_window_trend(samsara: dict | None
                           ) -> tuple[list[str], list[float]]:
-    """Fleet-avg speed-over-limit % for the three windows Samsara
-    reports — 6mo / 3mo / MTD — rendered as a 3-bar trend. We don't
-    show 6 monthly bars because Samsara's DriverSafetyScores
-    aggregates speed-over-limit at the window level; there's no
-    per-month breakdown of time-over-limit ms. A SafetyEvents filter
-    on event_type containing "speed" returned 0 matches in practice
-    (Samsara tracks speed as a continuous metric on the score, not
-    as a discrete event type), so this is the right data source.
+    """Fleet-avg speed-over-limit % rendered as 6 monthly bars
+    (Jan..Jun*) so it matches the visual shape of the other 6-month
+    trend charts. Samsara only exposes speed time-over-limit at 3
+    window granularities (6mo / 3mo / MTD) — there's no per-month
+    breakdown — so we synthesize the monthly view via window-
+    decomposition algebra:
 
-    Pairs with page 4's per-driver Speed Over Limit detail: page 1
-    answers "is fleet speeding trending up/down" (3-bar shape), page
-    4 answers "which driver."
-    """
+      pct_6mo  = fleet-avg speed-over-limit % for the last 6 months
+      pct_3mo  = same for the last 3 months
+      pct_mtd  = same for the current month-to-date
+
+      Oldest 3 months (Jan/Feb/Mar) = 2*pct_6mo - pct_3mo
+        (algebra: 6mo total time = oldest_3_total + 3mo_total;
+        assuming equal monthly drive time, oldest_3 contributes
+        half the 6mo window time, so oldest_3_pct = 2*pct_6mo - pct_3mo.)
+      Middle 2 months (Apr/May) = (3*pct_3mo - pct_mtd) / 2
+        (similar derivation.)
+      Current month (Jun*) = pct_mtd
+
+    Months within each window share the same value (the chart shows
+    3 step-changes rather than 6 distinct heights) but the 6-bar
+    shape matches the other trend charts as requested. Subtitle
+    notes "approx. from 3 windows" so the reader knows the math."""
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
+    months = _last_6_months()
+    labels = []
+    for i, (yy, mm) in enumerate(months):
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        if i == len(months) - 1:
+            lab += "*"
+        labels.append(lab)
     if not scores_all:
-        return (["6 mo", "3 mo", "MTD*"], [0, 0, 0])
+        return labels, [0.0] * 6
 
     def _avg(key: str) -> float:
         vals = [r.get(key) for r in scores_all if _isnum(r.get(key))]
         return (sum(vals) / len(vals)) if vals else 0.0
 
-    p_6mo = round(_avg("speed_pct"), 1)
-    p_3mo = round(_avg("speed_pct_3mo"), 1)
-    p_mtd = round(_avg("speed_pct_mtd"), 1)
-    return (["6 mo", "3 mo", "MTD*"], [p_6mo, p_3mo, p_mtd])
+    pct_6mo = _avg("speed_pct")
+    pct_3mo = _avg("speed_pct_3mo")
+    pct_mtd = _avg("speed_pct_mtd")
+
+    older = max(0.0, 2 * pct_6mo - pct_3mo)
+    mid = max(0.0, (3 * pct_3mo - pct_mtd) / 2)
+    current = pct_mtd
+
+    # Map by month index: [oldest, oldest, oldest, mid, mid, current]
+    values = [round(older, 1)] * 3 + [round(mid, 1)] * 2 + [round(current, 1)]
+    return labels, values
 
 
 def _coaching_action_monthly(samsara: dict | None, state: str
@@ -1035,11 +1060,11 @@ def _safety_summary_block_inline(samsara: dict | None,
                      fmt=lambda v: f"{v:.1f}%" if v else "0%")
     )
 
-    # Log-certification snapshot tiles — sit directly under the
-    # 6-month trend, before the detail tables. Missing Log Certs is
-    # the legacy "any uncertified day" count from compute_metrics;
-    # Unverified On-Duty/Driving is the narrower (and more audit-
-    # relevant) "uncertified day AND driver was working" count.
+    # Missing Log Certs snapshot tile — sits directly under the
+    # Fleet Safety Score + DVIR Open Defects tiles (the leftmost
+    # 2 cells of trend Row 1). Right half left empty so the tile
+    # vertically aligns with the snapshot tiles above it; the bar
+    # charts to the right (HOS / DVIR) sit on a separate row.
     uncert_drivers = ((samsara.get("detail") or {}).get("hos_uncert") or [])
     uncert_count = len(uncert_drivers)
     uncert_worst = ""
@@ -1054,24 +1079,20 @@ def _safety_summary_block_inline(samsara: dict | None,
               "bad" if uncert_count else "good"),
         width="50%",
     )
-    unver_count, unver_worst = _unverified_onduty_logs(samsara_sheets)
-    unver_log_tile = _tile(
-        "Unverified on-duty / driving logs",
-        str(unver_count),
-        _pill(unver_worst or "all on-duty days certified",
-              "bad" if unver_count else "good"),
-        width="50%",
-    )
     log_tiles_row = (
         f"<tr><td colspan='4' style='padding:8px 0 0;'>"
         f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
-        f"{miss_log_tile}{unver_log_tile}"
+        f"{miss_log_tile}"
+        f"<td width='50%' style='padding:6px;'></td>"
         f"</tr></table></td></tr>"
     )
 
     # Drop into a colspan=4 row so the 4-tile grid lines up with the
-    # page's 4-col layout. _safety_detail_tables already emits its own
-    # _section/_table rows so it slots in directly.
+    # page's 4-col layout. log_tiles_row sits between trend Row 1
+    # and Row 2 so Missing Log Certs is directly under the Fleet
+    # Safety Score + DVIR Open Defects snapshot tiles in Row 1.
+    # _safety_detail_tables already emits its own _section/_table
+    # rows so it slots in directly.
     return (
         f"<tr><td colspan='4' style='padding:8px 18px 0;'>"
         f"<table width='100%' cellpadding='0' cellspacing='0'>"
@@ -1079,8 +1100,8 @@ def _safety_summary_block_inline(samsara: dict | None,
         f"<tr>{safety_tiles}</tr>"
         f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}"
         f"<tr>{safety_charts_row1}</tr>"
-        f"<tr>{safety_charts_row2}</tr>"
         f"{log_tiles_row}"
+        f"<tr>{safety_charts_row2}</tr>"
         f"{_safety_detail_tables(samsara)}"
         f"</table></td></tr>"
     )
@@ -1516,9 +1537,8 @@ def build_page_driver_compliance(samba: dict | None,
         avg_txt = (f"{avg:.0f}" if isinstance(avg, (int, float)) and avg == avg
                    else "&mdash;")
         if high or ranked:
-            inner += _section('SambaSafety risk roster &mdash; worst 10 by score')
-            top = ranked[:10] if ranked else []
-            if top:
+            inner += _section('SambaSafety risk roster &mdash; all monitored drivers, worst-to-best')
+            if ranked:
                 rrows = "".join(
                     _tr([d.get("name", "&mdash;"),
                          f"{int(d['score'])}" if d.get("score") is not None else "&mdash;",
@@ -1528,7 +1548,7 @@ def build_page_driver_compliance(samba: dict | None,
                         [None,
                          ("bad" if d.get("high") else None),
                          None, None])
-                    for d in top
+                    for d in ranked
                 )
                 inner += _table(['Driver', 'Score', 'Risk category', 'State'],
                                  ['left', 'right', 'left', 'left'], rrows)
