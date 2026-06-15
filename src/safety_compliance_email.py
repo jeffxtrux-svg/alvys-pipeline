@@ -1838,6 +1838,223 @@ def _build_html_report(*,
     )
 
 
+def _write_accountability_json(
+    today: datetime.date,
+    samsara: dict | None,
+    samba: dict | None,
+    alvys_drivers: dict | None,
+    equipment: dict | None,
+) -> Path:
+    """Extract per-owner accountability items and write to output/.
+
+    Called from main() after all data dicts are computed. The Teams
+    notification step reads this file and posts two separate messages —
+    one for Audra (all safety items), one for Jackson + Dan (trailers).
+
+    Each item: {category, severity, detail, prompt, driver?, unit?}
+    severity: "critical" | "high" | "medium"
+    """
+    import json
+
+    out_dir = Path("output")
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / f"safety-accountability-{today.isoformat()}.json"
+
+    audra: list[dict] = []
+    ops: list[dict] = []   # Jackson + Dan
+
+    # ── Disqualified / invalid CDL ─────────────────────────────────────
+    for inv in (samba or {}).get("invalid_licenses") or []:
+        nm  = inv.get("name") or "Unknown"
+        st  = inv.get("status") or "DISQUALIFIED"
+        eff = inv.get("effective") or inv.get("date") or ""
+        audra.append({
+            "category": "Disqualified Driver",
+            "severity": "critical",
+            "driver":   nm,
+            "detail":   f"License: {st}" + (f" effective {eff}" if eff else ""),
+            "prompt":   "Has this driver been pulled from dispatch?",
+        })
+
+    # ── CDL expiring ───────────────────────────────────────────────────
+    seen_cdl: set[str] = set()
+    for d in list((alvys_drivers or {}).get("license_critical_14") or []) + \
+             list((alvys_drivers or {}).get("license_issues_30") or []):
+        nm = d.get("name", "?")
+        if nm in seen_cdl:
+            continue
+        seen_cdl.add(nm)
+        days = d.get("license_days")
+        exp  = d.get("license_exp") or ""
+        audra.append({
+            "category": "CDL Expiring",
+            "severity": "critical" if (days or 99) <= 7 else "high",
+            "driver":   nm,
+            "detail":   f"Expires {exp} ({days}d)" if days is not None else f"Expires {exp}",
+            "prompt":   "CDL renewal scheduled? When?",
+        })
+
+    # ── Medical card expiring ──────────────────────────────────────────
+    seen_med: set[str] = set()
+    for d in list((alvys_drivers or {}).get("medical_critical_14") or []) + \
+             list((alvys_drivers or {}).get("medical_issues_30") or []):
+        nm = d.get("name", "?")
+        if nm in seen_med:
+            continue
+        seen_med.add(nm)
+        days = d.get("medical_days")
+        exp  = d.get("medical_exp") or ""
+        audra.append({
+            "category": "Med Card",
+            "severity": "critical" if (days or 99) <= 14 else "medium",
+            "driver":   nm,
+            "detail":   f"Expires {exp} ({days}d)" if days is not None else f"Expires {exp}",
+            "prompt":   "DOT physical scheduled? When?",
+        })
+
+    # ── HOS violations (last 7d) ───────────────────────────────────────
+    for h in ((samsara or {}).get("detail") or {}).get("hos") or []:
+        drv   = h.get("driver") or h.get("driver name") or "?"
+        vtype = h.get("event type") or h.get("violation type") or "violation"
+        audra.append({
+            "category": "HOS Violation",
+            "severity": "high",
+            "driver":   drv,
+            "detail":   str(vtype),
+            "prompt":   "Action taken with this driver?",
+        })
+
+    # ── Safety events not coached (30d window) ────────────────────────
+    coaching_list = (samsara or {}).get("coaching_list") or []
+    for c in coaching_list:
+        drv    = c.get("driver") or "?"
+        n_ev   = c.get("events") or 1
+        types  = c.get("types")
+        tstr   = (", ".join(sorted(types)) if isinstance(types, (set, list))
+                  else str(types or ""))
+        acked  = c.get("acked") or False
+        status = str(c.get("status") or "").lower()
+        if acked or status in ("coached", "dismissed", "recognized"):
+            continue
+        # Estimate days open from last event
+        last = c.get("last") or ""
+        try:
+            last_dt = pd.Timestamp(last).date() if last else None
+            days_open = (today - last_dt).days if last_dt else None
+        except Exception:
+            days_open = None
+        detail = (f"{n_ev} event(s) not coached" +
+                  (f": {tstr}" if tstr else "") +
+                  (f" — {days_open}d open" if days_open else ""))
+        audra.append({
+            "category": "Safety Event — Not Coached",
+            "severity": "high" if (days_open or 0) > 3 else "medium",
+            "driver":   drv,
+            "detail":   detail,
+            "prompt":   "When will coaching be completed?",
+        })
+
+    # ── Open DVIR defects ──────────────────────────────────────────────
+    for dv in ((samsara or {}).get("detail") or {}).get("dvir") or []:
+        unit   = dv.get("unit") or dv.get("vehicle") or "?"
+        drv    = dv.get("driver") or ""
+        defect = dv.get("defect type") or dv.get("defect") or "defect"
+        audra.append({
+            "category": "DVIR Defect",
+            "severity": "high",
+            "unit":     unit,
+            "driver":   drv,
+            "detail":   str(defect),
+            "prompt":   "Has this defect been repaired and cleared in Samsara?",
+        })
+
+    # ── Missing log certifications / DVIR compliance ──────────────────
+    for u in ((samsara or {}).get("detail") or {}).get("hos_uncert") or []:
+        drv  = u.get("driver") or "?"
+        miss = u.get("days_missing") or 1
+        audra.append({
+            "category": "Missing Log Cert / DVIR",
+            "severity": "medium",
+            "driver":   drv,
+            "detail":   f"{miss} missing log certification(s)",
+            "prompt":   "Has driver been notified to certify logs in ELD?",
+        })
+
+    # ── Bottom safety scores ───────────────────────────────────────────
+    fleet  = (samsara or {}).get("fleet") or {}
+    scores = fleet.get("scores_all") or fleet.get("scores_bottom") or []
+    bottom = sorted(
+        [s for s in scores if _isnum(s.get("score"))],
+        key=lambda s: float(s["score"]),
+    )
+    for s in bottom[:3]:
+        score = float(s["score"])
+        if score >= 80:
+            continue
+        drv = s.get("driver") or "?"
+        audra.append({
+            "category": "Low Safety Score",
+            "severity": "high" if score < 60 else "medium",
+            "driver":   drv,
+            "detail":   f"Safety score: {score:.0f}/100",
+            "prompt":   "What is your plan to improve this driver's score?",
+        })
+
+    # ── Speeders (>15% of drive time over limit) ──────────────────────
+    for s in scores:
+        spct = s.get("speed_pct")
+        if not _isnum(spct) or float(spct) < 15:
+            continue
+        drv = s.get("driver") or "?"
+        audra.append({
+            "category": "Speeding",
+            "severity": "high" if float(spct) >= 25 else "medium",
+            "driver":   drv,
+            "detail":   f"{float(spct):.0f}% of drive time above speed limit",
+            "prompt":   "What is your plan to reduce this driver's speeding?",
+        })
+
+    # ── Tractor DOT inspections past 120d company policy ─────────────
+    for t in (equipment or {}).get("tractors") or []:
+        pd_val = t.get("policy_days")
+        if not isinstance(pd_val, (int, float)) or pd_val >= 0:
+            continue
+        unit = t.get("unit") or "?"
+        over = abs(int(pd_val))
+        audra.append({
+            "category": "DOT Inspection — Tractor",
+            "severity": "critical" if over > 60 else "high",
+            "unit":     unit,
+            "detail":   f"{over}d past 120d company policy",
+            "prompt":   "Inspection scheduled? When?",
+        })
+
+    # ── Trailer DOT inspections past 120d policy — Jackson + Dan ──────
+    for t in (equipment or {}).get("trailers") or []:
+        pd_val = t.get("policy_days")
+        if not isinstance(pd_val, (int, float)) or pd_val >= 0:
+            continue
+        unit = t.get("unit") or "?"
+        over = abs(int(pd_val))
+        ops.append({
+            "category": "DOT Inspection — Trailer",
+            "severity": "critical" if over > 60 else "high",
+            "unit":     unit,
+            "detail":   f"{over}d past 120d company policy",
+            "prompt":   "Inspection scheduled? When?",
+        })
+
+    result = {
+        "date":  today.isoformat(),
+        "audra": audra,
+        "ops":   ops,
+    }
+    path.write_text(json.dumps(result, indent=2, default=str))
+    log.info("Accountability JSON: %s (%d Audra, %d ops)",
+             path, len(audra), len(ops))
+    return path
+
+
 def _render_pdf(html: str) -> bytes | None:
     try:
         from weasyprint import HTML
@@ -1937,6 +2154,8 @@ def main() -> int:
         equipment=equipment, uninvoiced=None,
         carrier_backlog=None, csa=csa,
     )
+
+    _write_accountability_json(today, samsara, samba, alvys_drivers, equipment)
 
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
