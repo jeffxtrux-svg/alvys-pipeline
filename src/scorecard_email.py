@@ -4418,6 +4418,259 @@ def compute_alvys_equipment(sheets, now: pd.Timestamp | None = None,
     }
 
 
+def compute_inspection_compliance(samsara_sheets: dict | None,
+                                    days: int = 7) -> list[dict]:
+    """Per-driver DVIR inspection completion + defect rollup over the
+    last `days` days. FMCSA 396.11 / 396.13 requires a pre-trip AND a
+    post-trip DVIR per working day, so expected_total = working_days * 2.
+
+    Returns a list of dicts sorted by deficit (expected - done) descending:
+      {driver, working_days,
+       expected_tractor, done_tractor, defects_tractor,
+       expected_trailer, done_trailer, defects_trailer,
+       expected_total, done_total, defects_total}
+
+    Trailer inspections share the working-day count — a working day
+    typically pairs a tractor and a trailer, so expected trailer
+    inspections also = working_days * 2. Drivers without any working
+    days in the window are omitted.
+
+    DVIR completion is best-effort: if the DVIRs sheet is missing or its
+    columns can't be resolved, done counts stay at 0 so the compliance
+    gap surfaces in the page rather than blanking it out."""
+    if not samsara_sheets:
+        return []
+    hos = samsara_sheets.get("HOS_DailyLogs")
+    if hos is None or hos.empty:
+        return []
+
+    window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
+
+    hos_name_col = _find_col(hos, ["driver name", "driver.name"])
+    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
+                                     "logmetadata.logdate"])
+    hos_drive_col = _find_col(hos, ["dutystatusdurations.drivedurationms",
+                                       "drivedurationms"])
+    hos_onduty_col = _find_col(hos, ["dutystatusdurations.ondutydurationms",
+                                        "ondutydurationms"])
+    if not (hos_name_col and hos_date_col):
+        return []
+
+    hos_dt = _to_naive_dt(hos[hos_date_col])
+    drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
+             if hos_drive_col else pd.Series(0, index=hos.index))
+    onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
+              if hos_onduty_col else pd.Series(0, index=hos.index))
+    active = (drive > 0) | (onduty > 0)
+    hos_window = hos[active & (hos_dt >= window_start)].copy()
+    if hos_window.empty:
+        return []
+    working_days_by_driver = (
+        hos_window.groupby(hos_window[hos_name_col].astype(str).str.strip())
+        .size()
+        .to_dict()
+    )
+
+    done_tractor: dict[str, int] = {}
+    done_trailer: dict[str, int] = {}
+    dvirs = samsara_sheets.get("DVIRs")
+    if dvirs is not None and not dvirs.empty:
+        dvir_driver_col = _find_col(dvirs, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        dvir_time_col = _find_col(dvirs, ["starttime", "start time",
+                                            "createdattime", "submittedattime"])
+        dvir_vehicle_col = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+        dvir_trailer_col = _find_col(dvirs, ["trailer.name", "trailer name",
+                                                "asset.name"])
+        if dvir_driver_col and dvir_time_col:
+            dvir_dt = _to_naive_dt(dvirs[dvir_time_col])
+            dvirs_window = dvirs[dvir_dt >= window_start].copy()
+            if not dvirs_window.empty:
+                for nm, group in dvirs_window.groupby(
+                    dvirs_window[dvir_driver_col].astype(str).str.strip()
+                ):
+                    if not nm or nm.lower() == "nan":
+                        continue
+                    if dvir_vehicle_col:
+                        tractor_mask = (group[dvir_vehicle_col].notna()
+                                        & (group[dvir_vehicle_col].astype(str).str.strip() != ""))
+                        done_tractor[nm] = int(tractor_mask.sum())
+                    if dvir_trailer_col:
+                        trailer_mask = (group[dvir_trailer_col].notna()
+                                        & (group[dvir_trailer_col].astype(str).str.strip() != ""))
+                        done_trailer[nm] = int(trailer_mask.sum())
+                    if not dvir_vehicle_col and not dvir_trailer_col:
+                        done_tractor[nm] = len(group)
+
+    defects_tractor: dict[str, int] = {}
+    defects_trailer: dict[str, int] = {}
+    df_defects = samsara_sheets.get("DVIR_Defects")
+    if df_defects is not None and not df_defects.empty:
+        d_driver = _find_col(df_defects, ["driver"])
+        d_time = _find_col(df_defects, ["reported", "createdat"])
+        if d_driver and d_time:
+            d_dt = _to_naive_dt(df_defects[d_time])
+            d_window = df_defects[d_dt >= window_start].copy()
+            for nm, group in d_window.groupby(
+                d_window[d_driver].astype(str).str.strip()
+            ):
+                if not nm or nm.lower() == "nan":
+                    continue
+                defects_tractor[nm] = len(group)
+
+    rows: list[dict] = []
+    for nm, wd in working_days_by_driver.items():
+        wd = int(wd)
+        if wd == 0 or not nm or nm.lower() == "nan":
+            continue
+        exp_t = wd * 2
+        exp_tr = wd * 2
+        d_t = int(done_tractor.get(nm, 0))
+        d_tr = int(done_trailer.get(nm, 0))
+        df_t = int(defects_tractor.get(nm, 0))
+        df_tr = int(defects_trailer.get(nm, 0))
+        rows.append({
+            "driver": nm,
+            "working_days": wd,
+            "expected_tractor": exp_t,
+            "done_tractor": d_t,
+            "defects_tractor": df_t,
+            "expected_trailer": exp_tr,
+            "done_trailer": d_tr,
+            "defects_trailer": df_tr,
+            "expected_total": exp_t + exp_tr,
+            "done_total": d_t + d_tr,
+            "defects_total": df_t + df_tr,
+        })
+    rows.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))
+    return rows
+
+
+def build_page_inspection_compliance_executive(rows: list[dict] | None,
+                                                  date_str: str,
+                                                  pg: int = 11) -> str:
+    """Per-driver DVIR inspection compliance for the executive brief —
+    same data shape as the safety brief's page, but rendered with the
+    executive brief's _header() / _section() chrome so it slots cleanly
+    into that report's visual rhythm. Section banner: SAFETY.
+
+    Accepts pre-computed rows (from compute_inspection_compliance) so
+    the rendering layer doesn't need direct access to the raw sheets —
+    keeps build_html's signature one-layer-deep on Samsara data."""
+    rows = rows or []
+    header = _header(
+        f"<b>Inspection Compliance</b> &mdash; per-driver DVIR completion "
+        f"vs FMCSA 396.11 required (last 7 days)",
+        pg, date_str, section="SAFETY",
+    )
+    if not rows:
+        body = (
+            f"<table width='100%' cellpadding='0' cellspacing='0' "
+            f"style='background:#fff;'>"
+            f"<tr><td style='padding:20px 24px;color:{MUTE};font-size:13px;'>"
+            f"No driver inspection data in the last 7 days. "
+            f"HOS_DailyLogs or DVIRs sheet may be empty for this window."
+            f"</td></tr></table>"
+        )
+        return header + body
+
+    tot_wd = sum(r["working_days"] for r in rows)
+    tot_exp_t = sum(r["expected_tractor"] for r in rows)
+    tot_done_t = sum(r["done_tractor"] for r in rows)
+    tot_def_t = sum(r["defects_tractor"] for r in rows)
+    tot_exp_tr = sum(r["expected_trailer"] for r in rows)
+    tot_done_tr = sum(r["done_trailer"] for r in rows)
+    tot_def_tr = sum(r["defects_trailer"] for r in rows)
+    tot_exp = sum(r["expected_total"] for r in rows)
+    tot_done = sum(r["done_total"] for r in rows)
+    tot_def = sum(r["defects_total"] for r in rows)
+
+    def _pct(done: int, expected: int) -> str:
+        if expected <= 0:
+            return "&mdash;"
+        return f"{100 * done / expected:.0f}%"
+
+    def _kind(done: int, expected: int):
+        if expected <= 0:
+            return None
+        pct = done / expected
+        return "good" if pct >= 0.9 else ("warn" if pct >= 0.5 else "bad")
+
+    body_rows = ""
+    for r in rows:
+        body_rows += _tr(
+            [r["driver"], str(r["working_days"]),
+             f"{r['done_tractor']} / {r['expected_tractor']}",
+             str(r["defects_tractor"]),
+             f"{r['done_trailer']} / {r['expected_trailer']}",
+             str(r["defects_trailer"]),
+             f"{r['done_total']} / {r['expected_total']}",
+             str(r["defects_total"]),
+             _pct(r["done_total"], r["expected_total"])],
+            ["left", "right", "right", "right", "right", "right",
+             "right", "right", "right"],
+            [None, None,
+             _kind(r["done_tractor"], r["expected_tractor"]),
+             ("warn" if r["defects_tractor"] > 0 else None),
+             _kind(r["done_trailer"], r["expected_trailer"]),
+             ("warn" if r["defects_trailer"] > 0 else None),
+             _kind(r["done_total"], r["expected_total"]),
+             ("warn" if r["defects_total"] > 0 else None),
+             _kind(r["done_total"], r["expected_total"])],
+        )
+    # Bold TOTAL row at the bottom, matched to the standard table style.
+    body_rows += (
+        f"<tr>"
+        + "".join(
+            f"<td align='{a}' style='padding:10px 8px;font-size:13px;"
+            f"color:{INK};font-weight:800;background:#fafafa;"
+            f"border-top:2px solid {INK};'>{c}</td>"
+            for c, a in zip(
+                [f"TOTAL ({len(rows)} drivers)", str(tot_wd),
+                 f"{tot_done_t} / {tot_exp_t}", str(tot_def_t),
+                 f"{tot_done_tr} / {tot_exp_tr}", str(tot_def_tr),
+                 f"{tot_done} / {tot_exp}", str(tot_def),
+                 _pct(tot_done, tot_exp)],
+                ["left", "right", "right", "right", "right", "right",
+                 "right", "right", "right"],
+            )
+        )
+        + f"</tr>"
+    )
+
+    table_html = _table(
+        ['Driver', 'Worked', 'Tractor done / exp', 'Tractor defects',
+         'Trailer done / exp', 'Trailer defects', 'Total done / exp',
+         'Total defects', 'Compliance'],
+        ['left', 'right', 'right', 'right', 'right', 'right',
+         'right', 'right', 'right'],
+        body_rows,
+    )
+
+    note = (
+        f"<tr><td colspan='4' style='padding:8px 6px 14px;color:{MUTE};font-size:11px;'>"
+        f"Expected inspections = working days &times; 2 (FMCSA 396.11 "
+        f"requires a pre-trip and post-trip DVIR each working day). Working "
+        f"days counted from HOS daily logs with drive or on-duty time &gt; 0. "
+        f"Tractor vs trailer split derived from the asset on each DVIR; "
+        f"defects exploded from DVIR_Defects with one row per defect line."
+        f"</td></tr>"
+    )
+
+    body = (
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='background:#fff;'>"
+        f"{_section('DVIR inspection compliance &mdash; last 7 days')}"
+        f"{table_html}"
+        f"{note}"
+        f"</table>"
+    )
+    return header + body
+
+
 def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
     """Equipment Compliance page — renders one fleet type per call.
     kind='tractors' → page 5; kind='trailers' → page 6."""
@@ -7832,7 +8085,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None, csa=None, refresh_status=None) -> str:
+               customer_rpm=None, csa=None, refresh_status=None,
+               inspection_rows=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     # Phase 2B — Risk Watch strip: read the machine-readable signal
     # definitions from Karpathy-Wiki/wiki/risk-signals.yml, evaluate each
@@ -8034,6 +8288,14 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             + ((wrap(_strip(10) + build_csa_scorecard_page(csa, date_str)) + pb)
                if (csa and csa.get("basics")) else "")
             +
+            # -- SAFETY (page 11) -- Per-driver DVIR inspection compliance
+            # over the last 7 days, FMCSA 396.11 measure. Slotted into the
+            # vacant page 11 slot (the old AR Overdue Accounting page was
+            # dropped) so the brief shows the same actionable per-driver
+            # gap data the Safety & Compliance Report ships at 5am, giving
+            # leadership the same visibility without opening a second PDF.
+            f"{wrap(_strip(11) + build_page_inspection_compliance_executive(inspection_rows, date_str, pg=11))}{pb}"
+            +
             # -- ACCOUNTING --
             # build_page_ar_accounting (standalone "AR Overdue & Alvys
             # Accounting" page) was dropped per user — its 31+ overdue
@@ -8100,6 +8362,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     # `Drivers` sheet is added by src.main when the pipeline writes it.
     alvys_drivers = compute_alvys_drivers(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     equipment = compute_alvys_equipment(alvys_pipeline_sheets, samsara_sheets=samsara_sheets) if alvys_pipeline_sheets else None
+    inspection_rows = compute_inspection_compliance(samsara_sheets) if samsara_sheets else []
     w7a = ((alvys or {}).get("asset") or {}).get("7d") or (alvys or {}).get("7d")
     drag = compute_drag_attribution(alvys_sheets, qb_ar, w7a, rpm_goal, samsara)
     # DSO history: filter to X-Trux only (asset fleet — same scope the user sees in QB).
@@ -8116,7 +8379,8 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
                       avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status)
+                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status,
+                      inspection_rows=inspection_rows)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
