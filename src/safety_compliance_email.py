@@ -955,7 +955,7 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     if not (hos_name_col and hos_date_col):
         return []
 
-    hos_dt = pd.to_datetime(hos[hos_date_col], errors="coerce")
+    hos_dt = _to_naive_dt(hos[hos_date_col])
     drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
              if hos_drive_col else pd.Series(0, index=hos.index))
     onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
@@ -979,8 +979,7 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     if not (dvir_driver_col and dvir_time_col):
         return []
 
-    dvir_dt = pd.to_datetime(dvirs[dvir_time_col], errors="coerce", utc=True)
-    dvir_dt = dvir_dt.dt.tz_localize(None) if hasattr(dvir_dt, "dt") else dvir_dt
+    dvir_dt = _to_naive_dt(dvirs[dvir_time_col])
     dvirs_window = dvirs[dvir_dt >= window_start].copy()
 
     done_tractor: dict[str, int] = {}
@@ -1012,7 +1011,7 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
         d_dvir_type = _find_col(df_defects, ["dvir type"])
         d_unit = _find_col(df_defects, ["unit"])
         if d_driver and d_time:
-            d_dt = pd.to_datetime(df_defects[d_time], errors="coerce")
+            d_dt = _to_naive_dt(df_defects[d_time])
             d_window = df_defects[d_dt >= window_start].copy()
             # Heuristic for tractor vs trailer when DVIR Type isn't set:
             # unit names containing TR / TRL / a leading digit ≤ 9999 are
