@@ -79,6 +79,7 @@ from src.scorecard_email import (
     _tr,
     _windows,
     _xfreight_logo_svg,
+    build_page2 as _exec_build_page2,
     build_page2b as _exec_build_page2b,
     build_page7 as _exec_build_page7,
     build_page_coached as _exec_build_page_coached,
@@ -2666,7 +2667,7 @@ def _build_html_report(*,
     #  11. Trailer inspections  — exec brief equipment page (kind='trailers')
     #  12. DVIR audit trail     — per-driver inspection trail, last 14 days
     today_label = _today_label()
-    total = 12
+    total = 13
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
@@ -2679,14 +2680,15 @@ def _build_html_report(*,
         build_page_dvir_coaching(samsara, 4, total),
         build_page_driver_compliance(samba, alvys_drivers, 5, total),
         _exec_build_page_coached(samsara, today_label, pg=6),
+        _exec_build_page2(samsara, today_label, pg=7),
         _exec_build_page_equipment(equipment, today_label,
-                                     kind="tractors", pg=7),
+                                     kind="tractors", pg=8),
         _exec_build_page_equipment(equipment, today_label,
-                                     kind="trailers", pg=8),
-        build_page_inspection_compliance(samsara_sheets, 9, total),
-        build_page_csa_scorecard(csa, 10, total),
-        _exec_build_page2b(samsara, today_label, pg=11),
-        build_page_dvir_detail_by_driver(samsara_sheets, 12, total),
+                                     kind="trailers", pg=9),
+        build_page_inspection_compliance(samsara_sheets, 10, total),
+        build_page_csa_scorecard(csa, 11, total),
+        _exec_build_page2b(samsara, today_label, pg=12),
+        build_page_dvir_detail_by_driver(samsara_sheets, 13, total),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
