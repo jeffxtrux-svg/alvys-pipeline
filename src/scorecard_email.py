@@ -4738,7 +4738,7 @@ def _mwtile(label, v24, v7, vmtd, hk="mute"):
             f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{c('24h', v24, True)}{c('7d', v7)}{c('MTD', vmtd)}</tr></table></div></td>")
 
 
-def _bar_chart(title, months, values, sub="", fmt=str):
+def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False):
     if not months:
         return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;"
                 f"padding:14px;color:{MUTE};font-size:12px;'>{title}: data pending</div></td>")
@@ -4776,10 +4776,59 @@ def _bar_chart(title, months, values, sub="", fmt=str):
         lcol = INK if last else MUTE
         lbl += (f"<td align='center' width='{col_w}' style='font-size:9px;color:{lcol};font-weight:{'700' if last else '400'};"
                 f"padding-top:4px;white-space:nowrap;'>{m}</td>")
+    # Optional trend-line overlay: linear regression on (i, value) pairs,
+    # rendered as an SVG polyline absolutely-positioned over the bars
+    # table. Disabled by default to keep the exec brief unchanged; the
+    # safety brief's 6-mo trend bars opt in.
+    trend_svg = ""
+    bars_wrap_open = ""
+    bars_wrap_close = ""
+    if trend_line and len(values) >= 2:
+        n = len(values)
+        xs = list(range(n))
+        sx = sum(xs)
+        sy = sum(values)
+        sxy = sum(xi * yi for xi, yi in zip(xs, values))
+        sx2 = sum(xi * xi for xi in xs)
+        denom = n * sx2 - sx * sx
+        if denom != 0:
+            slope = (n * sxy - sx * sy) / denom
+            intercept = (sy - slope * sx) / n
+            # SVG viewBox coords: 0..100 wide, 0..100 tall (matches the
+            # bars table's relative dimensions). The bar tops live at
+            # roughly y = label_band_pct + (H_band_pct * (1 - v/maxv)),
+            # where the value-label band takes ~14% of the table height
+            # and the bar band takes the remaining ~86%.
+            label_band = 14.0
+            bar_band = 100.0 - label_band
+            pts = []
+            for xi in xs:
+                tv = slope * xi + intercept
+                tv = max(0.0, min(tv, maxv * 1.1))
+                bar_height_pct = (tv / maxv) * bar_band if maxv else 0
+                y = label_band + (bar_band - bar_height_pct)
+                x = (xi + 0.5) * 100.0 / n
+                pts.append(f"{x:.2f},{y:.2f}")
+            polyline = " ".join(pts)
+            trend_svg = (
+                f"<svg width='100%' height='100%' viewBox='0 0 100 100' "
+                f"preserveAspectRatio='none' "
+                f"style='position:absolute;top:0;left:0;pointer-events:none;'>"
+                f"<polyline points='{polyline}' stroke='{ACCENT}' "
+                f"stroke-width='1.5' fill='none' stroke-dasharray='3,2' "
+                f"stroke-linecap='round' vector-effect='non-scaling-stroke' "
+                f"opacity='0.85'/>"
+                f"</svg>"
+            )
+            bars_wrap_open = "<div style='position:relative;'>"
+            bars_wrap_close = "</div>"
     return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;overflow:hidden;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
+            f"{bars_wrap_open}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;table-layout:fixed;'><tr>{bar}</tr></table>"
+            f"{trend_svg}"
+            f"{bars_wrap_close}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='table-layout:fixed;'><tr>{lbl}</tr></table></div></td>")
 
 

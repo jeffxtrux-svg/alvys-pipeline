@@ -1006,7 +1006,7 @@ def _safety_summary_block_inline(samsara: dict | None,
     def chart(metric, title, sub):
         ml = tr.get(metric)
         return _bar_chart(title, ml[0] if ml else [],
-                          ml[1] if ml else [], sub)
+                          ml[1] if ml else [], sub, trend_line=True)
 
     # 6-month coaching-action series (coached / dismissed).
     coached_ml = _coaching_action_monthly(samsara, "coached")
@@ -1053,14 +1053,15 @@ def _safety_summary_block_inline(samsara: dict | None,
     # indicators paired together at the top of the trend section.
     safety_charts_row1 = fleet_score_tile + dvir_open_tile + miss_log_tile
 
-    # Row 2: 3 bars at 33% each — HOS, DVIR, Coached.
-    # _bar_chart cells default to width based on their containing
-    # row; with 3 cells in a row they auto-distribute to 33% each.
+    # Row 2: 3 bars at 33% each — HOS, DVIR, Coached. All opt in to
+    # trend_line=True so each bar chart shows a linear-regression
+    # trend overlay (SVG polyline over the bars).
     safety_charts_row2 = (
         chart("hos", "HOS violations", "per month &middot; *MTD")
         + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
         + _bar_chart("Coached events", coached_ml[0], coached_ml[1],
-                     "manager-reviewed / mo &middot; *MTD")
+                     "manager-reviewed / mo &middot; *MTD",
+                     trend_line=True)
     )
 
     # Row 3: 3 bars at 33% each — Safety events, Dismissed, Speed
@@ -1069,10 +1070,12 @@ def _safety_summary_block_inline(samsara: dict | None,
     safety_charts_row3 = (
         chart("events", "Safety events", "per month &middot; *MTD")
         + _bar_chart("Dismissed events", dismissed_ml[0], dismissed_ml[1],
-                     "no-action-needed / mo &middot; *MTD")
+                     "no-action-needed / mo &middot; *MTD",
+                     trend_line=True)
         + _bar_chart("Speed over limit", spd_labels, spd_vals,
                      "% drive time &middot; fleet avg",
-                     fmt=lambda v: f"{v:.1f}%" if v else "0%")
+                     fmt=lambda v: f"{v:.1f}%" if v else "0%",
+                     trend_line=True)
     )
 
     # Drop into a colspan=4 row so the inline block plays nicely with
