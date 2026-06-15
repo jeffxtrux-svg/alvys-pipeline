@@ -59,20 +59,32 @@ from src.scorecard_email import (
     WARN,
     WARNBG,
     XFREIGHT_RED,
+    _bar_chart,
     _find_col,
     _is_ar_excluded,
+    _isnum,
+    _mwtile,
+    _pill,
     _safe_read,
+    _safety_detail_tables,
     _section,
     _table,
     _tile,
     _to_naive_dt,
     _tr,
     _windows,
+    build_page2 as _exec_build_page2,
+    build_page2b as _exec_build_page2b,
+    build_page7 as _exec_build_page7,
+    build_page_coached as _exec_build_page_coached,
+    compute_alvys_ar,
     compute_alvys_drivers,
     compute_alvys_uninvoiced,
     compute_csa_scorecard,
+    compute_qb_ar_detail,
     compute_sambasafety,
     compute_samsara,
+    compute_speed_comment,
     send_email,
 )
 
@@ -803,6 +815,69 @@ def _risk_watch_block(signals: list[dict]) -> str:
     return f"<tr><td style='padding:0 18px 0;'>{strip}</td></tr>"
 
 
+def _safety_summary_block_inline(samsara: dict | None) -> str:
+    """The executive brief's page-1 safety section, lifted whole into
+    the safety brief — Audra's brief was missing the 24h/7d/MTD tile
+    breakdown, the 6-month trend bars, and the unified detail tables.
+
+    Built from the same helpers as scorecard_email so the visual is
+    pixel-identical to the executive brief: _mwtile (24h/7d/MTD tile),
+    _bar_chart (6-month bars), _tile (fleet score), and
+    _safety_detail_tables (events / HOS / missing logs / DVIR /
+    coaching). Returns a <tr> chain ready to drop into the page-1
+    body table."""
+    if not samsara:
+        return ""
+    sw = samsara.get("windows", {}) or {}
+
+    def swv(metric, k):
+        return sw.get(metric, {}).get(k, 0)
+
+    safety_tiles = (
+        _mwtile("Safety events", swv("events", "24h"), swv("events", "7d"),
+                swv("events", "mtd"), "warn")
+        + _mwtile("HOS violations", swv("hos", "24h"), swv("hos", "7d"),
+                  swv("hos", "mtd"), "bad")
+        + _mwtile("Open DVIR defects", swv("dvir", "24h"), swv("dvir", "7d"),
+                  swv("dvir", "mtd"), "warn")
+        + _mwtile("Coaching due", samsara.get("coaching", {}).get("24h", 0),
+                  samsara.get("coaching", {}).get("7d", 0),
+                  samsara.get("coaching", {}).get("mtd", 0), "warn")
+    )
+
+    tr = samsara.get("trend", {}) or {}
+
+    def chart(metric, title, sub):
+        ml = tr.get(metric)
+        return _bar_chart(title, ml[0] if ml else [],
+                          ml[1] if ml else [], sub)
+
+    fleet_score = (samsara.get("fleet") or {}).get("fleet_score")
+    fleet_score_tile = _tile(
+        "Fleet avg safety score",
+        (f"{fleet_score:.0f}" if _isnum(fleet_score) else "n/a"),
+        _pill("0&ndash;100 &middot; higher better", "mute"),
+    )
+    safety_charts = (chart("events", "Safety events", "per month &middot; *MTD")
+                     + chart("hos", "HOS violations", "per month &middot; *MTD")
+                     + chart("dvir", "DVIR defects", "reported/mo &middot; *MTD")
+                     + fleet_score_tile)
+
+    # Drop into a colspan=4 row so the 4-tile grid lines up with the
+    # page's 4-col layout. _safety_detail_tables already emits its own
+    # _section/_table rows so it slots in directly.
+    return (
+        f"<tr><td colspan='4' style='padding:8px 18px 0;'>"
+        f"<table width='100%' cellpadding='0' cellspacing='0'>"
+        f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}"
+        f"<tr>{safety_tiles}</tr>"
+        f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}"
+        f"<tr>{safety_charts}</tr>"
+        f"{_safety_detail_tables(samsara)}"
+        f"</table></td></tr>"
+    )
+
+
 def _footer_kb_links() -> str:
     """Footer pointing readers at the canonical KB pages so the brief
     becomes a launch surface, not a dead-end."""
@@ -901,6 +976,12 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
         bottom_line_block
         + _urgent_banner(urgent_items)
         + _risk_watch_block(risk_signals)
+        # Executive-brief safety summary lifted whole (24h/7d/MTD tiles,
+        # 6-month trend bars, safety events / HOS / missing logs / DVIR /
+        # coaching needs-assigned tables). Placed directly under Risk
+        # Watch so Audra sees the safety pulse before scrolling to
+        # action items.
+        + _safety_summary_block_inline(samsara)
         + f"<tr><td style='padding:14px 18px 8px;'>{tiles_row1}</td></tr>"
         + f"<tr><td style='padding:0 18px 14px;'>{tiles_row2}</td></tr>"
         + _action_items_block(action_items)
@@ -1519,6 +1600,8 @@ def _build_html_report(*,
                         alvys_sheets: dict | None,
                         uninvoiced: dict | None,
                         carrier_backlog: dict | None,
+                        qb_ar: dict | None,
+                        alvys_ar: dict | None,
                         risk_signals: list[dict] | None,
                         action_items: list[dict] | None) -> str:
     metrics = compute_metrics(samsara)
@@ -1527,32 +1610,52 @@ def _build_html_report(*,
     # Page flow: overview narrates "what changed + what to do today";
     # detail pages then progress topically so Audra can scan or read.
     #
-    #   1. Overview                  — bottom line, urgent, risk-watch, actions
+    #   1. Overview                  — bottom line, urgent, risk-watch,
+    #                                  exec-brief safety summary (tiles +
+    #                                  6mo trend + detail tables), action items
     #   2. Driver compliance         — DRIVERS: who can't/shouldn't drive
-    #   3. Driver safety scores      — DRIVERS: ranked behavior 30d
-    #   4. Safety events             — EVENTS: what fired in the last 7d
-    #   5. HOS compliance            — EVENTS: HOS violations + uncertified
-    #   6. Vehicle compliance        — EQUIPMENT: DVIRs + inspections due
-    #   7. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
+    #   3. Driver safety scores      — DRIVERS: exec-brief build_page2b
+    #                                  (per-driver score + harsh accel/brake/
+    #                                  turn + speed + crashes)
+    #   4. Safety & compliance detail— EVENTS: exec-brief build_page2
+    #                                  (Speed Over Limit + Coaching tiles)
+    #   5. Vehicle compliance        — EQUIPMENT: DVIRs + inspections due
+    #   6. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
+    #   7. Coached Events audit trail— SAFETY: exec-brief build_page_coached
+    #                                  (190-day every-coach/dismiss/recognize)
     #   8. Invoice closeout          — CLOSEOUT: un-invoiced + carrier-bill backlog
     #
     # Banner grouping (eyebrow in _page_header) makes the structure
-    # readable without a TOC. CSA sits late because it's strategic
-    # standing, not daily-action; closeout sits last as the topic shift
-    # from safety to billing — Audra's second accountability area.
-    total = 8
+    # readable without a TOC. The events / HOS / missing-log tables that
+    # used to be standalone pages 4 + 5 now live in the page-1 safety
+    # summary block — the exec-brief format is denser and Audra wanted
+    # them visible up front. Driver Safety Scores + Speed Over Limit +
+    # Coached Events come straight from the exec brief so the visual is
+    # pixel-identical (those pages use _header / SAFETY tag style).
+    # CSA sits late as strategic standing; Coached Events sits last in
+    # the SAFETY group as the long audit-trail tail; closeout sits last
+    # as the topic shift from safety to billing — Audra's second
+    # accountability area.
+    today_label = _today_label()
+    total = 9
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
                               action_items=(action_items or []),
                               risk_signals=(risk_signals or [])),
         build_page_driver_compliance(samba, alvys_drivers, 2, total),
-        build_page4_scores(samsara, 3, total),
-        build_page2_events(samsara, 4, total),
-        build_page3_hos(samsara, 5, total),
-        build_page5_vehicles(samsara, samsara_sheets, 6, total),
-        build_page_csa_scorecard(csa, 7, total),
+        _exec_build_page2b(samsara, today_label, pg=3),
+        _exec_build_page2(samsara, today_label, pg=4),
+        build_page5_vehicles(samsara, samsara_sheets, 5, total),
+        build_page_csa_scorecard(csa, 6, total),
+        _exec_build_page_coached(samsara, today_label, pg=7),
         build_page_invoice_closeout(uninvoiced, carrier_backlog, alvys_sheets, 8, total),
+        # AR Reconciliation by Customer (exec brief pp 26-27 in the
+        # PDF — long table that auto-paginates). End of the safety
+        # brief so the QB-vs-Alvys variance is available alongside
+        # Audra's invoice-closeout work without burying the safety
+        # narrative behind it.
+        _exec_build_page7(qb_ar, alvys_ar, today_label, pg=9),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
@@ -1633,6 +1736,11 @@ def main() -> int:
     qb_bills_path = os.environ.get("QB_BILLS_ONEDRIVE_PATH",
                                     "QuickBooks/QB_Bills.xlsx")
     qb_bills_sheets = _safe_read(tok, upn, qb_bills_path, missing, "QB Bills")
+    # QB AR aging detail — needed for the AR Reconciliation by Customer
+    # page at the end of the brief (matches exec-brief build_page7).
+    qb_ar_path = os.environ.get("QB_AR_ONEDRIVE_PATH",
+                                 "QuickBooks/QB_AgedReceivableDetail.xlsx")
+    qb_ar_sheets = _safe_read(tok, upn, qb_ar_path, missing, "QB AR aging")
     if missing:
         log.info("Optional sources missing (page(s) will soft-skip): %s",
                  ", ".join(missing))
@@ -1648,6 +1756,11 @@ def main() -> int:
     carrier_backlog = compute_carrier_invoice_backlog(
         alvys_sheets, qb_billed_load_ids=qb_billed_loads
     )
+    # AR shapes for the AR-by-customer reconciliation page (end of brief).
+    # Both soft-fail to {} so the page renders with whatever's available.
+    qb_ar = (compute_qb_ar_detail(next(iter(qb_ar_sheets.values())))
+             if qb_ar_sheets else {})
+    alvys_ar = compute_alvys_ar(alvys_sheets) if alvys_sheets else {}
 
     # Equipment compute — needed only for the action-items engine here
     # (the equipment detail pages live on the executive brief). Import
@@ -1686,6 +1799,7 @@ def main() -> int:
         samba=samba, csa=csa, alvys_drivers=alvys_drivers,
         alvys_sheets=alvys_sheets,
         uninvoiced=uninvoiced, carrier_backlog=carrier_backlog,
+        qb_ar=qb_ar, alvys_ar=alvys_ar,
         risk_signals=risk_signals, action_items=action_items,
     )
     pdf = _render_pdf(html)

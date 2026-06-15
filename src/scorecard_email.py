@@ -6213,10 +6213,12 @@ def _safety_detail_tables(samsara) -> str:
     )
 
 
-def build_page2(samsara, date_str) -> str:
+def build_page2(samsara, date_str, pg: int = 3) -> str:
     # Driver safety scores table (moved here from the Fleet Operations page
     # so all safety content lives on one page). All drivers ranked
     # worst-to-best; lowest scores get the red treatment so they pop.
+    # `pg` defaults to 3 for executive-brief compatibility; the safety
+    # brief imports this function and passes its own page number.
     fleet = (samsara or {}).get("fleet", {}) or {}
     scores_all = fleet.get("scores_all") or []
     def _score_kind(s: int) -> str:
@@ -6422,7 +6424,7 @@ def build_page2(samsara, date_str) -> str:
     )
 
 
-    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', 3, date_str, section='SAFETY')}"
+    return (f"{_header('Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet', pg, date_str, section='SAFETY')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"{_section(f'Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period')}"
             f"{_spd_tbl}"
@@ -7037,7 +7039,7 @@ def build_page_ar_accounting(qb_ar, uninv, alvys_ar, date_str) -> str:
             f"JW Logistics excluded throughout. Source: QuickBooks + Alvys API.</div>")
 
 
-def build_page7(qb_ar, alvys_ar, date_str) -> str:
+def build_page7(qb_ar, alvys_ar, date_str, pg: int = 12) -> str:
     rec = compute_ar_customer_reconciliation(qb_ar, alvys_ar) or {}
     rows = rec.get("rows", [])
     LIMIT = 30
@@ -7069,7 +7071,7 @@ def build_page7(qb_ar, alvys_ar, date_str) -> str:
         body += (f"<tr><td colspan='4' style='padding:8px;color:{MUTE};font-size:11px;'>"
                  f"Showing the {LIMIT} largest gaps of {len(rows)} customers.</td></tr>")
 
-    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', 12, date_str, section='ACCOUNTING')}"
+    return (f"{_header('AR Reconciliation by Customer &mdash; QuickBooks vs Alvys', pg, date_str, section='ACCOUNTING')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
             f"{_section('Where the QB&ndash;Alvys gap sits &middot; by customer &middot; as of ' + date_str)}"
@@ -7375,7 +7377,7 @@ def build_csa_scorecard_page(csa, date_str) -> str:
     )
 
 
-def build_page_coached(samsara, date_str) -> str:
+def build_page_coached(samsara, date_str, pg: int = 14) -> str:
     """End-of-brief audit trail: every Samsara safety event in the
     190-day window whose coachingState is coached / dismissed /
     recognized. The COACH column is intentionally blank ("—") —
@@ -7386,7 +7388,7 @@ def build_page_coached(samsara, date_str) -> str:
     automatically the moment Samsara enables it."""
     rows = (samsara or {}).get("coached_events") or []
     head = _header("Coached Events &mdash; all coaching actions, last 190 days",
-                   14, date_str, section='SAFETY')
+                   pg, date_str, section='SAFETY')
     # Tiles: total, by state
     _by_state: dict[str, int] = {}
     for r in rows:
