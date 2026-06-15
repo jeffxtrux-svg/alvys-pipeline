@@ -1954,17 +1954,24 @@ def _write_accountability_json(
             "prompt":   "When will coaching be completed?",
         })
 
-    # ── Open DVIR defects ──────────────────────────────────────────────
+    # ── Open DVIR defects — Jackson + Dan own repairs ─────────────────
+    # Deduplicate by (driver, defect) so one recurring defect doesn't
+    # flood the card with identical rows.
+    seen_dvir: set[tuple] = set()
     for dv in ((samsara or {}).get("detail") or {}).get("dvir") or []:
         unit   = dv.get("unit") or dv.get("vehicle") or "?"
         drv    = dv.get("driver") or ""
-        defect = dv.get("defect type") or dv.get("defect") or "defect"
-        audra.append({
+        defect = str(dv.get("defect type") or dv.get("defect") or "defect")
+        key    = (drv.lower(), defect.lower())
+        if key in seen_dvir:
+            continue
+        seen_dvir.add(key)
+        ops.append({
             "category": "DVIR Defect",
             "severity": "high",
             "unit":     unit,
             "driver":   drv,
-            "detail":   str(defect),
+            "detail":   defect,
             "prompt":   "Has this defect been repaired and cleared in Samsara?",
         })
 
