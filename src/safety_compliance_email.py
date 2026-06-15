@@ -1842,9 +1842,10 @@ def _accountability_key(item: dict) -> str:
     """Stable cross-day identity key for matching items across runs.
 
     DVIR defects key on category+driver+defect so different defects on
-    the same driver don't collapse. Everything else keys on category+
-    driver-or-unit, which is stable as long as the underlying issue
-    persists in the source data (Samsara / Alvys).
+    the same driver don't collapse. Individual safety events key on
+    category+driver+detail (event type + date) so two different events
+    for the same driver don't collapse. Everything else keys on
+    category+driver-or-unit.
     """
     cat  = (item.get("category") or "").lower().strip()
     drv  = (item.get("driver") or "").lower().strip()
@@ -1852,7 +1853,83 @@ def _accountability_key(item: dict) -> str:
     if "dvir defect" in cat:
         detail = (item.get("detail") or "").lower().strip()
         return f"{cat}|{drv or unit}|{detail}"
+    if "needs disposition" in cat:
+        detail = (item.get("detail") or "").lower().strip()
+        return f"{cat}|{drv}|{detail}"
     return f"{cat}|{drv or unit}"
+
+
+def _compute_dvir_compliance(
+    samsara_sheets: dict | None,
+    today: "datetime.date",
+    days_back: int = 7,
+) -> list[dict]:
+    """Compute per-driver DVIR pre/post-trip compliance for the last N days.
+
+    FMCSA 396.11 requires a pre-trip and post-trip inspection each working day.
+    Working days = days with drive or on-duty time > 0 from HOS_DailyLogs.
+    Expected = working_days × 2.  Done = DVIRs submitted in the same window.
+    Returns sorted list (worst compliance first) of:
+        {driver, worked, done, expected, pct}
+    """
+    if not samsara_sheets:
+        return []
+
+    df_hos = samsara_sheets.get("HOS_DailyLogs")
+    if df_hos is None or df_hos.empty:
+        return []
+
+    name_col   = _find_col(df_hos, ["driver name", "driver.name", "name"])
+    drive_col  = _find_col(df_hos, ["dutystatusdurations.drivedurationms", "drivedurationms"])
+    onduty_col = _find_col(df_hos, ["dutystatusdurations.ondutydurationms", "ondutydurationms"])
+    date_col   = _find_col(df_hos, ["log date", "logdate", "date", "starttime", "start_time"])
+
+    if not name_col:
+        return []
+
+    window_start = today - datetime.timedelta(days=days_back)
+    df_w = df_hos.copy()
+    if date_col:
+        dates = pd.to_datetime(df_w[date_col], errors="coerce").dt.date
+        df_w = df_w[(dates.notna()) & (dates >= window_start) & (dates <= today)]
+
+    drive  = (pd.to_numeric(df_w[drive_col],  errors="coerce").fillna(0)
+              if drive_col  else pd.Series(0, index=df_w.index))
+    onduty = (pd.to_numeric(df_w[onduty_col], errors="coerce").fillna(0)
+              if onduty_col else pd.Series(0, index=df_w.index))
+    working_days: dict = (
+        df_w[(drive > 0) | (onduty > 0)][name_col].value_counts().to_dict()
+    )
+
+    dvir_done: dict = {}
+    df_dvir = samsara_sheets.get("DVIRs")
+    if df_dvir is not None and not df_dvir.empty:
+        dn_col = _find_col(df_dvir, ["driver.name", "driver name", "driver"])
+        dd_col = _find_col(df_dvir, ["starttime", "start_time", "createdat",
+                                      "submittedattime", "date"])
+        if dn_col:
+            df_dv = df_dvir.copy()
+            if dd_col:
+                dvir_dates = pd.to_datetime(df_dv[dd_col], errors="coerce").dt.date
+                df_dv = df_dv[(dvir_dates.notna()) & (dvir_dates >= window_start)
+                               & (dvir_dates <= today)]
+            dvir_done = df_dv[dn_col].value_counts().to_dict()
+
+    results = []
+    for driver, worked in working_days.items():
+        if not driver or str(driver).lower() in ("nan", "none", ""):
+            continue
+        expected = int(worked) * 2
+        done = int(dvir_done.get(driver, 0))
+        pct  = round(done / expected * 100) if expected > 0 else 0
+        results.append({
+            "driver":   str(driver),
+            "worked":   int(worked),
+            "done":     done,
+            "expected": expected,
+            "pct":      pct,
+        })
+    return sorted(results, key=lambda r: r["pct"])
 
 
 def _write_accountability_json(
@@ -1861,6 +1938,7 @@ def _write_accountability_json(
     samba: dict | None,
     alvys_drivers: dict | None,
     equipment: dict | None,
+    samsara_sheets: dict | None = None,
     tok: str | None = None,
     upn: str | None = None,
 ) -> Path:
@@ -1948,10 +2026,36 @@ def _write_accountability_json(
             "severity": "high",
             "driver":   drv,
             "detail":   str(vtype),
-            "prompt":   "Action taken with this driver?",
+            "prompt":   "Has driver been counseled on this violation? What corrective action was taken?",
         })
 
-    # ── Safety events not coached (30d window) ────────────────────────
+    # ── Safety events needing disposition (last 7d, per-event) ───────
+    # Individual events with needsCoaching status — each needs Audra to
+    # disposition it in Samsara AND explain what corrective action was taken.
+    seen_ev: set[str] = set()
+    for ev in ((samsara or {}).get("detail") or {}).get("events") or []:
+        status_raw = str(ev.get("status") or "").strip()
+        if status_raw.lower() not in ("needscoaching", "needs_coaching",
+                                       "needs coaching", "needcoaching"):
+            continue
+        drv   = ev.get("driver name") or ev.get("driver") or "?"
+        etype = ev.get("event type") or "safety event"
+        date  = (ev.get("date") or "").strip()
+        sev_s = str(ev.get("severity") or "").lower()
+        ev_key = f"{drv.lower()}|{etype.lower()}|{date}"
+        if ev_key in seen_ev:
+            continue
+        seen_ev.add(ev_key)
+        audra.append({
+            "category": "Safety Event — Needs Disposition",
+            "severity": "high" if "high" in sev_s else "medium",
+            "driver":   drv,
+            "detail":   f"{etype} on {date}" if date else etype,
+            "prompt":   "Has this event been dispositioned in Samsara? What coaching action was taken to correct the behavior?",
+        })
+
+    # ── Safety events not coached — 30-day summary per driver ─────────
+    # Complements the per-event block above with a broader 30-day view.
     coaching_list = (samsara or {}).get("coaching_list") or []
     for c in coaching_list:
         drv    = c.get("driver") or "?"
@@ -1963,7 +2067,6 @@ def _write_accountability_json(
         status = str(c.get("status") or "").lower()
         if acked or status in ("coached", "dismissed", "recognized"):
             continue
-        # Estimate days open from last event
         last = c.get("last") or ""
         try:
             last_dt = pd.Timestamp(last).date() if last else None
@@ -1978,7 +2081,7 @@ def _write_accountability_json(
             "severity": "high" if (days_open or 0) > 3 else "medium",
             "driver":   drv,
             "detail":   detail,
-            "prompt":   "When will coaching be completed?",
+            "prompt":   "When will coaching be completed? What corrective action was taken?",
         })
 
     # ── Open DVIR defects — Jackson + Dan own repairs ─────────────────
@@ -2002,19 +2105,38 @@ def _write_accountability_json(
             "prompt":   "Has this defect been repaired and cleared in Samsara?",
         })
 
-    # ── DVIR Compliance — Audra ensures drivers are completing inspections
-    # hos_uncert = drivers who haven't certified their ELD logs (which
-    # includes missing pre/post-trip DVIR submissions). Separate from
-    # DVIR Defects (physical repairs) which go to Jackson + Dan above.
+    # ── DVIR inspection compliance (FMCSA 396.11) ────────────────────
+    # Drivers not completing required pre/post-trip DVIRs — DOT violation.
+    # Expected = working_days × 2; done = DVIRs submitted in the 7-day window.
+    for d in _compute_dvir_compliance(samsara_sheets, today):
+        if d["pct"] >= 100:
+            continue
+        drv  = d["driver"]
+        done = d["done"]
+        exp  = d["expected"]
+        pct  = d["pct"]
+        sev  = "critical" if pct == 0 else ("high" if pct < 50 else "medium")
+        audra.append({
+            "category": "DVIR Compliance",
+            "severity": sev,
+            "driver":   drv,
+            "detail":   f"{done}/{exp} inspections completed ({pct}%) — last 7 days",
+            "prompt":   "Has driver been notified? What action was taken to correct this DOT violation?",
+        })
+
+    # ── Prior Day Logs Not Certified ──────────────────────────────────
+    # hos_uncert = drivers who haven't certified their prior-day ELD logs.
+    # The days_missing count = how many prior-day logs need to be certified
+    # when the driver comes back on duty.
     for u in ((samsara or {}).get("detail") or {}).get("hos_uncert") or []:
         drv  = u.get("driver") or "?"
         miss = u.get("days_missing") or 1
         audra.append({
-            "category": "DVIR Compliance",
+            "category": "Prior Day Logs Not Certified",
             "severity": "medium",
             "driver":   drv,
-            "detail":   f"{miss} missing DVIR / log certification(s)",
-            "prompt":   "Has driver been notified to complete their pre/post-trip inspections?",
+            "detail":   f"{miss} prior-day log(s) not certified",
+            "prompt":   "Has driver been notified to certify their prior-day logs? What corrective action was taken?",
         })
 
     # ── Bottom safety scores ───────────────────────────────────────────
@@ -2052,34 +2174,52 @@ def _write_accountability_json(
         })
 
     # ── Tractor DOT inspections past 120d company policy ─────────────
+    # Goes to BOTH Audra and Ops (Audra owns safety/compliance, Jackson+Dan
+    # own tractor maintenance scheduling — all three must act together).
+    # Deadline rule: 240d total from last inspection (= 120d past policy,
+    # over >= 120) — tractor is taken out of service, do not move.
     for t in (equipment or {}).get("tractors") or []:
         pd_val = t.get("policy_days")
         if not isinstance(pd_val, (int, float)) or pd_val >= 0:
             continue
-        unit = t.get("unit") or "?"
-        over = abs(int(pd_val))
-        audra.append({
-            "category": "DOT Inspection — Tractor",
-            "severity": "critical" if over > 60 else "high",
-            "unit":     unit,
-            "detail":   f"{over}d past 120d company policy",
-            "prompt":   "Inspection scheduled? When?",
-        })
+        unit  = t.get("unit") or "?"
+        over  = abs(int(pd_val))
+        # 240d total from last inspection = 120d past policy → DEADLINED
+        deadlined = over >= 120
+        if deadlined:
+            detail = f"{over}d past 120d company policy — DEADLINED: do not move until inspected"
+            prompt = "UNIT IS OUT OF SERVICE. Inspection must be completed before tractor moves."
+            sev    = "critical"
+        else:
+            detail = f"{over}d past 120d company policy"
+            prompt = "Inspection must be scheduled immediately. When is appointment?"
+            sev    = "critical" if over > 60 else "high"
+        item = {"category": "DOT Inspection — Tractor", "severity": sev,
+                "unit": unit, "detail": detail, "prompt": prompt}
+        audra.append(item.copy())
+        ops.append(item.copy())
 
-    # ── Trailer DOT inspections past 120d policy — Jackson + Dan ──────
+    # ── Trailer DOT inspections past 120d policy ──────────────────────
+    # Goes to BOTH Audra and Ops (same deadline rule as tractors).
     for t in (equipment or {}).get("trailers") or []:
         pd_val = t.get("policy_days")
         if not isinstance(pd_val, (int, float)) or pd_val >= 0:
             continue
-        unit = t.get("unit") or "?"
-        over = abs(int(pd_val))
-        ops.append({
-            "category": "DOT Inspection — Trailer",
-            "severity": "critical" if over > 60 else "high",
-            "unit":     unit,
-            "detail":   f"{over}d past 120d company policy",
-            "prompt":   "Inspection scheduled? When?",
-        })
+        unit  = t.get("unit") or "?"
+        over  = abs(int(pd_val))
+        deadlined = over >= 120
+        if deadlined:
+            detail = f"{over}d past 120d company policy — DEADLINED: do not move until inspected"
+            prompt = "TRAILER IS OUT OF SERVICE. Inspection must be completed before trailer moves."
+            sev    = "critical"
+        else:
+            detail = f"{over}d past 120d company policy"
+            prompt = "Inspection must be scheduled immediately. When is appointment?"
+            sev    = "critical" if over > 60 else "high"
+        item = {"category": "DOT Inspection — Trailer", "severity": sev,
+                "unit": unit, "detail": detail, "prompt": prompt}
+        audra.append(item.copy())
+        ops.append(item.copy())
 
     # ── Carry-forward: load previous day's JSON from OneDrive ─────────
     # Try up to 3 days back (handles weekends / skipped runs).
@@ -2246,7 +2386,7 @@ def main() -> int:
     )
 
     _write_accountability_json(today, samsara, samba, alvys_drivers, equipment,
-                               tok=tok, upn=upn)
+                               samsara_sheets=samsara_sheets, tok=tok, upn=upn)
 
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
