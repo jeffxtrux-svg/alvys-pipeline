@@ -1056,22 +1056,22 @@ def _safety_summary_block_inline(samsara: dict | None,
     # bottom — gives the grid a consistent visual rhythm.
     def _snap_tile(label: str, value: str, sub: str,
                     value_color: str = INK) -> str:
+        # Shorter than the bar-chart tiles below — there's only one number
+        # to show, no point in matching the full ~180px chart height. The
+        # big value is bottom-right-anchored via position:absolute so it
+        # truly sits at the bottom of the tile (WeasyPrint doesn't honor
+        # td valign='bottom' reliably when the row has no explicit height —
+        # same fix as the bar-chart bars).
         return (
             f"<td class='tile' width='33%' valign='top' style='padding:6px;'>"
             f"<div style='border:1px solid {LINE};border-radius:10px;"
-            f"padding:12px 12px 10px;height:184px;'>"
-            # Title at top
+            f"padding:10px 14px 10px;height:96px;position:relative;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};"
             f"margin-bottom:2px;'>{label}</div>"
-            f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
-            # Bottom-anchored big number — uses a table cell with valign=bottom
-            # to push the value to the bottom of the remaining tile space.
-            f"<table width='100%' cellpadding='0' cellspacing='0' "
-            f"style='height:128px;'>"
-            f"<tr><td valign='bottom' align='center' style='padding-bottom:6px;'>"
-            f"<div style='{FONT_SERIF}font-size:48px;font-weight:400;"
+            f"<div style='font-size:10.5px;color:{MUTE};line-height:1.3;'>{sub}</div>"
+            f"<div style='position:absolute;right:14px;bottom:10px;"
+            f"{FONT_SERIF}font-size:34px;font-weight:400;"
             f"color:{value_color};letter-spacing:-1px;line-height:1;'>{value}</div>"
-            f"</td></tr></table>"
             f"</div>"
             f"</td>"
         )

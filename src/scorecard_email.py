@@ -4772,9 +4772,25 @@ def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False):
         # ~0.6in AR/AP column = no overflow at the right edge of the tile.
         # Add tiny letter-spacing tweak so the label digits don't sit too
         # close together.
-        bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 1px;'>"
-                f"<div style='font-size:7.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;letter-spacing:-0.1px;'>{label_html}</div>"
-                f"<div style='width:16px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
+        # Bars are absolutely-positioned at the bottom of a fixed-height
+        # container so they truly anchor to the baseline. WeasyPrint
+        # doesn't reliably honor valign='bottom' on td when the row has
+        # no explicit height — without this absolute positioning every
+        # bar (regardless of value) renders top-anchored, defeating the
+        # whole point of a comparison chart. The label sits 2px above
+        # the top of the bar so it tracks the bar height visually.
+        bar += (
+            f"<td align='center' width='{col_w}' style='padding:0 1px;'>"
+            f"<div style='position:relative;height:{H + 14}px;'>"
+            f"<div style='position:absolute;left:0;right:0;bottom:{h + 2}px;"
+            f"font-size:7.5px;font-weight:700;color:{label_color};"
+            f"white-space:nowrap;letter-spacing:-0.1px;line-height:1;'>"
+            f"{label_html}</div>"
+            f"<div style='position:absolute;left:50%;bottom:0;margin-left:-8px;"
+            f"width:16px;height:{h}px;background:{bc};"
+            f"border-radius:3px 3px 0 0;'></div>"
+            f"</div></td>"
+        )
         lcol = INK if last else MUTE
         lbl += (f"<td align='center' width='{col_w}' style='font-size:9px;color:{lcol};font-weight:{'700' if last else '400'};"
                 f"padding-top:4px;white-space:nowrap;'>{m}</td>")
