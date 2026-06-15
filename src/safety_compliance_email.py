@@ -1106,22 +1106,29 @@ def _safety_summary_block_inline(samsara: dict | None,
                      fmt=lambda v: f"{v:.1f}%" if v else "0%")
     )
 
-    # Drop into a colspan=4 row so the inline block plays nicely with
-    # the page's 4-col layout, even though the 6-month trend section
-    # below uses a 3-col grid (3 tiles + 6 bars = 9 cells in 3 rows
-    # of 3, all at 33% width). _safety_detail_tables already emits
-    # its own _section/_table rows so it slots in directly.
+    # Separate <table> elements for the 4-col metrics row and 3-col trend
+    # grid — mixing column counts in one table can misalign column widths.
+    # _safety_detail_tables emits its own _section/_table rows so it also
+    # gets its own table wrapper.
     return (
-        f"<tr><td colspan='4' style='padding:8px 18px 0;'>"
+        f"<tr><td colspan='4' style='padding:8px 24px 0;'>"
+        # 4-column metrics snapshot (25% each)
         f"<table width='100%' cellpadding='0' cellspacing='0'>"
-        f"{_section('Safety &amp; compliance &mdash; 24h / 7d / MTD &middot; X-Trux / XFreight fleet')}"
+        f"{_section('Current period &mdash; 24h / 7d / month-to-date')}"
         f"<tr>{safety_tiles}</tr>"
-        f"{_section('Safety &amp; compliance &mdash; 6-month trend (MTD)')}"
+        f"</table>"
+        # 3-column 6-month trend grid (33% each — separate table for clean widths)
+        f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:4px;'>"
+        f"{_section('6-month trend &mdash; rolling window &middot; * = month-to-date', span=3)}"
         f"<tr>{safety_charts_row1}</tr>"
         f"<tr>{safety_charts_row2}</tr>"
         f"<tr>{safety_charts_row3}</tr>"
+        f"</table>"
+        # Detail tables (events / HOS / DVIR / coaching)
+        f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:4px;'>"
         f"{_safety_detail_tables(samsara)}"
-        f"</table></td></tr>"
+        f"</table>"
+        f"</td></tr>"
     )
 
 
@@ -1145,14 +1152,17 @@ def _footer_kb_links() -> str:
     )
     return (
         f"<table width='100%' cellpadding='0' cellspacing='0' "
-        f"style='background:#fafafa;border-top:1px solid {LINE};margin-top:12px;'>"
-        f"<tr><td style='padding:14px 24px;'>"
-        f"<div style='font-size:10px;letter-spacing:2px;color:{MUTE};font-weight:700;"
-        f"margin-bottom:6px;'>KNOWLEDGE BASE</div>{rows}"
-        f"<div style='font-size:11px;color:{MUTE};margin-top:8px;font-style:italic;'>"
-        f"Each playbook listed here is a living protocol with a Recent Runs log &mdash; "
+        f"style='background:{TILEBG};border-top:2px solid {LINE};margin-top:16px;'>"
+        f"<tr><td style='padding:16px 28px 18px;'>"
+        f"<div style='font-size:9.5px;letter-spacing:2px;color:{MUTE};font-weight:700;"
+        f"text-transform:uppercase;margin-bottom:8px;'>Knowledge base &amp; playbooks</div>"
+        f"{rows}"
+        f"<div style='font-size:11px;color:{MUTE};margin-top:10px;font-style:italic;"
+        f"border-top:1px solid {LINE};padding-top:8px;'>"
+        f"Each playbook is a living protocol with a <b>Recent Runs</b> log &mdash; "
         f"append outcomes when you act on a brief item so the playbook learns from real "
-        f"invocations.</div></td></tr></table>"
+        f"invocations and the team builds institutional memory.</div>"
+        f"</td></tr></table>"
     )
 
 
@@ -1469,12 +1479,14 @@ def build_page_driver_compliance(samba: dict | None,
             for d in invalid
         )
         inner += (
-            f"<div style='margin:14px 18px 6px;padding:10px 14px;background:{BADBG};"
-            f"border-left:6px solid {BAD};border-radius:4px;'>"
-            f"<div style='font-size:11px;letter-spacing:1.5px;font-weight:800;color:{BAD};'>"
-            f"&#9888;&nbsp;DISQUALIFIED / INVALID LICENSES &mdash; PULL FROM DISPATCH"
-            f"</div></div>"
-            + f"<div style='padding:0 18px 6px;'>"
+            f"<div style='margin:14px 24px 10px;padding:12px 16px;background:{BADBG};"
+            f"border:1px solid {BAD};border-left:6px solid {BAD};border-radius:8px;'>"
+            f"<div style='font-size:10px;letter-spacing:1.8px;font-weight:800;color:{BAD};"
+            f"margin-bottom:8px;'>&#9888;&nbsp;DISQUALIFIED / INVALID LICENSES &mdash; PULL FROM DISPATCH</div>"
+            f"<div style='font-size:12.5px;color:{INK};'>These drivers cannot legally operate. "
+            f"Remove from dispatch schedule immediately.</div>"
+            f"</div>"
+            + f"<div style='padding:0 24px 6px;'>"
             f"{_table(['Driver','Status','Latest action','Action date'], ['left']*4, rows)}"
             f"</div>"
         )
@@ -1573,7 +1585,7 @@ def build_page_driver_compliance(samba: dict | None,
                 inner += _table(['Driver', 'Score', 'Risk category', 'State'],
                                  ['left', 'right', 'left', 'left'], rrows)
             inner += (
-                f"<div style='padding:6px 18px;color:{MUTE};font-size:11px;'>"
+                f"<div style='padding:6px 24px;color:{MUTE};font-size:11px;'>"
                 f"{len(high)} driver{'s' if len(high) != 1 else ''} at HIGH risk &middot; "
                 f"fleet avg risk score: {avg_txt}.</div>"
             )
@@ -1854,19 +1866,21 @@ def _build_html_report(*,
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
-        "body{margin:0;background:#fff;font-family:Helvetica,Arial,sans-serif;color:" + INK + ";}"
+        f"body{{margin:0;background:#fff;font-family:Helvetica,Arial,sans-serif;color:{INK};font-size:13px;line-height:1.45;}}"
         ".page-break{page-break-after:always;break-after:page;height:0;}"
         # WeasyPrint page counters — adds a true per-PDF-page footer on
         # every physical page (auto-paginated continuations included).
         # Inline 'Page X of N' counters in the per-page headers stay
         # hidden in print (.pg-of below) so we don't double up; the
         # @page footer is the single source of truth in the PDF.
-        "@page{size:letter;margin:0.45in 0.35in 0.7in;"
+        "@page{size:letter;margin:0.5in 0.4in 0.75in;"
         "@bottom-center{content:'Page ' counter(page) ' of ' counter(pages);"
         f"font-family:Helvetica,Arial,sans-serif;font-size:9px;color:{MUTE};"
         "letter-spacing:0.5px;}}"
         "@media print{.pg-of{display:none;}}"
         "table.tbl{border-collapse:collapse;width:100%;}"
+        ".tile{vertical-align:top!important;}"
+        f"td{{vertical-align:top;}}"
         "</style></head><body>"
         + body
         + "</body></html>"
