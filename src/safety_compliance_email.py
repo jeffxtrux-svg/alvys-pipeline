@@ -1346,8 +1346,49 @@ def build_page_csa_scorecard(csa: dict | None, pg: int, total: int) -> str:
     return _page_header("FMCSA CSA scorecard", pg, total) + _wrap_page(body)
 
 
+def _load_carrier_map(alvys_pipeline_sheets: dict | None) -> dict[str, str]:
+    """Build {load# (digit-normalized) → carrier name} from the Loads
+    sheet so the safety brief's Invoice Closeout page can display the
+    actual carrier on un-invoiced (customer-side) loads — answers
+    "who hauled this?" without re-touching the shared
+    compute_alvys_uninvoiced. Returns {} when the sheet or columns
+    are missing."""
+    if not alvys_pipeline_sheets:
+        return {}
+    loads = alvys_pipeline_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return {}
+    load_col = "Load #" if "Load #" in loads.columns else _find_col(loads, ["load #", "load number"])
+    carrier_col = "Carrier" if "Carrier" in loads.columns else _find_col(loads, ["carrier"])
+    if not (load_col and carrier_col):
+        return {}
+    out: dict[str, str] = {}
+    for idx in loads.index:
+        ln = _norm_load_token(loads.at[idx, load_col])
+        cr = loads.at[idx, carrier_col]
+        if not ln or cr is None or (isinstance(cr, float) and pd.isna(cr)):
+            continue
+        out[ln] = str(cr).strip()
+    return out
+
+
+def _totals_row(cells: list[str], al: list[str], colspan_of: list[int] | None = None) -> str:
+    """A distinct TOTAL row for the bottom of detail tables. Bold,
+    top-accent border, no per-cell bottom border so it reads as a
+    summary rather than just another data row."""
+    out = ""
+    for cc, a in zip(cells, al):
+        out += (
+            f"<td align='{a}' style='padding:10px 8px;font-size:13px;"
+            f"color:{INK};font-weight:800;background:#fafafa;"
+            f"border-top:2px solid {INK};'>{cc}</td>"
+        )
+    return f"<tr>{out}</tr>"
+
+
 def build_page_invoice_closeout(uninvoiced: dict | None,
                                   carrier_backlog: dict | None,
+                                  alvys_pipeline_sheets: dict | None,
                                   pg: int, total: int) -> str:
     """Audra's invoice-closeout responsibility (per the responsibility-map
     core memory): loads invoiced timely AND carrier invoices entered
@@ -1356,7 +1397,13 @@ def build_page_invoice_closeout(uninvoiced: dict | None,
     Asset side (X-Trux + X-Linx delivered, no customer invoice yet) is
     the same shape compute_alvys_uninvoiced returns to the executive
     brief; brokered side (X-Linx delivered, no carrier invoice number
-    entered) is compute_carrier_invoice_backlog. Both feed AR aging."""
+    entered) is compute_carrier_invoice_backlog. Both feed AR aging.
+
+    `alvys_pipeline_sheets` is used to derive a load→carrier map so
+    the customer-side table can show who's hauling each un-invoiced
+    load — Audra often needs that to phone the right party."""
+    carrier_map = _load_carrier_map(alvys_pipeline_sheets)
+
     # --- Section 1: customer side ---
     u_rows = (uninvoiced or {}).get("rows") or []
     u_count = (uninvoiced or {}).get("count") or 0
@@ -1372,17 +1419,28 @@ def build_page_invoice_closeout(uninvoiced: dict | None,
             _tr([str(r.get("load") or "&mdash;"),
                  str(r.get("customer") or "&mdash;"),
                  str(r.get("entity") or "&mdash;"),
+                 (carrier_map.get(_norm_load_token(r.get("load"))) or "&mdash;"),
                  str(r.get("delivered") or "&mdash;"),
                  (f"{r['days']}d" if r.get("days") is not None else "&mdash;"),
                  f"${(r.get('revenue') or 0):,.0f}"],
-                ["left", "left", "left", "left", "right", "right"],
-                [None, None, None, None,
+                ["left", "left", "left", "left", "left", "right", "right"],
+                [None, None, None, None, None,
                  ("bad" if (r.get("days") or 0) > 7 else "warn"),
                  None])
             for r in u_rows
         )
-        u_table = _table(['Load #', 'Customer', 'Entity', 'Delivered', 'Days', 'Revenue'],
-                          ['left', 'left', 'left', 'left', 'right', 'right'], rows)
+        # Totals row: sum of revenue across all shown rows. The page-1
+        # summary uses the unfiltered total_revenue from
+        # compute_alvys_uninvoiced (full count), but the table caps at
+        # `limit` shown rows — so the row total is what's visible here.
+        shown_total = sum((r.get("revenue") or 0) for r in u_rows)
+        rows += _totals_row(
+            [f"TOTAL ({len(u_rows)} shown)", "", "", "", "", "",
+             f"${shown_total:,.0f}"],
+            ["left", "left", "left", "left", "left", "right", "right"],
+        )
+        u_table = _table(['Load #', 'Customer', 'Entity', 'Carrier', 'Delivered', 'Days', 'Revenue'],
+                          ['left', 'left', 'left', 'left', 'left', 'right', 'right'], rows)
     else:
         u_table = (
             f"<div style='padding:12px 18px;color:{MUTE};font-size:12px;'>"
@@ -1421,6 +1479,12 @@ def build_page_invoice_closeout(uninvoiced: dict | None,
                  None])
             for r in c_rows
         )
+        shown_c_total = sum((r.get("carrier_rate") or 0) for r in c_rows)
+        rows += _totals_row(
+            [f"TOTAL ({len(c_rows)} shown)", "", "", "", "",
+             f"${shown_c_total:,.0f}"],
+            ["left", "left", "left", "left", "right", "right"],
+        )
         c_table = _table(['Load #', 'Customer', 'Carrier', 'Delivered', 'Days', 'Carrier rate'],
                           ['left', 'left', 'left', 'left', 'right', 'right'], rows)
     else:
@@ -1452,6 +1516,7 @@ def _build_html_report(*,
                         samba: dict | None,
                         csa: dict | None,
                         alvys_drivers: dict | None,
+                        alvys_sheets: dict | None,
                         uninvoiced: dict | None,
                         carrier_backlog: dict | None,
                         risk_signals: list[dict] | None,
@@ -1487,7 +1552,7 @@ def _build_html_report(*,
         build_page3_hos(samsara, 5, total),
         build_page5_vehicles(samsara, samsara_sheets, 6, total),
         build_page_csa_scorecard(csa, 7, total),
-        build_page_invoice_closeout(uninvoiced, carrier_backlog, 8, total),
+        build_page_invoice_closeout(uninvoiced, carrier_backlog, alvys_sheets, 8, total),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
@@ -1619,6 +1684,7 @@ def main() -> int:
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
         samba=samba, csa=csa, alvys_drivers=alvys_drivers,
+        alvys_sheets=alvys_sheets,
         uninvoiced=uninvoiced, carrier_backlog=carrier_backlog,
         risk_signals=risk_signals, action_items=action_items,
     )
