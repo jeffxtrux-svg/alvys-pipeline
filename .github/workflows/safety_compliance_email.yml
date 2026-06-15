@@ -110,9 +110,12 @@ jobs:
           SAFETY_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || inputs.skip_idempotency) && '1' || '' }}
         run: python -m src.safety_compliance_email
 
-      - name: Post safety summary to Teams
-        # Fires after the email send succeeds. Silent no-op if
-        # TEAMS_SAFETY_WEBHOOK secret is not yet set.
+      - name: Post accountability items to Teams
+        # Posts two separate MessageCards to the Safety and Compliance
+        # Teams channel — Audra's action items first, then Jackson+Dan's.
+        # Reads output/safety-accountability-{date}.json written by the
+        # safety brief run above. Silent no-op if TEAMS_SAFETY_WEBHOOK
+        # is not set.
         if: steps.ct_gate.outputs.skip != '1'
         env:
           TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
@@ -124,81 +127,73 @@ jobs:
 
           webhook = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
           if not webhook:
-              print("TEAMS_SAFETY_WEBHOOK not set — skipping Teams notification.")
+              print("TEAMS_SAFETY_WEBHOOK not set — skipping Teams posts.")
               raise SystemExit(0)
 
           today = datetime.date.today()
           run_url = os.environ.get("RUN_URL", "")
+          acc_path = Path(f"output/safety-accountability-{today.isoformat()}.json")
+          if not acc_path.exists():
+              print(f"Accountability JSON not found at {acc_path} — skipping.")
+              raise SystemExit(0)
 
-          # Read safety-relevant signals from risk-watch-latest.json.
-          # The file is written by the scorecard run; if absent (e.g. on
-          # a first-time run before the scorecard has fired) we skip the
-          # signal list rather than erroring.
-          _WIKI = Path("Karpathy-Wiki/wiki")
-          _SAFETY_KEYWORDS = {
-              "inspection", "dvir", "hos", "license", "medical", "mvr",
-              "csa", "safety", "driver", "speed", "coach",
-          }
+          data = json.loads(acc_path.read_text())
 
-          signals_path = _WIKI / "risk-watch-latest.json"
-          tripped_safety = []
-          ok_safety = 0
-          if signals_path.exists():
-              data = json.loads(signals_path.read_text())
-              for s in data.get("signals", []):
-                  tags = {t.lower() for t in (s.get("tags") or [])}
-                  title_words = set(s.get("title", "").lower().split())
-                  is_safety = bool(tags & _SAFETY_KEYWORDS or title_words & _SAFETY_KEYWORDS)
-                  if not is_safety:
-                      continue
-                  if s.get("tripped"):
-                      tripped_safety.append(s)
-                  else:
-                      ok_safety += 1
+          SEV_EMOJI  = {"critical": "🔴", "high": "🟠", "medium": "🟡"}
+          SEV_COLOR  = {"critical": "FF0000", "high": "FF8C00", "medium": "FFD700"}
 
-          # Build Microsoft Teams MessageCard payload.
-          sev_color = {"high": "FF0000", "medium": "FF8C00", "low": "FFD700"}
-          if tripped_safety:
-              theme_color = sev_color.get(
-                  (tripped_safety[0].get("severity") or "medium").lower(), "FF8C00"
-              )
-          else:
-              theme_color = "00B050"  # green — all clear
+          def _subject(item: dict) -> str:
+              """One-line subject for a fact row."""
+              parts = [item.get("driver") or item.get("unit") or ""]
+              parts = [p for p in parts if p]
+              return (f"{', '.join(parts)} — " if parts else "") + item.get("detail", "")
 
-          facts = []
-          if tripped_safety:
-              for s in tripped_safety[:6]:
-                  sev = (s.get("severity") or "medium").capitalize()
-                  facts.append({"name": f"[{sev}]", "value": s.get("title", "—")})
-          else:
-              facts.append({"name": "Status", "value": "All tracked safety signals within threshold."})
+          def _card_color(items: list[dict]) -> str:
+              for sev in ("critical", "high", "medium"):
+                  if any(i.get("severity") == sev for i in items):
+                      return SEV_COLOR[sev]
+              return "00B050"  # green — all clear
 
-          status_line = (
-              f"{len(tripped_safety)} signal(s) need attention · {ok_safety} OK"
-              if tripped_safety else f"All {ok_safety} tracked signal(s) OK"
-          )
+          def _facts(items: list[dict]) -> list[dict]:
+              facts = []
+              for item in items:
+                  emoji = SEV_EMOJI.get(item.get("severity", "medium"), "🟡")
+                  cat   = item.get("category", "")
+                  name  = f"{emoji} {cat}"
+                  val   = _subject(item) + f"\n→ {item.get('prompt', '')}"
+                  facts.append({"name": name, "value": val})
+              return facts
 
-          payload = {
-              "@type": "MessageCard",
-              "@context": "https://schema.org/extensions",
-              "themeColor": theme_color,
-              "summary": f"XFreight Safety & Compliance — {today:%a %b %d}",
-              "sections": [{
-                  "activityTitle": f"XFreight Safety & Compliance — {today:%A, %B %d, %Y}",
-                  "activitySubtitle": status_line,
-                  "facts": facts,
-              }],
-              "potentialAction": [{
-                  "@type": "OpenUri",
-                  "name": "View workflow run",
-                  "targets": [{"os": "default", "uri": run_url}],
-              }] if run_url else [],
-          }
+          def post_card(owner_label: str, items: list[dict]) -> None:
+              if not items:
+                  print(f"{owner_label}: no action items today — skipping post.")
+                  return
+              color  = _card_color(items)
+              subtitle = (f"{len(items)} action item(s) — reply with action taken"
+                          if items else "No action items today ✓")
+              payload = {
+                  "@type":    "MessageCard",
+                  "@context": "https://schema.org/extensions",
+                  "themeColor": color,
+                  "summary":  f"XFreight Safety Accountability — {today:%a %b %d} — {owner_label}",
+                  "sections": [{
+                      "activityTitle":    f"📋 {owner_label} — Safety Accountability | {today:%A, %B %d, %Y}",
+                      "activitySubtitle": subtitle,
+                      "facts": _facts(items),
+                  }],
+                  "potentialAction": [{
+                      "@type": "OpenUri",
+                      "name":  "View workflow run",
+                      "targets": [{"os": "default", "uri": run_url}],
+                  }] if run_url else [],
+              }
+              resp = requests.post(webhook, json=payload, timeout=30)
+              print(f"{owner_label} card: HTTP {resp.status_code} ({len(items)} items)")
+              if resp.status_code not in range(200, 300):
+                  print(f"  Response: {resp.text[:300]}")
 
-          resp = requests.post(webhook, json=payload, timeout=30)
-          print(f"Teams notification: HTTP {resp.status_code} — {resp.text[:200]}")
-          if resp.status_code not in range(200, 300):
-              raise SystemExit(1)
+          post_card("AUDRA",         data.get("audra", []))
+          post_card("JACKSON + DAN", data.get("ops",   []))
           PY
 
       - name: Notify on failure
