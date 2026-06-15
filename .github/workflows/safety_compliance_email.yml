@@ -1,16 +1,20 @@
 # Safety & Compliance Report — daily HTML brief at 5am CT focused on
 # driver safety, HOS compliance, and vehicle inspection state. Reads
 # Samsara_Master.xlsx from OneDrive (same source as the executive
-# brief) and emails an HTML body + PDF attachment.
+# brief) and emails a PDF attachment (body is a one-liner stub).
 #
-# Trigger: 2026-06-15 — bar-chart bottom-anchor + snapshot tile shrink.
-#
-# Currently in test mode: SAFETY_TO_EMAILS defaults to jeff@xfreight.net
-# only. Flip the default below to the wider standing list once the
-# report has been reviewed and signed off.
+# Production routing (per xfreight-employee-responsibilities.md, owner
+# approved 2026-06-15): scheduled fires go to **Audra** (primary)
+# with **JB + Jeff** CC'd. Manual dispatch / push (mobile escape
+# hatch) stays jeff-only so previews don't surprise Audra. A
+# dispatch with the `recipients` input always overrides for one-shot
+# routing.
 #
 # GitHub Secrets required (shared with the rest of the pipeline):
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+# Optional overrides: SAFETY_RECIPIENTS, SAFETY_CC_RECIPIENTS (if set,
+# replace the hardcoded literals below — same pattern as
+# SCORECARD_RECIPIENTS on scorecard_email.yml).
 # The Azure app needs Mail.Send (already used by the scorecard).
 
 name: Safety & Compliance Report (5am CT)
@@ -19,7 +23,11 @@ on:
   workflow_dispatch:
     inputs:
       recipients:
-        description: 'Comma-separated recipient override (default: jeff only while testing)'
+        description: 'Comma-separated TO override (default: jeff only on dispatch)'
+        required: false
+        default: ''
+      cc_recipients:
+        description: 'Comma-separated CC override (default: empty on dispatch)'
         required: false
         default: ''
       skip_idempotency:
@@ -94,14 +102,16 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
-          # TEST MODE: jeff-only on every trigger (scheduled, push,
-          # dispatch). The production routing per
-          # xfreight-employee-responsibilities.md is Audra primary +
-          # Jeff/JB cc, but the flip to that audience is on hold
-          # pending explicit owner approval. Until then ONEDRIVE_USER_UPN
-          # (jeff@xfreight.net) is the only recipient. A dispatch with
-          # the `recipients` input still overrides for one-shot previews.
-          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.ONEDRIVE_USER_UPN }}
+          # Routing (per xfreight-employee-responsibilities.md, owner
+          # approved 2026-06-15):
+          #   scheduled                                  → Audra TO, JB+Jeff CC
+          #   workflow_dispatch / push (no overrides)    → jeff only (preview mode)
+          #   workflow_dispatch with recipients input    → that list
+          #   workflow_dispatch with cc_recipients input → that CC list
+          # The literal fallback follows scorecard_email.yml so the
+          # right audience is reached even if a secret gets emptied.
+          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net') }}
+          SAFETY_CC_EMAILS: ${{ inputs.cc_recipients != '' && inputs.cc_recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '' || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net') }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # marker so the on-demand resend actually sends. The
           # skip_idempotency dispatch input does the same on demand.
@@ -115,7 +125,11 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
-          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.ONEDRIVE_USER_UPN }}
+          # Same routing as the main send — Audra TO + JB/Jeff CC for
+          # scheduled fires, jeff-only for dispatch/push so failed
+          # previews don't surprise Audra.
+          SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net') }}
+          SAFETY_CC_EMAILS: ${{ inputs.cc_recipients != '' && inputs.cc_recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '' || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net') }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
@@ -128,6 +142,7 @@ jobs:
               os.environ["AZURE_CLIENT_SECRET"],
           )
           to = [e.strip() for e in os.environ.get("SAFETY_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+          cc = [e.strip() for e in os.environ.get("SAFETY_CC_EMAILS", "").split(",") if e.strip()]
           run = os.environ.get("RUN_URL", "")
           html = (
               f"<p>The Safety &amp; Compliance Report job <b>failed</b> &mdash; "
@@ -135,5 +150,6 @@ jobs:
               f"<p>Run log: <a href='{run}'>{run}</a></p>"
           )
           send_email(tok, os.environ["ONEDRIVE_USER_UPN"], to,
-                     "⚠️ XFreight Safety & Compliance Report FAILED", html)
+                     "⚠️ XFreight Safety & Compliance Report FAILED", html,
+                     cc_emails=cc or None)
           PY

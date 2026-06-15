@@ -8584,9 +8584,12 @@ def render_pdf(html: str) -> bytes | None:
 
 
 def send_email(token: str, from_upn: str, to_emails: list[str], subject: str,
-               html: str, attachments: list[dict] | None = None) -> None:
+               html: str, attachments: list[dict] | None = None,
+               cc_emails: list[str] | None = None) -> None:
     """Send the brief. attachments=[{name, content_bytes, mime}, ...] are
-    delivered as Microsoft Graph fileAttachments (base64-encoded)."""
+    delivered as Microsoft Graph fileAttachments (base64-encoded).
+    cc_emails are added as ccRecipients (visible CC); pass None or [] to
+    suppress."""
     import base64
     url = f"{GRAPH}/users/{from_upn}/sendMail"
     message: dict = {
@@ -8594,6 +8597,10 @@ def send_email(token: str, from_upn: str, to_emails: list[str], subject: str,
         "body": {"contentType": "HTML", "content": html},
         "toRecipients": [{"emailAddress": {"address": a}} for a in to_emails],
     }
+    if cc_emails:
+        message["ccRecipients"] = [
+            {"emailAddress": {"address": a}} for a in cc_emails
+        ]
     if attachments:
         message["attachments"] = [
             {
@@ -8612,7 +8619,9 @@ def send_email(token: str, from_upn: str, to_emails: list[str], subject: str,
     )
     if resp.status_code == 202:
         attach_note = f" with {len(attachments)} attachment(s)" if attachments else ""
-        log.info("Scorecard email sent to %s%s", ", ".join(to_emails), attach_note)
+        cc_note = f" cc:{','.join(cc_emails)}" if cc_emails else ""
+        log.info("Scorecard email sent to %s%s%s",
+                 ", ".join(to_emails), cc_note, attach_note)
     else:
         log.error("sendMail failed [%s]: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()
