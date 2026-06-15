@@ -63,6 +63,7 @@ from src.scorecard_email import (
     _find_col,
     _is_ar_excluded,
     _isnum,
+    _monthly_counts,
     _mwtile,
     _pill,
     _safe_read,
