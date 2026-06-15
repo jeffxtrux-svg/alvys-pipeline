@@ -1889,8 +1889,6 @@ def build_page_driver_compliance(samba: dict | None,
         avg_txt = (f"{avg:.0f}" if isinstance(avg, (int, float)) and avg == avg
                    else "&mdash;")
         if high or ranked:
-            inner += ("<div style='page-break-before:always;break-before:page;"
-                      "height:0;overflow:hidden;'></div>")
             inner += _section('SambaSafety risk roster &mdash; all monitored drivers, worst-to-best')
             if ranked:
                 rrows = "".join(
