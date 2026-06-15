@@ -1975,16 +1975,19 @@ def _write_accountability_json(
             "prompt":   "Has this defect been repaired and cleared in Samsara?",
         })
 
-    # ── Missing log certifications / DVIR compliance ──────────────────
+    # ── DVIR Compliance — Audra ensures drivers are completing inspections
+    # hos_uncert = drivers who haven't certified their ELD logs (which
+    # includes missing pre/post-trip DVIR submissions). Separate from
+    # DVIR Defects (physical repairs) which go to Jackson + Dan above.
     for u in ((samsara or {}).get("detail") or {}).get("hos_uncert") or []:
         drv  = u.get("driver") or "?"
         miss = u.get("days_missing") or 1
         audra.append({
-            "category": "Missing Log Cert / DVIR",
+            "category": "DVIR Compliance",
             "severity": "medium",
             "driver":   drv,
-            "detail":   f"{miss} missing log certification(s)",
-            "prompt":   "Has driver been notified to certify logs in ELD?",
+            "detail":   f"{miss} missing DVIR / log certification(s)",
+            "prompt":   "Has driver been notified to complete their pre/post-trip inspections?",
         })
 
     # ── Bottom safety scores ───────────────────────────────────────────
