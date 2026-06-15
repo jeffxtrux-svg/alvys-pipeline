@@ -4987,7 +4987,7 @@ def _mwtile(label, v24, v7, vmtd, hk="mute"):
                 f"letter-spacing:.4px;color:{MUTE};'>{tag}</div><div style='font-size:18px;font-weight:800;"
                 f"color:{col};line-height:1.1;'>{val}</div></td>")
     return (f"<td class='tile' width='25%' style='padding:6px;' valign='top'><div style='background:#fff;border:1px solid {LINE};"
-            f"border-radius:10px;padding:12px 10px 10px;'><div style='font-size:11px;letter-spacing:.5px;"
+            f"border-radius:10px;padding:12px 10px 10px;text-align:center;'><div style='font-size:11px;letter-spacing:.5px;"
             f"text-transform:uppercase;color:{hf};font-weight:700;background:{hb};display:inline-block;"
             f"padding:2px 8px;border-radius:8px;margin-bottom:8px;'>{label}</div>"
             f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{c('24h', v24, True)}{c('7d', v7)}{c('MTD', vmtd)}</tr></table></div></td>")
@@ -5098,8 +5098,8 @@ def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False):
             bars_wrap_open = "<div style='position:relative;'>"
             bars_wrap_close = "</div>"
     return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;padding:12px 12px 10px;overflow:hidden;'>"
-            f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;'>{title}</div>"
-            f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;'>{sub}</div>"
+            f"<div style='font-size:12px;font-weight:800;color:{NAVY};margin-bottom:2px;text-align:center;'>{title}</div>"
+            f"<div style='font-size:11px;color:{MUTE};margin-bottom:10px;text-align:center;'>{sub}</div>"
             f"{bars_wrap_open}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='height:{H+22}px;table-layout:fixed;'><tr>{bar}</tr></table>"
             f"{trend_svg}"

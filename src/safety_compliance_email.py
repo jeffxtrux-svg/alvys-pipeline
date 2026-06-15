@@ -61,6 +61,7 @@ from src.scorecard_email import (
     WARN,
     WARNBG,
     XFREIGHT_RED,
+    COACH_EVENT_THRESHOLD,
     _bar_chart,
     _find_col,
     _is_ar_excluded,
@@ -78,7 +79,6 @@ from src.scorecard_email import (
     _tr,
     _windows,
     _xfreight_logo_svg,
-    build_page2 as _exec_build_page2,
     build_page2b as _exec_build_page2b,
     build_page7 as _exec_build_page7,
     build_page_coached as _exec_build_page_coached,
@@ -1171,13 +1171,12 @@ def _safety_summary_block_inline(samsara: dict | None,
         return (
             f"<td class='tile' width='33%' valign='top' style='padding:6px;'>"
             f"<div style='border:1px solid {LINE};border-radius:10px;"
-            f"padding:10px 14px 10px;height:96px;position:relative;'>"
+            f"padding:10px 14px 10px;height:96px;text-align:center;'>"
             f"<div style='font-size:12px;font-weight:800;color:{NAVY};"
             f"margin-bottom:2px;'>{label}</div>"
             f"<div style='font-size:10.5px;color:{MUTE};line-height:1.3;'>{sub}</div>"
-            f"<div style='position:absolute;right:14px;bottom:10px;"
-            f"{FONT_SERIF}font-size:34px;font-weight:400;"
-            f"color:{value_color};letter-spacing:-1px;line-height:1;'>{value}</div>"
+            f"<div style='{FONT_SERIF}font-size:34px;font-weight:400;"
+            f"color:{value_color};letter-spacing:-1px;line-height:1;margin-top:6px;'>{value}</div>"
             f"</div>"
             f"</td>"
         )
@@ -1263,15 +1262,6 @@ def _safety_summary_block_inline(samsara: dict | None,
         f"<tr>{safety_charts_row1}</tr>"
         f"<tr>{safety_charts_row2}</tr>"
         f"<tr>{safety_charts_row3}</tr>"
-        f"</table>"
-        # Detail tables (events / HOS / DVIR / coaching). The on-duty +
-        # uncertified subsection is injected above the "Missing log
-        # certifications" section via string replace so it sits where
-        # a reader naturally compares the two — strictest filter on top
-        # (drivers actively working with uncertified logs), then the
-        # superset (all uncertified days including off-duty paperwork).
-        f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:4px;'>"
-        f"{_inject_onduty_section(_safety_detail_tables(samsara), samsara_sheets)}"
         f"</table>"
         f"</td></tr>"
     )
@@ -1623,6 +1613,161 @@ def _inspections_due_html(samsara_sheets: dict | None) -> str:
 
 
 # ----------------------------------------------------------------------
+# Standalone detail pages (p3: events+HOS, p4: DVIR+coaching)
+# ----------------------------------------------------------------------
+
+def build_page_safety_events_hos(samsara: dict | None,
+                                   samsara_sheets: dict | None,
+                                   pg: int, total: int) -> str:
+    """Page 3 — Safety events + HOS violations + on-duty uncertified +
+    missing log certifications. Starts on a fresh page after the metrics
+    tiles so safety events are guaranteed to appear at the top of p3."""
+    detail = (samsara or {}).get("detail", {}) or {}
+
+    evs = detail.get("events", []) or []
+    event_rows = "".join(
+        _tr(
+            [r.get("driver name", "&mdash;"), r.get("unit", "&mdash;"),
+             (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
+             r.get("event type", "&mdash;"), r.get("severity", "&mdash;"),
+             r.get("status", "&mdash;")],
+            ["left"] * 6,
+            [None, None, None, None,
+             ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"), None],
+        )
+        for r in evs
+    )
+    if not event_rows:
+        event_rows = (f"<tr><td colspan='6' style='padding:14px;color:{MUTE};font-size:12px;'>"
+                      f"No safety events in the last 7 days.</td></tr>")
+
+    hos = detail.get("hos", []) or []
+    hos_rows = "".join(
+        _tr(
+            [r.get("driver name", "&mdash;"),
+             (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
+             r.get("violation type", "&mdash;"), r.get("status", "&mdash;")],
+            ["left"] * 4, [None, None, "bad", None],
+        )
+        for r in hos
+    )
+    if not hos_rows:
+        hos_rows = (f"<tr><td colspan='4' style='padding:14px;color:{MUTE};font-size:12px;'>"
+                    f"No HOS violations in the last 7 days.</td></tr>")
+
+    uncert = detail.get("hos_uncert", []) or []
+    uncert_rows = "".join(
+        _tr([r.get("driver", "&mdash;"), str(r.get("days_missing", "")),
+             r.get("span", "&mdash;"), "Not certified"],
+            ["left", "right", "left", "left"], [None, "bad", None, "bad"])
+        for r in uncert
+    )
+    if not uncert_rows:
+        uncert_rows = (f"<tr><td colspan='4' style='padding:14px;color:{MUTE};font-size:12px;'>"
+                       f"All daily logs certified.</td></tr>")
+
+    body = (
+        f"<tr><td style='padding:18px 24px 0;'>"
+        f"<table width='100%' cellpadding='0' cellspacing='0'>"
+        + _section('Safety events &mdash; last 7 days')
+        + _table(['Driver', 'Unit', 'Reported', 'Event', 'Severity', 'Status'],
+                 ['left'] * 6, event_rows)
+        + _section('HOS violations &mdash; last 7 days')
+        + _table(['Driver', 'Reported', 'Violation', 'Status'], ['left'] * 4, hos_rows)
+        + _onduty_uncert_block(samsara_sheets)
+        + _section('Missing log certifications &mdash; last 7 days')
+        + _table(['Driver', 'Days missing', 'Date range', 'Status'],
+                 ['left', 'right', 'left', 'left'], uncert_rows)
+        + f"</table></td></tr>"
+    )
+    return _page_header("Safety events & HOS", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
+
+
+def build_page_dvir_coaching(samsara: dict | None, pg: int, total: int) -> str:
+    """Page 4 — Open DVIR defects + coaching needs assigned. Starts on a
+    fresh page so DVIR always appears at the top regardless of how much
+    content the safety-events/HOS page carries."""
+    detail = (samsara or {}).get("detail", {}) or {}
+
+    # DVIR dedup — same logic as build_page5_vehicles.
+    dvirs = detail.get("dvir", []) or []
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for r in dvirs:
+        key = (str(r.get("unit") or "").strip().lower(),
+               str(r.get("defect") or "").strip().lower(),
+               str(r.get("defect type") or "").strip().lower(),
+               str(r.get("date") or "").strip(),
+               str(r.get("time") or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    dvir_rows = "".join(
+        _tr(
+            [r.get("unit", "&mdash;"), r.get("driver", "&mdash;"),
+             (r.get("date", "") + " " + r.get("time", "")).strip() or "&mdash;",
+             r.get("defect", "&mdash;"), r.get("defect type", "&mdash;"), "Open"],
+            ["left"] * 6, [None, None, None, None, None, "bad"],
+        )
+        for r in deduped
+    )
+    if not dvir_rows:
+        dvir_rows = (f"<tr><td colspan='6' style='padding:14px;color:{MUTE};font-size:12px;'>"
+                     f"No open DVIR defects.</td></tr>")
+
+    # Coaching needs assigned — replicated from _safety_detail_tables.
+    _ACK_KEEP_DAYS = 3
+    _now_utc = pd.Timestamp.now(tz="UTC")
+    _seven_d_ago = _now_utc - pd.Timedelta(days=7)
+    coaching_list = (samsara or {}).get("coaching_list") or []
+    coach_rows = ""
+    for c in coaching_list:
+        n = c.get("events", 0)
+        last_ts = pd.to_datetime(c.get("last", ""), errors="coerce", utc=True)
+        is_coaching = n >= COACH_EVENT_THRESHOLD
+        if is_coaching:
+            ack_ts = c.get("ack_ts") if c.get("acked") else None
+            if ack_ts is not None and (_now_utc - ack_ts).total_seconds() > _ACK_KEEP_DAYS * 86400:
+                continue
+            acked = ack_ts is not None
+        else:
+            if pd.notna(last_ts) and last_ts < _seven_d_ago:
+                continue
+            acked = False
+        action = "Assign coaching" if is_coaching else "Monitor"
+        action_kind = "bad" if is_coaching else "warn"
+        events_kind = "bad" if is_coaching else ("warn" if n > 0 else None)
+        types_str = ", ".join(c.get("types") or [])[:60] or "&mdash;"
+        ack_cell = ("&check;" if acked else "&mdash;") if is_coaching else "n/a"
+        ack_color = ("good" if acked else "mute") if is_coaching else "mute"
+        _coach_full = (c.get("coach") or "").strip()
+        coach_cell = _coach_full.split()[0] if _coach_full else "&mdash;"
+        coach_rows += _tr(
+            [c.get("driver", ""), types_str, str(n), c.get("last", "") or "&mdash;",
+             action, coach_cell, ack_cell],
+            ["left", "left", "right", "left", "left", "left", "center"],
+            [None, None, events_kind, None, action_kind, None, ack_color],
+        )
+    if not coach_rows:
+        coach_rows = (f"<tr><td colspan='7' style='padding:14px;color:{MUTE};font-size:12px;'>"
+                      f"No coaching needs assigned.</td></tr>")
+
+    body = (
+        f"<tr><td style='padding:18px 24px 0;'>"
+        f"<table width='100%' cellpadding='0' cellspacing='0'>"
+        + _section('DVIR defects (open) &mdash; all unresolved')
+        + _table(['Unit', 'Driver', 'Reported', 'Defect', 'Type', 'Status'],
+                 ['left'] * 6, dvir_rows)
+        + _section('Coaching needs assigned &mdash; drivers with safety events &middot; last 7 days')
+        + _table(['Driver', 'Event types', 'Events (7d)', 'Last event', 'Action', 'Coach', 'Ack'],
+                 ['left', 'left', 'right', 'left', 'left', 'left', 'center'], coach_rows)
+        + f"</table></td></tr>"
+    )
+    return _page_header("DVIR & Coaching", pg, total, section=_SEC_EVENTS) + _wrap_page(body)
+
+
+# ----------------------------------------------------------------------
 # New page renderers — driver compliance, CSA scorecard, invoice closeout
 # ----------------------------------------------------------------------
 
@@ -1744,6 +1889,8 @@ def build_page_driver_compliance(samba: dict | None,
         avg_txt = (f"{avg:.0f}" if isinstance(avg, (int, float)) and avg == avg
                    else "&mdash;")
         if high or ranked:
+            inner += ("<div style='page-break-before:always;break-before:page;"
+                      "height:0;overflow:hidden;'></div>")
             inner += _section('SambaSafety risk roster &mdash; all monitored drivers, worst-to-best')
             if ranked:
                 rrows = "".join(
@@ -2099,42 +2246,32 @@ def _build_html_report(*,
     metrics = compute_metrics(samsara)
     urgent_items = [i for i in (action_items or []) if i.get("priority") == 1]
 
-    # Page flow: overview narrates "what changed + what to do today";
-    # detail pages then progress topically so Audra can scan or read.
-    #
-    #   1. Overview                  — bottom line, urgent, risk-watch,
-    #                                  action items (executive summary)
-    #   2. Safety metrics            — EVENTS: 24h/7d/MTD tiles, 6-month
-    #                                  trend grid, detail tables (events,
-    #                                  HOS, on-duty + uncertified, missing
-    #                                  log certs, DVIR, coaching)
-    #   3. Driver compliance         — DRIVERS: who can't/shouldn't drive
-    #   4. Driver safety scores      — DRIVERS: exec-brief build_page2b
-    #                                  (per-driver score + harsh accel/brake/
-    #                                  turn + speed + crashes)
-    #   5. Safety & compliance detail— EVENTS: exec-brief build_page2
-    #                                  (Speed Over Limit + Coaching tiles)
-    #   6. Inspection compliance     — EQUIPMENT: per-driver DVIR
-    #                                  completion vs FMCSA-required 2/day
-    #                                  (pre + post trip), tractor / trailer
-    #                                  / total + defects logged
-    #   7. FMCSA CSA scorecard       — REGULATORY: BASIC percentiles
-    #   8. Coached Events audit trail— SAFETY: exec-brief build_page_coached
-    #                                  (190-day every-coach/dismiss/recognize)
-    #
-    # Vehicle Compliance was dropped 2026-06-15 — its Open DVIR defects
-    # table already lives on page 1's _safety_detail_tables block, and
-    # the inspections-due section was a permanent placeholder. The
-    # Inspection Compliance page added 2026-06-15 takes EQUIPMENT slot
-    # with actionable per-driver compliance data instead.
-    #
-    # Invoice Closeout + AR Reconciliation moved to the separate
-    # Financial Brief (src/financial_email.py) so each report stays
-    # scoped to one cognitive mode: safety = vigilance, financial =
-    # batch admin. The two ship at different times of day to match
-    # when the work actually happens.
+    # Page flow (logical pages — each starts on a fresh PDF page):
+    #   1. Overview            — bottom line, urgent, risk-watch, actions
+    #   2. Safety metrics      — 24h/7d/MTD tiles + 6-month trend grid
+    #   3. Safety events & HOS — events last 7d + HOS + on-duty uncert + certs
+    #   4. DVIR & coaching     — open DVIR defects + coaching needs assigned
+    #   5. Driver compliance   — CDL/DOT/MVR (SambaSafety risk roster gets
+    #                            its own physical page via CSS page-break)
+    #   6. Driver safety scores— per-driver score + harsh/speed/crash cols;
+    #                            Speed Over Limit methodology note appended
+    #                            at bottom so it sits on the same page rather
+    #                            than alone on the next page.
+    #   7. Inspection compliance — per-driver DVIR completion vs FMCSA 2/day
+    #   8. FMCSA CSA scorecard — BASIC percentile ranks
+    #   9. Coached events trail — 190-day every-coach/dismiss/recognize
     today_label = _today_label()
-    total = 8
+    total = 9
+    _scores_footnote = (
+        f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
+        f"border-top:1px solid {LINE};margin-top:14px;'>"
+        f"24h sections: Samsara (SafetyEvents, HOS_Violations, DVIR_Defects). "
+        f"Speed Over Limit = time-over-posted-limit &divide; total drive time, shown as % "
+        f"when both fields are available (&ge;5% flagged for coaching, 1&ndash;5% monitored); "
+        f"falls back to minutes over limit when drive time isn&rsquo;t exposed. "
+        f"Coaching &amp; training: Samsara Coaching Sessions / "
+        f"Training Assignments (past-due only; tiles hidden when module not enabled).</div>"
+    )
     pages = [
         build_page1_overview(samsara, metrics, 1, total,
                               urgent_items=urgent_items,
@@ -2142,12 +2279,13 @@ def _build_html_report(*,
                               risk_signals=(risk_signals or []),
                               samsara_sheets=samsara_sheets),
         build_page2_metrics(samsara, samsara_sheets, 2, total),
-        build_page_driver_compliance(samba, alvys_drivers, 3, total),
-        _exec_build_page2b(samsara, today_label, pg=4),
-        _exec_build_page2(samsara, today_label, pg=5),
-        build_page_inspection_compliance(samsara_sheets, 6, total),
-        build_page_csa_scorecard(csa, 7, total),
-        _exec_build_page_coached(samsara, today_label, pg=8),
+        build_page_safety_events_hos(samsara, samsara_sheets, 3, total),
+        build_page_dvir_coaching(samsara, 4, total),
+        build_page_driver_compliance(samba, alvys_drivers, 5, total),
+        _exec_build_page2b(samsara, today_label, pg=6) + _scores_footnote,
+        build_page_inspection_compliance(samsara_sheets, 7, total),
+        build_page_csa_scorecard(csa, 8, total),
+        _exec_build_page_coached(samsara, today_label, pg=9),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
     body += _footer_kb_links()
