@@ -57,6 +57,7 @@ from src.scorecard_email import (
     # Data computers
     compute_samsara, compute_sambasafety, compute_csa_scorecard,
     compute_alvys_equipment, compute_alvys_drivers,
+    compute_inspection_compliance,
     # Page builders reused from the executive brief
     build_page9, build_page_equipment, build_page_coached,
     build_page2b, build_csa_scorecard_page,
@@ -1071,9 +1072,14 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
              · Trailer Done/Exp · Trailer Defects · Total Done/Exp
              · Total Defects · Compliance %
 
-    Done counts come from DVIR_Inspections (one row per inspection leg,
-    including safe ones). Working days from HOS_DailyLogs (drive or
-    on-duty time > 0). Defects from DVIR_Defects.
+    Working days, done counts and defects all come from
+    ``compute_inspection_compliance`` (defined in scorecard_email.py).
+    That function counts working days from HOS_DailyLogs using the
+    actual column names that ship in the sheet
+    (``dutystatusdurations.drivedurationms`` / ``ondutydurationms``)
+    and EXCLUDES drivers with 0 working days — restoring the
+    pre-2026-06-16 behaviour after a column-name regression caused
+    every driver to appear with WKD=7.
     """
     header = _sc_header(
         "Safety &amp; Compliance · Inspection compliance",
@@ -1088,95 +1094,11 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
         f"with one row per defect line.</div>"
     )
 
-    # ── Build working days per driver from HOS_DailyLogs ────────────────────
-    now = pd.Timestamp.now()
-    cutoff_7d = now - pd.Timedelta(days=7)
-    worked: dict[str, int] = {}
+    # Single source of truth for working-days + done + defects.
+    # Drivers with 0 working days are already filtered out inside.
+    rows = compute_inspection_compliance(samsara_sheets, days=7)
 
-    hos_daily = (samsara_sheets or {}).get("HOS_DailyLogs")
-    if hos_daily is not None and not hos_daily.empty:
-        date_col = _find_col(hos_daily, ["log date", "starttime", "start time", "date"])
-        drv_col  = _find_col(hos_daily, ["driver name", "driver"])
-        drive_col = _find_col(hos_daily, ["driveMs", "drivems", "drive ms",
-                                           "driveTime", "drive time"])
-        duty_col  = _find_col(hos_daily, ["onDutyMs", "ondutytime", "on duty ms",
-                                           "onDutyTime", "on duty time"])
-        if date_col and drv_col:
-            df_hos = hos_daily[[date_col, drv_col]
-                                + ([drive_col] if drive_col else [])
-                                + ([duty_col]  if duty_col  else [])].copy()
-            df_hos["_dt"] = pd.to_datetime(df_hos[date_col], errors="coerce", utc=True)
-            df_hos["_dt"] = df_hos["_dt"].dt.tz_localize(None)
-            df_hos["_drv"] = df_hos[drv_col].astype(str).str.strip()
-            df_hos = df_hos[(df_hos["_dt"] >= cutoff_7d) & df_hos["_drv"].ne("")]
-            # Working day = any drive or on-duty time > 0
-            if drive_col or duty_col:
-                active = pd.Series([False] * len(df_hos), index=df_hos.index)
-                for col in [drive_col, duty_col]:
-                    if col:
-                        active |= pd.to_numeric(df_hos[col], errors="coerce").fillna(0) > 0
-                df_hos = df_hos[active]
-            for drv, grp in df_hos.groupby("_drv"):
-                days = grp["_dt"].dt.date.nunique()
-                if days > 0:
-                    worked[drv] = days
-
-    # ── Build done + defect counts from DVIR_Inspections + DVIR_Defects ─────
-    tractor_done:    dict[str, int] = {}
-    trailer_done:    dict[str, int] = {}
-    tractor_defects: dict[str, int] = {}
-    trailer_defects: dict[str, int] = {}
-
-    insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
-    if insp_df is not None and not insp_df.empty:
-        dt_col  = _find_col(insp_df, ["reported", "createdat"])
-        drv_col = _find_col(insp_df, ["driver"])
-        typ_col = _find_col(insp_df, ["unittype"])
-        if dt_col and drv_col and typ_col:
-            df_i = insp_df.copy()
-            df_i["_dt"] = pd.to_datetime(df_i[dt_col], errors="coerce", utc=True)
-            df_i["_dt"] = df_i["_dt"].dt.tz_localize(None)
-            df_i["_drv"] = df_i[drv_col].astype(str).str.strip()
-            df_i["_typ"] = df_i[typ_col].astype(str).str.strip().str.lower()
-            df_i = df_i[df_i["_dt"] >= cutoff_7d]
-            for (drv, typ), grp in df_i.groupby(["_drv", "_typ"]):
-                if typ == "tractor":
-                    tractor_done[drv] = tractor_done.get(drv, 0) + len(grp)
-                elif typ == "trailer":
-                    trailer_done[drv] = trailer_done.get(drv, 0) + len(grp)
-
-    defect_df = (samsara_sheets or {}).get("DVIR_Defects")
-    if defect_df is not None and not defect_df.empty:
-        dt_col2  = _find_col(defect_df, ["reported", "createdat"])
-        drv_col2 = _find_col(defect_df, ["driver"])
-        unit_col = _find_col(defect_df, ["unit"])
-        if dt_col2 and drv_col2:
-            df_d = defect_df.copy()
-            df_d["_dt"] = pd.to_datetime(df_d[dt_col2], errors="coerce", utc=True)
-            df_d["_dt"] = df_d["_dt"].dt.tz_localize(None)
-            df_d["_drv"] = df_d[drv_col2].astype(str).str.strip()
-            df_d = df_d[df_d["_dt"] >= cutoff_7d]
-            # Derive unit type: trailers often named with "trailer", "TL", or numeric ≥6 digits
-            def _is_trailer_unit(name: str) -> bool:
-                n = str(name).lower()
-                return ("trail" in n or n.startswith("tl")
-                        or (n.isdigit() and len(n) >= 7))
-            if unit_col:
-                df_d["_is_trl"] = df_d[unit_col].astype(str).apply(_is_trailer_unit)
-            else:
-                df_d["_is_trl"] = False
-            for (drv, is_trl), grp in df_d.groupby(["_drv", "_is_trl"]):
-                if is_trl:
-                    trailer_defects[drv] = trailer_defects.get(drv, 0) + len(grp)
-                else:
-                    tractor_defects[drv] = tractor_defects.get(drv, 0) + len(grp)
-
-    # ── Assemble per-driver rows — collect first, sort worst→best ───────────
-    all_drivers = sorted(set(list(worked.keys())
-                             + list(tractor_done.keys())
-                             + list(trailer_done.keys())))
-
-    def _frac(done: int, exp: int, kind: str | None) -> str:
+    def _frac(done: int, exp: int) -> str:
         color = ""
         if done == 0 and exp > 0:
             color = f"color:{BAD};font-weight:700;"
@@ -1189,26 +1111,25 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
     def _comp_cell(done: int, exp: int) -> tuple[str, str | None]:
         if exp == 0:
             return "&mdash;", None
-        pct = min(round(done / exp * 100), 100)
+        pct = round(done / exp * 100)
         txt = f"{pct}%"
         kind = "bad" if pct < 50 else ("warn" if pct < 95 else "good")
         return txt, kind
 
     driver_rows = []
-    for drv in all_drivers:
-        if not drv or drv.lower() in ("nan", "none", ""):
+    for r in rows:
+        drv = r["driver"]
+        if drv.lower().startswith("temp"):  # exclude Temp Driver placeholders
             continue
-        if drv.lower().startswith("temp"):  # exclude Temp D / Temp Driver placeholders
-            continue
-        days = worked.get(drv, 0)
-        exp  = days * 2
-        td   = tractor_done.get(drv, 0)
-        rd   = trailer_done.get(drv, 0)
-        tdef = tractor_defects.get(drv, 0)
-        rdef = trailer_defects.get(drv, 0)
-        total_done = td + rd
-        total_exp  = exp + exp
-        sort_pct = round(total_done / total_exp * 100) if total_exp > 0 else 0
+        days       = r["working_days"]
+        td         = r["done_tractor"]
+        rd         = r["done_trailer"]
+        exp        = r["expected_tractor"]      # = days * 2
+        tdef       = r["defects_tractor"]
+        rdef       = r["defects_trailer"]
+        total_done = r["done_total"]
+        total_exp  = r["expected_total"]        # = exp + exp
+        sort_pct   = round(total_done / total_exp * 100) if total_exp > 0 else 0
         driver_rows.append((sort_pct, drv, days, exp, td, rd, tdef, rdef, total_done, total_exp))
 
     driver_rows.sort(key=lambda r: r[0])  # worst compliance first

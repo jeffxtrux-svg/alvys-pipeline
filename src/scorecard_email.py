@@ -3934,6 +3934,131 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
     }
 
 
+def compute_inspection_compliance(samsara_sheets: dict | None,
+                                    days: int = 7) -> list[dict]:
+    """Per-driver DVIR inspection completion + defect rollup over the
+    last `days` days. FMCSA 396.11 / 396.13 requires a pre-trip AND a
+    post-trip DVIR per working day, so expected_total = working_days * 2.
+
+    Returns a list of dicts sorted by deficit (expected - done) descending:
+      {driver, working_days,
+       expected_tractor, done_tractor, defects_tractor,
+       expected_trailer, done_trailer, defects_trailer,
+       expected_total, done_total, defects_total}
+
+    Drivers without any working days in the window are omitted (so a
+    driver who didn't work doesn't show up as 0/0)."""
+    if not samsara_sheets:
+        return []
+    hos = samsara_sheets.get("HOS_DailyLogs")
+    if hos is None or hos.empty:
+        return []
+
+    window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
+
+    hos_name_col = _find_col(hos, ["driver name", "driver.name"])
+    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
+                                     "logmetadata.logdate"])
+    hos_drive_col = _find_col(hos, ["dutystatusdurations.drivedurationms",
+                                       "drivedurationms"])
+    hos_onduty_col = _find_col(hos, ["dutystatusdurations.ondutydurationms",
+                                        "ondutydurationms"])
+    if not (hos_name_col and hos_date_col):
+        return []
+
+    hos_dt = _to_naive_dt(hos[hos_date_col])
+    drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
+             if hos_drive_col else pd.Series(0, index=hos.index))
+    onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
+              if hos_onduty_col else pd.Series(0, index=hos.index))
+    active = (drive > 0) | (onduty > 0)
+    hos_window = hos[active & (hos_dt >= window_start)].copy()
+    if hos_window.empty:
+        return []
+    working_days_by_driver = (
+        hos_window.groupby(hos_window[hos_name_col].astype(str).str.strip())
+        .size()
+        .to_dict()
+    )
+
+    done_tractor: dict[str, int] = {}
+    done_trailer: dict[str, int] = {}
+    dvirs = samsara_sheets.get("DVIRs")
+    if dvirs is not None and not dvirs.empty:
+        dvir_driver_col = _find_col(dvirs, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        dvir_time_col = _find_col(dvirs, ["starttime", "start time",
+                                            "createdattime", "submittedattime"])
+        dvir_vehicle_col = _find_col(dvirs, ["vehicle.name", "vehicle name"])
+        dvir_trailer_col = _find_col(dvirs, ["trailer.name", "trailer name",
+                                                "asset.name"])
+        if dvir_driver_col and dvir_time_col:
+            dvir_dt = _to_naive_dt(dvirs[dvir_time_col])
+            dvirs_window = dvirs[dvir_dt >= window_start].copy()
+            if not dvirs_window.empty:
+                for nm, group in dvirs_window.groupby(
+                    dvirs_window[dvir_driver_col].astype(str).str.strip()
+                ):
+                    if not nm or nm.lower() == "nan":
+                        continue
+                    if dvir_vehicle_col:
+                        tractor_mask = (group[dvir_vehicle_col].notna()
+                                        & (group[dvir_vehicle_col].astype(str).str.strip() != ""))
+                        done_tractor[nm] = int(tractor_mask.sum())
+                    if dvir_trailer_col:
+                        trailer_mask = (group[dvir_trailer_col].notna()
+                                        & (group[dvir_trailer_col].astype(str).str.strip() != ""))
+                        done_trailer[nm] = int(trailer_mask.sum())
+                    if not dvir_vehicle_col and not dvir_trailer_col:
+                        done_tractor[nm] = len(group)
+
+    defects_tractor: dict[str, int] = {}
+    defects_trailer: dict[str, int] = {}
+    df_defects = samsara_sheets.get("DVIR_Defects")
+    if df_defects is not None and not df_defects.empty:
+        d_driver = _find_col(df_defects, ["driver"])
+        d_time = _find_col(df_defects, ["reported", "createdat"])
+        if d_driver and d_time:
+            d_dt = _to_naive_dt(df_defects[d_time])
+            d_window = df_defects[d_dt >= window_start].copy()
+            for nm, group in d_window.groupby(
+                d_window[d_driver].astype(str).str.strip()
+            ):
+                if not nm or nm.lower() == "nan":
+                    continue
+                defects_tractor[nm] = len(group)
+
+    rows: list[dict] = []
+    for nm, wd in working_days_by_driver.items():
+        wd = int(wd)
+        if wd == 0 or not nm or nm.lower() == "nan":
+            continue
+        exp_t = wd * 2
+        exp_tr = wd * 2
+        d_t = int(done_tractor.get(nm, 0))
+        d_tr = int(done_trailer.get(nm, 0))
+        df_t = int(defects_tractor.get(nm, 0))
+        df_tr = int(defects_trailer.get(nm, 0))
+        rows.append({
+            "driver": nm,
+            "working_days": wd,
+            "expected_tractor": exp_t,
+            "done_tractor": d_t,
+            "defects_tractor": df_t,
+            "expected_trailer": exp_tr,
+            "done_trailer": d_tr,
+            "defects_trailer": df_tr,
+            "expected_total": exp_t + exp_tr,
+            "done_total": d_t + d_tr,
+            "defects_total": df_t + df_tr,
+        })
+    rows.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))
+    return rows
+
+
 def compute_csa_scorecard(sheets) -> dict | None:
     """Extract FMCSA CSA carrier scorecard from the 'CSA Scorecard' tab of
     SambaSafety_Master.xlsx. Returns None if the tab is absent."""
