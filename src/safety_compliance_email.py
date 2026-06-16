@@ -427,21 +427,41 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
             urgent.append(_action_row("URGENT", "Safety Mgr",
                                       f"PULL FROM SERVICE: {nm} — CDL {status} — cannot legally operate CMV"))
 
-    # DOT medical card — 4-tier escalation
+    # Driver's license expiration — 2-tier escalation (SambaSafety feed)
+    if samba and samba.get("license_issues"):
+        for d in samba["license_issues"]:
+            days = d.get("days_to_exp")
+            if days is None or days < 0:
+                continue  # expired/invalid handled by CDL disqualified block above
+            nm  = d.get("name", "Unknown")
+            exp = d.get("exp")
+            try:
+                exp_fmt = pd.Timestamp(exp).strftime("%-m/%-d/%y")
+            except Exception:
+                exp_fmt = str(exp)[:10] if exp else "?"
+            if days <= 5:
+                urgent.append(_action_row("URGENT", "Safety Mgr",
+                                          f"{nm}: driver's license expires in {days}d ({exp_fmt}) — "
+                                          f"confirm appointment is scheduled to renew and document appointment date"))
+                today_items.append(_action_row("TODAY", "Dispatch",
+                                               f"{nm}: driver's license expires in {days}d ({exp_fmt}) — "
+                                               f"confirm driver can make their renewal appointment on time"))
+            elif days <= 15:
+                today_items.append(_action_row("TODAY", "Safety Mgr",
+                                               f"{nm}: driver's license expires in {days}d ({exp_fmt}) — "
+                                               f"when is this being renewed? Confirm renewal plan with driver."))
+
+    # DOT medical card — 3-tier escalation (expired / ≤3d / ≤7d / ≤14d)
     if alvys_drivers:
         med14_list = alvys_drivers.get("medical_critical_14") or []
-        med30_list = alvys_drivers.get("medical_issues_30") or []
-        critical_names: set = set()
         for d in med14_list:
             nm = d.get("name") or "Unknown"
             days = d.get("medical_days", 0)
             exp = d.get("medical_exp") or ""
-            critical_names.add(nm)
             if days <= 0:
                 urgent.append(_action_row("URGENT", "Safety Mgr",
                                           f"{nm}: DOT medical card EXPIRED — pull from service immediately"))
             elif days <= 3:
-                # ≤3d: Safety Mgr confirm appointment + Dispatch confirm driver return
                 urgent.append(_action_row("URGENT", "Safety Mgr",
                                           f"{nm}: DOT physical in {days}d ({exp}) — confirm appointment is booked, "
                                           f"document appointment date"))
@@ -449,24 +469,13 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                                f"{nm}: DOT physical in {days}d ({exp}) — coordinate driver return "
                                                f"to ensure they are present for the appointment"))
             elif days <= 7:
-                # ≤7d: Safety Mgr confirm appointment scheduled + date documented
                 urgent.append(_action_row("URGENT", "Safety Mgr",
                                           f"{nm}: DOT medical expires in {days}d ({exp}) — confirm appointment "
                                           f"is scheduled and document appointment date in driver file"))
             else:
-                # ≤14d: Safety Mgr schedule appointment + document date
                 urgent.append(_action_row("URGENT", "Safety Mgr",
                                           f"{nm}: DOT medical expires in {days}d ({exp}) — schedule appointment "
                                           f"now and document appointment date in driver file"))
-        # 15-30d → TODAY / Safety Mgr (not already in the ≤14d tier)
-        for d in med30_list:
-            nm = d.get("name") or "Unknown"
-            if nm in critical_names:
-                continue
-            days = d.get("medical_days", 0)
-            exp = d.get("medical_exp") or ""
-            today_items.append(_action_row("TODAY", "Safety Mgr",
-                                           f"{nm}: DOT medical expires in {days}d ({exp}) — schedule renewal appointment"))
 
     # Open DVIR defects → Safety Mgr / Dispatch
     for r in unique_dvirs[:3]:
