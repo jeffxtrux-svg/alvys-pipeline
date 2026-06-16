@@ -1171,7 +1171,7 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
                 else:
                     tractor_defects[drv] = tractor_defects.get(drv, 0) + len(grp)
 
-    # ── Assemble per-driver rows ─────────────────────────────────────────────
+    # ── Assemble per-driver rows — collect first, sort worst→best ───────────
     all_drivers = sorted(set(list(worked.keys())
                              + list(tractor_done.keys())
                              + list(trailer_done.keys())))
@@ -1189,17 +1189,16 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
     def _comp_cell(done: int, exp: int) -> tuple[str, str | None]:
         if exp == 0:
             return "&mdash;", None
-        pct = round(done / exp * 100)
+        pct = min(round(done / exp * 100), 100)
         txt = f"{pct}%"
         kind = "bad" if pct < 50 else ("warn" if pct < 95 else "good")
         return txt, kind
 
-    tbody = ""
-    tot_worked = tot_t_done = tot_t_exp = tot_t_def = 0
-    tot_r_done = tot_r_exp = tot_r_def = 0
-
+    driver_rows = []
     for drv in all_drivers:
         if not drv or drv.lower() in ("nan", "none", ""):
+            continue
+        if drv.lower().startswith("temp"):  # exclude Temp D / Temp Driver placeholders
             continue
         days = worked.get(drv, 0)
         exp  = days * 2
@@ -1209,6 +1208,18 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
         rdef = trailer_defects.get(drv, 0)
         total_done = td + rd
         total_exp  = exp + exp
+        sort_pct = round(total_done / total_exp * 100) if total_exp > 0 else 0
+        driver_rows.append((sort_pct, drv, days, exp, td, rd, tdef, rdef, total_done, total_exp))
+
+    driver_rows.sort(key=lambda r: r[0])  # worst compliance first
+
+    tbody = ""
+    tot_worked = tot_t_done = tot_t_exp = tot_t_def = 0
+    tot_r_done = tot_r_exp = tot_r_def = 0
+
+    CS = "padding:6px 4px;font-size:10px;border-bottom:1px solid " + LINE + ";"  # cell style
+
+    for sort_pct, drv, days, exp, td, rd, tdef, rdef, total_done, total_exp in driver_rows:
         comp_txt, comp_kind = _comp_cell(total_done, total_exp)
 
         tot_worked += days
@@ -1218,63 +1229,60 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
         def_color = f"color:{BAD};font-weight:700;" if (tdef + rdef) > 0 else ""
         tbody += (
             f"<tr>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};'>{drv}</td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{days}</td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{_frac(td, exp, None)}</td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
-            f"<span style='{def_color}'>{tdef}</span></td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{_frac(rd, exp, None)}</td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
-            f"<span style='{def_color}'>{rdef}</span></td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{_frac(total_done, total_exp, None)}</td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
-            f"<span style='{def_color}'>{tdef + rdef}</span></td>"
-            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
+            f"<td style='{CS}'>{drv}</td>"
+            f"<td style='{CS}text-align:right;'>{days}</td>"
+            f"<td style='{CS}text-align:right;'>{_frac(td, exp, None)}</td>"
+            f"<td style='{CS}text-align:right;'><span style='{def_color}'>{tdef}</span></td>"
+            f"<td style='{CS}text-align:right;'>{_frac(rd, exp, None)}</td>"
+            f"<td style='{CS}text-align:right;'><span style='{def_color}'>{rdef}</span></td>"
+            f"<td style='{CS}text-align:right;'>{_frac(total_done, total_exp, None)}</td>"
+            f"<td style='{CS}text-align:right;'><span style='{def_color}'>{tdef + rdef}</span></td>"
+            f"<td style='{CS}text-align:right;'>"
             + (_pill(comp_txt, comp_kind) if comp_kind else comp_txt)
             + "</td></tr>"
         )
 
-    # Totals footer row
-    n_drv = len([d for d in all_drivers if d and d.lower() not in ("nan", "none", "")])
+    # Totals footer
+    n_drv = len(driver_rows)
     total_done_all = tot_t_done + tot_r_done
     total_exp_all  = tot_t_exp  + tot_r_exp
     total_def_all  = tot_t_def  + tot_r_def
     comp_all_txt, comp_all_kind = _comp_cell(total_done_all, total_exp_all)
     def_all_color = f"color:{BAD};font-weight:700;" if total_def_all > 0 else ""
+    FS = "padding:8px 4px;font-size:10px;border-top:2px solid " + INK + ";"  # footer style
     tbody += (
         f"<tr style='background:{TILEBG};font-weight:700;'>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};'>TOTAL ({n_drv} drivers)</td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{tot_worked}</td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{tot_t_done} / {tot_t_exp}</td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>"
-        f"<span style='{def_all_color}'>{tot_t_def}</span></td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{tot_r_done} / {tot_r_exp}</td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>"
-        f"<span style='{def_all_color}'>{tot_r_def}</span></td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{total_done_all} / {total_exp_all}</td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>"
-        f"<span style='{def_all_color}'>{total_def_all}</span></td>"
-        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{comp_all_txt}</td>"
+        f"<td style='{FS}'>TOTAL ({n_drv} drivers)</td>"
+        f"<td style='{FS}text-align:right;'>{tot_worked}</td>"
+        f"<td style='{FS}text-align:right;'>{tot_t_done} / {tot_t_exp}</td>"
+        f"<td style='{FS}text-align:right;'><span style='{def_all_color}'>{tot_t_def}</span></td>"
+        f"<td style='{FS}text-align:right;'>{tot_r_done} / {tot_r_exp}</td>"
+        f"<td style='{FS}text-align:right;'><span style='{def_all_color}'>{tot_r_def}</span></td>"
+        f"<td style='{FS}text-align:right;'>{total_done_all} / {total_exp_all}</td>"
+        f"<td style='{FS}text-align:right;'><span style='{def_all_color}'>{total_def_all}</span></td>"
+        f"<td style='{FS}text-align:right;'>{comp_all_txt}</td>"
         f"</tr>"
     )
 
-    if not tbody:
+    if not driver_rows:
         tbody = (_all_clear_row(
             "No DVIR inspection data available for the last 7 days — "
             "DVIR_Inspections sheet may not yet be populated (run the Samsara refresh first).",
             span=9))
 
-    hdrs = ["DRIVER", "WORKED", "TRACTOR DONE / EXP", "TRACTOR DEFECTS",
-            "TRAILER DONE / EXP", "TRAILER DEFECTS", "TOTAL DONE / EXP",
-            "TOTAL DEFECTS", "COMPLIANCE"]
+    # Two-line headers + explicit % widths to force all 9 cols onto the page
+    hdrs   = ["DRIVER", "WKD", "TRACTOR<br>DONE/EXP", "TRACTOR<br>DEFECTS",
+              "TRAILER<br>DONE/EXP", "TRAILER<br>DEFECTS", "TOTAL<br>DONE/EXP",
+              "TOTAL<br>DEFECTS", "COMP %"]
+    widths = ["20%", "5%", "12%", "9%", "12%", "9%", "12%", "8%", "8%"]
     aligns = ["left", "right", "right", "right", "right", "right", "right", "right", "right"]
     thead = "".join(
-        f"<th style='padding:8px 8px;font-size:10px;letter-spacing:0.8px;"
+        f"<th style='padding:5px 4px;font-size:9px;letter-spacing:0.5px;"
         f"text-transform:uppercase;color:{MUTE};font-weight:700;"
-        f"border-bottom:2px solid {LINE};text-align:{a};white-space:nowrap;'>{h}</th>"
-        for h, a in zip(hdrs, aligns))
+        f"border-bottom:2px solid {LINE};text-align:{a};width:{w};'>{h}</th>"
+        for h, a, w in zip(hdrs, aligns, widths))
     table = (f"<table width='100%' cellpadding='0' cellspacing='0' "
-             f"style='border-collapse:collapse;'>"
+             f"style='border-collapse:collapse;table-layout:fixed;'>"
              f"<thead><tr>{thead}</tr></thead>"
              f"<tbody>{tbody}</tbody></table>")
 
