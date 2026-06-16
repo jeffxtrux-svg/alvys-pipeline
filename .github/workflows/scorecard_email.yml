@@ -149,12 +149,10 @@ jobs:
           #     single-mailbox test send so a verification run doesn't fan out
           #     to the whole team).
           #   workflow_dispatch with recipients input set    → that list.
-          #   scheduled / workflow_call → the standing list (Jeff only).
-          # Final `||` fallback hardcodes Jeff only so the standing list
-          # survives even if the SCORECARD_RECIPIENTS secret is unset.
-          # (Confirmed Jeff-only 2026-06-16 — JB reads MTD upload, Dan
-          # reads Ops context; see Karpathy-Wiki/raw/xfreight-brief-roadmap.md.)
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net') }}
+          #   scheduled / workflow_call → the standing list (Jeff + JB + Dan).
+          # Final `||` fallback hardcodes Jeff + JB + Dan so the standing
+          # list survives even if the SCORECARD_RECIPIENTS secret is unset.
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
           # Push and manual dispatch bypass the same-day idempotency marker so
           # on-demand re-sends always fire. Cron slots leave the marker in force
           # so only the first scheduled slot each day actually emails.
@@ -219,9 +217,9 @@ jobs:
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           # Mirror the send step's recipient policy so a one-shot dispatch
           # to a single mailbox doesn't fan its failure notice out.
-          # Final `||` fallback hardcodes Jeff only so the standing list
-          # survives even if the SCORECARD_RECIPIENTS secret is unset.
-          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net') }}
+          # Final `||` fallback hardcodes Jeff + JB + Dan so the standing
+          # list survives even if the SCORECARD_RECIPIENTS secret is unset.
+          SCORECARD_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net') }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'
