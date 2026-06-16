@@ -288,6 +288,23 @@ def _build_bottom_line(m: dict) -> str:
 # Risk Watch + Action Items helpers for page 1
 # ----------------------------------------------------------------------
 
+_SAFETY_DATE_COLS = ["time", "Event Time", "Time", "occurredAtTime", "startTime", "Start Time"]
+
+
+def _events_in_window(samsara_sheets: dict | None, hours: int) -> int:
+    """Count SafetyEvents rows recorded in the last `hours` hours."""
+    if not samsara_sheets:
+        return 0
+    df = samsara_sheets.get("SafetyEvents")
+    if df is None or df.empty:
+        return 0
+    dc = _find_col(df, _SAFETY_DATE_COLS)
+    if not dc:
+        return 0
+    dates = _to_naive_dt(df[dc])
+    cutoff = pd.Timestamp.now() - pd.Timedelta(hours=hours)
+    return int((dates >= cutoff).sum())
+
 def _risk_item(label: str, status: str, note: str = "") -> str:
     """Single TRIPPED / OK risk-watch line."""
     if status == "TRIPPED":
@@ -652,9 +669,17 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                        f"{drv}: certify prior-day logs before next dispatch "
                                        f"({days}d outstanding)"))
 
+    # Count items by owner for the action-items header summary tile
+    all_items = urgent + today_items
+    sm_count = sum(1 for h in all_items if "<b>Safety Mgr" in h)
+    di_count = sum(1 for h in all_items if "Dispatch" in h)
+
     if not urgent and not today_items:
-        return (f"<div style='padding:0 24px 18px;color:{MUTE};font-size:13px;'>"
-                f"No action items — all risk indicators within normal thresholds.</div>")
+        return (
+            f"<div style='padding:0 24px 18px;color:{MUTE};font-size:13px;'>"
+            f"No action items — all risk indicators within normal thresholds.</div>",
+            0, 0,
+        )
 
     html = "<div style='padding:0 24px 18px;'>"
     if urgent:
@@ -666,7 +691,7 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                  f"color:{WARN};font-weight:700;margin:16px 0 6px;'>TODAY</div>"
                  + "".join(today_items))
     html += "</div>"
-    return html
+    return html, sm_count, di_count
 
 
 # ----------------------------------------------------------------------
@@ -750,11 +775,49 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
         f"</div>"
     )
 
+    # Build action items first to get owner counts for the header summary
+    ai_html, sm_count, di_count = _build_action_items(
+        metrics, samsara, samba, equipment,
+        alvys_drivers=alvys_drivers,
+        samsara_sheets=samsara_sheets,
+        prev_scores=prev_scores,
+    )
+
+    # Safety event counts for 24h / 48h / 72h windows
+    ev_24h = metrics.get("events_24h", 0)
+    ev_48h = _events_in_window(samsara_sheets, 48)
+    ev_72h = _events_in_window(samsara_sheets, 72)
+
+    def _ai_chip(label: str, val: int, kind: str = "mute") -> str:
+        colors = {
+            "bad":  (BAD,  BADBG),
+            "warn": (WARN, WARNBG),
+            "mute": (MUTE, "#eef2f7"),
+        }
+        fg, bg = colors.get(kind, colors["mute"])
+        return (f"<span style='display:inline-block;background:{bg};color:{fg};"
+                f"font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:10px;"
+                f"margin-left:6px;white-space:nowrap;'>{label}: {val}</span>")
+
+    ai_chips = (
+        _ai_chip("Safety Mgr", sm_count, "bad" if sm_count else "mute")
+        + _ai_chip("Dispatch", di_count, "warn" if di_count else "mute")
+        + "&nbsp;&nbsp;"
+        + _ai_chip("24h events", ev_24h, "warn" if ev_24h else "mute")
+        + _ai_chip("48h events", ev_48h, "warn" if ev_48h else "mute")
+        + _ai_chip("72h events", ev_72h, "warn" if ev_72h else "mute")
+    )
+
     ai_title = (
         f"<div style='padding:18px 24px 4px;'>"
+        f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
+        f"<td valign='bottom'>"
         f"<div style='{FONT_SERIF}font-size:17px;font-weight:400;color:{INK};"
         f"letter-spacing:-0.3px;'>Action Items</div>"
         f"<div style='width:36px;height:2px;background:{INK};margin-top:6px;'></div>"
+        f"</td>"
+        f"<td align='right' valign='bottom' style='padding-bottom:2px;'>{ai_chips}</td>"
+        f"</tr></table>"
         f"</div>"
     )
 
@@ -764,10 +827,7 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
             + rw_title
             + _build_risk_watch(metrics, samsara, samba, equipment)
             + ai_title
-            + _build_action_items(metrics, samsara, samba, equipment,
-                                   alvys_drivers=alvys_drivers,
-                                   samsara_sheets=samsara_sheets,
-                                   prev_scores=prev_scores))
+            + ai_html)
 
 
 def _extra_trends(samsara: dict | None,
