@@ -424,6 +424,12 @@ def _build_risk_watch(m: dict, samsara: dict | None, samba, equipment) -> str:
             + "</div>")
 
 
+def _pd(text: str) -> str:
+    """Muted progressive-discipline sub-line appended to relevant action items."""
+    return (f"<br><em style='color:#888;font-size:11px;'>&#9656; Progressive discipline: "
+            f"{text}</em>")
+
+
 def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                         alvys_drivers=None, samsara_sheets=None,
                         prev_scores=None) -> str:
@@ -506,7 +512,9 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
     if m["hos_24h"] > 0:
         urgent.append(_action_row("URGENT", "Safety Mgr",
                                   f"{m['hos_24h']} HOS violation"
-                                  f"{'s' if m['hos_24h'] != 1 else ''} in last 24h — pull logs"))
+                                  f"{'s' if m['hos_24h'] != 1 else ''} in last 24h — pull logs"
+                                  + _pd("Step 2 — coaching conversation within 5 business days. "
+                                        "Two violations in 30 days → written warning (Step 3).")))
 
     # SambaSafety risk flags → Safety Mgr
     if samba and samba.get("high_risk"):
@@ -534,7 +542,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                            f"{nm}: MVR violation — {vtyp} ({date_fmt}{pts_note}{sev_note}). "
                                            f"Speak with driver about what happened. Decision: "
                                            f"challenge the violation OR acknowledge as factual violation against "
-                                           f"equipment/driver. Document decision and action taken."))
+                                           f"equipment/driver. Document decision and action taken."
+                                           + _pd("Step 1 — document violation in driver file today. "
+                                                 "Step 2 — coaching conversation within 5 business days "
+                                                 "with outcome of challenge/factual decision recorded.")))
 
     # Overdue annual inspections — tractors → Safety Mgr, trailers → Dispatch
     if equipment:
@@ -569,7 +580,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                     today_items.append(_action_row("TODAY", "Safety Mgr",
                                                    f"{drv}: DVIR compliance {comp_pct}% last 7d "
                                                    f"({done}/{exp}, {wd} working day{'s' if wd != 1 else ''}) "
-                                                   f"— discuss with driver, document corrective action"))
+                                                   f"— discuss with driver, document corrective action"
+                                                   + _pd("Step 2 — coaching conversation on pre/post-trip "
+                                                         "inspection expectations within 5 business days. "
+                                                         "Repeat within 60 days → written warning (Step 3).")))
         except Exception:
             pass
 
@@ -581,7 +595,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         drv = r.get("driver", "Unknown")
         today_items.append(_action_row("TODAY", "Safety Mgr",
                                        f"{drv}: safety score {score} (below 90 threshold) "
-                                       f"— meet with driver, develop improvement plan, document outcome"))
+                                       f"— meet with driver, develop improvement plan, document outcome"
+                                       + _pd("Step 2 — coaching conversation + written improvement plan "
+                                             "within 5 business days. No improvement after 30 days → "
+                                             "Step 4 (performance improvement period).")))
 
     # Safety score trends vs yesterday → Safety Mgr (decline = plan; improve = kudos)
     if prev_scores:
@@ -598,7 +615,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                 today_items.append(_action_row("TODAY", "Safety Mgr",
                                                f"{drv}: safety score dropped {prev}→{curr} "
                                                f"— identify root cause, develop action plan, "
-                                               f"document steps taken"))
+                                               f"document steps taken"
+                                               + _pd("Step 2 — coaching conversation within 5 business days "
+                                                     "if this reflects a pattern. Document root cause and "
+                                                     "corrective steps taken.")))
             elif delta > 0:
                 today_items.append(_action_row("TODAY", "Safety Mgr",
                                                f"{drv}: safety score improved {prev}→{curr} "
@@ -614,7 +634,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         note = f" ({bhv})" if bhv else ""
         today_items.append(_action_row("TODAY", "Safety Mgr",
                                        f"{drv}: coaching session overdue {ovrd}d (due {due}){note}"
-                                       f" — conduct session and document outcome"))
+                                       f" — conduct session and document outcome"
+                                       + _pd("This IS Step 2 — overdue means it must be completed today. "
+                                             "If second incident of same type within 60 days → "
+                                             "written warning required (Step 3).")))
 
     # Safety events needing coaching (needsCoaching / unacknowledged) → Safety Mgr
     coaching_list = (samsara or {}).get("coaching_list") or []
@@ -632,7 +655,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                        f"{drv}: {n} safety event{'s' if n != 1 else ''} need coaching — "
                                        f"{types}{unit_note}{sev_note}. "
                                        f"Conduct coaching session with driver and document "
-                                       f"type of action taken to prevent recurrence."))
+                                       f"type of action taken to prevent recurrence."
+                                       + _pd("Step 2 — coaching conversation within 5 business days. "
+                                             "Same event type repeated within 60 days → "
+                                             "written warning (Step 3).")))
 
     # Speeding ≥1% last 7 days → Safety Mgr per driver with coaching directive
     for r in scores_all:
@@ -646,7 +672,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         comment = comment.rstrip(". ").lower()
         today_items.append(_action_row("TODAY", "Safety Mgr",
                                        f"{drv}: speeding {pct_7d:.1f}% last 7d — {comment} "
-                                       f"— document coaching session and outcome"))
+                                       f"— document coaching session and outcome"
+                                       + _pd("Step 2 — coaching conversation within 5 business days. "
+                                             "Record session outcome in Samsara. "
+                                             "Repeat within 60 days → written warning (Step 3).")))
 
     # On-duty today with uncertified prior-day logs → Dispatch per driver
     uncert = detail.get("hos_uncert", []) or []
