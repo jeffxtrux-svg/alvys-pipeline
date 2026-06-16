@@ -1562,7 +1562,6 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     email_html = _head + pb.join(pages[:6]) + _tail
     pdf_html   = _head + pb.join(pages)     + _tail
     return email_html, pdf_html
-    )
 
 
 def _render_pdf(html: str) -> bytes | None:
