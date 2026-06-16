@@ -165,15 +165,20 @@ def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
         reported = _ts_to_str(dvir_time)
         mechanic_notes = dvir.get("mechanicNotes") or dvir.get("resolvedComment") or ""
 
-        # Location — try multiple field paths used by different Samsara endpoints
-        loc_node = dvir.get("location") or dvir.get("startLocation") or {}
-        location = (
-            loc_node.get("formattedAddress")
-            or (loc_node.get("reverseGeoAddress") or {}).get("formattedAddress")
-            or loc_node.get("name")
-            or dvir.get("locationName")
-            or ""
-        )
+        # Location — field may be a plain string or a nested dict depending on endpoint
+        loc_raw = dvir.get("location") or dvir.get("startLocation") or {}
+        if isinstance(loc_raw, str):
+            location = loc_raw
+        elif isinstance(loc_raw, dict):
+            location = (
+                loc_raw.get("formattedAddress")
+                or (loc_raw.get("reverseGeoAddress") or {}).get("formattedAddress")
+                or loc_raw.get("name")
+                or dvir.get("locationName")
+                or ""
+            )
+        else:
+            location = dvir.get("locationName") or ""
 
         # Tractor leg — present when the DVIR has a vehicle asset
         vehicle = dvir.get("vehicle")
