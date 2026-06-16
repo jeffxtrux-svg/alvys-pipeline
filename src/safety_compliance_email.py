@@ -196,7 +196,7 @@ def compute_metrics(samsara: dict | None) -> dict:
         "hos_mtd":     int((w.get("hos") or {}).get("mtd", 0)),
         "dvir_24h":    int((w.get("dvir") or {}).get("24h", 0)),
         "dvir_7d":     int((w.get("dvir") or {}).get("7d", 0)),
-        "dvir_open":   int((w.get("dvir") or {}).get("mtd", 0)),
+        "dvir_open":   len(_dedup_dvirs(detail.get("dvir", []) or [])),
         "coaching_24h": int(coaching_w.get("24h", 0)),
         "coaching_7d":  int(coaching_w.get("7d", 0)),
         "coaching_mtd": int(coaching_w.get("mtd", 0)),
@@ -334,6 +334,14 @@ def _build_risk_watch(m: dict, samsara: dict | None, samba, equipment) -> str:
     else:
         items.append(_risk_item("Fleet Safety Score", "OK", "No score data available"))
 
+    if samba and samba.get("invalid_licenses"):
+        n = len(samba["invalid_licenses"])
+        nms = ", ".join(d.get("name", "?") for d in samba["invalid_licenses"][:2])
+        items.append(_risk_item("Invalid / Disqualified CDL", "TRIPPED",
+                                f"{n} driver{'s' if n != 1 else ''} with invalid license — pull from dispatch: {nms}"))
+    elif samba:
+        items.append(_risk_item("Invalid / Disqualified CDL", "OK", "No invalid or disqualified licenses"))
+
     if samba and samba.get("high_risk"):
         n = len(samba["high_risk"])
         items.append(_risk_item("High-Risk Drivers (SambaSafety)", "TRIPPED",
@@ -378,6 +386,13 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment) -> str:
 
     urgent: list[str] = []
     today_items: list[str] = []
+
+    if samba and samba.get("invalid_licenses"):
+        for d in samba["invalid_licenses"][:3]:
+            nm = d.get("name") or "Unknown"
+            status = (d.get("status") or "INVALID").upper()
+            urgent.append(_action_row("URGENT", "Dispatch",
+                                      f"PULL FROM SERVICE: {nm} — CDL {status} — cannot legally operate CMV"))
 
     for r in unique_dvirs[:3]:
         unit = r.get("unit") or "?"
@@ -603,9 +618,13 @@ def _extra_trends(samsara: dict | None,
 
     if insp_df is not None and not insp_df.empty:
         idc = _find_col(insp_df, ["reported", "createdat"])
+        drv_col_i = _find_col(insp_df, ["driver"])
         if idc:
-            di = insp_df[[idc]].copy()
+            cols_i = [idc] + ([drv_col_i] if drv_col_i else [])
+            di = insp_df[cols_i].copy()
             di["_dt"] = pd.to_datetime(di[idc], errors="coerce", utc=True).dt.tz_localize(None)
+            if drv_col_i:
+                di["_drv"] = di[drv_col_i].astype(str).str.strip()
             wd_by_month = _working_days_by_month(hos_df)
             months6 = _last_6_months()
             labels, pcts = [], []
@@ -617,8 +636,18 @@ def _extra_trends(samsara: dict | None,
                 labels.append(f"{yr}-{mo:02d}")
                 if exp > 0:
                     pcts.append(min(round(done / exp * 100), 100))
-                elif done > 0:
-                    pcts.append(100)  # DVIRs filed but no HOS working-day anchor → assume compliant
+                elif done > 0 and drv_col_i and "_drv" in di.columns:
+                    # HOS data unavailable for this month — estimate expected from
+                    # distinct driver-day combos in DVIR inspection data. This slightly
+                    # overstates compliance (misses zero-DVIR working days) but is far
+                    # more accurate than the 100% fallback.
+                    month_di = di[mask & di["_drv"].ne("") & di["_dt"].notna()]
+                    if not month_di.empty:
+                        driver_days = month_di.groupby(["_drv", month_di["_dt"].dt.date]).ngroups
+                        exp_est = driver_days * 2
+                        pcts.append(min(round(done / exp_est * 100), 100) if exp_est > 0 else 0)
+                    else:
+                        pcts.append(0)
                 else:
                     pcts.append(0)
             out["dvir_pct"] = (labels, pcts)
@@ -767,7 +796,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
         + _bar_chart("Coached Events / mo", coached_m, coached_c,
                      "manager-reviewed / mo · *MTD")
         + _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
-                     "% completed / required · *MTD",
+                     "% inspections completed · *MTD · est. from driver-days",
                      fmt=lambda v: f"{int(v)}%")
         + "</tr></table>"
     )
@@ -1217,7 +1246,7 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
 
 def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
                            total: int, date_str: str) -> str:
-    """DVIR inspection detail — last 7 days, grouped by driver.
+    """DVIR inspection detail — last 14 days, grouped by driver.
 
     Per-driver header shows name, inspection count, required/completed/missing/%.
     Row columns: Date/Time · Location · Vehicle · Trailer · Type · Safe · Defects
@@ -1225,10 +1254,10 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
     Data source: DVIR_Inspections sheet (one row per inspection leg).
     """
     header = _sc_header(
-        "DVIR Inspection Detail — last 7 days", pg, total, date_str, section="EQUIPMENT")
+        "DVIR Inspection Detail — last 14 days", pg, total, date_str, section="EQUIPMENT")
 
     now = pd.Timestamp.now()
-    cutoff_7d = now - pd.Timedelta(days=7)
+    cutoff_14d = now - pd.Timedelta(days=14)
 
     # ── Load DVIR_Inspections ────────────────────────────────────────────────
     insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
@@ -1249,7 +1278,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
             df_i = insp_df.copy()
             df_i["_dt"] = pd.to_datetime(df_i[dc], errors="coerce", utc=True).dt.tz_localize(None)
             df_i["_drv"] = df_i[drv].astype(str).str.strip()
-            df_i = df_i[(df_i["_dt"] >= cutoff_7d) & df_i["_drv"].ne("")]
+            df_i = df_i[(df_i["_dt"] >= cutoff_14d) & df_i["_drv"].ne("")]
             df_i = df_i.sort_values("_dt", ascending=False)
 
             for _, row in df_i.iterrows():
@@ -1288,7 +1317,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
             h7 = hos_df.copy()
             h7["_dt"] = pd.to_datetime(h7[hdc], errors="coerce", utc=True).dt.tz_localize(None)
             h7["_drv"] = h7[hdrv].astype(str).str.strip()
-            h7 = h7[(h7["_dt"] >= cutoff_7d) & h7["_drv"].ne("")]
+            h7 = h7[(h7["_dt"] >= cutoff_14d) & h7["_drv"].ne("")]
             if hdrvc or hdutc:
                 act = pd.Series([False] * len(h7), index=h7.index)
                 for col in [hdrvc, hdutc]:
@@ -1366,7 +1395,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
         body = (
             f"<div style='padding:24px;'>"
             + _all_clear_row(
-                "No DVIR inspection data for the last 7 days — "
+                "No DVIR inspection data for the last 14 days — "
                 "DVIR_Inspections sheet will populate after the next Samsara refresh.",
                 span=8)
             + f"</div>"
@@ -1380,7 +1409,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
     return (
         header
         + f"<div style='padding:0 24px 4px;'>"
-        + _section("DVIR inspection log — last 7 days")
+        + _section("DVIR inspection log — last 14 days")
         + f"</div>"
         + body
     )
@@ -1523,7 +1552,7 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     coached_html = build_page_coached(samsara, date_str)
     pages.append(_patch_pg_total(coached_html, total))
 
-    # Second-to-last — DVIR Inspection Detail (per-driver log, last 7 days)
+    # Second-to-last — DVIR Inspection Detail (per-driver log, last 14 days)
     pages.append(build_page_dvir_detail(samsara_sheets, len(pages) + 1, total, date_str))
 
     # Last — Knowledge Base & Playbooks
