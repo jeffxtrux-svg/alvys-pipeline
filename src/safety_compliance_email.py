@@ -595,8 +595,8 @@ def _extra_trends(samsara: dict | None,
             return {}
         dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
         drv = _find_col(hos, ["driver name", "driver"])
-        drvc = _find_col(hos, ["drivems", "drive ms", "drivetime", "drive time"])
-        dutc = _find_col(hos, ["ondutytime", "on duty ms", "ondutytime", "on duty time"])
+        drvc = _find_col(hos, ["drivedurationms", "drivems", "drive ms", "drivetime", "drive time"])
+        dutc = _find_col(hos, ["ondutydurationms", "ondutytime", "on duty ms", "on duty time"])
         if not dc or not drv:
             return {}
         h = hos[[dc, drv] + ([drvc] if drvc else []) + ([dutc] if dutc else [])].copy()
@@ -628,45 +628,30 @@ def _extra_trends(samsara: dict | None,
             wd_by_month = _working_days_by_month(hos_df)
             months6 = _last_6_months()
             labels, pcts = [], []
+            import logging as _logging
+            _log_dvir = _logging.getLogger("safety_compliance_email")
+            _log_dvir.info("DVIR chart: wd_by_month keys=%s", sorted(wd_by_month.keys()))
             for yr, mo in months6:
                 mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
                 done  = int(mask.sum())
                 wd    = wd_by_month.get((yr, mo), 0)
-                exp   = wd * 2
+                exp   = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
                 labels.append(f"{yr}-{mo:02d}")
+                _log_dvir.info("DVIR chart %d-%02d: done=%d wd=%d exp=%d", yr, mo, done, wd, exp)
                 if exp > 0:
                     pcts.append(min(round(done / exp * 100), 100))
                 else:
-                    # No HOS data for this month (pipeline only fetches last 7 days).
-                    # Driver-day estimates from DVIR data are circular (only counts
-                    # days where inspections already occurred → always ≈100%). Show 0
-                    # so the bar is absent rather than falsely showing full compliance.
                     pcts.append(0)
             out["dvir_pct"] = (labels, pcts)
-            # Last-7d snapshot
-            cutoff_7d = pd.Timestamp.now() - pd.Timedelta(days=7)
-            done_7d = int((di["_dt"] >= cutoff_7d).sum())
-            wd_7d   = 0
-            if hos_df is not None and not hos_df.empty:
-                dc  = _find_col(hos_df, ["log date", "starttime", "start time", "date"])
-                drv = _find_col(hos_df, ["driver name", "driver"])
-                drvc = _find_col(hos_df, ["drivems", "drive ms"])
-                dutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
-                if dc and drv:
-                    h7 = hos_df[[dc, drv]
-                                + ([drvc] if drvc else [])
-                                + ([dutc] if dutc else [])].copy()
-                    h7["_dt"] = pd.to_datetime(h7[dc], errors="coerce", utc=True).dt.tz_localize(None)
-                    h7 = h7[h7["_dt"] >= cutoff_7d]
-                    if drvc or dutc:
-                        act = pd.Series([False] * len(h7), index=h7.index)
-                        for col in [drvc, dutc]:
-                            if col:
-                                act |= pd.to_numeric(h7[col], errors="coerce").fillna(0) > 0
-                        h7 = h7[act]
-                    wd_7d = len(h7)
-            exp_7d = wd_7d * 2
-            out["dvir_comp_7d"] = min(round(done_7d / exp_7d * 100), 100) if exp_7d > 0 else None
+            # Last-7d KPI — use the same source as the compliance table
+            # (compute_inspection_compliance) so the KPI matches the table exactly.
+            _comp_rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
+            if _comp_rows_7d:
+                _td = sum(r.get("done_total", 0) for r in _comp_rows_7d)
+                _te = sum(r.get("expected_total", 0) for r in _comp_rows_7d)
+                out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
+            else:
+                out["dvir_comp_7d"] = None
         else:
             out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
             out["dvir_comp_7d"] = None
@@ -791,7 +776,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
         + _bar_chart("Coached Events / mo", coached_m, coached_c,
                      "manager-reviewed / mo · *MTD")
         + _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
-                     "% inspections completed · *MTD · HOS-based; older months = n/a",
+                     "% inspections completed · *MTD · done÷(HOS days×4)",
                      fmt=lambda v: f"{int(v)}%")
         + "</tr></table>"
     )
@@ -1111,11 +1096,9 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
 
     methodology = (
         f"<div style='padding:8px 24px 18px;font-size:11px;color:{MUTE};'>"
-        f"Expected inspections = working days &times; 2 (FMCSA 396.11 requires a "
-        f"pre-trip and post-trip DVIR each working day). Working days counted from "
-        f"HOS daily logs with drive or on-duty time &gt; 0. Tractor vs trailer split "
-        f"derived from the asset on each DVIR; defects exploded from DVIR_Defects "
-        f"with one row per defect line.</div>"
+        f"Expected inspections = working days &times; 4 (pre-trip + post-trip &times; "
+        f"tractor + trailer, per FMCSA 396.11/396.13). Working days from HOS logs "
+        f"(drive or on-duty time &gt; 0). Chart uses same formula over the last 6 months.</div>"
     )
 
     # Single source of truth for working-days + done + defects.
