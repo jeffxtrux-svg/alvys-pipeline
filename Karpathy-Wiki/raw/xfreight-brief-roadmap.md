@@ -7,7 +7,7 @@
 
 | Brief | Audience | Owner | First fired | Notes |
 |---|---|---|---|---|
-| **Executive brief** (13-page scorecard) | Jeff + JB + Dan | Jeff | live | Lagging-KPI focused; matches Jeff's facts-first philosophy. Power BI + this brief are Jeff's primary surfaces. |
+| **Executive brief** (13-page scorecard) | **Jeff only** | Jeff | live | Lagging-KPI focused; matches Jeff's facts-first philosophy. Power BI + this brief are Jeff's primary surfaces. JB and Dan are **not** on this brief — each reads their own (MTD upload for JB, Ops brief / driver context for Dan). Corrected 2026-06-16. |
 | **Safety & Compliance brief** | Audra (TO) + Jeff + JB (CC) | Audra | 2026-06-16 first scheduled fire | Split off the executive brief; PDF only, Teams accountability cards posted after. |
 | **Financial brief** | Audra | Audra | (recent) | Split off the executive brief earlier in 2026-06; Invoice closeout + carrier billing. |
 | **MTD upload** (daily-upload.yml) | JB | JB | live | Forecast-shaped — JB's preferred surface for "how is the month landing"; still in JB's validation period. |
