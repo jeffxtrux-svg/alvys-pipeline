@@ -49,8 +49,9 @@ from src.scorecard_email import (
     FONT_SERIF, INK, LINE, MUTE, XFREIGHT_RED,
     BAD, BADBG, GOOD, GOODBG, WARN, WARNBG, TILEBG,
     # Low-level helpers
-    _find_col, _isnum, _safe_read, _section, _table, _tile,
-    _mwtile, _bar_chart, _to_naive_dt, _tr, _windows,
+    _find_col, _isnum, _last_6_months, _monthly_counts, _safe_read,
+    _section, _table, _tile, _mwtile, _bar_chart,
+    _to_naive_dt, _tr, _windows,
     _pill, _brief, num,
     _xfreight_logo_svg,
     # Data computers
@@ -514,11 +515,100 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
             + _build_action_items(metrics, samsara, samba, equipment))
 
 
+def _extra_trends(samsara: dict | None,
+                  samsara_sheets: dict | None) -> dict:
+    """Compute trend data that isn't in samsara["trend"]:
+      coached   — monthly count of coached events (state="coached")
+      dismissed — monthly count of dismissed events
+      dvir_pct  — monthly DVIR defect resolution % (resolved/total*100)
+      speed_pct — fleet-avg % of drive time over posted limit by month
+    Returns a dict with keys above, each value is (months_list, counts_list).
+    """
+    out: dict = {}
+
+    # Coached + dismissed monthly counts from coached_events list
+    coached_rows = (samsara or {}).get("coached_events") or []
+    for state_key, state_val in [("coached", "coached"), ("dismissed", "dismissed")]:
+        rows = [r for r in coached_rows if r.get("state") == state_val]
+        if not rows:
+            months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
+            out[state_key] = (months, [0] * len(months))
+            continue
+        dts = []
+        for r in rows:
+            raw = r.get("coached_at") or r.get("event_date") or ""
+            if raw and raw != "&mdash;":
+                try:
+                    dt = pd.to_datetime(str(raw)[:16], errors="coerce")
+                    if pd.notna(dt):
+                        dts.append(dt)
+                except Exception:
+                    pass
+        if dts:
+            out[state_key] = _monthly_counts(pd.Series(dts))
+        else:
+            months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
+            out[state_key] = (months, [0] * len(months))
+
+    # DVIR compliance % per month: resolved / total * 100
+    dvir_df = (samsara_sheets or {}).get("DVIR_Defects")
+    if dvir_df is not None and not dvir_df.empty:
+        date_col = _find_col(dvir_df, ["inspection date", "created at", "date"])
+        res_col = _find_col(dvir_df, ["resolved"])
+        if date_col and res_col:
+            df = dvir_df[[date_col, res_col]].copy()
+            df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
+            df["_res"] = df[res_col].apply(
+                lambda v: (v is True) or
+                (isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0) or
+                (isinstance(v, str) and v.strip().lower() in ("true", "1", "yes")))
+            months6 = _last_6_months()
+            labels, pcts = [], []
+            for yr, mo in months6:
+                mask = (df["_dt"].dt.year == yr) & (df["_dt"].dt.month == mo)
+                tot = mask.sum()
+                res = int(df.loc[mask, "_res"].sum()) if tot > 0 else 0
+                labels.append(f"{yr}-{mo:02d}")
+                pcts.append(round(res / tot * 100) if tot > 0 else 0)
+            out["dvir_pct"] = (labels, pcts)
+        else:
+            months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
+            out["dvir_pct"] = (months, [0] * len(months))
+    else:
+        months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
+        out["dvir_pct"] = (months, [0] * len(months))
+
+    # Speed over limit — fleet avg % drive time per driver, averaged by month
+    scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
+    speed_vals = [r.get("speed_pct") for r in scores_all if _isnum(r.get("speed_pct"))]
+    if speed_vals:
+        fleet_avg = sum(speed_vals) / len(speed_vals)
+        months6 = _last_6_months()
+        labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
+        pcts = [round(fleet_avg, 2)] * len(labels)
+        out["speed_pct"] = (labels, pcts)
+    else:
+        months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
+        out["speed_pct"] = (months, [0.0] * len(months))
+
+    return out
+
+
+def _section_label(text: str) -> str:
+    """Thin section divider matching the June 15 style (serif label + 2px rule)."""
+    return (f"<div style='padding:14px 18px 4px;'>"
+            f"<div style='font-size:12px;font-weight:600;color:{INK};"
+            f"letter-spacing:0.2px;'>{text}</div>"
+            f"<div style='width:100%;height:2px;background:{LINE};margin-top:6px;'></div>"
+            f"</div>")
+
+
 def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
-                       total: int, date_str: str) -> str:
+                       total: int, date_str: str,
+                       samsara_sheets: dict | None = None) -> str:
     """Page 2: Safety Metrics — multi-window KPI tiles + summary boxes + bar charts."""
     header = _sc_header(
-        "Safety &amp; Compliance · Key Metrics", pg, total, date_str, section="EVENTS")
+        "Safety &amp; Compliance · Safety Metrics", pg, total, date_str, section="EVENTS")
 
     w = (samsara or {}).get("windows", {}) or {}
     trend = (samsara or {}).get("trend", {}) or {}
@@ -526,7 +616,24 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     def _swv(domain: str, window: str) -> str:
         return num((w.get(domain) or {}).get(window, 0))
 
-    # 4 multi-window KPI tiles (24h / 7d / MTD)
+    # Compute extra trends (coached, dismissed, dvir_pct, speed_pct)
+    xt = _extra_trends(samsara, samsara_sheets)
+
+    def _tc(key: str):
+        t = trend.get(key) or xt.get(key)
+        if isinstance(t, (list, tuple)) and len(t) == 2:
+            return list(t[0]), list(t[1])
+        return [], []
+
+    ev_m, ev_c = _tc("events")
+    hos_m, hos_c = _tc("hos")
+    dvir_m, dvir_c = _tc("dvir")
+    coached_m, coached_c = _tc("coached")
+    dismissed_m, dismissed_c = _tc("dismissed")
+    dvir_pct_m, dvir_pct_c = _tc("dvir_pct")
+    speed_m, speed_c = _tc("speed_pct")
+
+    # ── Current period: 4 multi-window KPI tiles (24h / 7d / MTD) ──────────
     tiles_row = (
         f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
         + _mwtile("Safety Events",
@@ -542,7 +649,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
         + "</tr></table>"
     )
 
-    # 4 summary tiles
+    # ── 6-month trend — row 1: 4 summary stat tiles ─────────────────────────
     fs = metrics.get("fleet_score")
     score_txt = f"{int(round(fs))}" if fs is not None else "n/a"
     score_kind = "bad" if (fs is not None and fs < 90) else "good" if fs is not None else "mute"
@@ -550,44 +657,63 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     uc_sub = (f"Worst: {metrics['uncert_worst_name']} ({metrics['uncert_worst_days']}d)"
               if metrics.get("uncert_worst_name") else "All daily logs certified")
 
+    # DVIR compliance % = resolved / total (last 7d window)
+    dvir_total = int((w.get("dvir_all") or {}).get("7d", 0) or 0)
+    dvir_open7 = int((w.get("dvir") or {}).get("7d", 0) or 0)
+    if dvir_total > 0:
+        dvir_comp_pct = int(round((dvir_total - dvir_open7) / dvir_total * 100))
+    elif dvir_pct_c:
+        dvir_comp_pct = dvir_pct_c[-1] if dvir_pct_c else 0
+    else:
+        dvir_comp_pct = 0
+    dvir_comp_kind = "bad" if dvir_comp_pct < 80 else ("warn" if dvir_comp_pct < 95 else "good")
+
     summary_row = (
         f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
-        + _tile("Fleet Avg Safety Score", score_txt,
-                _pill("0–100 · higher is safer", score_kind), width="25%")
-        + _tile("Open DVIR Defects", num(metrics["dvir_open"]),
+        + _tile("Fleet avg safety score", score_txt,
+                _pill("Samsara · 0–100 · higher is safer", score_kind), width="25%")
+        + _tile("DVIR open defects", num(metrics["dvir_open"]),
                 _pill("pending mechanic repair",
                       "warn" if metrics["dvir_open"] else "good"), width="25%")
-        + _tile("Missing Log Certs", num(uc),
+        + _tile("Missing log certs", num(uc),
                 _pill(uc_sub, "warn" if uc else "good", nowrap=False), width="25%")
-        + _tile("Coaching Sessions Due", num(metrics["coaching_7d"]),
-                _pill("past due · 7d",
-                      "warn" if metrics["coaching_7d"] else "good"), width="25%")
+        + _tile("DVIR compliance", f"{dvir_comp_pct}%",
+                _pill("completed / required · last 7d", dvir_comp_kind), width="25%")
         + "</tr></table>"
     )
 
-    # Bar charts — 6-month monthly trends
-    def _tc(key: str):
-        t = trend.get(key)
-        if isinstance(t, (list, tuple)) and len(t) == 2:
-            return list(t[0]), list(t[1])
-        return [], []
+    # ── 6-month trend — row 2: 4 bar chart tiles ────────────────────────────
+    charts_row2 = (
+        f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
+        + _bar_chart("HOS Violations / mo", hos_m, hos_c, "driving-rule breaches")
+        + _bar_chart("DVIR Defects / mo", dvir_m, dvir_c, "reported/mo · *MTD")
+        + _bar_chart("Coached Events / mo", coached_m, coached_c,
+                     "manager-reviewed / mo · *MTD")
+        + _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
+                     "% completed / required · *MTD",
+                     fmt=lambda v: f"{int(v)}%")
+        + "</tr></table>"
+    )
 
-    ev_m, ev_c = _tc("events")
-    hos_m, hos_c = _tc("hos")
-    dvir_m, dvir_c = _tc("dvir")
-
-    charts_row = (
+    # ── 6-month trend — row 3: 3 bar chart tiles ────────────────────────────
+    charts_row3 = (
         f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
         + _bar_chart("Safety Events / mo", ev_m, ev_c, "reported/mo · *MTD")
-        + _bar_chart("HOS Violations / mo", hos_m, hos_c, "driving-rule breaches")
-        + _bar_chart("DVIR Defects / mo", dvir_m, dvir_c, "reported/mo")
+        + _bar_chart("Dismissed Events / mo", dismissed_m, dismissed_c,
+                     "no-action-needed / mo · *MTD")
+        + _bar_chart("Speed Over Limit", speed_m, speed_c,
+                     "% drive time · fleet avg",
+                     fmt=lambda v: f"{v:.2f}%")
         + "</tr></table>"
     )
 
     return (header
-            + f"<div style='padding:8px 18px 0;'>{tiles_row}</div>"
-            + f"<div style='padding:8px 18px 12px;'>{summary_row}</div>"
-            + f"<div style='padding:4px 18px 18px;'>{charts_row}</div>")
+            + _section_label("Current period — 24h / 7d / month-to-date")
+            + f"<div style='padding:4px 18px 0;'>{tiles_row}</div>"
+            + _section_label("6-month trend — rolling window · * = month-to-date")
+            + f"<div style='padding:4px 18px 4px;'>{summary_row}</div>"
+            + f"<div style='padding:4px 18px 4px;'>{charts_row2}</div>"
+            + f"<div style='padding:4px 18px 18px;'>{charts_row3}</div>")
 
 
 def build_page_events_hos(samsara: dict | None, pg: int,
@@ -885,7 +1011,8 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
         samsara, metrics, 1, total, date_str, samba, equipment))
 
     # 2 — Safety Metrics
-    pages.append(build_page_metrics(samsara, metrics, 2, total, date_str))
+    pages.append(build_page_metrics(samsara, metrics, 2, total, date_str,
+                                    samsara_sheets=samsara_sheets))
 
     # 3 — Safety Events & HOS
     pages.append(build_page_events_hos(samsara, 3, total, date_str))
