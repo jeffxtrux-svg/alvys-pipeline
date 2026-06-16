@@ -702,11 +702,11 @@ def main() -> int:
     log.info("=" * 60)
     raw_hos_viol = client.fetch_hos_violations(start_safety, now)
 
-    # HOS daily logs — per-driver per-day summary with cert status
-    # (Samsara's "Missing Certifications" tab in the dashboard).
-    # Bounded to last 7d, matching the dashboard's default view.
+    # HOS daily logs — per-driver per-day summary with cert status.
+    # Extended to 190d to match DVIR lookback so the DVIR compliance
+    # chart has HOS-based expected counts for all 6 monthly bars.
     try:
-        _dlog_start = now - datetime.timedelta(days=7)
+        _dlog_start = now - datetime.timedelta(days=190)
         raw_hos_daily = client.fetch_hos_daily_logs(_dlog_start, now)
     except Exception as e:
         log.warning("HOS daily-logs fetch failed: %s", e)
