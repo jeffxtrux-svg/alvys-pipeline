@@ -130,6 +130,86 @@ def build_dvir_defects(raw_dvirs: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
+    """One row per inspection leg (tractor or trailer) per DVIR.
+
+    Each combined DVIR (vehicle + trailer) produces TWO rows so that
+    tractor and trailer done-counts can be summed independently.
+    Safe inspections (no defects) ARE included — this is what
+    build_dvir_defects skips, so both sheets are needed together.
+
+    Columns: Reported, Driver, Unit, UnitType, DVIRType, DefectCount
+    """
+    rows: list[dict] = []
+    for dvir in raw_dvirs or []:
+        def _pick_named(*candidates):
+            for c in candidates:
+                node = dvir.get(c)
+                if isinstance(node, dict):
+                    nm = node.get("name") or node.get("id")
+                    if nm:
+                        return nm
+            return None
+
+        auth_user = ((dvir.get("authorSignature") or {}).get("signatoryUser") or {})
+        driver_name = (auth_user.get("name") or auth_user.get("id")
+                       or _pick_named("driver", "submittedBy", "createdBy", "inspector", "user")
+                       or dvir.get("driverName") or dvir.get("submittedByName")
+                       or dvir.get("createdByName"))
+        dvir_time = (dvir.get("startTime") or dvir.get("createdAtTime")
+                     or dvir.get("submittedAtTime") or dvir.get("completedAtTime")
+                     or dvir.get("createdAtMs") or dvir.get("createdAt"))
+        dvir_type = (dvir.get("inspectionType") or dvir.get("dvirType")
+                     or dvir.get("type") or "")
+        reported = _ts_to_str(dvir_time)
+
+        # Tractor leg — present when the DVIR has a vehicle asset
+        vehicle = dvir.get("vehicle")
+        v_defs = [d for d in (dvir.get("vehicleDefects") or []) if isinstance(d, dict)]
+        if vehicle or v_defs:
+            unit = (vehicle.get("name") or vehicle.get("id") if isinstance(vehicle, dict)
+                    else dvir.get("vehicleName") or dvir.get("assetName") or "")
+            rows.append({
+                "Reported":    reported,
+                "Driver":      driver_name,
+                "Unit":        unit,
+                "UnitType":    "Tractor",
+                "DVIRType":    dvir_type,
+                "DefectCount": len(v_defs),
+            })
+
+        # Trailer leg — present when the DVIR has a trailer asset
+        trailer = dvir.get("trailer")
+        t_defs = [d for d in (dvir.get("trailerDefects") or []) if isinstance(d, dict)]
+        if trailer or t_defs:
+            unit_t = (trailer.get("name") or trailer.get("id") if isinstance(trailer, dict)
+                      else dvir.get("trailerName") or "")
+            rows.append({
+                "Reported":    reported,
+                "Driver":      driver_name,
+                "Unit":        unit_t,
+                "UnitType":    "Trailer",
+                "DVIRType":    dvir_type,
+                "DefectCount": len(t_defs),
+            })
+
+        # Fallback — no vehicle or trailer key, but DVIR exists
+        if not vehicle and not v_defs and not trailer and not t_defs:
+            unit_fb = (_pick_named("asset") or dvir.get("assetName") or "")
+            all_defs = [d for d in (dvir.get("defects") or []) if isinstance(d, dict)]
+            rows.append({
+                "Reported":    reported,
+                "Driver":      driver_name,
+                "Unit":        unit_fb,
+                "UnitType":    "Tractor",  # assume tractor when type unknown
+                "DVIRType":    dvir_type,
+                "DefectCount": len(all_defs),
+            })
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["Reported", "Driver", "Unit", "UnitType", "DVIRType", "DefectCount"])
+
+
 # Coarse severity buckets keyed off behavior names (adjust as needed).
 _HIGH_SEVERITY = (
     "forward collision", "collision warning", "crash", "harsh brake",
@@ -745,6 +825,9 @@ def main() -> int:
     df_dvir_defects = build_dvir_defects(raw_dvirs)
     log.info("  DVIR_Defects: %d rows (exploded from %d DVIRs)",
              len(df_dvir_defects), len(raw_dvirs))
+    df_dvir_inspections = build_dvir_inspections(raw_dvirs)
+    log.info("  DVIR_Inspections: %d rows (tractor+trailer legs from %d DVIRs)",
+             len(df_dvir_inspections), len(raw_dvirs))
 
     # Build a vehicle_id -> assigned-driver-name map from /fleet/vehicles so
     # the EngineIdle sheet can call out who's been parked. Samsara puts the
@@ -833,7 +916,8 @@ def main() -> int:
         "HOS_Violations": df_hosv,
         "HOS_DailyLogs":  df_hos_daily,
         "DVIRs":          flatten(raw_dvirs,     "DVIRs"),
-        "DVIR_Defects":   df_dvir_defects,
+        "DVIR_Defects":       df_dvir_defects,
+        "DVIR_Inspections":   df_dvir_inspections,
         "EngineIdle":     df_idle,
         "DriverSafetyScores":    df_driver_scores,
         "DriverSafetyScoresMtd": df_driver_scores_mtd,

@@ -966,6 +966,229 @@ def build_page_footnote(pg: int, total: int, date_str: str) -> str:
             f"<table width='100%' cellpadding='0' cellspacing='0'>{tbody}</table></div>")
 
 
+def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
+                               total: int, date_str: str) -> str:
+    """DVIR inspection compliance — last 7 days, per driver.
+
+    Columns: Driver · Worked (days) · Tractor Done/Exp · Tractor Defects
+             · Trailer Done/Exp · Trailer Defects · Total Done/Exp
+             · Total Defects · Compliance %
+
+    Done counts come from DVIR_Inspections (one row per inspection leg,
+    including safe ones). Working days from HOS_DailyLogs (drive or
+    on-duty time > 0). Defects from DVIR_Defects.
+    """
+    header = _sc_header(
+        "Safety &amp; Compliance · Inspection compliance",
+        pg, total, date_str, section="EQUIPMENT")
+
+    methodology = (
+        f"<div style='padding:8px 24px 18px;font-size:11px;color:{MUTE};'>"
+        f"Expected inspections = working days &times; 2 (FMCSA 396.11 requires a "
+        f"pre-trip and post-trip DVIR each working day). Working days counted from "
+        f"HOS daily logs with drive or on-duty time &gt; 0. Tractor vs trailer split "
+        f"derived from the asset on each DVIR; defects exploded from DVIR_Defects "
+        f"with one row per defect line.</div>"
+    )
+
+    # ── Build working days per driver from HOS_DailyLogs ────────────────────
+    now = pd.Timestamp.now()
+    cutoff_7d = now - pd.Timedelta(days=7)
+    worked: dict[str, int] = {}
+
+    hos_daily = (samsara_sheets or {}).get("HOS_DailyLogs")
+    if hos_daily is not None and not hos_daily.empty:
+        date_col = _find_col(hos_daily, ["log date", "starttime", "start time", "date"])
+        drv_col  = _find_col(hos_daily, ["driver name", "driver"])
+        drive_col = _find_col(hos_daily, ["driveMs", "drivems", "drive ms",
+                                           "driveTime", "drive time"])
+        duty_col  = _find_col(hos_daily, ["onDutyMs", "ondutytime", "on duty ms",
+                                           "onDutyTime", "on duty time"])
+        if date_col and drv_col:
+            df_hos = hos_daily[[date_col, drv_col]
+                                + ([drive_col] if drive_col else [])
+                                + ([duty_col]  if duty_col  else [])].copy()
+            df_hos["_dt"] = pd.to_datetime(df_hos[date_col], errors="coerce", utc=True)
+            df_hos["_dt"] = df_hos["_dt"].dt.tz_localize(None)
+            df_hos["_drv"] = df_hos[drv_col].astype(str).str.strip()
+            df_hos = df_hos[(df_hos["_dt"] >= cutoff_7d) & df_hos["_drv"].ne("")]
+            # Working day = any drive or on-duty time > 0
+            if drive_col or duty_col:
+                active = pd.Series([False] * len(df_hos), index=df_hos.index)
+                for col in [drive_col, duty_col]:
+                    if col:
+                        active |= pd.to_numeric(df_hos[col], errors="coerce").fillna(0) > 0
+                df_hos = df_hos[active]
+            for drv, grp in df_hos.groupby("_drv"):
+                days = grp["_dt"].dt.date.nunique()
+                if days > 0:
+                    worked[drv] = days
+
+    # ── Build done + defect counts from DVIR_Inspections + DVIR_Defects ─────
+    tractor_done:    dict[str, int] = {}
+    trailer_done:    dict[str, int] = {}
+    tractor_defects: dict[str, int] = {}
+    trailer_defects: dict[str, int] = {}
+
+    insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
+    if insp_df is not None and not insp_df.empty:
+        dt_col  = _find_col(insp_df, ["reported", "createdat"])
+        drv_col = _find_col(insp_df, ["driver"])
+        typ_col = _find_col(insp_df, ["unittype"])
+        if dt_col and drv_col and typ_col:
+            df_i = insp_df.copy()
+            df_i["_dt"] = pd.to_datetime(df_i[dt_col], errors="coerce", utc=True)
+            df_i["_dt"] = df_i["_dt"].dt.tz_localize(None)
+            df_i["_drv"] = df_i[drv_col].astype(str).str.strip()
+            df_i["_typ"] = df_i[typ_col].astype(str).str.strip().str.lower()
+            df_i = df_i[df_i["_dt"] >= cutoff_7d]
+            for (drv, typ), grp in df_i.groupby(["_drv", "_typ"]):
+                if typ == "tractor":
+                    tractor_done[drv] = tractor_done.get(drv, 0) + len(grp)
+                elif typ == "trailer":
+                    trailer_done[drv] = trailer_done.get(drv, 0) + len(grp)
+
+    defect_df = (samsara_sheets or {}).get("DVIR_Defects")
+    if defect_df is not None and not defect_df.empty:
+        dt_col2  = _find_col(defect_df, ["reported", "createdat"])
+        drv_col2 = _find_col(defect_df, ["driver"])
+        unit_col = _find_col(defect_df, ["unit"])
+        if dt_col2 and drv_col2:
+            df_d = defect_df.copy()
+            df_d["_dt"] = pd.to_datetime(df_d[dt_col2], errors="coerce", utc=True)
+            df_d["_dt"] = df_d["_dt"].dt.tz_localize(None)
+            df_d["_drv"] = df_d[drv_col2].astype(str).str.strip()
+            df_d = df_d[df_d["_dt"] >= cutoff_7d]
+            # Derive unit type: trailers often named with "trailer", "TL", or numeric ≥6 digits
+            def _is_trailer_unit(name: str) -> bool:
+                n = str(name).lower()
+                return ("trail" in n or n.startswith("tl")
+                        or (n.isdigit() and len(n) >= 7))
+            if unit_col:
+                df_d["_is_trl"] = df_d[unit_col].astype(str).apply(_is_trailer_unit)
+            else:
+                df_d["_is_trl"] = False
+            for (drv, is_trl), grp in df_d.groupby(["_drv", "_is_trl"]):
+                if is_trl:
+                    trailer_defects[drv] = trailer_defects.get(drv, 0) + len(grp)
+                else:
+                    tractor_defects[drv] = tractor_defects.get(drv, 0) + len(grp)
+
+    # ── Assemble per-driver rows ─────────────────────────────────────────────
+    all_drivers = sorted(set(list(worked.keys())
+                             + list(tractor_done.keys())
+                             + list(trailer_done.keys())))
+
+    def _frac(done: int, exp: int, kind: str | None) -> str:
+        color = ""
+        if done == 0 and exp > 0:
+            color = f"color:{BAD};font-weight:700;"
+        elif done >= exp and exp > 0:
+            color = f"color:{GOOD};font-weight:700;"
+        elif done < exp and exp > 0:
+            color = f"color:{WARN};font-weight:700;"
+        return f"<span style='{color}'>{done} / {exp}</span>"
+
+    def _comp_cell(done: int, exp: int) -> tuple[str, str | None]:
+        if exp == 0:
+            return "&mdash;", None
+        pct = round(done / exp * 100)
+        txt = f"{pct}%"
+        kind = "bad" if pct < 50 else ("warn" if pct < 95 else "good")
+        return txt, kind
+
+    tbody = ""
+    tot_worked = tot_t_done = tot_t_exp = tot_t_def = 0
+    tot_r_done = tot_r_exp = tot_r_def = 0
+
+    for drv in all_drivers:
+        if not drv or drv.lower() in ("nan", "none", ""):
+            continue
+        days = worked.get(drv, 0)
+        exp  = days * 2
+        td   = tractor_done.get(drv, 0)
+        rd   = trailer_done.get(drv, 0)
+        tdef = tractor_defects.get(drv, 0)
+        rdef = trailer_defects.get(drv, 0)
+        total_done = td + rd
+        total_exp  = exp + exp
+        comp_txt, comp_kind = _comp_cell(total_done, total_exp)
+
+        tot_worked += days
+        tot_t_done += td;  tot_t_exp += exp;  tot_t_def += tdef
+        tot_r_done += rd;  tot_r_exp += exp;  tot_r_def += rdef
+
+        def_color = f"color:{BAD};font-weight:700;" if (tdef + rdef) > 0 else ""
+        tbody += (
+            f"<tr>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};'>{drv}</td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{days}</td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{_frac(td, exp, None)}</td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
+            f"<span style='{def_color}'>{tdef}</span></td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{_frac(rd, exp, None)}</td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
+            f"<span style='{def_color}'>{rdef}</span></td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>{_frac(total_done, total_exp, None)}</td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
+            f"<span style='{def_color}'>{tdef + rdef}</span></td>"
+            f"<td style='padding:8px 8px;font-size:12px;border-bottom:1px solid {LINE};text-align:right;'>"
+            + (_pill(comp_txt, comp_kind) if comp_kind else comp_txt)
+            + "</td></tr>"
+        )
+
+    # Totals footer row
+    n_drv = len([d for d in all_drivers if d and d.lower() not in ("nan", "none", "")])
+    total_done_all = tot_t_done + tot_r_done
+    total_exp_all  = tot_t_exp  + tot_r_exp
+    total_def_all  = tot_t_def  + tot_r_def
+    comp_all_txt, comp_all_kind = _comp_cell(total_done_all, total_exp_all)
+    def_all_color = f"color:{BAD};font-weight:700;" if total_def_all > 0 else ""
+    tbody += (
+        f"<tr style='background:{TILEBG};font-weight:700;'>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};'>TOTAL ({n_drv} drivers)</td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{tot_worked}</td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{tot_t_done} / {tot_t_exp}</td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>"
+        f"<span style='{def_all_color}'>{tot_t_def}</span></td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{tot_r_done} / {tot_r_exp}</td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>"
+        f"<span style='{def_all_color}'>{tot_r_def}</span></td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{total_done_all} / {total_exp_all}</td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>"
+        f"<span style='{def_all_color}'>{total_def_all}</span></td>"
+        f"<td style='padding:10px 8px;font-size:12px;border-top:2px solid {INK};text-align:right;'>{comp_all_txt}</td>"
+        f"</tr>"
+    )
+
+    if not tbody:
+        tbody = (_all_clear_row(
+            "No DVIR inspection data available for the last 7 days — "
+            "DVIR_Inspections sheet may not yet be populated (run the Samsara refresh first).",
+            span=9))
+
+    hdrs = ["DRIVER", "WORKED", "TRACTOR DONE / EXP", "TRACTOR DEFECTS",
+            "TRAILER DONE / EXP", "TRAILER DEFECTS", "TOTAL DONE / EXP",
+            "TOTAL DEFECTS", "COMPLIANCE"]
+    aligns = ["left", "right", "right", "right", "right", "right", "right", "right", "right"]
+    thead = "".join(
+        f"<th style='padding:8px 8px;font-size:10px;letter-spacing:0.8px;"
+        f"text-transform:uppercase;color:{MUTE};font-weight:700;"
+        f"border-bottom:2px solid {LINE};text-align:{a};white-space:nowrap;'>{h}</th>"
+        for h, a in zip(hdrs, aligns))
+    table = (f"<table width='100%' cellpadding='0' cellspacing='0' "
+             f"style='border-collapse:collapse;'>"
+             f"<thead><tr>{thead}</tr></thead>"
+             f"<tbody>{tbody}</tbody></table>")
+
+    return (header
+            + methodology
+            + f"<div style='padding:0 24px 4px;'>"
+            + _section("DVIR inspection compliance — last 7 days")
+            + f"</div>"
+            + f"<div style='padding:4px 24px 24px;'>{table}</div>")
+
+
 def build_page_knowledge_base(pg: int, total: int, date_str: str) -> str:
     """Last page: Knowledge Base & Playbooks — sources and schedule."""
     header = _sc_header(
@@ -1028,18 +1251,19 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
       5-6 Driver Compliance     (build_page9 from scorecard_email)
       7  Speed over Limit       (custom)
       8  Methodology            (custom)
-      9-10 Tractor Inspections  (build_page_equipment kind=tractors)
-      11-12 Trailer Inspections (build_page_equipment kind=trailers)
-      13 FMCSA CSA Scorecard    (build_csa_scorecard_page)
-      14 Driver Safety Scores   (build_page2b)
-      15+ Coached Events        (build_page_coached)
+      9  DVIR Inspection Compliance (custom)
+      10-11 Tractor Inspections (build_page_equipment kind=tractors)
+      12-13 Trailer Inspections (build_page_equipment kind=trailers)
+      14 FMCSA CSA Scorecard    (build_csa_scorecard_page)
+      15 Driver Safety Scores   (build_page2b)
+      16+ Coached Events        (build_page_coached)
       Last Knowledge Base       (custom)
 
     PDF page numbers come from the CSS @page counter(pages) automatically.
     The 'total' value in _sc_header is approximate for the email screen view.
     """
     metrics = compute_metrics(samsara)
-    total = 22  # approximate for the email screen header
+    total = 23  # approximate for the email screen header
 
     pages: list[str] = []
 
@@ -1068,30 +1292,33 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     # 8 — Methodology Footnote
     pages.append(build_page_footnote(8, total, date_str))
 
-    # 9-10 — Tractor Inspections (build_page_equipment accepts pg param)
+    # 9 — DVIR Inspection Compliance (per-driver done/expected/defects table)
+    pages.append(build_page_dvir_compliance(samsara_sheets, 9, total, date_str))
+
+    # 10-11 — Tractor Inspections (build_page_equipment accepts pg param)
     if equipment:
-        tractor_html = build_page_equipment(equipment, date_str, kind="tractors", pg=9)
+        tractor_html = build_page_equipment(equipment, date_str, kind="tractors", pg=10)
         pages.append(_patch_pg_total(tractor_html, total))
-        trailer_html = build_page_equipment(equipment, date_str, kind="trailers", pg=11)
+        trailer_html = build_page_equipment(equipment, date_str, kind="trailers", pg=12)
         pages.append(_patch_pg_total(trailer_html, total))
     else:
         pages.append(
             _sc_header("Equipment Compliance — Tractor Inspections",
-                       9, total, date_str, "SAFETY")
+                       10, total, date_str, "SAFETY")
             + _brief("Alvys Pipeline.xlsx not found on OneDrive — "
                      "equipment inspection data unavailable this run.", "mute"))
         pages.append(
             _sc_header("Equipment Compliance — Trailer Inspections",
-                       11, total, date_str, "SAFETY")
+                       12, total, date_str, "SAFETY")
             + _brief("Alvys Pipeline.xlsx not found on OneDrive — "
                      "equipment inspection data unavailable this run.", "mute"))
 
-    # 13 — FMCSA CSA Scorecard
+    # 14 — FMCSA CSA Scorecard
     csa_html = build_csa_scorecard_page(csa, date_str)
     pages.append(_patch_pg_total(csa_html, total))
 
-    # 14 — Driver Safety Scores (build_page2b accepts pg param)
-    scores_html = build_page2b(samsara, date_str, pg=14)
+    # 15 — Driver Safety Scores (build_page2b accepts pg param)
+    scores_html = build_page2b(samsara, date_str, pg=15)
     pages.append(_patch_pg_total(scores_html, total))
 
     # 15+ — Coached Events (scorecard builder; pg=14 in its header, PDF correct)
