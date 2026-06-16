@@ -1,5 +1,5 @@
 // Cloudflare Worker — off-GitHub backstop trigger for the XFreight morning
-// emails (executive scorecard brief + daily MTD upload).
+// emails (executive scorecard brief + daily MTD upload + safety brief).
 //
 // Why this exists
 // ---------------
@@ -14,12 +14,13 @@
 //
 // What it triggers (and why it never double-sends)
 // ------------------------------------------------
-// It dispatches the two *healthcheck* workflows, NOT the primary jobs:
+// It dispatches the *healthcheck* workflows, NOT the primary jobs:
 //   * scorecard_healthcheck.yml
 //   * daily_upload_healthcheck.yml
+//   * safety_compliance_healthcheck.yml
 // Each healthcheck checks the OneDrive "sent-{today}.txt" marker and only
-// re-fires the real scorecard / daily-upload job when today's email hasn't
-// gone out yet. So triggering this every morning is idempotent:
+// re-fires the real scorecard / daily-upload / safety job when today's email
+// hasn't gone out yet. So triggering this every morning is idempotent:
 //   - Normal morning (GitHub cron worked, marker present)  → healthcheck no-ops.
 //   - Drop morning   (no marker)                           → healthcheck recovers.
 // workflow_dispatch also bypasses the healthchecks' CT-hour gate, so they run
@@ -41,6 +42,7 @@ const REF = "main";
 const WORKFLOWS = [
   "scorecard_healthcheck.yml",
   "daily_upload_healthcheck.yml",
+  "safety_compliance_healthcheck.yml",
 ];
 
 async function dispatch(workflow, token) {
