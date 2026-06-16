@@ -805,10 +805,11 @@ def build_page_events_hos(samsara: dict | None, pg: int,
         span=4)
 
     # Dispatch alerts — drivers missing certifications for the full 7-day window
+    # Rendered as a <tr> inside the same outer table so the layout stays intact.
     persistent = sorted(
         [r for r in uncert if r.get("days_missing", 0) >= 6],
         key=lambda x: -x.get("days_missing", 0))
-    dispatch_html = ""
+    dispatch_tr = ""
     if persistent:
         items_html = ""
         for r in persistent:
@@ -824,11 +825,9 @@ def build_page_events_hos(samsara: dict | None, pg: int,
                 f"<b>Dispatch:</b> {drv}: {days}d missing log certifications</span>"
                 f"</div>"
             )
-        dispatch_html = (
-            f"<div style='padding:0 18px;'>"
-            + _section("Persistent uncertified logs — dispatch action required")
-            + f"<div style='padding:0 6px;'>{items_html}</div>"
-            + f"</div>"
+        dispatch_tr = (
+            _section("Persistent uncertified logs — dispatch action required")
+            + f"<tr><td colspan='4' style='padding:0 6px 6px;'>{items_html}</td></tr>"
         )
 
     return (header
@@ -839,9 +838,7 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             + _section("HOS violations — last 7 days (driving-rule breaches)")
             + _table(["Driver", "Reported", "Violation type", "Status"],
                      ["left"] * 4, hos_rows)
-            + "</table>"
-            + dispatch_html
-            + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:0 18px;'>"
+            + dispatch_tr
             + _section("Missing log certifications — last 7 days")
             + _table(["Driver", "Days missing", "Date range", "Status"],
                      ["left", "right", "left", "left"], uc_rows)
