@@ -328,9 +328,9 @@ def _build_risk_watch(m: dict, samsara: dict | None, samba, equipment) -> str:
     fs = m.get("fleet_score")
     if fs is not None and fs < 90:
         items.append(_risk_item("Fleet Safety Score", "TRIPPED",
-                                f"Score {int(fs)} — below 90 threshold"))
+                                f"Score {int(round(fs))} — below 90 threshold"))
     elif fs is not None:
-        items.append(_risk_item("Fleet Safety Score", "OK", f"Score {int(fs)}"))
+        items.append(_risk_item("Fleet Safety Score", "OK", f"Score {int(round(fs))}"))
     else:
         items.append(_risk_item("Fleet Safety Score", "OK", "No score data available"))
 
@@ -636,19 +636,11 @@ def _extra_trends(samsara: dict | None,
                 labels.append(f"{yr}-{mo:02d}")
                 if exp > 0:
                     pcts.append(min(round(done / exp * 100), 100))
-                elif done > 0 and drv_col_i and "_drv" in di.columns:
-                    # HOS data unavailable for this month — estimate expected from
-                    # distinct driver-day combos in DVIR inspection data. This slightly
-                    # overstates compliance (misses zero-DVIR working days) but is far
-                    # more accurate than the 100% fallback.
-                    month_di = di[mask & di["_drv"].ne("") & di["_dt"].notna()]
-                    if not month_di.empty:
-                        driver_days = month_di.groupby(["_drv", month_di["_dt"].dt.date]).ngroups
-                        exp_est = driver_days * 2
-                        pcts.append(min(round(done / exp_est * 100), 100) if exp_est > 0 else 0)
-                    else:
-                        pcts.append(0)
                 else:
+                    # No HOS data for this month (pipeline only fetches last 7 days).
+                    # Driver-day estimates from DVIR data are circular (only counts
+                    # days where inspections already occurred → always ≈100%). Show 0
+                    # so the bar is absent rather than falsely showing full compliance.
                     pcts.append(0)
             out["dvir_pct"] = (labels, pcts)
             # Last-7d snapshot
@@ -796,7 +788,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
         + _bar_chart("Coached Events / mo", coached_m, coached_c,
                      "manager-reviewed / mo · *MTD")
         + _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
-                     "% inspections completed · *MTD · est. from driver-days",
+                     "% inspections completed · *MTD · HOS-based; older months = n/a",
                      fmt=lambda v: f"{int(v)}%")
         + "</tr></table>"
     )
