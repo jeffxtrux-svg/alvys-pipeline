@@ -623,8 +623,11 @@ def test_equipment_badges_neutral_until_past_due_red_when_overdue():
     # Upcoming 15d inspection stays NEUTRAL (normal color) — no emphasis.
     assert f"<span style='color:{MUTE};font-size:12px;'>15d</span>" in html
     # Red is reserved for the expired unit only.
+    # Wording is "Needs Insp · Xd past" (not "OVERDUE Xd") per 120d company
+    # policy: unit is flagged for inspection, not out-of-service.
     red_overdue = (f"background:{BADBG};color:{BAD};font-size:11px;"
-                   f"padding:2px 6px;border-radius:4px;font-weight:700;'>OVERDUE 5d</span>")
+                   f"padding:2px 6px;border-radius:4px;font-weight:700;'>"
+                   f"Needs Insp &middot; 5d past</span>")
     assert red_overdue in html
     # No amber anywhere on the page, and the upcoming day is never red.
     assert "#b45309" not in html and "#fef3c7" not in html
