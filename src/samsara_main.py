@@ -138,7 +138,8 @@ def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
     Safe inspections (no defects) ARE included — this is what
     build_dvir_defects skips, so both sheets are needed together.
 
-    Columns: Reported, Driver, Unit, UnitType, DVIRType, DefectCount
+    Columns: Reported, Driver, Unit, UnitType, DVIRType, DefectCount,
+             Location, Safe, MechanicNotes
     """
     rows: list[dict] = []
     for dvir in raw_dvirs or []:
@@ -162,6 +163,17 @@ def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
         dvir_type = (dvir.get("inspectionType") or dvir.get("dvirType")
                      or dvir.get("type") or "")
         reported = _ts_to_str(dvir_time)
+        mechanic_notes = dvir.get("mechanicNotes") or dvir.get("resolvedComment") or ""
+
+        # Location — try multiple field paths used by different Samsara endpoints
+        loc_node = dvir.get("location") or dvir.get("startLocation") or {}
+        location = (
+            loc_node.get("formattedAddress")
+            or (loc_node.get("reverseGeoAddress") or {}).get("formattedAddress")
+            or loc_node.get("name")
+            or dvir.get("locationName")
+            or ""
+        )
 
         # Tractor leg — present when the DVIR has a vehicle asset
         vehicle = dvir.get("vehicle")
@@ -170,12 +182,15 @@ def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
             unit = (vehicle.get("name") or vehicle.get("id") if isinstance(vehicle, dict)
                     else dvir.get("vehicleName") or dvir.get("assetName") or "")
             rows.append({
-                "Reported":    reported,
-                "Driver":      driver_name,
-                "Unit":        unit,
-                "UnitType":    "Tractor",
-                "DVIRType":    dvir_type,
-                "DefectCount": len(v_defs),
+                "Reported":      reported,
+                "Driver":        driver_name,
+                "Unit":          unit,
+                "UnitType":      "Tractor",
+                "DVIRType":      dvir_type,
+                "DefectCount":   len(v_defs),
+                "Location":      location,
+                "Safe":          len(v_defs) == 0,
+                "MechanicNotes": mechanic_notes,
             })
 
         # Trailer leg — present when the DVIR has a trailer asset
@@ -185,12 +200,15 @@ def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
             unit_t = (trailer.get("name") or trailer.get("id") if isinstance(trailer, dict)
                       else dvir.get("trailerName") or "")
             rows.append({
-                "Reported":    reported,
-                "Driver":      driver_name,
-                "Unit":        unit_t,
-                "UnitType":    "Trailer",
-                "DVIRType":    dvir_type,
-                "DefectCount": len(t_defs),
+                "Reported":      reported,
+                "Driver":        driver_name,
+                "Unit":          unit_t,
+                "UnitType":      "Trailer",
+                "DVIRType":      dvir_type,
+                "DefectCount":   len(t_defs),
+                "Location":      location,
+                "Safe":          len(t_defs) == 0,
+                "MechanicNotes": mechanic_notes,
             })
 
         # Fallback — no vehicle or trailer key, but DVIR exists
@@ -198,16 +216,20 @@ def build_dvir_inspections(raw_dvirs: list[dict]) -> pd.DataFrame:
             unit_fb = (_pick_named("asset") or dvir.get("assetName") or "")
             all_defs = [d for d in (dvir.get("defects") or []) if isinstance(d, dict)]
             rows.append({
-                "Reported":    reported,
-                "Driver":      driver_name,
-                "Unit":        unit_fb,
-                "UnitType":    "Tractor",  # assume tractor when type unknown
-                "DVIRType":    dvir_type,
-                "DefectCount": len(all_defs),
+                "Reported":      reported,
+                "Driver":        driver_name,
+                "Unit":          unit_fb,
+                "UnitType":      "Tractor",
+                "DVIRType":      dvir_type,
+                "DefectCount":   len(all_defs),
+                "Location":      location,
+                "Safe":          len(all_defs) == 0,
+                "MechanicNotes": mechanic_notes,
             })
 
-    return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["Reported", "Driver", "Unit", "UnitType", "DVIRType", "DefectCount"])
+    cols = ["Reported", "Driver", "Unit", "UnitType", "DVIRType",
+            "DefectCount", "Location", "Safe", "MechanicNotes"]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
 
 
 # Coarse severity buckets keyed off behavior names (adjust as needed).

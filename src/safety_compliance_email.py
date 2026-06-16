@@ -567,38 +567,79 @@ def _extra_trends(samsara: dict | None,
             months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
             out[state_key] = (months, [0] * len(months))
 
-    # DVIR compliance % per month + last-7d snapshot
-    # Sheet columns: "Reported" (date), "Resolved" (bool) — see samsara_main.build_dvir_defects
-    dvir_df = (samsara_sheets or {}).get("DVIR_Defects")
+    # DVIR compliance % — inspections done / expected (working_days × 2)
+    # Uses DVIR_Inspections (all inspections incl. safe) + HOS_DailyLogs (working days).
     fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-    if dvir_df is not None and not dvir_df.empty:
-        date_col = _find_col(dvir_df, ["reported", "createdat", "createdatms",
-                                        "inspection date", "date"])
-        res_col = _find_col(dvir_df, ["resolved"])
-        if date_col and res_col:
-            df = dvir_df[[date_col, res_col]].copy()
-            df["_dt"] = pd.to_datetime(df[date_col], errors="coerce", utc=True)
-            df["_dt"] = df["_dt"].dt.tz_localize(None)
-            df["_res"] = df[res_col].apply(
-                lambda v: (v is True) or
-                (isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0) or
-                (isinstance(v, str) and v.strip().lower() in ("true", "1", "yes")))
-            # Monthly trend
+    insp_df  = (samsara_sheets or {}).get("DVIR_Inspections")
+    hos_df   = (samsara_sheets or {}).get("HOS_DailyLogs")
+
+    def _working_days_by_month(hos: "pd.DataFrame | None") -> dict:
+        """Return {(yr, mo): driver_day_count} from HOS daily logs."""
+        if hos is None or hos.empty:
+            return {}
+        dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
+        drv = _find_col(hos, ["driver name", "driver"])
+        drvc = _find_col(hos, ["drivems", "drive ms", "drivetime", "drive time"])
+        dutc = _find_col(hos, ["ondutytime", "on duty ms", "ondutytime", "on duty time"])
+        if not dc or not drv:
+            return {}
+        h = hos[[dc, drv] + ([drvc] if drvc else []) + ([dutc] if dutc else [])].copy()
+        h["_dt"] = pd.to_datetime(h[dc], errors="coerce", utc=True).dt.tz_localize(None)
+        h["_drv"] = h[drv].astype(str).str.strip()
+        if drvc or dutc:
+            active = pd.Series([False] * len(h), index=h.index)
+            for col in [drvc, dutc]:
+                if col:
+                    active |= pd.to_numeric(h[col], errors="coerce").fillna(0) > 0
+            h = h[active]
+        h = h[h["_drv"].ne("") & h["_dt"].notna()]
+        result: dict = {}
+        for _, row in h.iterrows():
+            key = (row["_dt"].year, row["_dt"].month)
+            # count distinct driver-date combos
+            result[key] = result.get(key, 0) + 1
+        return result
+
+    if insp_df is not None and not insp_df.empty:
+        idc = _find_col(insp_df, ["reported", "createdat"])
+        if idc:
+            di = insp_df[[idc]].copy()
+            di["_dt"] = pd.to_datetime(di[idc], errors="coerce", utc=True).dt.tz_localize(None)
+            wd_by_month = _working_days_by_month(hos_df)
             months6 = _last_6_months()
             labels, pcts = [], []
             for yr, mo in months6:
-                mask = (df["_dt"].dt.year == yr) & (df["_dt"].dt.month == mo)
-                tot = int(mask.sum())
-                res = int(df.loc[mask, "_res"].sum()) if tot > 0 else 0
+                mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
+                done  = int(mask.sum())
+                wd    = wd_by_month.get((yr, mo), 0)
+                exp   = wd * 2
                 labels.append(f"{yr}-{mo:02d}")
-                pcts.append(round(res / tot * 100) if tot > 0 else 0)
+                pcts.append(round(done / exp * 100) if exp > 0 else 0)
             out["dvir_pct"] = (labels, pcts)
-            # Last-7d snapshot for the summary tile
+            # Last-7d snapshot
             cutoff_7d = pd.Timestamp.now() - pd.Timedelta(days=7)
-            mask_7d = df["_dt"] >= cutoff_7d
-            tot_7d = int(mask_7d.sum())
-            res_7d = int(df.loc[mask_7d, "_res"].sum()) if tot_7d > 0 else 0
-            out["dvir_comp_7d"] = round(res_7d / tot_7d * 100) if tot_7d > 0 else None
+            done_7d = int((di["_dt"] >= cutoff_7d).sum())
+            wd_7d   = 0
+            if hos_df is not None and not hos_df.empty:
+                dc  = _find_col(hos_df, ["log date", "starttime", "start time", "date"])
+                drv = _find_col(hos_df, ["driver name", "driver"])
+                drvc = _find_col(hos_df, ["drivems", "drive ms"])
+                dutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
+                if dc and drv:
+                    h7 = hos_df[[dc, drv]
+                                + ([drvc] if drvc else [])
+                                + ([dutc] if dutc else [])].copy()
+                    h7["_dt"] = pd.to_datetime(h7[dc], errors="coerce", utc=True).dt.tz_localize(None)
+                    h7 = h7[h7["_dt"] >= cutoff_7d]
+                    if drvc or dutc:
+                        act = pd.Series([False] * len(h7), index=h7.index)
+                        for col in [drvc, dutc]:
+                            if col:
+                                act |= pd.to_numeric(h7[col], errors="coerce").fillna(0) > 0
+                        h7 = h7[act]
+                    wd_7d = len(h7)
+            exp_7d = wd_7d * 2
+            out["dvir_comp_7d"] = round(done_7d / exp_7d * 100) if exp_7d > 0 else None
         else:
             out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
             out["dvir_comp_7d"] = None
@@ -703,14 +744,12 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     summary_row = (
         f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
         + _tile("Fleet avg safety score", score_txt,
-                _pill("Samsara · 0–100 · higher is safer", score_kind), width="25%")
+                _pill("Samsara · 0–100 · higher is safer", score_kind), width="33%")
         + _tile("DVIR open defects", num(metrics["dvir_open"]),
                 _pill("pending mechanic repair",
-                      "warn" if metrics["dvir_open"] else "good"), width="25%")
-        + _tile("Missing log certs", num(uc),
-                _pill(uc_sub, "warn" if uc else "good", nowrap=False), width="25%")
+                      "warn" if metrics["dvir_open"] else "good"), width="33%")
         + _tile("DVIR compliance", dvir_comp_txt,
-                _pill("completed / required · last 7d", dvir_comp_kind), width="25%")
+                _pill("completed / required · last 7d", dvir_comp_kind), width="34%")
         + "</tr></table>"
     )
 
@@ -1216,6 +1255,177 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
             + f"<div style='padding:4px 24px 24px;'>{table}</div>")
 
 
+def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
+                           total: int, date_str: str) -> str:
+    """DVIR inspection detail — last 7 days, grouped by driver.
+
+    Per-driver header shows name, inspection count, required/completed/missing/%.
+    Row columns: Date/Time · Location · Vehicle · Trailer · Type · Safe · Defects
+                 · Mechanic Notes.
+    Data source: DVIR_Inspections sheet (one row per inspection leg).
+    """
+    header = _sc_header(
+        "DVIR Inspection Detail — last 7 days", pg, total, date_str, section="EQUIPMENT")
+
+    now = pd.Timestamp.now()
+    cutoff_7d = now - pd.Timedelta(days=7)
+
+    # ── Load DVIR_Inspections ────────────────────────────────────────────────
+    insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
+    driver_inspections: dict[str, list[dict]] = {}
+
+    if insp_df is not None and not insp_df.empty:
+        dc  = _find_col(insp_df, ["reported", "createdat"])
+        drv = _find_col(insp_df, ["driver"])
+        typ = _find_col(insp_df, ["unittype"])
+        dvc = _find_col(insp_df, ["dvirtype"])
+        unt = _find_col(insp_df, ["unit"])
+        loc = _find_col(insp_df, ["location"])
+        saf = _find_col(insp_df, ["safe"])
+        def_ = _find_col(insp_df, ["defectcount"])
+        mec = _find_col(insp_df, ["mechanicnotes"])
+
+        if dc and drv:
+            df_i = insp_df.copy()
+            df_i["_dt"] = pd.to_datetime(df_i[dc], errors="coerce", utc=True).dt.tz_localize(None)
+            df_i["_drv"] = df_i[drv].astype(str).str.strip()
+            df_i = df_i[(df_i["_dt"] >= cutoff_7d) & df_i["_drv"].ne("")]
+            df_i = df_i.sort_values("_dt", ascending=False)
+
+            for _, row in df_i.iterrows():
+                d = row["_drv"]
+                dt_str = row["_dt"].strftime("%Y-%m-%d %H:%M") if pd.notna(row["_dt"]) else "&mdash;"
+                unit_val = str(row[unt]).strip() if unt and pd.notna(row[unt]) else ""
+                unit_type = str(row[typ]).strip().lower() if typ else "tractor"
+                vehicle = unit_val if unit_type == "tractor" else "&mdash;"
+                trailer = unit_val if unit_type == "trailer" else "&mdash;"
+                loc_val = str(row[loc]).strip() if loc and pd.notna(row[loc]) else "&mdash;"
+                if not loc_val or loc_val in ("nan", "none", ""):
+                    loc_val = "&mdash;"
+                dvir_type = str(row[dvc]).strip() if dvc and pd.notna(row[dvc]) else "&mdash;"
+                safe_val = row[saf] if saf and pd.notna(row[saf]) else True
+                is_safe = safe_val is True or str(safe_val).lower() in ("true", "1", "yes")
+                defects = int(row[def_]) if def_ and pd.notna(row[def_]) else 0
+                notes = str(row[mec]).strip() if mec and pd.notna(row[mec]) else ""
+                if not notes or notes in ("nan", "none", ""):
+                    notes = "&mdash;"
+
+                driver_inspections.setdefault(d, []).append({
+                    "dt": dt_str, "loc": loc_val, "vehicle": vehicle,
+                    "trailer": trailer, "type": dvir_type,
+                    "safe": is_safe, "defects": defects, "notes": notes,
+                })
+
+    # ── Load worked days for expected calculation ────────────────────────────
+    worked: dict[str, int] = {}
+    hos_df = (samsara_sheets or {}).get("HOS_DailyLogs")
+    if hos_df is not None and not hos_df.empty:
+        hdc  = _find_col(hos_df, ["log date", "starttime", "date"])
+        hdrv = _find_col(hos_df, ["driver name", "driver"])
+        hdrvc = _find_col(hos_df, ["drivems", "drive ms"])
+        hdutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
+        if hdc and hdrv:
+            h7 = hos_df.copy()
+            h7["_dt"] = pd.to_datetime(h7[hdc], errors="coerce", utc=True).dt.tz_localize(None)
+            h7["_drv"] = h7[hdrv].astype(str).str.strip()
+            h7 = h7[(h7["_dt"] >= cutoff_7d) & h7["_drv"].ne("")]
+            if hdrvc or hdutc:
+                act = pd.Series([False] * len(h7), index=h7.index)
+                for col in [hdrvc, hdutc]:
+                    if col:
+                        act |= pd.to_numeric(h7[col], errors="coerce").fillna(0) > 0
+                h7 = h7[act]
+            for d, grp in h7.groupby("_drv"):
+                worked[d] = grp["_dt"].dt.date.nunique()
+
+    # ── Render per-driver blocks ─────────────────────────────────────────────
+    HDRS  = ["DATE / TIME", "LOCATION", "VEHICLE", "TRAILER",
+             "TYPE", "SAFE", "DEFECTS", "MECHANIC NOTES"]
+    ALIGNS = ["left", "left", "right", "right", "left", "center", "right", "left"]
+    COL_W  = ["12%", "28%", "8%", "8%", "8%", "6%", "6%", "24%"]
+
+    thead_cells = "".join(
+        f"<th style='padding:6px 8px;font-size:9.5px;letter-spacing:0.8px;"
+        f"text-transform:uppercase;color:{MUTE};font-weight:700;"
+        f"border-bottom:2px solid {LINE};text-align:{a};width:{w};white-space:nowrap;'>{h}</th>"
+        for h, a, w in zip(HDRS, ALIGNS, COL_W))
+    thead = f"<thead><tr>{thead_cells}</tr></thead>"
+
+    def _driver_block(drv: str, rows: list[dict]) -> str:
+        days    = worked.get(drv, 0)
+        exp     = days * 2
+        done    = len(rows)
+        missing = max(0, exp - done)
+        pct     = round(done / exp * 100) if exp > 0 else 0
+        pct_color = BAD if pct < 80 else (WARN if pct < 95 else GOOD)
+        summary = (
+            f"Required: <b>{exp}</b>&nbsp;&nbsp;"
+            f"Completed: <b>{done}</b>&nbsp;&nbsp;"
+            f"Missing: <b>{missing}</b>&nbsp;&nbsp;"
+            f"<span style='color:{pct_color};font-weight:800;'>{pct}%</span>"
+        )
+        drv_header = (
+            f"<div style='display:flex;justify-content:space-between;align-items:baseline;"
+            f"padding:18px 0 6px;border-bottom:2px solid {INK};margin-bottom:0;'>"
+            f"<span style='font-size:13px;font-weight:700;color:{INK};letter-spacing:0.3px;'>"
+            f"{drv}</span>"
+            f"<span style='font-size:9.5px;color:{MUTE};margin-left:10px;'>"
+            f"·&nbsp;{done} inspection{'s' if done != 1 else ''}</span>"
+            f"<span style='flex:1;'></span>"
+            f"<span style='font-size:11px;color:{INK};'>{summary}</span>"
+            f"</div>"
+        )
+        tbody_rows = ""
+        for r in rows:
+            safe_cell = (
+                f"<span style='color:{GOOD};font-weight:700;'>&#10003;</span>"
+                if r["safe"] else
+                f"<span style='color:{BAD};font-weight:700;'>&#9888;</span>"
+            )
+            def_color = f"color:{BAD};font-weight:700;" if r["defects"] > 0 else ""
+            tbody_rows += (
+                f"<tr>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};'>{r['dt']}</td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>{r['loc']}</td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};text-align:right;'>{r['vehicle']}</td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};text-align:right;'>{r['trailer']}</td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};'>{r['type']}</td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};text-align:center;'>{safe_cell}</td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};text-align:right;'><span style='{def_color}'>{r['defects']}</span></td>"
+                f"<td style='padding:7px 8px;font-size:11px;border-bottom:1px solid {LINE};color:{MUTE};'>{r['notes']}</td>"
+                f"</tr>"
+            )
+        table = (
+            f"<table width='100%' cellpadding='0' cellspacing='0' "
+            f"style='border-collapse:collapse;margin-bottom:6px;'>"
+            f"{thead}<tbody>{tbody_rows}</tbody></table>"
+        )
+        return drv_header + table
+
+    if not driver_inspections:
+        body = (
+            f"<div style='padding:24px;'>"
+            + _all_clear_row(
+                "No DVIR inspection data for the last 7 days — "
+                "DVIR_Inspections sheet will populate after the next Samsara refresh.",
+                span=8)
+            + f"</div>"
+        )
+    else:
+        blocks = "".join(
+            _driver_block(drv, rows)
+            for drv, rows in sorted(driver_inspections.items()))
+        body = f"<div style='padding:0 24px 24px;'>{blocks}</div>"
+
+    return (
+        header
+        + f"<div style='padding:0 24px 4px;'>"
+        + _section("DVIR inspection log — last 7 days")
+        + f"</div>"
+        + body
+    )
+
+
 def build_page_knowledge_base(pg: int, total: int, date_str: str) -> str:
     """Last page: Knowledge Base & Playbooks — sources and schedule."""
     header = _sc_header(
@@ -1284,6 +1494,7 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
       14 FMCSA CSA Scorecard    (build_csa_scorecard_page)
       15 Driver Safety Scores   (build_page2b)
       16+ Coached Events        (build_page_coached)
+      N   DVIR Inspection Detail (custom — per-driver log last 7d)
       Last Knowledge Base       (custom)
 
     PDF page numbers come from the CSS @page counter(pages) automatically.
@@ -1351,6 +1562,9 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     # 15+ — Coached Events (scorecard builder; pg=14 in its header, PDF correct)
     coached_html = build_page_coached(samsara, date_str)
     pages.append(_patch_pg_total(coached_html, total))
+
+    # Second-to-last — DVIR Inspection Detail (per-driver log, last 7 days)
+    pages.append(build_page_dvir_detail(samsara_sheets, len(pages) + 1, total, date_str))
 
     # Last — Knowledge Base & Playbooks
     pages.append(build_page_knowledge_base(len(pages) + 1, total, date_str))
