@@ -614,7 +614,12 @@ def _extra_trends(samsara: dict | None,
                 wd    = wd_by_month.get((yr, mo), 0)
                 exp   = wd * 2
                 labels.append(f"{yr}-{mo:02d}")
-                pcts.append(round(done / exp * 100) if exp > 0 else 0)
+                if exp > 0:
+                    pcts.append(min(round(done / exp * 100), 100))
+                elif done > 0:
+                    pcts.append(100)  # DVIRs filed but no HOS working-day anchor → assume compliant
+                else:
+                    pcts.append(0)
             out["dvir_pct"] = (labels, pcts)
             # Last-7d snapshot
             cutoff_7d = pd.Timestamp.now() - pd.Timedelta(days=7)
@@ -639,7 +644,7 @@ def _extra_trends(samsara: dict | None,
                         h7 = h7[act]
                     wd_7d = len(h7)
             exp_7d = wd_7d * 2
-            out["dvir_comp_7d"] = round(done_7d / exp_7d * 100) if exp_7d > 0 else None
+            out["dvir_comp_7d"] = min(round(done_7d / exp_7d * 100), 100) if exp_7d > 0 else None
         else:
             out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
             out["dvir_comp_7d"] = None

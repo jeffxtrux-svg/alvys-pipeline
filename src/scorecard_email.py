@@ -4772,7 +4772,9 @@ def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False):
         # ~0.6in AR/AP column = no overflow at the right edge of the tile.
         # Add tiny letter-spacing tweak so the label digits don't sit too
         # close together.
-        bar += (f"<td valign='bottom' align='center' width='{col_w}' style='padding:0 1px;'>"
+        spacer_h = H - h  # push label+bar to a common bottom baseline
+        bar += (f"<td align='center' width='{col_w}' style='padding:0 1px;'>"
+                f"<div style='height:{spacer_h}px;'></div>"
                 f"<div style='font-size:7.5px;font-weight:700;color:{label_color};margin-bottom:3px;white-space:nowrap;letter-spacing:-0.1px;'>{label_html}</div>"
                 f"<div style='width:16px;height:{h}px;background:{bc};border-radius:3px 3px 0 0;margin:0 auto;'></div></td>")
         lcol = INK if last else MUTE
