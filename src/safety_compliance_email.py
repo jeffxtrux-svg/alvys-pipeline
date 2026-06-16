@@ -57,7 +57,7 @@ from src.scorecard_email import (
     # Data computers
     compute_samsara, compute_sambasafety, compute_csa_scorecard,
     compute_alvys_equipment, compute_alvys_drivers,
-    compute_inspection_compliance,
+    compute_inspection_compliance, compute_speed_comment,
     # Page builders reused from the executive brief
     build_page9, build_page_equipment, build_page_coached,
     build_page2, build_page2b, build_csa_scorecard_page,
@@ -379,15 +379,18 @@ def _build_risk_watch(m: dict, samsara: dict | None, samba, equipment) -> str:
             + "</div>")
 
 
-def _build_action_items(m: dict, samsara: dict | None, samba, equipment) -> str:
+def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
+                        alvys_drivers=None, samsara_sheets=None) -> str:
     """Action Items block derived from live data."""
     detail = (samsara or {}).get("detail", {}) or {}
     unique_dvirs = _dedup_dvirs(detail.get("dvir", []) or [])
+    fleet = (samsara or {}).get("fleet", {}) or {}
+    scores_all = fleet.get("scores_all") or []
 
     urgent: list[str] = []
     today_items: list[str] = []
 
-    # CDL disqualified → Safety Mgr (cannot legally dispatch)
+    # CDL disqualified → Safety Mgr
     if samba and samba.get("invalid_licenses"):
         for d in samba["invalid_licenses"][:3]:
             nm = d.get("name") or "Unknown"
@@ -395,12 +398,36 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment) -> str:
             urgent.append(_action_row("URGENT", "Safety Mgr",
                                       f"PULL FROM SERVICE: {nm} — CDL {status} — cannot legally operate CMV"))
 
-    # Open DVIR defects → Safety Mgr
+    # DOT medical card critical (≤14d) → URGENT / Safety Mgr
+    if alvys_drivers:
+        for d in (alvys_drivers.get("medical_critical_14") or []):
+            nm = d.get("name") or "Unknown"
+            days = d.get("medical_days", 0)
+            exp = d.get("medical_exp") or ""
+            if days <= 0:
+                urgent.append(_action_row("URGENT", "Safety Mgr",
+                                          f"{nm}: DOT medical card EXPIRED — pull from service"))
+            else:
+                urgent.append(_action_row("URGENT", "Safety Mgr",
+                                          f"{nm}: DOT medical card expires in {days}d ({exp}) — renew now"))
+        # Expiring 15-30d → TODAY
+        med30 = alvys_drivers.get("medical_issues_30") or []
+        med14 = {d.get("name") for d in (alvys_drivers.get("medical_critical_14") or [])}
+        for d in med30:
+            if d.get("name") in med14:
+                continue
+            nm = d.get("name") or "Unknown"
+            days = d.get("medical_days", 0)
+            exp = d.get("medical_exp") or ""
+            today_items.append(_action_row("TODAY", "Safety Mgr",
+                                           f"{nm}: DOT medical card expires in {days}d ({exp}) — schedule renewal"))
+
+    # Open DVIR defects → Safety Mgr / Dispatch
     for r in unique_dvirs[:3]:
         unit = r.get("unit") or "?"
         defect = r.get("defect") or "unspecified defect"
         driver = r.get("driver") or "?"
-        urgent.append(_action_row("URGENT", "Safety Mgr",
+        urgent.append(_action_row("URGENT", "Safety Mgr / Dispatch",
                                   f"Resolve DVIR defect on unit {unit}: {defect} (reported by {driver})"))
 
     # HOS violations in last 24h → Safety Mgr
@@ -433,8 +460,49 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment) -> str:
             today_items.append(_action_row("TODAY", "Dispatch",
                                            f"Schedule inspection: unit {unit} ({days}d past 120-day policy)"))
 
-    # On-duty today with uncertified prior-day logs → individual Dispatch items
-    # (drivers actively working who started their shift without certifying yesterday)
+    # Missing DVIRs (0 inspections done last 7d despite working) → Safety Mgr per driver
+    if samsara_sheets:
+        try:
+            comp_rows = compute_inspection_compliance(samsara_sheets, days=7)
+            for row in comp_rows:
+                if row.get("done_total", 0) == 0 and row.get("expected_total", 0) > 0:
+                    drv = row.get("driver", "Unknown")
+                    wd  = row.get("working_days", 0)
+                    today_items.append(_action_row("TODAY", "Safety Mgr",
+                                                   f"{drv}: 0 DVIRs completed in last 7d "
+                                                   f"({wd} working day{'s' if wd != 1 else ''}) "
+                                                   f"— require pre/post-trip inspections"))
+        except Exception:
+            pass
+
+    # Coaching sessions past due (manager-led) → Safety Mgr per driver
+    cs = (samsara or {}).get("coaching_sessions", {}) or {}
+    for r in (cs.get("manager_past_due") or []):
+        drv  = r.get("driver", "Unknown")
+        due  = r.get("due_at", "")
+        ovrd = r.get("days_overdue", 0)
+        bhv  = r.get("behaviors", "")
+        note = f" ({bhv})" if bhv else ""
+        today_items.append(_action_row("TODAY", "Safety Mgr",
+                                       f"{drv}: coaching session overdue {ovrd}d (due {due}){note}"
+                                       f" — conduct session and document outcome"))
+
+    # Speeding >1% MTD → Safety Mgr per driver with coaching directive
+    for r in scores_all:
+        pct_mtd = r.get("speed_pct_mtd")
+        pct_6mo = r.get("speed_pct")
+        pct_3mo = r.get("speed_pct_3mo")
+        if not _isnum(pct_mtd) or pct_mtd <= 1.0:
+            continue
+        drv = r.get("driver", "Unknown")
+        comment = compute_speed_comment(pct_6mo, pct_3mo, pct_mtd)
+        # Strip trailing period for inline embedding
+        comment = comment.rstrip(". ").lower()
+        today_items.append(_action_row("TODAY", "Safety Mgr",
+                                       f"{drv}: speeding {pct_mtd:.1f}% MTD — {comment} "
+                                       f"— document coaching session and outcome"))
+
+    # On-duty today with uncertified prior-day logs → Dispatch per driver
     uncert = detail.get("hos_uncert", []) or []
     _today_d = pd.Timestamp.now().date()
     _yesterday = _today_d - pd.Timedelta(days=1)
@@ -494,7 +562,8 @@ def _all_clear_row(msg: str, span: int = 6) -> str:
 # ----------------------------------------------------------------------
 
 def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
-                        total: int, date_str: str, samba, equipment) -> str:
+                        total: int, date_str: str, samba, equipment,
+                        alvys_drivers=None, samsara_sheets=None) -> str:
     """Page 1: Overview — Bottom Line · Urgent · Risk Watch · Action Items."""
     header = _sc_header(
         "Safety &amp; Compliance · Daily Overview", pg, total, date_str, section="EVENTS")
@@ -565,7 +634,9 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
             + rw_title
             + _build_risk_watch(metrics, samsara, samba, equipment)
             + ai_title
-            + _build_action_items(metrics, samsara, samba, equipment))
+            + _build_action_items(metrics, samsara, samba, equipment,
+                                   alvys_drivers=alvys_drivers,
+                                   samsara_sheets=samsara_sheets))
 
 
 def _extra_trends(samsara: dict | None,
@@ -1497,7 +1568,8 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
 
     # 1 — Overview
     pages.append(build_page_overview(
-        samsara, metrics, 1, total, date_str, samba, equipment))
+        samsara, metrics, 1, total, date_str, samba, equipment,
+        alvys_drivers=alvys_drivers, samsara_sheets=samsara_sheets))
 
     # 2 — Safety Metrics
     pages.append(build_page_metrics(samsara, metrics, 2, total, date_str,
