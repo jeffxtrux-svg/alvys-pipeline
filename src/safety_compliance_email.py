@@ -827,7 +827,7 @@ def build_page_events_hos(samsara: dict | None, pg: int,
         "No HOS violations in the last 7 days — all drivers operating within hours of service.",
         span=4)
 
-    # Missing log certifications
+    # Missing log certifications (full 7-day window — leading indicator)
     uncert = detail.get("hos_uncert", []) or []
     uc_rows = "".join(
         _tr(
@@ -839,21 +839,31 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             [None, "bad", None, "bad"])
         for r in uncert
     ) or _all_clear_row(
-        "Every driver working today has certified their prior-day logs"
-        " — no audit risk from missed start-of-shift certifications.",
+        "No missing log certifications in the last 7 days — all logs signed.",
         span=4)
 
-    # Dispatch alerts — drivers missing certifications for the full 7-day window
-    # Rendered as a <tr> inside the same outer table so the layout stays intact.
-    persistent = sorted(
-        [r for r in uncert if r.get("days_missing", 0) >= 6],
+    # On-duty today — uncertified prior-day logs
+    # Filter uncert for drivers whose span ends yesterday or today:
+    # these are the drivers who started their current shift without certifying yesterday.
+    def _span_end(r: dict):
+        s = r.get("span", "")
+        end = s.split("–")[-1].strip() if "–" in s else s.strip()
+        try:
+            return pd.to_datetime(end).date()
+        except Exception:
+            return None
+
+    today_date  = pd.Timestamp.now().date()
+    yesterday   = today_date - pd.Timedelta(days=1)
+    on_duty_now = sorted(
+        [r for r in uncert if (_span_end(r) or pd.Timestamp.min.date()) >= yesterday],
         key=lambda x: -x.get("days_missing", 0))
-    dispatch_tr = ""
-    if persistent:
+
+    if on_duty_now:
         items_html = ""
-        for r in persistent:
+        for r in on_duty_now:
             drv  = r.get("driver", "Unknown Driver").upper()
-            days = r.get("days_missing", 7)
+            days = r.get("days_missing", 1)
             items_html += (
                 f"<div style='display:flex;align-items:center;gap:12px;"
                 f"padding:11px 0;border-bottom:1px solid {LINE};'>"
@@ -864,9 +874,24 @@ def build_page_events_hos(samsara: dict | None, pg: int,
                 f"<b>Dispatch:</b> {drv}: {days}d missing log certifications</span>"
                 f"</div>"
             )
-        dispatch_tr = (
-            _section("Persistent uncertified logs — dispatch action required")
-            + f"<tr><td colspan='4' style='padding:0 6px 6px;'>{items_html}</td></tr>"
+        on_duty_tr = (
+            _section("On-duty today — uncertified prior-day logs"
+                     " · started this shift without certifying yesterday")
+            + f"<tr><td colspan='4' style='padding:0 6px 10px;'>{items_html}</td></tr>"
+        )
+    else:
+        on_duty_tr = (
+            _section("On-duty today — uncertified prior-day logs"
+                     " · started this shift without certifying yesterday")
+            + f"<tr><td colspan='4' style='padding:0 6px 10px;'>"
+            f"<div style='border-left:4px solid {GOOD};background:{GOODBG};"
+            f"border-radius:6px;padding:10px 14px;'>"
+            f"<div style='font-size:10px;letter-spacing:1.5px;font-weight:800;"
+            f"color:{GOOD};margin-bottom:4px;'>&#10003; ALL CLEAR</div>"
+            f"<div style='font-size:12.5px;color:{INK};'>"
+            f"Every driver working today has certified their prior-day logs"
+            f" — no audit risk from missed start-of-shift certifications.</div>"
+            f"</div></td></tr>"
         )
 
     return (header
@@ -877,8 +902,8 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             + _section("HOS violations — last 7 days (driving-rule breaches)")
             + _table(["Driver", "Reported", "Violation type", "Status"],
                      ["left"] * 4, hos_rows)
-            + dispatch_tr
-            + _section("Missing log certifications — last 7 days")
+            + on_duty_tr
+            + _section("Missing log certifications — last 7 days // leading indicator")
             + _table(["Driver", "Days missing", "Date range", "Status"],
                      ["left", "right", "left", "left"], uc_rows)
             + "</table>"
@@ -886,7 +911,8 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             f"border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara SafetyEvents, HOS_Violations, HOS_DailyLogs (7-day window). "
             f"HOS = driving-rule breaches only (form-and-manner excluded). "
-            f"Missing certifications = drivers who have not e-signed prior-day logs.</div>")
+            f"On-duty today = uncertified drivers whose latest missing log is from yesterday. "
+            f"Missing certifications = 7-day historical view (leading indicator).</div>")
 
 
 def build_page_dvir_defects(samsara: dict | None, pg: int,
