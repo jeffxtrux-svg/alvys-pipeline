@@ -427,29 +427,46 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
             urgent.append(_action_row("URGENT", "Safety Mgr",
                                       f"PULL FROM SERVICE: {nm} — CDL {status} — cannot legally operate CMV"))
 
-    # DOT medical card critical (≤14d) → URGENT / Safety Mgr
+    # DOT medical card — 4-tier escalation
     if alvys_drivers:
-        for d in (alvys_drivers.get("medical_critical_14") or []):
+        med14_list = alvys_drivers.get("medical_critical_14") or []
+        med30_list = alvys_drivers.get("medical_issues_30") or []
+        critical_names: set = set()
+        for d in med14_list:
             nm = d.get("name") or "Unknown"
             days = d.get("medical_days", 0)
             exp = d.get("medical_exp") or ""
+            critical_names.add(nm)
             if days <= 0:
                 urgent.append(_action_row("URGENT", "Safety Mgr",
-                                          f"{nm}: DOT medical card EXPIRED — pull from service"))
-            else:
+                                          f"{nm}: DOT medical card EXPIRED — pull from service immediately"))
+            elif days <= 3:
+                # ≤3d: Safety Mgr confirm appointment + Dispatch confirm driver return
                 urgent.append(_action_row("URGENT", "Safety Mgr",
-                                          f"{nm}: DOT medical card expires in {days}d ({exp}) — renew now"))
-        # Expiring 15-30d → TODAY
-        med30 = alvys_drivers.get("medical_issues_30") or []
-        med14 = {d.get("name") for d in (alvys_drivers.get("medical_critical_14") or [])}
-        for d in med30:
-            if d.get("name") in med14:
-                continue
+                                          f"{nm}: DOT physical in {days}d ({exp}) — confirm appointment is booked, "
+                                          f"document appointment date"))
+                today_items.append(_action_row("TODAY", "Dispatch",
+                                               f"{nm}: DOT physical in {days}d ({exp}) — coordinate driver return "
+                                               f"to ensure they are present for the appointment"))
+            elif days <= 7:
+                # ≤7d: Safety Mgr confirm appointment scheduled + date documented
+                urgent.append(_action_row("URGENT", "Safety Mgr",
+                                          f"{nm}: DOT medical expires in {days}d ({exp}) — confirm appointment "
+                                          f"is scheduled and document appointment date in driver file"))
+            else:
+                # ≤14d: Safety Mgr schedule appointment + document date
+                urgent.append(_action_row("URGENT", "Safety Mgr",
+                                          f"{nm}: DOT medical expires in {days}d ({exp}) — schedule appointment "
+                                          f"now and document appointment date in driver file"))
+        # 15-30d → TODAY / Safety Mgr (not already in the ≤14d tier)
+        for d in med30_list:
             nm = d.get("name") or "Unknown"
+            if nm in critical_names:
+                continue
             days = d.get("medical_days", 0)
             exp = d.get("medical_exp") or ""
             today_items.append(_action_row("TODAY", "Safety Mgr",
-                                           f"{nm}: DOT medical card expires in {days}d ({exp}) — schedule renewal"))
+                                           f"{nm}: DOT medical expires in {days}d ({exp}) — schedule renewal appointment"))
 
     # Open DVIR defects → Safety Mgr / Dispatch
     for r in unique_dvirs[:3]:
@@ -816,24 +833,30 @@ def _extra_trends(samsara: dict | None,
         out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
         out["dvir_comp_7d"] = None
 
-    # Speed over limit — fleet avg % drive time, current month MTD only.
-    # Per-month historical speed data is not available from the driver-score API
-    # (scores_all has 6mo/3mo/MTD aggregates, not monthly breakdowns).
-    # Historical bars show 0 rather than repeating the 6mo aggregate for every month.
+    # Speed over limit — fleet avg % drive time per calendar month.
+    # samsara_main now makes per-month API calls and stores them in speeds_monthly.
+    # Current month uses MTD; completed months use actual per-month API results.
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
+    speeds_monthly = ((samsara or {}).get("fleet") or {}).get("speeds_monthly") or {}
     months6 = _last_6_months()
     _n6 = len(months6)
     labels = [
         pd.Timestamp(year=yr, month=mo, day=1).strftime("%b") + ("*" if i == _n6 - 1 else "")
         for i, (yr, mo) in enumerate(months6)
     ]
-    pcts = [0.0] * len(labels)
-    mtd_vals  = [r.get("speed_pct_mtd") for r in scores_all if _isnum(r.get("speed_pct_mtd"))]
-    spd_vals  = [r.get("speed_pct")     for r in scores_all if _isnum(r.get("speed_pct"))]
-    if mtd_vals:
-        pcts[-1] = round(sum(mtd_vals) / len(mtd_vals), 2)
-    elif spd_vals:
-        pcts[-1] = round(sum(spd_vals) / len(spd_vals), 2)
+    pcts = []
+    for i, (yr, mo) in enumerate(months6):
+        if i == _n6 - 1:
+            mtd_vals = [r.get("speed_pct_mtd") for r in scores_all if _isnum(r.get("speed_pct_mtd"))]
+            spd_vals = [r.get("speed_pct") for r in scores_all if _isnum(r.get("speed_pct"))]
+            if mtd_vals:
+                pcts.append(round(sum(mtd_vals) / len(mtd_vals), 2))
+            elif spd_vals:
+                pcts.append(round(sum(spd_vals) / len(spd_vals), 2))
+            else:
+                pcts.append(0.0)
+        else:
+            pcts.append(speeds_monthly.get((yr, mo), 0.0))
     out["speed_pct"] = (labels, pcts)
 
     return out

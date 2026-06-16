@@ -9,6 +9,7 @@ Writes output/samsara/Samsara_Master.xlsx with one sheet per data type.
 """
 from __future__ import annotations
 
+import calendar as _calendar
 import datetime
 import logging
 import os
@@ -752,6 +753,27 @@ def main() -> int:
         driver_ids, start_3mo, now
     )
 
+    # Per-calendar-month safety scores for the 6-month speed trend chart.
+    # The 6mo/3mo/MTD aggregates don't break down by month; we make one call
+    # per completed calendar month in the look-back window so the chart can
+    # show actual monthly speed-over-limit percentages instead of all zeros.
+    _cur_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    monthly_scores_raw: dict[str, list] = {}
+    for _mb in range(5, 0, -1):
+        _m = _cur_month_start.month - _mb
+        _y = _cur_month_start.year
+        while _m <= 0:
+            _m += 12
+            _y -= 1
+        _last_day = _calendar.monthrange(_y, _m)[1]
+        _ms = datetime.datetime(_y, _m, 1, 0, 0, 0)
+        _me = datetime.datetime(_y, _m, _last_day, 23, 59, 59)
+        _key = f"{_y}_{_m:02d}"
+        log.info("=" * 60)
+        log.info("Step 11d/12: Driver safety scores — %d-%02d", _y, _m)
+        log.info("=" * 60)
+        monthly_scores_raw[_key] = client.fetch_driver_safety_scores(driver_ids, _ms, _me)
+
     log.info("=" * 60)
     log.info("Step 12/13: Coaching sessions (past-due tracking)")
     log.info("=" * 60)
@@ -874,12 +896,17 @@ def main() -> int:
     df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
     df_driver_scores_mtd = flatten(raw_driver_scores_mtd, "DriverSafetyScoresMtd")
     df_driver_scores_3mo = flatten(raw_driver_scores_3mo, "DriverSafetyScores3mo")
+    df_scores_monthly: dict[str, pd.DataFrame] = {
+        f"DriverSafetyScores_{k}": flatten(v, f"DriverSafetyScores_{k}")
+        for k, v in monthly_scores_raw.items()
+    }
     # Stamp the driver name onto each row by joining with the drivers sheet.
     drivers_df = flatten(raw_drivers, "Drivers")
     name_by_id: dict = {}
     if not drivers_df.empty and "id" in drivers_df.columns and "name" in drivers_df.columns:
         name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
-    for _df in (df_driver_scores, df_driver_scores_mtd, df_driver_scores_3mo):
+    for _df in (df_driver_scores, df_driver_scores_mtd, df_driver_scores_3mo,
+                *df_scores_monthly.values()):
         if not _df.empty and "driverId" in _df.columns and name_by_id:
             _df["Driver Name"] = _df["driverId"].astype(str).map(name_by_id)
 
@@ -949,6 +976,7 @@ def main() -> int:
         "DriverSafetyScores":    df_driver_scores,
         "DriverSafetyScoresMtd": df_driver_scores_mtd,
         "DriverSafetyScores3mo": df_driver_scores_3mo,
+        **df_scores_monthly,
         "CoachingSessions":      df_coaching,
         "TrainingAssignments":   df_training,
         **ifta_sheets,

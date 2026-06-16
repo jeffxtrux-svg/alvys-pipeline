@@ -3496,6 +3496,25 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     if nm in pct_3mo:
                         r["speed_pct_3mo"] = pct_3mo[nm]
 
+                # Per-calendar-month fleet avg speed for the 6-month trend bar chart.
+                # Sheets named DriverSafetyScores_YYYY_MM are written by samsara_main.
+                monthly_speed: dict = {}
+                for skey, sdf in sheets.items():
+                    if not skey.startswith("DriverSafetyScores_"):
+                        continue
+                    suffix = skey[len("DriverSafetyScores_"):]
+                    parts = suffix.split("_")
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        yr, mo = int(parts[0]), int(parts[1])
+                    except ValueError:
+                        continue
+                    pcts_m = list(_pct_by_name(sdf, skey).values())
+                    if pcts_m:
+                        monthly_speed[(yr, mo)] = round(sum(pcts_m) / len(pcts_m), 2)
+                out["fleet"]["speeds_monthly"] = monthly_speed
+
     # --- Coaching sessions ---------------------------------------------------
     # NOTE: Samsara's /coaching/sessions endpoint 404s for our account, so the
     # CoachingSessions sheet is an empty placeholder on every run. Ack state
