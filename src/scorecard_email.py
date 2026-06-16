@@ -3935,10 +3935,14 @@ def compute_sambasafety(sheets, now: pd.Timestamp | None = None) -> dict | None:
 
 
 def compute_inspection_compliance(samsara_sheets: dict | None,
-                                    days: int = 7) -> list[dict]:
-    """Per-driver DVIR inspection completion + defect rollup over the
-    last `days` days. FMCSA 396.11 / 396.13 requires a pre-trip AND a
-    post-trip DVIR per working day, so expected_total = working_days * 2.
+                                    days: int = 7,
+                                    start: "pd.Timestamp | None" = None,
+                                    end: "pd.Timestamp | None" = None) -> list[dict]:
+    """Per-driver DVIR inspection completion + defect rollup. By default,
+    the window is the trailing `days` days; pass explicit `start`/`end`
+    Timestamps to use a custom range (e.g. one calendar month). FMCSA
+    396.11 / 396.13 requires a pre-trip AND a post-trip DVIR per working
+    day, so expected_total = working_days * 2.
 
     Returns a list of dicts sorted by deficit (expected - done) descending:
       {driver, working_days,
@@ -3954,7 +3958,8 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     if hos is None or hos.empty:
         return []
 
-    window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
+    window_start = start if start is not None else pd.Timestamp.now() - pd.Timedelta(days=days)
+    window_end = end  # None → no upper bound
 
     hos_name_col = _find_col(hos, ["driver name", "driver.name"])
     hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
@@ -3972,7 +3977,10 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
               if hos_onduty_col else pd.Series(0, index=hos.index))
     active = (drive > 0) | (onduty > 0)
-    hos_window = hos[active & (hos_dt >= window_start)].copy()
+    hos_mask = active & (hos_dt >= window_start)
+    if window_end is not None:
+        hos_mask &= hos_dt < window_end
+    hos_window = hos[hos_mask].copy()
     if hos_window.empty:
         return []
     working_days_by_driver = (
@@ -3997,7 +4005,10 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
                                                 "asset.name"])
         if dvir_driver_col and dvir_time_col:
             dvir_dt = _to_naive_dt(dvirs[dvir_time_col])
-            dvirs_window = dvirs[dvir_dt >= window_start].copy()
+            dvir_mask = dvir_dt >= window_start
+            if window_end is not None:
+                dvir_mask &= dvir_dt < window_end
+            dvirs_window = dvirs[dvir_mask].copy()
             if not dvirs_window.empty:
                 for nm, group in dvirs_window.groupby(
                     dvirs_window[dvir_driver_col].astype(str).str.strip()
@@ -4023,7 +4034,10 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
         d_time = _find_col(df_defects, ["reported", "createdat"])
         if d_driver and d_time:
             d_dt = _to_naive_dt(df_defects[d_time])
-            d_window = df_defects[d_dt >= window_start].copy()
+            d_mask = d_dt >= window_start
+            if window_end is not None:
+                d_mask &= d_dt < window_end
+            d_window = df_defects[d_mask].copy()
             for nm, group in d_window.groupby(
                 d_window[d_driver].astype(str).str.strip()
             ):

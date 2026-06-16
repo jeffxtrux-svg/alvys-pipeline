@@ -568,90 +568,38 @@ def _extra_trends(samsara: dict | None,
             months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
             out[state_key] = (months, [0] * len(months))
 
-    # DVIR compliance % — inspections done / expected (working_days × 2)
-    # Uses DVIR_Inspections (all inspections incl. safe) + HOS_DailyLogs (working days).
+    # DVIR compliance % — single source of truth: compute_inspection_compliance
+    # in scorecard_email. Same logic the detail page uses, so the page-1 tile,
+    # the 6-month chart, and the per-driver table all agree.
     fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-    insp_df  = (samsara_sheets or {}).get("DVIR_Inspections")
-    hos_df   = (samsara_sheets or {}).get("HOS_DailyLogs")
 
-    def _working_days_by_month(hos: "pd.DataFrame | None") -> dict:
-        """Return {(yr, mo): driver_day_count} from HOS daily logs."""
-        if hos is None or hos.empty:
-            return {}
-        dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
-        drv = _find_col(hos, ["driver name", "driver"])
-        drvc = _find_col(hos, ["drivems", "drive ms", "drivetime", "drive time"])
-        dutc = _find_col(hos, ["ondutytime", "on duty ms", "ondutytime", "on duty time"])
-        if not dc or not drv:
-            return {}
-        h = hos[[dc, drv] + ([drvc] if drvc else []) + ([dutc] if dutc else [])].copy()
-        h["_dt"] = pd.to_datetime(h[dc], errors="coerce", utc=True).dt.tz_localize(None)
-        h["_drv"] = h[drv].astype(str).str.strip()
-        if drvc or dutc:
-            active = pd.Series([False] * len(h), index=h.index)
-            for col in [drvc, dutc]:
-                if col:
-                    active |= pd.to_numeric(h[col], errors="coerce").fillna(0) > 0
-            h = h[active]
-        h = h[h["_drv"].ne("") & h["_dt"].notna()]
-        result: dict = {}
-        for _, row in h.iterrows():
-            key = (row["_dt"].year, row["_dt"].month)
-            # count distinct driver-date combos
-            result[key] = result.get(key, 0) + 1
-        return result
+    def _fleet_compliance_pct(start, end) -> int | None:
+        rows = compute_inspection_compliance(samsara_sheets, start=start, end=end)
+        if not rows:
+            return None
+        done = sum(r["done_total"] for r in rows)
+        exp  = sum(r["expected_total"] for r in rows)
+        if exp == 0:
+            return None
+        return min(round(done / exp * 100), 100)
 
-    if insp_df is not None and not insp_df.empty:
-        idc = _find_col(insp_df, ["reported", "createdat"])
-        if idc:
-            di = insp_df[[idc]].copy()
-            di["_dt"] = pd.to_datetime(di[idc], errors="coerce", utc=True).dt.tz_localize(None)
-            wd_by_month = _working_days_by_month(hos_df)
-            months6 = _last_6_months()
-            labels, pcts = [], []
-            for yr, mo in months6:
-                mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
-                done  = int(mask.sum())
-                wd    = wd_by_month.get((yr, mo), 0)
-                exp   = wd * 2
-                labels.append(f"{yr}-{mo:02d}")
-                if exp > 0:
-                    pcts.append(min(round(done / exp * 100), 100))
-                elif done > 0:
-                    pcts.append(100)  # DVIRs filed but no HOS working-day anchor → assume compliant
-                else:
-                    pcts.append(0)
-            out["dvir_pct"] = (labels, pcts)
-            # Last-7d snapshot
-            cutoff_7d = pd.Timestamp.now() - pd.Timedelta(days=7)
-            done_7d = int((di["_dt"] >= cutoff_7d).sum())
-            wd_7d   = 0
-            if hos_df is not None and not hos_df.empty:
-                dc  = _find_col(hos_df, ["log date", "starttime", "start time", "date"])
-                drv = _find_col(hos_df, ["driver name", "driver"])
-                drvc = _find_col(hos_df, ["drivems", "drive ms"])
-                dutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
-                if dc and drv:
-                    h7 = hos_df[[dc, drv]
-                                + ([drvc] if drvc else [])
-                                + ([dutc] if dutc else [])].copy()
-                    h7["_dt"] = pd.to_datetime(h7[dc], errors="coerce", utc=True).dt.tz_localize(None)
-                    h7 = h7[h7["_dt"] >= cutoff_7d]
-                    if drvc or dutc:
-                        act = pd.Series([False] * len(h7), index=h7.index)
-                        for col in [drvc, dutc]:
-                            if col:
-                                act |= pd.to_numeric(h7[col], errors="coerce").fillna(0) > 0
-                        h7 = h7[act]
-                    wd_7d = len(h7)
-            exp_7d = wd_7d * 2
-            out["dvir_comp_7d"] = min(round(done_7d / exp_7d * 100), 100) if exp_7d > 0 else None
+    # 7-day snapshot for the page-1 tile
+    now = pd.Timestamp.now()
+    out["dvir_comp_7d"] = _fleet_compliance_pct(now - pd.Timedelta(days=7), None)
+
+    # 6-month chart: full calendar months (current month = MTD)
+    months6 = _last_6_months()
+    labels, pcts = [], []
+    for yr, mo in months6:
+        m_start = pd.Timestamp(year=yr, month=mo, day=1)
+        if mo == 12:
+            m_end = pd.Timestamp(year=yr + 1, month=1, day=1)
         else:
-            out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
-            out["dvir_comp_7d"] = None
-    else:
-        out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
-        out["dvir_comp_7d"] = None
+            m_end = pd.Timestamp(year=yr, month=mo + 1, day=1)
+        pct = _fleet_compliance_pct(m_start, m_end)
+        labels.append(f"{yr}-{mo:02d}")
+        pcts.append(pct if pct is not None else 0)
+    out["dvir_pct"] = (labels, pcts) if labels else (fallback_months, [0] * len(fallback_months))
 
     # Speed over limit — fleet avg % drive time per driver, averaged by month
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
@@ -1111,7 +1059,7 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
     def _comp_cell(done: int, exp: int) -> tuple[str, str | None]:
         if exp == 0:
             return "&mdash;", None
-        pct = round(done / exp * 100)
+        pct = min(round(done / exp * 100), 100)
         txt = f"{pct}%"
         kind = "bad" if pct < 50 else ("warn" if pct < 95 else "good")
         return txt, kind
@@ -1129,7 +1077,7 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
         rdef       = r["defects_trailer"]
         total_done = r["done_total"]
         total_exp  = r["expected_total"]        # = exp + exp
-        sort_pct   = round(total_done / total_exp * 100) if total_exp > 0 else 0
+        sort_pct   = min(round(total_done / total_exp * 100), 100) if total_exp > 0 else 0
         driver_rows.append((sort_pct, drv, days, exp, td, rd, tdef, rdef, total_done, total_exp))
 
     driver_rows.sort(key=lambda r: r[0])  # worst compliance first
