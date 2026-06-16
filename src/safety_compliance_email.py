@@ -1323,7 +1323,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
         exp     = days * 2
         done    = len(rows)
         missing = max(0, exp - done)
-        pct     = round(done / exp * 100) if exp > 0 else 0
+        pct     = min(round(done / exp * 100), 100) if exp > 0 else 0
         pct_color = BAD if pct < 80 else (WARN if pct < 95 else GOOD)
         summary = (
             f"Required: <b>{exp}</b>&nbsp;&nbsp;"
