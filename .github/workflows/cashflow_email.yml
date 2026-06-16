@@ -1,0 +1,135 @@
+# X-Linx & X-Trux Cash Flow — daily 7am CT email
+#
+# AR from QuickBooks (OneDrive staging files written by the 4am QB pull).
+# AP from Ramp API (live, per-entity credentials).
+# Truk-Way and N&J entities excluded throughout.
+#
+# DST-proof pattern: four UTC slots cover both CDT (UTC-5) and CST (UTC-6)
+# 7am windows. The CT-gate step skips slots that land before 7am Central.
+#
+# GitHub Secrets required:
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   ONEDRIVE_USER_UPN
+#   RAMP_XTRUX_CLIENT_ID, RAMP_XTRUX_CLIENT_SECRET
+#   RAMP_XLINX_CLIENT_ID, RAMP_XLINX_CLIENT_SECRET
+#
+# Optional secret:
+#   CASHFLOW_TO_EMAILS  — recipients (defaults to ONEDRIVE_USER_UPN / jeff@xfreight.net)
+
+name: Cash Flow Email (7am CT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipients:
+        description: 'Comma-separated recipient override'
+        required: false
+        default: ''
+      skip_idempotency:
+        description: 'Set true to force-resend even if today marker exists'
+        type: boolean
+        default: false
+  workflow_call:
+  push:
+    paths:
+      - .github/workflows/cashflow_email.yml
+  schedule:
+    # DST-proof: arm both CDT and CST 7am slots + ~1h of backups.
+    # CT-gate step rejects anything that lands before 7am Central.
+    - cron: '0 12 * * *'    # 7am CDT primary  / 6am CST (gated out)
+    - cron: '30 12 * * *'   # 7:30am CDT backup / 6:30am CST (gated out)
+    - cron: '0 13 * * *'    # 8am CDT (gated out) / 7am CST primary
+    - cron: '30 13 * * *'   # 8:30am CDT (gated out) / 7:30am CST backup
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  cashflow_report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Gate to 7am CT (skip slots before 7am or at exactly 8am)
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -lt 7 ]; then
+            echo "Before 7am CT — skipping this slot."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          elif [ "$CT_HOUR" -eq 8 ]; then
+            echo "8am CT slot — skipping (reserved for healthchecks)."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "7am CT window — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Send Cash Flow Email
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          CASHFLOW_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.CASHFLOW_TO_EMAILS || secrets.ONEDRIVE_USER_UPN }}
+          CASHFLOW_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || inputs.skip_idempotency) && '1' || '' }}
+          # QuickBooks — used only if pulling AR live (currently reads from OneDrive staging)
+          QB_CLIENT_ID: ${{ secrets.QB_CLIENT_ID }}
+          QB_CLIENT_SECRET: ${{ secrets.QB_CLIENT_SECRET }}
+          QB_XTRUX_REFRESH_TOKEN: ${{ secrets.QB_XTRUX_REFRESH_TOKEN }}
+          QB_XLINX_REFRESH_TOKEN: ${{ secrets.QB_XLINX_REFRESH_TOKEN }}
+          # Ramp — separate credentials per entity
+          RAMP_XTRUX_CLIENT_ID: ${{ secrets.RAMP_XTRUX_CLIENT_ID }}
+          RAMP_XTRUX_CLIENT_SECRET: ${{ secrets.RAMP_XTRUX_CLIENT_SECRET }}
+          RAMP_XLINX_CLIENT_ID: ${{ secrets.RAMP_XLINX_CLIENT_ID }}
+          RAMP_XLINX_CLIENT_SECRET: ${{ secrets.RAMP_XLINX_CLIENT_SECRET }}
+        run: python -m src.cashflow_email
+
+      - name: Notify on failure
+        if: failure() && steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          CASHFLOW_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.CASHFLOW_TO_EMAILS || secrets.ONEDRIVE_USER_UPN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from src.onedrive_upload import get_token
+          from src.scorecard_email import send_email
+          tok = get_token(
+              os.environ["AZURE_TENANT_ID"],
+              os.environ["AZURE_CLIENT_ID"],
+              os.environ["AZURE_CLIENT_SECRET"],
+          )
+          to = [e.strip() for e in os.environ.get("CASHFLOW_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+          run = os.environ.get("RUN_URL", "")
+          html = (
+              f"<p>The Cash Flow email job <b>failed</b> &mdash; "
+              f"today's report did not send.</p>"
+              f"<p>Run log: <a href='{run}'>{run}</a></p>"
+          )
+          send_email(tok, os.environ["ONEDRIVE_USER_UPN"], to,
+                     "⚠️ XFreight Cash Flow Email FAILED", html)
+          PY
