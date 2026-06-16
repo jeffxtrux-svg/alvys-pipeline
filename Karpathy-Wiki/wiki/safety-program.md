@@ -3,7 +3,7 @@ title: Safety Program
 type: concept
 tags: [safety, compliance, samsara, sambasafety, fmcsa]
 sources: ["raw/xfreight-safety-program.md", "raw/xfreight-safety-program-policies.md", "raw/xfreight-driver-discipline-and-incidents.md"]
-related: ["[[FMCSA CSA Scorecard]]", "[[Driver Roster]]", "[[Key People]]", "[[Daily Scorecard Email]]", "[[Owner-Operator Program]]", "[[Coaching Ack]]"]
+related: ["[[FMCSA CSA Scorecard]]", "[[DOT Inspection Policy]]", "[[Driver Roster]]", "[[Key People]]", "[[Daily Scorecard Email]]", "[[Owner-Operator Program]]", "[[Coaching Ack]]"]
 ---
 
 # Safety Program
@@ -79,9 +79,9 @@ Bottom-Line callouts that can fire: `CDL EXPIRED`, `CDL RENEWALS UPCOMING`, `MVR
 
 ## Equipment Compliance (Pages 5 & 6)
 
-Two compliance windows:
-1. **Federal annual inspection:** 365 days.
-2. **XFreight company policy:** 120 days from last inspection.
+Two compliance windows — see [[DOT Inspection Policy]] for the canonical language rules and rationale:
+1. **Federal annual inspection:** 365 days (out-of-service threshold if crossed).
+2. **XFreight company policy:** 120 days from last inspection (operational deadline; unit still in service).
 
 The 120-day company policy is the binding constraint — it fires sooner than the federal rule. Trailers overdue on the 120-day policy get a Bottom-Line callout naming up to 8 units + "and N more."
 

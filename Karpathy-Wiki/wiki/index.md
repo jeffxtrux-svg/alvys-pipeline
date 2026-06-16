@@ -2,12 +2,12 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-15"
+last_compiled: "2026-06-16"
 ---
 
 # Wiki Index
 
-The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-15.
+The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-16.
 
 ## Meta
 
@@ -72,6 +72,7 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 ## Safety & Compliance
 
 - [[Safety Program]] — speed-over-limit rubric, coaching policy, MVR workflow, equipment inspections, and driver discipline framework.
+- [[DOT Inspection Policy]] — 120-day company policy vs. 365-day federal annual: what each window means, who pays, and the language rules for "overdue" vs "out of service."
 - [[Driver Discipline and Incidents]] — written-warning framework, documented incidents (Brad/chafed-brake-hose), Sharefile record structure, and the pipeline's current coverage gap on historic incidents.
 - [[Coaching Ack]] — June 6, 2026 fix: coaching ack now derived from SafetyEvents `coachingStatus`, not the always-empty CoachingSessions sheet.
 - [[FMCSA CSA Scorecard]] — X-Trux carrier profile (DOT #841776 / MC #375851), BASIC percentile thresholds, page-10 rendering.
@@ -88,6 +89,12 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 - [[Refresh Cadence]] — source-data pulls bumped from 3x/day to every 2 hours (4am–6pm CT) in June 2026; rationale and cost.
 - [[Daily Scorecard Email]] — 13-page daily executive brief: page-by-page breakdown, key constants, Bottom Line logic.
 - [[Daily Operations]] — day-to-day operating rhythm: three email cadences, escalation patterns, full phone directory, fuel spend.
+- [[Brief Roadmap]] — current brief stack (Executive, Safety, Financial, MTD upload) and what is planned (Operations brief); page-placement rules by audience.
+- [[Jeff JB Tracking Philosophy]] — Jeff (facts-first / lagging) vs. JB (forecast-first / leading): two mental models that coexist; implications for any brief or report design.
+- [[Dan Tracking Driver Connection]] — Dan's facts-first + skeptical tracking style, plus his deep driver connections and sponsorship of the planned per-driver report.
+- [[OTD Early Warning Wishlist]] — planned new brief page: trucks projected late today; data sources, scoping decisions, and build sequence (not yet built).
+- [[Driver Report Wishlist]] — planned per-driver weekly snapshot going directly to drivers; first non-management brief audience (not yet built).
+- [[Audra Safety Brief Day 1]] — pre-observation hypothesis of Audra's morning workflow with the Safety brief (first fire 2026-06-16); questions to verify after Day 3–5.
 - [[Slack / Teams Morning Digest]] — Phase 3A compact morning channel post: MTD KPIs + Risk Watch + Decisions Graded; setup and data sources.
 - [[X-Trux Open-Trip Rule]] — loads with any trip in Open status are excluded from the entity P&L until every leg progresses past Open (replaces the "Driver Rate > 0" proxy).
 
