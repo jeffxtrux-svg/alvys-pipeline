@@ -3489,12 +3489,15 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
 
                 pct_mtd = _pct_by_name(sheets.get("DriverSafetyScoresMtd"), "DriverSafetyScoresMtd")
                 pct_3mo = _pct_by_name(sheets.get("DriverSafetyScores3mo"), "DriverSafetyScores3mo")
+                pct_7d  = _pct_by_name(sheets.get("DriverSafetyScores7d"),  "DriverSafetyScores7d")
                 for r in out["fleet"]["scores_all"]:
                     nm = (r.get("driver") or "").strip().lower()
                     if nm in pct_mtd:
                         r["speed_pct_mtd"] = pct_mtd[nm]
                     if nm in pct_3mo:
                         r["speed_pct_3mo"] = pct_3mo[nm]
+                    if nm in pct_7d:
+                        r["speed_pct_7d"] = pct_7d[nm]
 
                 # Per-calendar-month fleet avg speed for the 6-month trend bar chart.
                 # Sheets named DriverSafetyScores_YYYY_MM are written by samsara_main.

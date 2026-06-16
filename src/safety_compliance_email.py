@@ -608,19 +608,18 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                        f"Conduct coaching session with driver and document "
                                        f"type of action taken to prevent recurrence."))
 
-    # Speeding >1% MTD → Safety Mgr per driver with coaching directive
+    # Speeding ≥1% last 7 days → Safety Mgr per driver with coaching directive
     for r in scores_all:
-        pct_mtd = r.get("speed_pct_mtd")
+        pct_7d  = r.get("speed_pct_7d")
         pct_6mo = r.get("speed_pct")
         pct_3mo = r.get("speed_pct_3mo")
-        if not _isnum(pct_mtd) or pct_mtd <= 1.0:
+        if not _isnum(pct_7d) or pct_7d < 1.0:
             continue
         drv = r.get("driver", "Unknown")
-        comment = compute_speed_comment(pct_6mo, pct_3mo, pct_mtd)
-        # Strip trailing period for inline embedding
+        comment = compute_speed_comment(pct_6mo, pct_3mo, pct_7d)
         comment = comment.rstrip(". ").lower()
         today_items.append(_action_row("TODAY", "Safety Mgr",
-                                       f"{drv}: speeding {pct_mtd:.1f}% MTD — {comment} "
+                                       f"{drv}: speeding {pct_7d:.1f}% last 7d — {comment} "
                                        f"— document coaching session and outcome"))
 
     # On-duty today with uncertified prior-day logs → Dispatch per driver

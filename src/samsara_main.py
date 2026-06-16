@@ -753,6 +753,16 @@ def main() -> int:
         driver_ids, start_3mo, now
     )
 
+    # Fourth pull for the trailing 7 days so the safety brief can flag drivers
+    # exceeding 1% speeding on a weekly basis (more actionable than MTD).
+    start_7d = now - datetime.timedelta(days=7)
+    log.info("=" * 60)
+    log.info("Step 11d_7d/12: Driver safety scores — last 7d (%s → now)", start_7d.date())
+    log.info("=" * 60)
+    raw_driver_scores_7d = client.fetch_driver_safety_scores(
+        driver_ids, start_7d, now
+    )
+
     # Per-calendar-month safety scores for the 6-month speed trend chart.
     # The 6mo/3mo/MTD aggregates don't break down by month; we make one call
     # per completed calendar month in the look-back window so the chart can
@@ -896,6 +906,7 @@ def main() -> int:
     df_driver_scores = flatten(raw_driver_scores, "DriverSafetyScores")
     df_driver_scores_mtd = flatten(raw_driver_scores_mtd, "DriverSafetyScoresMtd")
     df_driver_scores_3mo = flatten(raw_driver_scores_3mo, "DriverSafetyScores3mo")
+    df_driver_scores_7d = flatten(raw_driver_scores_7d, "DriverSafetyScores7d")
     df_scores_monthly: dict[str, pd.DataFrame] = {
         f"DriverSafetyScores_{k}": flatten(v, f"DriverSafetyScores_{k}")
         for k, v in monthly_scores_raw.items()
@@ -906,7 +917,7 @@ def main() -> int:
     if not drivers_df.empty and "id" in drivers_df.columns and "name" in drivers_df.columns:
         name_by_id = dict(zip(drivers_df["id"].astype(str), drivers_df["name"]))
     for _df in (df_driver_scores, df_driver_scores_mtd, df_driver_scores_3mo,
-                *df_scores_monthly.values()):
+                df_driver_scores_7d, *df_scores_monthly.values()):
         if not _df.empty and "driverId" in _df.columns and name_by_id:
             _df["Driver Name"] = _df["driverId"].astype(str).map(name_by_id)
 
@@ -976,6 +987,7 @@ def main() -> int:
         "DriverSafetyScores":    df_driver_scores,
         "DriverSafetyScoresMtd": df_driver_scores_mtd,
         "DriverSafetyScores3mo": df_driver_scores_3mo,
+        "DriverSafetyScores7d":  df_driver_scores_7d,
         **df_scores_monthly,
         "CoachingSessions":      df_coaching,
         "TrainingAssignments":   df_training,
