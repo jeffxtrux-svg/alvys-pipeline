@@ -804,6 +804,33 @@ def build_page_events_hos(samsara: dict | None, pg: int,
         " — no audit risk from missed start-of-shift certifications.",
         span=4)
 
+    # Dispatch alerts — drivers missing certifications for the full 7-day window
+    persistent = sorted(
+        [r for r in uncert if r.get("days_missing", 0) >= 6],
+        key=lambda x: -x.get("days_missing", 0))
+    dispatch_html = ""
+    if persistent:
+        items_html = ""
+        for r in persistent:
+            drv  = r.get("driver", "Unknown Driver").upper()
+            days = r.get("days_missing", 7)
+            items_html += (
+                f"<div style='display:flex;align-items:center;gap:12px;"
+                f"padding:11px 0;border-bottom:1px solid {LINE};'>"
+                f"<span style='background:{BAD};color:#fff;font-size:9px;font-weight:800;"
+                f"letter-spacing:1.2px;padding:3px 8px;border-radius:4px;"
+                f"white-space:nowrap;'>TODAY</span>"
+                f"<span style='font-size:12.5px;color:{INK};'>"
+                f"<b>Dispatch:</b> {drv}: {days}d missing log certifications</span>"
+                f"</div>"
+            )
+        dispatch_html = (
+            f"<div style='padding:0 18px;'>"
+            + _section("Persistent uncertified logs — dispatch action required")
+            + f"<div style='padding:0 6px;'>{items_html}</div>"
+            + f"</div>"
+        )
+
     return (header
             + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             + _section("Safety events — last 7 days")
@@ -812,7 +839,10 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             + _section("HOS violations — last 7 days (driving-rule breaches)")
             + _table(["Driver", "Reported", "Violation type", "Status"],
                      ["left"] * 4, hos_rows)
-            + _section("Missing log certifications")
+            + "</table>"
+            + dispatch_html
+            + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:0 18px;'>"
+            + _section("Missing log certifications — last 7 days")
             + _table(["Driver", "Days missing", "Date range", "Status"],
                      ["left", "right", "left", "left"], uc_rows)
             + "</table>"
