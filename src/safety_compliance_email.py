@@ -595,24 +595,26 @@ def _extra_trends(samsara: dict | None,
             return {}
         dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
         drv = _find_col(hos, ["driver name", "driver"])
-        drvc = _find_col(hos, ["drivedurationms", "drivems", "drive ms", "drivetime", "drive time"])
-        dutc = _find_col(hos, ["ondutydurationms", "ondutytime", "on duty ms", "on duty time"])
         if not dc or not drv:
             return {}
-        h = hos[[dc, drv] + ([drvc] if drvc else []) + ([dutc] if dutc else [])].copy()
+        # Include ALL drive/onduty columns — both certified (dutyStatusDurations.*)
+        # and pending (pendingDutyStatusDurations.*) so recent uncertified log days
+        # (where certified driveDurationMs=0 but pending > 0) are counted correctly.
+        drive_cols = [c for c in hos.columns if "drivedurationms" in str(c).lower()]
+        onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
+        activity_cols = drive_cols + onduty_cols
+        h = hos[[dc, drv] + activity_cols].copy()
         h["_dt"] = pd.to_datetime(h[dc], errors="coerce", utc=True).dt.tz_localize(None)
         h["_drv"] = h[drv].astype(str).str.strip()
-        if drvc or dutc:
+        if activity_cols:
             active = pd.Series([False] * len(h), index=h.index)
-            for col in [drvc, dutc]:
-                if col:
-                    active |= pd.to_numeric(h[col], errors="coerce").fillna(0) > 0
+            for col in activity_cols:
+                active |= pd.to_numeric(h[col], errors="coerce").fillna(0) > 0
             h = h[active]
         h = h[h["_drv"].ne("") & h["_dt"].notna()]
         result: dict = {}
         for _, row in h.iterrows():
             key = (row["_dt"].year, row["_dt"].month)
-            # count distinct driver-date combos
             result[key] = result.get(key, 0) + 1
         return result
 
@@ -628,16 +630,12 @@ def _extra_trends(samsara: dict | None,
             wd_by_month = _working_days_by_month(hos_df)
             months6 = _last_6_months()
             labels, pcts = [], []
-            import logging as _logging
-            _log_dvir = _logging.getLogger("safety_compliance_email")
-            _log_dvir.info("DVIR chart: wd_by_month keys=%s", sorted(wd_by_month.keys()))
             for yr, mo in months6:
                 mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
                 done  = int(mask.sum())
                 wd    = wd_by_month.get((yr, mo), 0)
                 exp   = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
                 labels.append(f"{yr}-{mo:02d}")
-                _log_dvir.info("DVIR chart %d-%02d: done=%d wd=%d exp=%d", yr, mo, done, wd, exp)
                 if exp > 0:
                     pcts.append(min(round(done / exp * 100), 100))
                 else:
@@ -746,7 +744,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     if dvir_comp_7d is not None:
         dvir_comp_pct = dvir_comp_7d
         dvir_comp_txt = f"{dvir_comp_pct}%"
-    elif dvir_pct_c:
+    elif dvir_pct_c and dvir_pct_c[-1]:
         dvir_comp_pct = dvir_pct_c[-1]
         dvir_comp_txt = f"{dvir_comp_pct}%"
     else:

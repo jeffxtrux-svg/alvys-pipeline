@@ -3959,19 +3959,22 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     hos_name_col = _find_col(hos, ["driver name", "driver.name"])
     hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
                                      "logmetadata.logdate"])
-    hos_drive_col = _find_col(hos, ["dutystatusdurations.drivedurationms",
-                                       "drivedurationms"])
-    hos_onduty_col = _find_col(hos, ["dutystatusdurations.ondutydurationms",
-                                        "ondutydurationms"])
     if not (hos_name_col and hos_date_col):
         return []
 
+    # Check ALL drive/onduty columns — certified (dutyStatusDurations.*) and
+    # pending (pendingDutyStatusDurations.*) — so uncertified recent log days
+    # where certified driveDurationMs=0 but pending > 0 are not filtered out.
+    drive_cols = [c for c in hos.columns if "drivedurationms" in str(c).lower()]
+    onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
+    activity_cols = drive_cols + onduty_cols
     hos_dt = _to_naive_dt(hos[hos_date_col])
-    drive = (pd.to_numeric(hos[hos_drive_col], errors="coerce").fillna(0)
-             if hos_drive_col else pd.Series(0, index=hos.index))
-    onduty = (pd.to_numeric(hos[hos_onduty_col], errors="coerce").fillna(0)
-              if hos_onduty_col else pd.Series(0, index=hos.index))
-    active = (drive > 0) | (onduty > 0)
+    if activity_cols:
+        active = pd.Series(False, index=hos.index)
+        for col in activity_cols:
+            active |= pd.to_numeric(hos[col], errors="coerce").fillna(0) > 0
+    else:
+        active = pd.Series(True, index=hos.index)
     hos_window = hos[active & (hos_dt >= window_start)].copy()
     if hos_window.empty:
         return []
