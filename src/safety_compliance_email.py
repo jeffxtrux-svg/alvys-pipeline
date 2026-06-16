@@ -387,53 +387,73 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment) -> str:
     urgent: list[str] = []
     today_items: list[str] = []
 
+    # CDL disqualified → Safety Mgr (cannot legally dispatch)
     if samba and samba.get("invalid_licenses"):
         for d in samba["invalid_licenses"][:3]:
             nm = d.get("name") or "Unknown"
             status = (d.get("status") or "INVALID").upper()
-            urgent.append(_action_row("URGENT", "Dispatch",
+            urgent.append(_action_row("URGENT", "Safety Mgr",
                                       f"PULL FROM SERVICE: {nm} — CDL {status} — cannot legally operate CMV"))
 
+    # Open DVIR defects → Safety Mgr
     for r in unique_dvirs[:3]:
         unit = r.get("unit") or "?"
         defect = r.get("defect") or "unspecified defect"
         driver = r.get("driver") or "?"
-        urgent.append(_action_row("URGENT", "Maintenance",
+        urgent.append(_action_row("URGENT", "Safety Mgr",
                                   f"Resolve DVIR defect on unit {unit}: {defect} (reported by {driver})"))
 
+    # HOS violations in last 24h → Safety Mgr
     if m["hos_24h"] > 0:
-        urgent.append(_action_row("URGENT", "Safety",
+        urgent.append(_action_row("URGENT", "Safety Mgr",
                                   f"{m['hos_24h']} HOS violation"
                                   f"{'s' if m['hos_24h'] != 1 else ''} in last 24h — pull logs"))
 
-    if m["uncert_worst_name"] and m["uncert_worst_days"] > 7:
-        urgent.append(_action_row("URGENT", "Dispatch",
-                                  f"{m['uncert_worst_name']}: {m['uncert_worst_days']}d "
-                                  f"missing certifications — require log sign-off"))
-
+    # SambaSafety risk flags → Safety Mgr
     if samba and samba.get("high_risk"):
         for d in (samba["high_risk"] or [])[:2]:
             nm = d.get("name") or d.get("driver") or "Unknown"
             today_items.append(_action_row("TODAY", "Safety Mgr",
                                            f"Review SambaSafety risk flag for {nm}"))
 
+    # Overdue annual inspections — tractors → Safety Mgr, trailers → Dispatch
     if equipment:
         od_t = [r for r in (equipment.get("tractors") or [])
                 if isinstance(r.get("annual_days"), int) and r["annual_days"] < 0]
         od_r = [r for r in (equipment.get("trailers") or [])
                 if isinstance(r.get("annual_days"), int) and r["annual_days"] < 0]
-        for r in (od_t + od_r)[:3]:
+        for r in od_t[:3]:
             unit = r.get("unit", "?")
             days = abs(r.get("annual_days", 0))
-            today_items.append(_action_row("TODAY", "Fleet Mgr",
+            today_items.append(_action_row("TODAY", "Safety Mgr",
+                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy)"))
+        for r in od_r[:3]:
+            unit = r.get("unit", "?")
+            days = abs(r.get("annual_days", 0))
+            today_items.append(_action_row("TODAY", "Dispatch",
                                            f"Schedule inspection: unit {unit} ({days}d past 120-day policy)"))
 
+    # On-duty today with uncertified prior-day logs → individual Dispatch items
+    # (drivers actively working who started their shift without certifying yesterday)
     uncert = detail.get("hos_uncert", []) or []
-    for r in sorted(uncert, key=lambda x: -x.get("days_missing", 0))[:2]:
-        if r.get("days_missing", 0) > 3:
-            today_items.append(_action_row("TODAY", "Dispatch",
-                                           f"{r.get('driver', '?')}: {r.get('days_missing', 0)}d "
-                                           f"missing log certifications"))
+    _today_d = pd.Timestamp.now().date()
+    _yesterday = _today_d - pd.Timedelta(days=1)
+    def _span_end_ai(r: dict):
+        s = r.get("span", "")
+        end = s.split("–")[-1].strip() if "–" in s else s.strip()
+        try:
+            return pd.to_datetime(end).date()
+        except Exception:
+            return None
+    on_duty_now = sorted(
+        [r for r in uncert if (_span_end_ai(r) or pd.Timestamp.min.date()) >= _yesterday],
+        key=lambda x: -x.get("days_missing", 0))
+    for r in on_duty_now:
+        drv  = r.get("driver", "Unknown Driver")
+        days = r.get("days_missing", 1)
+        today_items.append(_action_row("TODAY", "Dispatch",
+                                       f"{drv}: certify prior-day logs before next dispatch "
+                                       f"({days}d outstanding)"))
 
     if not urgent and not today_items:
         return (f"<div style='padding:0 24px 18px;color:{MUTE};font-size:13px;'>"
