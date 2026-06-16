@@ -57,7 +57,7 @@ from src.scorecard_email import (
     # Data computers
     compute_samsara, compute_sambasafety, compute_csa_scorecard,
     compute_alvys_equipment, compute_alvys_drivers,
-    compute_inspection_compliance,
+    compute_inspection_compliance, compute_speed_comment,
     # Page builders reused from the executive brief
     build_page9, build_page_equipment, build_page_coached,
     build_page2b, build_csa_scorecard_page,
@@ -568,38 +568,63 @@ def _extra_trends(samsara: dict | None,
             months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
             out[state_key] = (months, [0] * len(months))
 
-    # DVIR compliance % — single source of truth: compute_inspection_compliance
-    # in scorecard_email. Same logic the detail page uses, so the page-1 tile,
-    # the 6-month chart, and the per-driver table all agree.
+    # DVIR compliance % — two separate computations:
+    #
+    #   Tile (7d):  compute_inspection_compliance — uses HOS_DailyLogs for
+    #               working-day counts, accurate for the recent window.
+    #
+    #   6-month chart:  DVIRs sheet directly — HOS_DailyLogs only holds ~7 days
+    #               of history so it can't answer "what was April's compliance?".
+    #               The DVIRs sheet has 6+ months of submissions; we count
+    #               driver-working-days from it (each unique driver×date = 1 wd)
+    #               and DVIRs filed against expected (wd × 2).
     fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
 
-    def _fleet_compliance_pct(start, end) -> int | None:
-        rows = compute_inspection_compliance(samsara_sheets, start=start, end=end)
-        if not rows:
-            return None
-        done = sum(r["done_total"] for r in rows)
-        exp  = sum(r["expected_total"] for r in rows)
-        if exp == 0:
-            return None
-        return min(round(done / exp * 100), 100)
-
-    # 7-day snapshot for the page-1 tile
+    # 7-day tile: HOS-based (accurate recent working-day count)
     now = pd.Timestamp.now()
-    out["dvir_comp_7d"] = _fleet_compliance_pct(now - pd.Timedelta(days=7), None)
+    rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
+    if rows_7d:
+        done_7d = sum(r["done_total"] for r in rows_7d)
+        exp_7d  = sum(r["expected_total"] for r in rows_7d)
+        out["dvir_comp_7d"] = min(round(done_7d / exp_7d * 100), 100) if exp_7d > 0 else None
+    else:
+        out["dvir_comp_7d"] = None
 
-    # 6-month chart: full calendar months (current month = MTD)
+    # 6-month chart: DVIRs sheet (has historical data HOS doesn't)
+    dvirs_df = (samsara_sheets or {}).get("DVIRs")
     months6 = _last_6_months()
-    labels, pcts = [], []
-    for yr, mo in months6:
-        m_start = pd.Timestamp(year=yr, month=mo, day=1)
-        if mo == 12:
-            m_end = pd.Timestamp(year=yr + 1, month=1, day=1)
+    labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
+    pcts: list[int] = []
+
+    if dvirs_df is not None and not dvirs_df.empty:
+        dvir_driver_col = _find_col(dvirs_df, ["driver.name", "driver name",
+                                                "authorsignature.signatoryuser.name"])
+        dvir_time_col = _find_col(dvirs_df, ["starttime", "start time",
+                                               "createdattime", "submittedattime"])
+        if dvir_driver_col and dvir_time_col:
+            dvir_dt = _to_naive_dt(dvirs_df[dvir_time_col])
+            for yr, mo in months6:
+                m_start = pd.Timestamp(year=yr, month=mo, day=1)
+                m_end = (pd.Timestamp(year=yr + 1, month=1, day=1)
+                         if mo == 12 else pd.Timestamp(year=yr, month=mo + 1, day=1))
+                mask = (dvir_dt >= m_start) & (dvir_dt < m_end)
+                mo_dvirs = dvirs_df[mask]
+                if mo_dvirs.empty:
+                    pcts.append(0)
+                    continue
+                # Count unique driver × date combos as working days
+                drv_series = mo_dvirs[dvir_driver_col].astype(str).str.strip()
+                date_series = dvir_dt[mask].dt.date
+                wd = len(set(zip(drv_series, date_series)))
+                exp = wd * 2
+                done = len(mo_dvirs)
+                pcts.append(min(round(done / exp * 100), 100) if exp > 0 else 0)
         else:
-            m_end = pd.Timestamp(year=yr, month=mo + 1, day=1)
-        pct = _fleet_compliance_pct(m_start, m_end)
-        labels.append(f"{yr}-{mo:02d}")
-        pcts.append(pct if pct is not None else 0)
-    out["dvir_pct"] = (labels, pcts) if labels else (fallback_months, [0] * len(fallback_months))
+            pcts = [0] * len(months6)
+    else:
+        pcts = [0] * len(months6)
+
+    out["dvir_pct"] = (labels, pcts)
 
     # Speed over limit — fleet avg % drive time per driver, averaged by month
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
@@ -907,80 +932,100 @@ def build_page_dvir_defects(samsara: dict | None, pg: int,
 
 def build_page_speed(samsara: dict | None, pg: int,
                      total: int, date_str: str) -> str:
-    """Page 7: Speed over Posted Limit — per-driver 6-month safety score data."""
+    """Speed over Posted Limit — per-driver 6-month period with actionable comments.
+    Matches the executive brief format (6mo / 3mo / MTD columns + comment rubric)."""
     header = _sc_header(
-        "Speed Over Posted Limit — Per-Driver", pg, total, date_str, section="SAFETY")
+        "Safety &amp; Compliance Detail &mdash; last 24h &middot; X-Trux / XFreight fleet",
+        pg, total, date_str, section="SAFETY")
     fleet = (samsara or {}).get("fleet", {}) or {}
     scores_all = fleet.get("scores_all") or []
-    speeders = fleet.get("speeders") or []
 
-    def _spd_cell(r: dict) -> str:
-        pct_v = r.get("speed_pct")
-        mins = r.get("speed_min")
+    # Rank all drivers by speed_pct desc (fall back to speed_min)
+    speeders_ranked = [r for r in scores_all if r.get("speed_min") is not None]
+    speeders_ranked.sort(
+        key=lambda r: -(r.get("speed_pct") if _isnum(r.get("speed_pct"))
+                        else (r.get("speed_min") or 0) / 1000.0))
+    spd_count = sum(1 for r in speeders_ranked if (r.get("speed_min") or 0) > 0)
+    total_d = len(scores_all)
+
+    def _spd_cell(pct_v, sm):
         if _isnum(pct_v):
             return f"{pct_v:.1f}%"
-        if _isnum(mins):
-            return f"{mins} min"
-        return "&ndash;"
+        if sm:
+            return f"{sm} min"
+        return "&mdash;"
 
-    def _spd_kind(r: dict) -> str | None:
-        pct_v = r.get("speed_pct")
+    def _spd_kind(pct_v, sm):
         if _isnum(pct_v):
-            if pct_v == 0:
-                return None
-            return "bad" if pct_v >= 5 else ("warn" if pct_v >= 1 else None)
-        mins = r.get("speed_min")
-        if not _isnum(mins) or mins == 0:
+            if pct_v >= 5: return "bad"
+            if pct_v >= 1: return "warn"
             return None
-        return "bad" if mins >= 60 else "warn"
+        if sm and sm >= 60: return "bad"
+        if sm: return "warn"
+        return None
 
-    def _score_kind(r: dict) -> str | None:
-        s = r.get("score")
-        if s is None:
-            return None
+    def _score_kind(s):
+        if s is None: return None
         return "bad" if s < 90 else ("warn" if s < 100 else "good")
 
-    _any_pct = any(_isnum(r.get("speed_pct")) for r in scores_all)
-    spd_hdr = "Speed Over Limit (% drive time)" if _any_pct else "Speed Over Limit (min)"
+    def _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd):
+        if not comment:
+            return None
+        pcts = [p for p in (pct_6mo, pct_3mo, pct_mtd) if _isnum(p)]
+        peak = max(pcts) if pcts else None
+        if _isnum(peak) and peak >= 2.25:
+            return "bad"
+        if "spiking" in comment or "trending worse" in comment:
+            return "bad"
+        if ("falling fast" in comment or "improving" in comment) and _isnum(peak) and peak < 1.5:
+            return "good"
+        return "warn"
 
-    score_rows = "".join(
-        _tr(
-            [r.get("driver", "&mdash;"),
-             str(r.get("score") or "&ndash;"),
-             _spd_cell(r),
-             str(r.get("harsh_accel") or "&ndash;"),
-             str(r.get("harsh_brake") or "&ndash;"),
-             str(r.get("crashes") or "&ndash;")],
-            ["left", "right", "right", "right", "right", "right"],
-            [None, _score_kind(r), _spd_kind(r),
-             ("bad" if (r.get("harsh_accel") or 0) > 0 else None),
-             ("bad" if (r.get("harsh_brake") or 0) > 0 else None),
-             ("bad" if (r.get("crashes") or 0) > 0 else None)])
-        for r in scores_all
-    ) or (f"<tr><td colspan='6' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
-          f"No driver safety score data available.</td></tr>")
+    rows = ""
+    for r in speeders_ranked:
+        sm = r.get("speed_min") or 0
+        if sm == 0:
+            continue
+        pct_6mo = r.get("speed_pct")
+        pct_3mo = r.get("speed_pct_3mo")
+        pct_mtd = r.get("speed_pct_mtd")
+        comment = compute_speed_comment(pct_6mo, pct_3mo, pct_mtd)
+        comment_kind = _spd_comment_kind(comment, pct_6mo, pct_3mo, pct_mtd)
+        rows += _tr(
+            [r.get("driver", "&mdash;"), str(r.get("score") or "&ndash;"),
+             _spd_cell(pct_6mo, sm), _spd_cell(pct_3mo, None),
+             _spd_cell(pct_mtd, None), comment or "&mdash;"],
+            ["left", "right", "right", "right", "right", "left"],
+            [None, _score_kind(r.get("score")),
+             _spd_kind(pct_6mo, sm), _spd_kind(pct_3mo, None),
+             _spd_kind(pct_mtd, None), comment_kind])
 
-    sp_rows = "".join(
-        _tr([r.get("driver", "&mdash;"), str(r.get("count", 0))],
-            ["left", "right"], [None, "bad"])
-        for r in speeders
-    ) or (f"<tr><td colspan='2' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
-          f"No speeding events in last 7 days.</td></tr>")
+    if not rows:
+        rows = (f"<tr><td colspan='6' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
+                f"No speeding data available.</td></tr>")
 
-    return (header
-            + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
-            + _section("Top speeders — safety event stream · last 7 days")
-            + _table(["Driver", "Speed events"], ["left", "right"], sp_rows)
-            + _section(f"Driver safety scores — all {len(scores_all)} drivers · 6-month window")
-            + _table(["Driver", "Score", spd_hdr, "Harsh accel", "Harsh brake", "Crashes"],
-                     ["left", "right", "right", "right", "right", "right"], score_rows)
-            + "</table>"
-            + f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
-            f"border-top:1px solid {LINE};margin-top:14px;'>"
-            f"Source: Samsara Driver Safety Scores (6-month window). Speed over limit "
-            f"= % of drive time (or minutes when % unavailable) spent above posted limit. "
-            f"≥10% drive time = red · ≥1% = amber · 0% = neutral. "
-            f"Top speeders: Samsara SafetyEvents stream, last 7 days.</div>")
+    spd_tbl = _table(
+        ["Driver", "Safety Score",
+         "Speed Over Limit (6 mo)", "Speed Over Limit (3 mo)",
+         "Speed Over Limit (MTD)", "Comments"],
+        ["left", "right", "right", "right", "right", "left"],
+        rows,
+    )
+
+    return (
+        header
+        + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
+        + _section(f"Speed over posted limit &middot; {spd_count} of {total_d} drivers &middot; 6-month period")
+        + spd_tbl
+        + "</table>"
+        + f"<div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;"
+        f"border-top:1px solid {LINE};margin-top:14px;'>"
+        f"Speed Over Limit = % of drive time above posted speed limit (6-month window). "
+        f"Comments use peak of 6mo/3mo/MTD: &ge;3% = STOP; &ge;2.5% = sit down with driver; "
+        f"&ge;2.25% = too fast; &ge;2% = needs conversation. "
+        f"Trend: MTD vs 6mo baseline &mdash; improving / spiking / trending worse."
+        f"</div>"
+    )
 
 
 def build_page_footnote(pg: int, total: int, date_str: str) -> str:
