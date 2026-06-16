@@ -804,7 +804,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
                      "no-action-needed / mo · *MTD")
         + _bar_chart("Speed Over Limit", speed_m, speed_c,
                      "% drive time · fleet avg",
-                     fmt=lambda v: f"{v:.2f}%")
+                     fmt=lambda v: f"{v:.2f}%", y_max=2.0)
         + "</tr></table>"
     )
 

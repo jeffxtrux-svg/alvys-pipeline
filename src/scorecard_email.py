@@ -4865,11 +4865,11 @@ def _mwtile(label, v24, v7, vmtd, hk="mute"):
             f"<table width='100%' cellpadding='0' cellspacing='0'><tr>{c('24h', v24, True)}{c('7d', v7)}{c('MTD', vmtd)}</tr></table></div></td>")
 
 
-def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False):
+def _bar_chart(title, months, values, sub="", fmt=str, trend_line=False, y_max=None):
     if not months:
         return (f"<td class='tile' valign='top' style='padding:6px;'><div style='border:1px solid {LINE};border-radius:10px;"
                 f"padding:14px;color:{MUTE};font-size:12px;'>{title}: data pending</div></td>")
-    maxv = max(values) if max(values) else 1
+    maxv = y_max if (y_max is not None and y_max > 0) else (max(values) if max(values) else 1)
     H = 84
     # Equal-width column for every month so the bars distribute evenly even
     # when label content varies (e.g. "$0.000" vs "$2.687", or "0" vs "146")
