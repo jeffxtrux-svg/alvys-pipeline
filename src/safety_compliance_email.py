@@ -437,6 +437,23 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment) -> str:
 
 
 # ----------------------------------------------------------------------
+# ALL CLEAR empty-state helper
+# ----------------------------------------------------------------------
+
+def _all_clear_row(msg: str, span: int = 6) -> str:
+    """Green ALL CLEAR callout used as the empty-state row inside a _table()."""
+    return (
+        f"<tr><td colspan='{span}' style='padding:10px 4px;'>"
+        f"<div style='border-left:4px solid {GOOD};background:{GOODBG};"
+        f"border-radius:6px;padding:10px 14px;'>"
+        f"<div style='font-size:10px;letter-spacing:1.5px;font-weight:800;"
+        f"color:{GOOD};margin-bottom:4px;'>&#10003; ALL CLEAR</div>"
+        f"<div style='font-size:12.5px;color:{INK};'>{msg}</div>"
+        f"</div></td></tr>"
+    )
+
+
+# ----------------------------------------------------------------------
 # Page builders
 # ----------------------------------------------------------------------
 
@@ -737,8 +754,9 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             [None, None, None, None,
              ("bad" if str(r.get("severity", "")).lower() == "high" else "warn"), None])
         for r in evs
-    ) or (f"<tr><td colspan='6' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
-          f"No safety events in the last 7 days.</td></tr>")
+    ) or _all_clear_row(
+        "No safety events in the last 7 days — all drivers operating within safety thresholds.",
+        span=6)
 
     # HOS violations last 7d
     hos = detail.get("hos", []) or []
@@ -751,8 +769,9 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             ["left"] * 4,
             [None, None, "bad", None])
         for r in hos
-    ) or (f"<tr><td colspan='4' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
-          f"No HOS violations in the last 7 days.</td></tr>")
+    ) or _all_clear_row(
+        "No HOS violations in the last 7 days — all drivers operating within hours of service.",
+        span=4)
 
     # Missing log certifications
     uncert = detail.get("hos_uncert", []) or []
@@ -765,8 +784,10 @@ def build_page_events_hos(samsara: dict | None, pg: int,
             ["left", "right", "left", "left"],
             [None, "bad", None, "bad"])
         for r in uncert
-    ) or (f"<tr><td colspan='4' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
-          f"All daily logs certified.</td></tr>")
+    ) or _all_clear_row(
+        "Every driver working today has certified their prior-day logs"
+        " — no audit risk from missed start-of-shift certifications.",
+        span=4)
 
     return (header
             + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
@@ -806,8 +827,9 @@ def build_page_dvir_defects(samsara: dict | None, pg: int,
             ["left"] * 6,
             [None, None, None, None, None, "bad"])
         for r in unique
-    ) or (f"<tr><td colspan='6' style='padding:14px 8px;color:{MUTE};font-size:12px;'>"
-          f"No open DVIR defects.</td></tr>")
+    ) or _all_clear_row(
+        "No open DVIR defects — all reported defects have been resolved.",
+        span=6)
 
     return (header
             + f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
