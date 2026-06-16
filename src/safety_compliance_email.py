@@ -567,33 +567,44 @@ def _extra_trends(samsara: dict | None,
             months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
             out[state_key] = (months, [0] * len(months))
 
-    # DVIR compliance % per month: resolved / total * 100
+    # DVIR compliance % per month + last-7d snapshot
+    # Sheet columns: "Reported" (date), "Resolved" (bool) — see samsara_main.build_dvir_defects
     dvir_df = (samsara_sheets or {}).get("DVIR_Defects")
+    fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
     if dvir_df is not None and not dvir_df.empty:
-        date_col = _find_col(dvir_df, ["inspection date", "created at", "date"])
+        date_col = _find_col(dvir_df, ["reported", "createdat", "createdatms",
+                                        "inspection date", "date"])
         res_col = _find_col(dvir_df, ["resolved"])
         if date_col and res_col:
             df = dvir_df[[date_col, res_col]].copy()
-            df["_dt"] = pd.to_datetime(df[date_col], errors="coerce")
+            df["_dt"] = pd.to_datetime(df[date_col], errors="coerce", utc=True)
+            df["_dt"] = df["_dt"].dt.tz_localize(None)
             df["_res"] = df[res_col].apply(
                 lambda v: (v is True) or
                 (isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0) or
                 (isinstance(v, str) and v.strip().lower() in ("true", "1", "yes")))
+            # Monthly trend
             months6 = _last_6_months()
             labels, pcts = [], []
             for yr, mo in months6:
                 mask = (df["_dt"].dt.year == yr) & (df["_dt"].dt.month == mo)
-                tot = mask.sum()
+                tot = int(mask.sum())
                 res = int(df.loc[mask, "_res"].sum()) if tot > 0 else 0
                 labels.append(f"{yr}-{mo:02d}")
                 pcts.append(round(res / tot * 100) if tot > 0 else 0)
             out["dvir_pct"] = (labels, pcts)
+            # Last-7d snapshot for the summary tile
+            cutoff_7d = pd.Timestamp.now() - pd.Timedelta(days=7)
+            mask_7d = df["_dt"] >= cutoff_7d
+            tot_7d = int(mask_7d.sum())
+            res_7d = int(df.loc[mask_7d, "_res"].sum()) if tot_7d > 0 else 0
+            out["dvir_comp_7d"] = round(res_7d / tot_7d * 100) if tot_7d > 0 else None
         else:
-            months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-            out["dvir_pct"] = (months, [0] * len(months))
+            out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
+            out["dvir_comp_7d"] = None
     else:
-        months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-        out["dvir_pct"] = (months, [0] * len(months))
+        out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
+        out["dvir_comp_7d"] = None
 
     # Speed over limit — fleet avg % drive time per driver, averaged by month
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
@@ -674,16 +685,20 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     uc_sub = (f"Worst: {metrics['uncert_worst_name']} ({metrics['uncert_worst_days']}d)"
               if metrics.get("uncert_worst_name") else "All daily logs certified")
 
-    # DVIR compliance % = resolved / total (last 7d window)
-    dvir_total = int((w.get("dvir_all") or {}).get("7d", 0) or 0)
-    dvir_open7 = int((w.get("dvir") or {}).get("7d", 0) or 0)
-    if dvir_total > 0:
-        dvir_comp_pct = int(round((dvir_total - dvir_open7) / dvir_total * 100))
+    # DVIR compliance % — resolved / total · last 7d (from DVIR_Defects sheet)
+    dvir_comp_7d = xt.get("dvir_comp_7d")
+    if dvir_comp_7d is not None:
+        dvir_comp_pct = dvir_comp_7d
+        dvir_comp_txt = f"{dvir_comp_pct}%"
     elif dvir_pct_c:
-        dvir_comp_pct = dvir_pct_c[-1] if dvir_pct_c else 0
+        dvir_comp_pct = dvir_pct_c[-1]
+        dvir_comp_txt = f"{dvir_comp_pct}%"
     else:
-        dvir_comp_pct = 0
-    dvir_comp_kind = "bad" if dvir_comp_pct < 80 else ("warn" if dvir_comp_pct < 95 else "good")
+        dvir_comp_pct = None
+        dvir_comp_txt = "n/a"
+    dvir_comp_kind = ("bad" if (dvir_comp_pct is not None and dvir_comp_pct < 80)
+                      else ("warn" if (dvir_comp_pct is not None and dvir_comp_pct < 95)
+                            else "good"))
 
     summary_row = (
         f"<table width='100%' cellpadding='0' cellspacing='0'><tr>"
@@ -694,7 +709,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
                       "warn" if metrics["dvir_open"] else "good"), width="25%")
         + _tile("Missing log certs", num(uc),
                 _pill(uc_sub, "warn" if uc else "good", nowrap=False), width="25%")
-        + _tile("DVIR compliance", f"{dvir_comp_pct}%",
+        + _tile("DVIR compliance", dvir_comp_txt,
                 _pill("completed / required · last 7d", dvir_comp_kind), width="25%")
         + "</tr></table>"
     )
