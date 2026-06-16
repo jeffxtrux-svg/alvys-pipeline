@@ -489,6 +489,27 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
             today_items.append(_action_row("TODAY", "Safety Mgr",
                                            f"Review SambaSafety risk flag for {nm}"))
 
+    # MVR violations (90-day window) → Safety Mgr per driver
+    # Decision tree: challenge the violation OR acknowledge as factual.
+    if samba and samba.get("violations"):
+        for v in samba["violations"]:
+            nm   = v.get("name", "Unknown")
+            vtyp = v.get("type", "violation")
+            pts  = v.get("points")
+            sev  = (v.get("severity") or "").strip()
+            vd   = v.get("date")
+            try:
+                date_fmt = pd.Timestamp(vd).strftime("%-m/%-d/%y")
+            except Exception:
+                date_fmt = str(vd)[:10] if vd else "?"
+            pts_note = f" | {int(pts)} pts" if _isnum(pts) else ""
+            sev_note = f" | {sev}" if sev else ""
+            today_items.append(_action_row("TODAY", "Safety Mgr",
+                                           f"{nm}: MVR violation — {vtyp} ({date_fmt}{pts_note}{sev_note}). "
+                                           f"Speak with driver about what happened. Decision: "
+                                           f"challenge the violation OR acknowledge as factual violation against "
+                                           f"equipment/driver. Document decision and action taken."))
+
     # Overdue annual inspections — tractors → Safety Mgr, trailers → Dispatch
     if equipment:
         od_t = [r for r in (equipment.get("tractors") or [])
@@ -568,6 +589,24 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         today_items.append(_action_row("TODAY", "Safety Mgr",
                                        f"{drv}: coaching session overdue {ovrd}d (due {due}){note}"
                                        f" — conduct session and document outcome"))
+
+    # Safety events needing coaching (needsCoaching / unacknowledged) → Safety Mgr
+    coaching_list = (samsara or {}).get("coaching_list") or []
+    for c in coaching_list:
+        if c.get("acked"):
+            continue
+        drv   = c.get("driver", "Unknown")
+        n     = c.get("events", 1)
+        types = ", ".join(c.get("types") or []) or "safety event"
+        sevs  = ", ".join(c.get("severities") or []) or ""
+        units = ", ".join(c.get("units") or []) or ""
+        unit_note = f" on unit {units}" if units else ""
+        sev_note  = f" (severity: {sevs})" if sevs else ""
+        today_items.append(_action_row("TODAY", "Safety Mgr",
+                                       f"{drv}: {n} safety event{'s' if n != 1 else ''} need coaching — "
+                                       f"{types}{unit_note}{sev_note}. "
+                                       f"Conduct coaching session with driver and document "
+                                       f"type of action taken to prevent recurrence."))
 
     # Speeding >1% MTD → Safety Mgr per driver with coaching directive
     for r in scores_all:
