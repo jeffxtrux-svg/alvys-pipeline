@@ -60,7 +60,7 @@ from src.scorecard_email import (
     compute_inspection_compliance,
     # Page builders reused from the executive brief
     build_page9, build_page_equipment, build_page_coached,
-    build_page2b, build_csa_scorecard_page,
+    build_page2, build_page2b, build_csa_scorecard_page,
     # Email
     send_email,
 )
@@ -674,18 +674,21 @@ def _extra_trends(samsara: dict | None,
         out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
         out["dvir_comp_7d"] = None
 
-    # Speed over limit — fleet avg % drive time per driver, averaged by month
+    # Speed over limit — fleet avg % drive time, current month MTD only.
+    # Per-month historical speed data is not available from the driver-score API
+    # (scores_all has 6mo/3mo/MTD aggregates, not monthly breakdowns).
+    # Historical bars show 0 rather than repeating the 6mo aggregate for every month.
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
-    speed_vals = [r.get("speed_pct") for r in scores_all if _isnum(r.get("speed_pct"))]
-    if speed_vals:
-        fleet_avg = sum(speed_vals) / len(speed_vals)
-        months6 = _last_6_months()
-        labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
-        pcts = [round(fleet_avg, 2)] * len(labels)
-        out["speed_pct"] = (labels, pcts)
-    else:
-        months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-        out["speed_pct"] = (months, [0.0] * len(months))
+    months6 = _last_6_months()
+    labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
+    pcts = [0.0] * len(labels)
+    mtd_vals  = [r.get("speed_pct_mtd") for r in scores_all if _isnum(r.get("speed_pct_mtd"))]
+    spd_vals  = [r.get("speed_pct")     for r in scores_all if _isnum(r.get("speed_pct"))]
+    if mtd_vals:
+        pcts[-1] = round(sum(mtd_vals) / len(mtd_vals), 2)
+    elif spd_vals:
+        pcts[-1] = round(sum(spd_vals) / len(spd_vals), 2)
+    out["speed_pct"] = (labels, pcts)
 
     return out
 
@@ -1505,8 +1508,9 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     p9 = build_page9(samba, date_str, alvys_drivers)
     pages.append(_patch_pg_total(p9, total))
 
-    # 7 — Speed over Posted Limit
-    pages.append(build_page_speed(samsara, 7, total, date_str))
+    # 7 — Speed over Posted Limit (rich version: 6mo/3mo/MTD + driver comments)
+    p2 = build_page2(samsara, date_str, pg=7)
+    pages.append(_patch_pg_total(p2, total))
 
     # 8 — Methodology Footnote
     pages.append(build_page_footnote(8, total, date_str))
