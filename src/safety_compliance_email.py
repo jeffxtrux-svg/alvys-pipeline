@@ -669,8 +669,11 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                        f"{drv}: certify prior-day logs before next dispatch "
                                        f"({days}d outstanding)"))
 
-    # Count items by owner for the action-items header summary tile
+    # Count items by owner for the action-items header summary tile.
+    # total = distinct action items (each row counts once regardless of owner).
+    # sm/di counts include shared "Safety Mgr / Dispatch" items in both buckets.
     all_items = urgent + today_items
+    total_count = len(all_items)
     sm_count = sum(1 for h in all_items if "<b>Safety Mgr" in h)
     di_count = sum(1 for h in all_items if "Dispatch" in h)
 
@@ -678,7 +681,7 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         return (
             f"<div style='padding:0 24px 18px;color:{MUTE};font-size:13px;'>"
             f"No action items — all risk indicators within normal thresholds.</div>",
-            0, 0,
+            0, 0, 0,
         )
 
     html = "<div style='padding:0 24px 18px;'>"
@@ -691,7 +694,7 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                  f"color:{WARN};font-weight:700;margin:16px 0 6px;'>TODAY</div>"
                  + "".join(today_items))
     html += "</div>"
-    return html, sm_count, di_count
+    return html, sm_count, di_count, total_count
 
 
 # ----------------------------------------------------------------------
@@ -776,7 +779,7 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
     )
 
     # Build action items first to get owner counts for the header summary
-    ai_html, sm_count, di_count = _build_action_items(
+    ai_html, sm_count, di_count, total_count = _build_action_items(
         metrics, samsara, samba, equipment,
         alvys_drivers=alvys_drivers,
         samsara_sheets=samsara_sheets,
@@ -800,7 +803,8 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
                 f"margin-left:6px;white-space:nowrap;'>{label}: {val}</span>")
 
     ai_chips = (
-        _ai_chip("Safety Mgr", sm_count, "bad" if sm_count else "mute")
+        _ai_chip("Total Outstanding", total_count, "bad" if total_count else "mute")
+        + _ai_chip("Safety Mgr", sm_count, "bad" if sm_count else "mute")
         + _ai_chip("Dispatch", di_count, "warn" if di_count else "mute")
         + "&nbsp;&nbsp;"
         + _ai_chip("24h events", ev_24h, "warn" if ev_24h else "mute")
