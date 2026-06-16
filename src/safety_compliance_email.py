@@ -888,7 +888,7 @@ def _extra_trends(samsara: dict | None,
         onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
         activity_cols = drive_cols + onduty_cols
         h = hos[[dc, drv] + activity_cols].copy()
-        h["_dt"] = pd.to_datetime(h[dc], errors="coerce", utc=True).dt.tz_localize(None)
+        h["_dt"] = _to_naive_dt(h[dc])
         h["_drv"] = h[drv].astype(str).str.strip()
         if activity_cols:
             active = pd.Series([False] * len(h), index=h.index)
@@ -908,7 +908,7 @@ def _extra_trends(samsara: dict | None,
         if idc:
             cols_i = [idc] + ([drv_col_i] if drv_col_i else [])
             di = insp_df[cols_i].copy()
-            di["_dt"] = pd.to_datetime(di[idc], errors="coerce", utc=True).dt.tz_localize(None)
+            di["_dt"] = _to_naive_dt(di[idc])
             if drv_col_i:
                 di["_drv"] = di[drv_col_i].astype(str).str.strip()
             wd_by_month = _working_days_by_month(hos_df)
