@@ -26,6 +26,7 @@ Data sources:
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import re
@@ -106,6 +107,33 @@ def _write_marker(tok: str, upn: str, d: datetime.date, body: str) -> None:
     upload_file(tok, upn,
                 folder_path=_MARKER_FOLDER,
                 filename=_MARKER_NAME_TPL.format(d.isoformat()),
+                file_path=tmp)
+
+
+_SCORES_NAME_TPL = "scores-{}.json"
+
+
+def _read_prev_scores(tok: str, upn: str, d: datetime.date) -> dict:
+    """Return {driver: score} from the score file for date d, or {} if absent."""
+    path = f"{_MARKER_FOLDER}/{_SCORES_NAME_TPL.format(d.isoformat())}"
+    try:
+        data = download_file(tok, upn, path)
+        return json.loads(data).get("scores", {})
+    except Exception:
+        return {}
+
+
+def _write_scores(tok: str, upn: str, d: datetime.date, scores_all: list) -> None:
+    """Persist per-driver scores for trend comparison on the next run."""
+    scores = {r["driver"]: r["score"]
+              for r in scores_all if r.get("driver") and r.get("score") is not None}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+        json.dump({"scores": scores}, tf, indent=2)
+        tmp = Path(tf.name)
+    ensure_folder(tok, upn, _MARKER_FOLDER)
+    upload_file(tok, upn,
+                folder_path=_MARKER_FOLDER,
+                filename=_SCORES_NAME_TPL.format(d.isoformat()),
                 file_path=tmp)
 
 
@@ -380,7 +408,8 @@ def _build_risk_watch(m: dict, samsara: dict | None, samba, equipment) -> str:
 
 
 def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
-                        alvys_drivers=None, samsara_sheets=None) -> str:
+                        alvys_drivers=None, samsara_sheets=None,
+                        prev_scores=None) -> str:
     """Action Items block derived from live data."""
     detail = (samsara or {}).get("detail", {}) or {}
     unique_dvirs = _dedup_dvirs(detail.get("dvir", []) or [])
@@ -460,20 +489,56 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
             today_items.append(_action_row("TODAY", "Dispatch",
                                            f"Schedule inspection: unit {unit} ({days}d past 120-day policy)"))
 
-    # Missing DVIRs (0 inspections done last 7d despite working) → Safety Mgr per driver
+    # DVIR compliance <90% last 7d → Safety Mgr per driver
     if samsara_sheets:
         try:
             comp_rows = compute_inspection_compliance(samsara_sheets, days=7)
             for row in comp_rows:
-                if row.get("done_total", 0) == 0 and row.get("expected_total", 0) > 0:
+                exp  = row.get("expected_total", 0)
+                done = row.get("done_total", 0)
+                if exp <= 0:
+                    continue
+                comp_pct = round(done / exp * 100)
+                if comp_pct < 90:
                     drv = row.get("driver", "Unknown")
                     wd  = row.get("working_days", 0)
                     today_items.append(_action_row("TODAY", "Safety Mgr",
-                                                   f"{drv}: 0 DVIRs completed in last 7d "
-                                                   f"({wd} working day{'s' if wd != 1 else ''}) "
-                                                   f"— require pre/post-trip inspections"))
+                                                   f"{drv}: DVIR compliance {comp_pct}% last 7d "
+                                                   f"({done}/{exp}, {wd} working day{'s' if wd != 1 else ''}) "
+                                                   f"— discuss with driver, document corrective action"))
         except Exception:
             pass
+
+    # Safety score <90 → Safety Mgr per driver (action plan + document)
+    for r in scores_all:
+        score = r.get("score")
+        if score is None or score >= 90:
+            continue
+        drv = r.get("driver", "Unknown")
+        today_items.append(_action_row("TODAY", "Safety Mgr",
+                                       f"{drv}: safety score {score} (below 90 threshold) "
+                                       f"— meet with driver, develop improvement plan, document outcome"))
+
+    # Safety score trends vs yesterday → Safety Mgr (decline = plan; improve = kudos)
+    if prev_scores:
+        for r in scores_all:
+            drv = r.get("driver")
+            curr = r.get("score")
+            if not drv or curr is None:
+                continue
+            prev = prev_scores.get(drv)
+            if prev is None:
+                continue
+            delta = curr - prev
+            if delta < 0:
+                today_items.append(_action_row("TODAY", "Safety Mgr",
+                                               f"{drv}: safety score dropped {prev}→{curr} "
+                                               f"— identify root cause, develop action plan, "
+                                               f"document steps taken"))
+            elif delta > 0:
+                today_items.append(_action_row("TODAY", "Safety Mgr",
+                                               f"{drv}: safety score improved {prev}→{curr} "
+                                               f"— recognize driver, reinforce positive behavior"))
 
     # Coaching sessions past due (manager-led) → Safety Mgr per driver
     cs = (samsara or {}).get("coaching_sessions", {}) or {}
@@ -563,7 +628,8 @@ def _all_clear_row(msg: str, span: int = 6) -> str:
 
 def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
                         total: int, date_str: str, samba, equipment,
-                        alvys_drivers=None, samsara_sheets=None) -> str:
+                        alvys_drivers=None, samsara_sheets=None,
+                        prev_scores=None) -> str:
     """Page 1: Overview — Bottom Line · Urgent · Risk Watch · Action Items."""
     header = _sc_header(
         "Safety &amp; Compliance · Daily Overview", pg, total, date_str, section="EVENTS")
@@ -636,7 +702,8 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
             + ai_title
             + _build_action_items(metrics, samsara, samba, equipment,
                                    alvys_drivers=alvys_drivers,
-                                   samsara_sheets=samsara_sheets))
+                                   samsara_sheets=samsara_sheets,
+                                   prev_scores=prev_scores))
 
 
 def _extra_trends(samsara: dict | None,
@@ -1538,7 +1605,7 @@ def build_page_knowledge_base(pg: int, total: int, date_str: str) -> str:
 
 def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
                        samba, csa, equipment, alvys_drivers,
-                       date_str: str) -> str:
+                       date_str: str, prev_scores: dict | None = None) -> str:
     """Assemble the full safety report HTML matching the June 15 2026 format.
 
     Page order:
@@ -1569,7 +1636,8 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     # 1 — Overview
     pages.append(build_page_overview(
         samsara, metrics, 1, total, date_str, samba, equipment,
-        alvys_drivers=alvys_drivers, samsara_sheets=samsara_sheets))
+        alvys_drivers=alvys_drivers, samsara_sheets=samsara_sheets,
+        prev_scores=prev_scores))
 
     # 2 — Safety Metrics
     pages.append(build_page_metrics(samsara, metrics, 2, total, date_str,
@@ -1730,8 +1798,14 @@ def main() -> int:
     else:
         log.warning("Alvys Pipeline.xlsx not found — equipment pages will show placeholder.")
 
+    # Read yesterday's scores for trend comparison (missing = first run, no items generated)
+    yesterday = today - datetime.timedelta(days=1)
+    prev_scores = _read_prev_scores(tok, upn, yesterday)
+    log.info("Previous scores loaded: %d drivers", len(prev_scores))
+
     email_html, pdf_html = _build_html_report(
-        samsara, samsara_sheets, samba, csa, equipment, alvys_drivers, date_str)
+        samsara, samsara_sheets, samba, csa, equipment, alvys_drivers,
+        date_str, prev_scores=prev_scores)
     pdf = _render_pdf(pdf_html)
 
     subj = f"XFreight Safety & Compliance Report — {today.strftime('%B %-d, %Y')}"
@@ -1744,6 +1818,11 @@ def main() -> int:
             "mime": "application/pdf",
         }]
     send_email(tok, upn, to_emails, subj, email_html, attachments=attachments)
+
+    # Persist today's scores so tomorrow's run can detect improvements / declines
+    scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
+    _write_scores(tok, upn, today, scores_all)
+    log.info("Scores written: %d drivers", len(scores_all))
 
     _write_marker(tok, upn, today,
                   f"sent={len(to_emails)} pdf={'yes' if pdf else 'no'}")
