@@ -573,11 +573,11 @@ def _extra_trends(samsara: dict | None,
     #   Tile (7d):  compute_inspection_compliance — uses HOS_DailyLogs for
     #               working-day counts, accurate for the recent window.
     #
-    #   6-month chart:  DVIRs sheet directly — HOS_DailyLogs only holds ~7 days
-    #               of history so it can't answer "what was April's compliance?".
-    #               The DVIRs sheet has 6+ months of submissions; we count
-    #               driver-working-days from it (each unique driver×date = 1 wd)
-    #               and DVIRs filed against expected (wd × 2).
+    #   6-month chart:  DVIRs sheet for "done", Trips sheet for "working days".
+    #               HOS_DailyLogs only holds ~7 days; can't compute historical
+    #               compliance from it. Trips has 6+ months of per-driver
+    #               activity. Counting working days from DVIRs themselves would
+    #               be circular (a driver who filed 0 DVIRs becomes invisible).
     fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
 
     # 7-day tile: HOS-based (accurate recent working-day count)
@@ -590,39 +590,53 @@ def _extra_trends(samsara: dict | None,
     else:
         out["dvir_comp_7d"] = None
 
-    # 6-month chart: DVIRs sheet (has historical data HOS doesn't)
+    # 6-month chart: working days from Trips, DVIRs filed from DVIRs sheet
     dvirs_df = (samsara_sheets or {}).get("DVIRs")
+    trips_df = (samsara_sheets or {}).get("Trips")
     months6 = _last_6_months()
     labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
     pcts: list[int] = []
 
+    # Build per-month working-days count from Trips (unique driver × date)
+    wd_by_month: dict[tuple[int, int], int] = {}
+    if trips_df is not None and not trips_df.empty:
+        trip_drv_col = _find_col(trips_df, ["driverid", "driver.id", "driver name", "driver.name"])
+        trip_time_col = _find_col(trips_df, ["endms", "end ms", "endtime", "starttime", "startms"])
+        if trip_drv_col and trip_time_col:
+            t_dt = _to_naive_dt(trips_df[trip_time_col])
+            t_drv = trips_df[trip_drv_col].astype(str).str.strip()
+            valid = t_dt.notna() & t_drv.ne("") & t_drv.ne("nan")
+            t_dt = t_dt[valid]
+            t_drv = t_drv[valid]
+            t_date = t_dt.dt.date
+            t_ym = list(zip(t_dt.dt.year, t_dt.dt.month))
+            seen: set[tuple[int, int, str, object]] = set()
+            for ym, drv, dt in zip(t_ym, t_drv, t_date):
+                key = (ym[0], ym[1], drv, dt)
+                if key in seen:
+                    continue
+                seen.add(key)
+                wd_by_month[(ym[0], ym[1])] = wd_by_month.get((ym[0], ym[1]), 0) + 1
+
+    # Build per-month DVIR-done count
+    done_by_month: dict[tuple[int, int], int] = {}
     if dvirs_df is not None and not dvirs_df.empty:
-        dvir_driver_col = _find_col(dvirs_df, ["driver.name", "driver name",
-                                                "authorsignature.signatoryuser.name"])
         dvir_time_col = _find_col(dvirs_df, ["starttime", "start time",
                                                "createdattime", "submittedattime"])
-        if dvir_driver_col and dvir_time_col:
-            dvir_dt = _to_naive_dt(dvirs_df[dvir_time_col])
-            for yr, mo in months6:
-                m_start = pd.Timestamp(year=yr, month=mo, day=1)
-                m_end = (pd.Timestamp(year=yr + 1, month=1, day=1)
-                         if mo == 12 else pd.Timestamp(year=yr, month=mo + 1, day=1))
-                mask = (dvir_dt >= m_start) & (dvir_dt < m_end)
-                mo_dvirs = dvirs_df[mask]
-                if mo_dvirs.empty:
-                    pcts.append(0)
-                    continue
-                # Count unique driver × date combos as working days
-                drv_series = mo_dvirs[dvir_driver_col].astype(str).str.strip()
-                date_series = dvir_dt[mask].dt.date
-                wd = len(set(zip(drv_series, date_series)))
-                exp = wd * 2
-                done = len(mo_dvirs)
-                pcts.append(min(round(done / exp * 100), 100) if exp > 0 else 0)
+        if dvir_time_col:
+            d_dt = _to_naive_dt(dvirs_df[dvir_time_col])
+            for dt in d_dt.dropna():
+                key = (dt.year, dt.month)
+                done_by_month[key] = done_by_month.get(key, 0) + 1
+
+    for yr, mo in months6:
+        wd = wd_by_month.get((yr, mo), 0)
+        done = done_by_month.get((yr, mo), 0)
+        exp = wd * 2
+        if exp > 0:
+            pcts.append(min(round(done / exp * 100), 100))
         else:
-            pcts = [0] * len(months6)
-    else:
-        pcts = [0] * len(months6)
+            pcts.append(0)
 
     out["dvir_pct"] = (labels, pcts)
 
