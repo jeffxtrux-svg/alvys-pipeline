@@ -564,8 +564,7 @@ def _extra_trends(samsara: dict | None,
     for state_key, state_val in [("coached", "coached"), ("dismissed", "dismissed")]:
         rows = [r for r in coached_rows if r.get("state") == state_val]
         if not rows:
-            months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-            out[state_key] = (months, [0] * len(months))
+            out[state_key] = _monthly_counts(pd.Series([], dtype=object))
             continue
         dts = []
         for r in rows:
@@ -580,12 +579,11 @@ def _extra_trends(samsara: dict | None,
         if dts:
             out[state_key] = _monthly_counts(pd.Series(dts))
         else:
-            months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-            out[state_key] = (months, [0] * len(months))
+            out[state_key] = _monthly_counts(pd.Series([], dtype=object))
 
     # DVIR compliance % — inspections done / expected (working_days × 2)
     # Uses DVIR_Inspections (all inspections incl. safe) + HOS_DailyLogs (working days).
-    fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
+    _fallback_labels, _fallback_zeros = _monthly_counts(pd.Series([], dtype=object))
     insp_df  = (samsara_sheets or {}).get("DVIR_Inspections")
     hos_df   = (samsara_sheets or {}).get("HOS_DailyLogs")
 
@@ -630,12 +628,15 @@ def _extra_trends(samsara: dict | None,
             wd_by_month = _working_days_by_month(hos_df)
             months6 = _last_6_months()
             labels, pcts = [], []
-            for yr, mo in months6:
+            for i, (yr, mo) in enumerate(months6):
                 mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
                 done  = int(mask.sum())
                 wd    = wd_by_month.get((yr, mo), 0)
                 exp   = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
-                labels.append(f"{yr}-{mo:02d}")
+                lab = pd.Timestamp(year=yr, month=mo, day=1).strftime("%b")
+                if i == len(months6) - 1:
+                    lab += "*"
+                labels.append(lab)
                 if exp > 0:
                     pcts.append(min(round(done / exp * 100), 100))
                 else:
@@ -651,7 +652,7 @@ def _extra_trends(samsara: dict | None,
             else:
                 out["dvir_comp_7d"] = None
         else:
-            out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
+            out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
             out["dvir_comp_7d"] = None
     else:
         out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
@@ -663,7 +664,11 @@ def _extra_trends(samsara: dict | None,
     # Historical bars show 0 rather than repeating the 6mo aggregate for every month.
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
     months6 = _last_6_months()
-    labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
+    _n6 = len(months6)
+    labels = [
+        pd.Timestamp(year=yr, month=mo, day=1).strftime("%b") + ("*" if i == _n6 - 1 else "")
+        for i, (yr, mo) in enumerate(months6)
+    ]
     pcts = [0.0] * len(labels)
     mtd_vals  = [r.get("speed_pct_mtd") for r in scores_all if _isnum(r.get("speed_pct_mtd"))]
     spd_vals  = [r.get("speed_pct")     for r in scores_all if _isnum(r.get("speed_pct"))]
@@ -1536,9 +1541,7 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     pages.append(build_page_knowledge_base(len(pages) + 1, total, date_str))
 
     pb = "<div class='page-break' style='page-break-after:always;break-after:page;height:0;'></div>"
-    body = pb.join(pages)
-
-    return (
+    _head = (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
         f"body{{margin:0;background:#fff;"
@@ -1552,8 +1555,13 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
         "@media print{.pg-of{display:none !important;}}"
         ".pg-of{display:inline;}"
         "</style></head><body>"
-        + body
-        + "</body></html>"
+    )
+    _tail = "</body></html>"
+    # Email body: first 6 pages only (overview → DVIR defects → driver compliance).
+    # Full report goes in the PDF attachment — keeps email concise and scannable.
+    email_html = _head + pb.join(pages[:6]) + _tail
+    pdf_html   = _head + pb.join(pages)     + _tail
+    return email_html, pdf_html
     )
 
 
@@ -1631,9 +1639,9 @@ def main() -> int:
     else:
         log.warning("Alvys Pipeline.xlsx not found — equipment pages will show placeholder.")
 
-    html = _build_html_report(
+    email_html, pdf_html = _build_html_report(
         samsara, samsara_sheets, samba, csa, equipment, alvys_drivers, date_str)
-    pdf = _render_pdf(html)
+    pdf = _render_pdf(pdf_html)
 
     subj = f"XFreight Safety & Compliance Report — {today.strftime('%B %-d, %Y')}"
     attachments = None
@@ -1644,7 +1652,7 @@ def main() -> int:
             "content_bytes": pdf,
             "mime": "application/pdf",
         }]
-    send_email(tok, upn, to_emails, subj, html, attachments=attachments)
+    send_email(tok, upn, to_emails, subj, email_html, attachments=attachments)
 
     _write_marker(tok, upn, today,
                   f"sent={len(to_emails)} pdf={'yes' if pdf else 'no'}")
