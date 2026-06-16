@@ -568,20 +568,21 @@ def _extra_trends(samsara: dict | None,
             months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
             out[state_key] = (months, [0] * len(months))
 
-    # DVIR compliance % — two separate computations:
+    # DVIR compliance % — two computations that must stay in sync:
     #
-    #   Tile (7d):  compute_inspection_compliance — uses HOS_DailyLogs for
-    #               working-day counts, accurate for the recent window.
+    #   Tile (7d):    compute_inspection_compliance — HOS-based working days,
+    #                 exact match with the per-driver detail table.
     #
-    #   6-month chart:  DVIRs sheet for "done", Trips sheet for "working days".
-    #               HOS_DailyLogs only holds ~7 days; can't compute historical
-    #               compliance from it. Trips has 6+ months of per-driver
-    #               activity. Counting working days from DVIRs themselves would
-    #               be circular (a driver who filed 0 DVIRs becomes invisible).
+    #   6-month chart: DVIR_Inspections for done count (has 6mo history).
+    #                 HOS_DailyLogs for working days, but only covers ~7 days —
+    #                 so historical months have wd=0. When wd=0 and inspections
+    #                 exist we fall back to 100% (data present, no wd anchor).
+    #                 Current month uses compute_inspection_compliance so the bar
+    #                 matches the tile exactly.
     fallback_months = [f"{m[0]}-{m[1]:02d}" for m in _last_6_months()]
-
-    # 7-day tile: HOS-based (accurate recent working-day count)
     now = pd.Timestamp.now()
+
+    # 7-day tile
     rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
     if rows_7d:
         done_7d = sum(r["done_total"] for r in rows_7d)
@@ -590,53 +591,58 @@ def _extra_trends(samsara: dict | None,
     else:
         out["dvir_comp_7d"] = None
 
-    # 6-month chart: working days from Trips, DVIRs filed from DVIRs sheet
-    dvirs_df = (samsara_sheets or {}).get("DVIRs")
-    trips_df = (samsara_sheets or {}).get("Trips")
+    # 6-month chart
+    insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
+    hos_df  = (samsara_sheets or {}).get("HOS_DailyLogs")
+
+    def _hos_wd_by_month(hos) -> dict:
+        if hos is None or hos.empty:
+            return {}
+        dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
+        drv = _find_col(hos, ["driver name", "driver"])
+        if not dc or not drv:
+            return {}
+        h = hos[[dc, drv]].copy()
+        h["_dt"] = pd.to_datetime(h[dc], errors="coerce", utc=True).dt.tz_localize(None)
+        h["_drv"] = h[drv].astype(str).str.strip()
+        h = h[h["_drv"].ne("") & h["_dt"].notna()]
+        result: dict = {}
+        for _, row in h.iterrows():
+            key = (row["_dt"].year, row["_dt"].month)
+            result[key] = result.get(key, 0) + 1
+        return result
+
     months6 = _last_6_months()
     labels = [f"{yr}-{mo:02d}" for yr, mo in months6]
     pcts: list[int] = []
 
-    # Build per-month working-days count from Trips (unique driver × date)
-    wd_by_month: dict[tuple[int, int], int] = {}
-    if trips_df is not None and not trips_df.empty:
-        trip_drv_col = _find_col(trips_df, ["driverid", "driver.id", "driver name", "driver.name"])
-        trip_time_col = _find_col(trips_df, ["endms", "end ms", "endtime", "starttime", "startms"])
-        if trip_drv_col and trip_time_col:
-            t_dt = _to_naive_dt(trips_df[trip_time_col])
-            t_drv = trips_df[trip_drv_col].astype(str).str.strip()
-            valid = t_dt.notna() & t_drv.ne("") & t_drv.ne("nan")
-            t_dt = t_dt[valid]
-            t_drv = t_drv[valid]
-            t_date = t_dt.dt.date
-            t_ym = list(zip(t_dt.dt.year, t_dt.dt.month))
-            seen: set[tuple[int, int, str, object]] = set()
-            for ym, drv, dt in zip(t_ym, t_drv, t_date):
-                key = (ym[0], ym[1], drv, dt)
-                if key in seen:
-                    continue
-                seen.add(key)
-                wd_by_month[(ym[0], ym[1])] = wd_by_month.get((ym[0], ym[1]), 0) + 1
-
-    # Build per-month DVIR-done count
-    done_by_month: dict[tuple[int, int], int] = {}
-    if dvirs_df is not None and not dvirs_df.empty:
-        dvir_time_col = _find_col(dvirs_df, ["starttime", "start time",
-                                               "createdattime", "submittedattime"])
-        if dvir_time_col:
-            d_dt = _to_naive_dt(dvirs_df[dvir_time_col])
-            for dt in d_dt.dropna():
-                key = (dt.year, dt.month)
-                done_by_month[key] = done_by_month.get(key, 0) + 1
-
-    for yr, mo in months6:
-        wd = wd_by_month.get((yr, mo), 0)
-        done = done_by_month.get((yr, mo), 0)
-        exp = wd * 2
-        if exp > 0:
-            pcts.append(min(round(done / exp * 100), 100))
+    if insp_df is not None and not insp_df.empty:
+        idc = _find_col(insp_df, ["reported", "createdat"])
+        if idc:
+            di = insp_df[[idc]].copy()
+            di["_dt"] = pd.to_datetime(di[idc], errors="coerce", utc=True).dt.tz_localize(None)
+            wd_by_month = _hos_wd_by_month(hos_df)
+            for yr, mo in months6:
+                is_current = (yr == now.year and mo == now.month)
+                if is_current:
+                    # Current month: match the tile exactly
+                    pcts.append(out["dvir_comp_7d"] if out["dvir_comp_7d"] is not None else 0)
+                else:
+                    # Historical: DVIR_Inspections done vs HOS working days
+                    mask = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
+                    done = int(mask.sum())
+                    wd   = wd_by_month.get((yr, mo), 0)
+                    exp  = wd * 2
+                    if exp > 0:
+                        pcts.append(min(round(done / exp * 100), 100))
+                    elif done > 0:
+                        pcts.append(100)  # inspections exist but no HOS anchor
+                    else:
+                        pcts.append(0)
         else:
-            pcts.append(0)
+            pcts = [0] * len(months6)
+    else:
+        pcts = [0] * len(months6)
 
     out["dvir_pct"] = (labels, pcts)
 
