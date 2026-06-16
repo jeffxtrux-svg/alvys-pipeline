@@ -1,0 +1,209 @@
+# Safety brief healthcheck — fires at 6:00am Central if the morning
+# Safety & Compliance brief hasn't been sent yet. Solves the same
+# silent-GitHub-Actions-cron-drop problem the scorecard healthcheck
+# solves for the executive brief: if all the 5am safety slots drop
+# (as happened on 2026-06-16, Audra's first day), nobody knows the
+# brief is missing until they notice the absence mid-morning.
+#
+# How it works:
+#   1. Cron fires at 6:00am Central (dual-cron + CT-hour-gate, year-round).
+#   2. Authenticate to Microsoft Graph using the same Azure app as the
+#      safety brief.
+#   3. Check whether the `Safety/sent-{YYYY-MM-DD}.txt` marker exists
+#      in OneDrive for today (Central time).
+#   4. If marker present → exit cleanly. Healthcheck passed.
+#   5. If marker absent → dispatch safety_compliance_email.yml via the
+#      GitHub API. That run fires immediately and sends the brief.
+#
+# Race-with-safety-backup: avoided by the existing 6am gate in
+# safety_compliance_email.yml (it explicitly skips 6am with the comment
+# "6am CT slot reserved for healthcheck"). The healthcheck owns 6:00am
+# exclusively; safety brief backups continue at 5:00, 5:30, and 6:30.
+#
+# Off-GitHub backstop: ops/cron-trigger/worker.js (Cloudflare Worker)
+# dispatches this healthcheck at 5:30am CT to recover the case where
+# GitHub's own cron drops this very healthcheck slot too — same pattern
+# as the scorecard healthcheck.
+#
+# Required GitHub Secrets (shared with safety_compliance_email.yml):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   ONEDRIVE_USER_UPN, GH_PAT
+
+name: Safety brief healthcheck (6:00am CT)
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Year-round 6:00am Central. CDT (UTC-5) + CST (UTC-6) crons both
+    # armed; the "Gate to 6am CT" step rejects the off-season slot.
+    - cron: '0 11 * * *'    # 6:00am CDT / 5:00am CST (CST: gated)
+    - cron: '0 12 * * *'    # 7:00am CDT (CDT: gated) / 6:00am CST
+
+permissions:
+  contents: read
+  actions: write   # required to dispatch safety_compliance_email.yml via gh CLI
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Gate to 6am CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 6 ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "6am CT slot — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        # Only need msal + requests to call Graph; no WeasyPrint /
+        # pandas etc. needed for a marker-presence check. python-dotenv
+        # is required because src/onedrive_upload.py imports load_dotenv
+        # at module load.
+        run: pip install msal requests python-dotenv
+
+      - name: Check today's safety marker
+        if: steps.ct_gate.outputs.skip != '1'
+        id: marker
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+        run: |
+          python - <<'PY'
+          """
+          Check whether the daily safety brief marker exists in OneDrive.
+
+          Marker path follows src/safety_compliance_email.py:
+              Safety/sent-{YYYY-MM-DD}.txt
+          where the date is today in America/Chicago.
+          """
+          import os
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          sys.path.insert(0, ".")
+          from src.onedrive_upload import get_token, download_file
+          import requests
+
+          today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+          marker_path = f"Safety/sent-{today}.txt"
+
+          print(f"Checking marker for {today} → {marker_path}")
+          tok = get_token(
+              os.environ["AZURE_TENANT_ID"],
+              os.environ["AZURE_CLIENT_ID"],
+              os.environ["AZURE_CLIENT_SECRET"],
+          )
+
+          try:
+              download_file(tok, os.environ["ONEDRIVE_USER_UPN"], marker_path)
+              print(f"✓ Marker found — safety brief already sent today. Healthcheck PASS.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("needs_send=0\n")
+          except requests.HTTPError as e:
+              code = e.response.status_code if e.response is not None else None
+              if code == 404:
+                  print(f"⚠ No marker — safety brief NOT yet sent today.")
+                  print(f"  Will dispatch safety_compliance_email.yml to recover.")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write("needs_send=1\n")
+              else:
+                  print(f"Unexpected Graph error ({code}) — failing closed (treating as needs_send to be safe).")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write("needs_send=1\n")
+          except Exception as e:
+              print(f"Marker check raised {type(e).__name__}: {e}")
+              print(f"Failing closed — dispatching safety brief to be safe.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("needs_send=1\n")
+          PY
+
+      - name: Dispatch safety_compliance_email.yml (marker missing)
+        if: steps.ct_gate.outputs.skip != '1' && steps.marker.outputs.needs_send == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Dispatching safety_compliance_email.yml via gh workflow run…"
+          gh workflow run safety_compliance_email.yml --ref main
+          echo "✓ Dispatched. Brief should land in ~3-5 minutes."
+
+      - name: Healthcheck summary
+        if: steps.ct_gate.outputs.skip != '1'
+        run: |
+          if [ "${{ steps.marker.outputs.needs_send }}" = "1" ]; then
+            echo "::warning::Safety brief healthcheck recovered a missed morning brief."
+          else
+            echo "::notice::Safety brief healthcheck OK — brief already sent for today."
+          fi
+
+      # Notify on failure so a broken healthcheck doesn't go silent.
+      - name: Notify on failure
+        if: failure() && steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          # Notify the same standing list the safety brief itself uses,
+          # so whoever expects the brief also gets the failure alert.
+          SAFETY_TO_EMAILS: ${{ secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net' }}
+          SAFETY_CC_EMAILS: ${{ secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, ".")
+          from src.onedrive_upload import get_token
+          from src.scorecard_email import send_email
+          tok = get_token(
+              os.environ["AZURE_TENANT_ID"],
+              os.environ["AZURE_CLIENT_ID"],
+              os.environ["AZURE_CLIENT_SECRET"],
+          )
+          to = [e.strip() for e in os.environ.get("SAFETY_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+          cc = [e.strip() for e in os.environ.get("SAFETY_CC_EMAILS", "").split(",") if e.strip()]
+          run = os.environ.get("RUN_URL", "")
+          html = (
+              f"<p>The <b>safety brief healthcheck</b> at 6:00am CT failed — "
+              f"this morning's Safety &amp; Compliance brief may or may not "
+              f"have landed.</p>"
+              f"<p>Manually verify by checking Audra's inbox for "
+              f"\"XFreight Safety &amp; Compliance Report — \" with today's date.</p>"
+              f"<p>Run log: <a href='{run}'>{run}</a></p>"
+          )
+          send_email(
+              tok,
+              os.environ["ONEDRIVE_USER_UPN"],
+              to,
+              "⚠️ XFreight safety brief HEALTHCHECK failed",
+              html,
+              cc_emails=cc or None,
+          )
+          PY
