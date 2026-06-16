@@ -4015,6 +4015,9 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
                 ):
                     if not nm or nm.lower() == "nan":
                         continue
+                    # Total DVIRs filed — used for compliance % (matches detail page)
+                    done_tractor[nm] = len(group)
+                    # Tractor vs trailer split — informational display only
                     if dvir_vehicle_col:
                         tractor_mask = (group[dvir_vehicle_col].notna()
                                         & (group[dvir_vehicle_col].astype(str).str.strip() != ""))
@@ -4023,8 +4026,6 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
                         trailer_mask = (group[dvir_trailer_col].notna()
                                         & (group[dvir_trailer_col].astype(str).str.strip() != ""))
                         done_trailer[nm] = int(trailer_mask.sum())
-                    if not dvir_vehicle_col and not dvir_trailer_col:
-                        done_tractor[nm] = len(group)
 
     defects_tractor: dict[str, int] = {}
     defects_trailer: dict[str, int] = {}
@@ -4054,6 +4055,11 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
         exp_tr = wd * 2
         d_t = int(done_tractor.get(nm, 0))
         d_tr = int(done_trailer.get(nm, 0))
+        # done_total = tractor + trailer; if both columns found, this is the split
+        # sum. If neither column found, done_tractor holds the full count.
+        # expected_total = wd × 2 (FMCSA: 1 pre-trip + 1 post-trip per working day),
+        # matching the detail page so the two views agree.
+        done_total = d_t + d_tr
         df_t = int(defects_tractor.get(nm, 0))
         df_tr = int(defects_trailer.get(nm, 0))
         rows.append({
@@ -4065,8 +4071,8 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
             "expected_trailer": exp_tr,
             "done_trailer": d_tr,
             "defects_trailer": df_tr,
-            "expected_total": exp_t + exp_tr,
-            "done_total": d_t + d_tr,
+            "expected_total": wd * 2,
+            "done_total": done_total,
             "defects_total": df_t + df_tr,
         })
     rows.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))

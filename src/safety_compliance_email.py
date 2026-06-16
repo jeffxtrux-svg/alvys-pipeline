@@ -1295,8 +1295,8 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
     if hos_df is not None and not hos_df.empty:
         hdc  = _find_col(hos_df, ["log date", "starttime", "date"])
         hdrv = _find_col(hos_df, ["driver name", "driver"])
-        hdrvc = _find_col(hos_df, ["drivems", "drive ms"])
-        hdutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
+        hdrvc = _find_col(hos_df, ["dutystatusdurations.drivedurationms", "drivedurationms"])
+        hdutc = _find_col(hos_df, ["dutystatusdurations.ondutydurationms", "ondutydurationms"])
         if hdc and hdrv:
             h7 = hos_df.copy()
             h7["_dt"] = pd.to_datetime(h7[hdc], errors="coerce", utc=True).dt.tz_localize(None)
