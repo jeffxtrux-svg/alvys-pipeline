@@ -1821,11 +1821,8 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     p2 = build_page2(samsara, date_str, pg=7)
     pages.append(_patch_pg_total(p2, total))
 
-    # 8 — Methodology Footnote
-    pages.append(build_page_footnote(8, total, date_str))
-
-    # 9 — DVIR Inspection Compliance (per-driver done/expected/defects table)
-    pages.append(build_page_dvir_compliance(samsara_sheets, 9, total, date_str))
+    # 8 — DVIR Inspection Compliance (per-driver done/expected/defects table)
+    pages.append(build_page_dvir_compliance(samsara_sheets, 8, total, date_str))
 
     # 10-11 — Tractor Inspections (build_page_equipment accepts pg param)
     if equipment:
@@ -1857,8 +1854,11 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     coached_html = build_page_coached(samsara, date_str)
     pages.append(_patch_pg_total(coached_html, total))
 
-    # Second-to-last — DVIR Inspection Detail (per-driver log, last 14 days)
+    # DVIR Inspection Detail (per-driver log, last 14 days)
     pages.append(build_page_dvir_detail(samsara_sheets, len(pages) + 1, total, date_str))
+
+    # Second-to-last — Methodology & Data Sources
+    pages.append(build_page_footnote(len(pages) + 1, total, date_str))
 
     # Last — Knowledge Base & Playbooks
     pages.append(build_page_knowledge_base(len(pages) + 1, total, date_str))
