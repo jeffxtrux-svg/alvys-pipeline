@@ -13,6 +13,9 @@ __pycache__/
 venv/
 .python-version
 
+# Claude Code internal
+.claude/
+
 # IDE
 .vscode/
 .idea/
