@@ -8767,14 +8767,13 @@ def main() -> int:
             "content_bytes": pdf_bytes,
             "mime": "application/pdf",
         })
-    # When the PDF rendered successfully, the email body contains PDF pages
-    # 1-5 (executive overview + bill-by-bill matching + SambaSafety + Samsara
-    # safety detail) plus page 11 (fleet idle). The full report still ships
-    # as a PDF attachment for everything else. If PDF rendering failed, the
-    # fallback below uses the entire inline HTML body so the brief reaches
-    # the recipient one way or another.
+    # When the PDF rendered successfully, the email body contains PDF page 1
+    # (executive overview top half). The full report still ships as a PDF
+    # attachment for everything else. If PDF rendering failed, the fallback
+    # below uses the entire inline HTML body so the brief reaches the
+    # recipient one way or another.
     if pdf_bytes:
-        body_html = _build_email_body_pages(str(html), pages=[1, 2, 3, 4, 5, 11])
+        body_html = _build_email_body_pages(str(html), pages=[1])
     else:
         body_html = str(html)
     send_email(token, from_upn, to_emails, subject, body_html, attachments=attachments)
