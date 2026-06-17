@@ -1,0 +1,77 @@
+# Weekly Safety Accountability Pattern Report — runs Monday ~6:30am CT
+#
+# Reads 7 days of accountability JSON from OneDrive (Safety/accountability-{date}.json),
+# analyses patterns (top offenders, category breakdown, chronic items, resolution rate,
+# escalation flags), emails a summary, and posts a compact Teams card.
+#
+# GitHub Secrets required (shared with safety_compliance_email.yml):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   ONEDRIVE_USER_UPN
+#   SAFETY_TO_EMAILS      — primary recipients (default: audra@xfreight.net)
+#   SAFETY_CC_EMAILS      — cc recipients (default: jb@xfreight.net,jeff@xfreight.net)
+#   TEAMS_SAFETY_WEBHOOK  — Teams incoming webhook URL (optional; no-op if unset)
+
+name: Weekly Safety Accountability Pattern Report (Mon 6:30am CT)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # DST-proof: arm both CDT (UTC-5) and CST (UTC-6) Monday slots.
+    # CT gate below rejects anything before 5am Mon Central.
+    - cron: '0 11 * * 1'   # 6am CDT Mon / 5am CST Mon
+    - cron: '0 12 * * 1'   # 7am CDT Mon / 6am CST Mon (backup)
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  weekly_report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Gate to Monday 5am CT or later
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_DOW=$(TZ=America/Chicago date +%u)
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time day-of-week: $CT_DOW  hour: $CT_HOUR"
+          if [ "$CT_DOW" -ne 1 ]; then
+            echo "Not Monday CT — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          elif [ "$CT_HOUR" -lt 5 ]; then
+            echo "Before 5am CT Monday — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "Monday $CT_HOUR:xx CT — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install requests msal python-dotenv pandas openpyxl
+
+      - name: Build and send Weekly Accountability Pattern Report
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID:      ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:      ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:  ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:    ${{ secrets.ONEDRIVE_USER_UPN }}
+          SAFETY_TO_EMAILS:     ${{ secrets.SAFETY_TO_EMAILS }}
+          SAFETY_CC_EMAILS:     ${{ secrets.SAFETY_CC_EMAILS }}
+          TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+        run: python -m src.accountability_weekly_report
