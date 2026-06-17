@@ -1,0 +1,70 @@
+# Accountability EOD Summary — posts a ~5pm CT Teams card showing which
+# accountability items were actioned today vs. still open.
+#
+# Reads:
+#   output/accountability-{date}.json  (or OneDrive/Safety/ fallback)
+#   OneDrive/Safety/Accountability Log.xlsx
+#
+# GitHub Secrets required:
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   ONEDRIVE_USER_UPN
+#   TEAMS_SAFETY_WEBHOOK
+
+name: Accountability EOD Summary (5pm CT)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # DST-proof: arm 10pm UTC (5pm CDT) and 11pm UTC (5pm CST)
+    - cron: '0 22 * * *'
+    - cron: '0 23 * * *'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  eod_summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Gate to 5pm CT only
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -ne 17 ]; then
+            echo "Not 5pm CT — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "5pm CT — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Post EOD accountability summary to Teams
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:   ${{ secrets.ONEDRIVE_USER_UPN }}
+          TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python -m src.accountability_eod_summary

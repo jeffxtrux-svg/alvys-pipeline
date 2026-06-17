@@ -1132,6 +1132,42 @@ def _build_accountability_structured(
     return audra_items, ops_items
 
 
+def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> set[str]:
+    """Return normalized category names actioned in the log on check_date.
+
+    Reads Accountability Log.xlsx from OneDrive/Safety/ and returns a set of
+    lowercased category strings whose Date column matches check_date.  Fails
+    soft — returns empty set if the file is absent or unreadable.
+    """
+    import io
+    resolved: set[str] = set()
+    try:
+        raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
+        xl  = pd.ExcelFile(io.BytesIO(raw))
+        df  = xl.parse(xl.sheet_names[0])
+        # Normalise column names
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        date_col = next((c for c in df.columns if "date" in c), None)
+        cat_col  = next((c for c in df.columns if "category" in c), None)
+        if date_col is None or cat_col is None:
+            return resolved
+        for _, row in df.iterrows():
+            raw_date = row[date_col]
+            if pd.isna(raw_date):
+                continue
+            try:
+                row_date = pd.Timestamp(raw_date).date()
+            except Exception:
+                continue
+            if row_date == check_date:
+                cat = str(row[cat_col]).strip().lower()
+                if cat and cat != "nan":
+                    resolved.add(cat)
+    except Exception as exc:
+        log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
+    return resolved
+
+
 def _write_accountability_json(
     today: datetime.date,
     audra_items: list[dict],
@@ -1139,10 +1175,12 @@ def _write_accountability_json(
     history: list[dict],
     tok: str,
     upn: str,
+    resolved_cats: set[str] | None = None,
 ) -> None:
     """Enrich items with carry-forward (days_open) and occurrence counts,
     then write to output/ and upload to OneDrive/Safety/."""
     yesterday = today - datetime.timedelta(days=1)
+    resolved_cats = resolved_cats or set()
 
     # Build yesterday's key→days_open map for carry-forward
     yesterday_keys: dict[str, int] = {}
@@ -1156,7 +1194,13 @@ def _write_accountability_json(
         for item in items:
             item = dict(item)
             key = _accountability_key(item)
-            prev_days = yesterday_keys.get(key, 0)
+            cat_norm = (item.get("category") or "").lower().strip()
+            # If this category was actioned yesterday, break the escalation chain.
+            if cat_norm in resolved_cats:
+                prev_days = 0
+                item["actioned_yesterday"] = True
+            else:
+                prev_days = yesterday_keys.get(key, 0)
             item["days_open"] = prev_days + 1 if prev_days else 1
 
             drv_or_unit = item.get("driver") or item.get("unit") or ""
@@ -2464,8 +2508,15 @@ def main() -> int:
     acc_history = _load_accountability_history(tok, upn, today)
     log.info("Accountability history loaded: %d items over 30d", len(acc_history))
 
+    # Check yesterday's Accountability Log to break escalation chain for actioned items
+    yesterday = today - datetime.timedelta(days=1)
+    resolved_cats = _load_accountability_log(tok, upn, yesterday)
+    if resolved_cats:
+        log.info("Resolved categories (actioned yesterday): %s", resolved_cats)
+
     # Write accountability JSON (local output/ + OneDrive/Safety/)
-    _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn)
+    _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn,
+                               resolved_cats=resolved_cats)
 
     # Compute carried-forward items for the "OPEN — ACTION PENDING" section:
     # any item from today's list that also appeared in yesterday's JSON

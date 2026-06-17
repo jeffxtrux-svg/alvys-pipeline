@@ -620,8 +620,9 @@ def test_equipment_overlays_current_mileage_from_samsara():
 def test_equipment_badges_neutral_until_past_due_red_when_overdue():
     now = pd.Timestamp("2026-06-13")
     html = build_page_equipment(_equip(now), "x", kind="tractors", pg=5)
-    # Upcoming 15d inspection stays NEUTRAL (normal color) — no emphasis.
-    assert f"<span style='color:{MUTE};font-size:12px;'>15d</span>" in html
+    # Only units at/past the 120d policy window appear in the table.
+    # Unit 100 (15d remaining) is filtered out; unit 200 (5d overdue) appears.
+    assert f"<span style='color:{MUTE};font-size:12px;'>15d</span>" not in html
     # Red is reserved for the expired unit only.
     # Wording is "Needs Insp · Xd past" (not "OVERDUE Xd") per 120d company
     # policy: unit is flagged for inspection, not out-of-service.
@@ -633,8 +634,6 @@ def test_equipment_badges_neutral_until_past_due_red_when_overdue():
     assert "#b45309" not in html and "#fef3c7" not in html
     assert (f"background:{BADBG};color:{BAD};font-size:11px;padding:2px 6px;"
             f"border-radius:4px;font-weight:700;'>15d</span>") not in html
-    assert "Current Mileage" in html and "1,000" in html
-    assert "Samsara odometer" in html
 
 
 def test_equipment_next_oil_due_estimate_from_current_odometer():
@@ -664,7 +663,7 @@ def test_equipment_overlays_last_oil_change_from_maintenance_tab():
     now = pd.Timestamp("2026-06-13")
     trucks = pd.DataFrame([
         {"Unit": "100", "Status": "Active", "VIN": "V100",
-         "AnnualInspectionDue": now + pd.Timedelta(days=15),
+         "AnnualInspectionDue": now - pd.Timedelta(days=5),
          "RegistrationExpires": now + pd.Timedelta(days=300)},
     ])
     # RelatedAsset / Category arrive as stringified dicts in the workbook.
