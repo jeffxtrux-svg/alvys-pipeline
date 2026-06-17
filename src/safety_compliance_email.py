@@ -426,7 +426,7 @@ def _build_risk_watch(m: dict, samsara: dict | None, samba, equipment) -> str:
 
 def _pd(text: str) -> str:
     """Muted progressive-discipline sub-line appended to relevant action items."""
-    return (f"<br><em style='color:#888;font-size:11px;'>&#9656; Progressive discipline: "
+    return (f"<br><em style='color:#1a3a6b;font-size:11px;'>&#9656; Progressive discipline: "
             f"{text}</em>")
 
 
