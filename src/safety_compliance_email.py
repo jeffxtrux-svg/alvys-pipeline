@@ -728,6 +728,82 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
     return html, sm_count, di_count, total_count
 
 
+def _build_carried_forward(items: list) -> str:
+    """Render the 'OPEN — ACTION PENDING' section for items carried from yesterday.
+
+    Items are pre-sorted by days_open desc then severity. Each shows a DAY-N
+    badge (amber=2d, orange=3d, red=4+d), driver/unit, category, and detail.
+    Items open 3+ days show an ESCALATED flag.
+    """
+    if not items:
+        return ""
+
+    CF_BLUE = "#1a3a6b"
+    SEV_RANK = {"critical": 0, "high": 1, "medium": 2}
+    items_sorted = sorted(
+        items,
+        key=lambda x: (-x.get("days_open", 2), SEV_RANK.get(x.get("severity", "medium"), 2)),
+    )
+
+    rows_html = ""
+    for item in items_sorted:
+        days   = item.get("days_open", 2)
+        drv    = (item.get("driver") or item.get("unit") or "").strip()
+        cat    = item.get("category", "")
+        detail = item.get("detail", "")
+        owner  = item.get("owner", "")
+
+        if days >= 4:
+            badge_bg = BAD
+        elif days >= 3:
+            badge_bg = "#c47a00"  # deep amber
+        else:
+            badge_bg = "#b06000"  # warm amber
+
+        esc_html = ""
+        if days >= 3:
+            esc_html = (
+                f"<span style='background:{BADBG};color:{BAD};font-size:9px;"
+                f"font-weight:800;padding:2px 6px;border-radius:3px;"
+                f"margin-left:8px;letter-spacing:0.5px;'>ESCALATED</span>"
+            )
+
+        owner_html = (
+            f"<span style='color:{MUTE};font-size:10px;margin-left:8px;'>{owner}</span>"
+            if owner else ""
+        )
+
+        rows_html += (
+            f"<div style='display:flex;align-items:flex-start;gap:10px;"
+            f"padding:10px 0;border-bottom:1px solid {LINE};'>"
+            f"<span style='background:{badge_bg};color:#fff;font-size:9px;"
+            f"font-weight:800;letter-spacing:0.5px;padding:3px 7px;border-radius:4px;"
+            f"white-space:nowrap;min-width:46px;text-align:center;flex-shrink:0;'>"
+            f"DAY {days}</span>"
+            f"<div>"
+            f"<div style='font-size:12px;color:{INK};font-weight:700;line-height:1.4;'>"
+            f"{'<span style=\"text-transform:uppercase;\">' + drv + '</span> — ' if drv else ''}"
+            f"{cat}{esc_html}{owner_html}</div>"
+            f"<div style='font-size:11px;color:{MUTE};margin-top:2px;'>{detail}</div>"
+            f"</div></div>"
+        )
+
+    n = len(items_sorted)
+    subtitle = (
+        f"{n} item{'s' if n != 1 else ''} carried forward — "
+        f"still open in today's data, no resolution detected in live systems. "
+        f"Reply to this email or Teams card with action taken."
+    )
+    return (
+        f"<div style='padding:16px 24px 4px;'>"
+        f"<div style='font-size:10px;letter-spacing:1.5px;text-transform:uppercase;"
+        f"color:{CF_BLUE};font-weight:700;margin-bottom:4px;'>OPEN — ACTION PENDING</div>"
+        f"<div style='font-size:11px;color:{MUTE};margin-bottom:8px;'>{subtitle}</div>"
+        f"<div style='border-left:3px solid {CF_BLUE};padding-left:12px;'>"
+        f"{rows_html}</div></div>"
+    )
+
+
 # ----------------------------------------------------------------------
 # Structured accountability items — for Teams Adaptive Cards + JSON output
 # ----------------------------------------------------------------------
@@ -1155,7 +1231,7 @@ def _all_clear_row(msg: str, span: int = 6) -> str:
 def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
                         total: int, date_str: str, samba, equipment,
                         alvys_drivers=None, samsara_sheets=None,
-                        prev_scores=None) -> str:
+                        prev_scores=None, carried_forward=None) -> str:
     """Page 1: Overview — Bottom Line · Urgent · Risk Watch · Action Items."""
     header = _sc_header(
         "Safety &amp; Compliance · Daily Overview", pg, total, date_str, section="EVENTS")
@@ -1259,13 +1335,15 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
         f"</div>"
     )
 
+    cf_html = _build_carried_forward(carried_forward or [])
     return (header
             + bottom_line_block
             + urgent_block
             + rw_title
             + _build_risk_watch(metrics, samsara, samba, equipment)
             + ai_title
-            + ai_html)
+            + ai_html
+            + cf_html)
 
 
 def _extra_trends(samsara: dict | None,
@@ -2173,7 +2251,8 @@ def build_page_knowledge_base(pg: int, total: int, date_str: str) -> str:
 
 def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
                        samba, csa, equipment, alvys_drivers,
-                       date_str: str, prev_scores: dict | None = None) -> str:
+                       date_str: str, prev_scores: dict | None = None,
+                       carried_forward: list | None = None) -> str:
     """Assemble the full safety report HTML matching the June 15 2026 format.
 
     Page order:
@@ -2205,7 +2284,7 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     pages.append(build_page_overview(
         samsara, metrics, 1, total, date_str, samba, equipment,
         alvys_drivers=alvys_drivers, samsara_sheets=samsara_sheets,
-        prev_scores=prev_scores))
+        prev_scores=prev_scores, carried_forward=carried_forward))
 
     # 2 — Safety Metrics
     pages.append(build_page_metrics(samsara, metrics, 2, total, date_str,
@@ -2387,9 +2466,30 @@ def main() -> int:
     # Write accountability JSON (local output/ + OneDrive/Safety/)
     _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn)
 
+    # Compute carried-forward items for the "OPEN — ACTION PENDING" section:
+    # any item from today's list that also appeared in yesterday's JSON
+    # (days_open > 1 means it was open yesterday and is still open today).
+    yesterday_acc = today - datetime.timedelta(days=1)
+    yesterday_keys: dict[str, int] = {
+        _accountability_key(item): item.get("days_open", 1)
+        for item in acc_history
+        if item.get("_date") == yesterday_acc.isoformat()
+    }
+    seen_cf_keys: set = set()
+    carried_forward: list = []
+    for item in audra_items + ops_items:
+        key = _accountability_key(item)
+        if key in seen_cf_keys:
+            continue
+        seen_cf_keys.add(key)
+        prev = yesterday_keys.get(key, 0)
+        if prev > 0:
+            carried_forward.append({**item, "days_open": prev + 1})
+    log.info("Carried-forward items: %d", len(carried_forward))
+
     email_html, pdf_html = _build_html_report(
         samsara, samsara_sheets, samba, csa, equipment, alvys_drivers,
-        date_str, prev_scores=prev_scores)
+        date_str, prev_scores=prev_scores, carried_forward=carried_forward)
     pdf = _render_pdf(pdf_html)
 
     subj = f"XFreight Safety & Compliance Report — {today.strftime('%B %-d, %Y')}"
