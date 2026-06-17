@@ -116,110 +116,19 @@ jobs:
           SAFETY_SKIP_IDEMPOTENCY: ${{ (github.event_name == 'push' || inputs.skip_idempotency) && '1' || '' }}
         run: python -m src.safety_compliance_email
 
-      - name: Post accountability items to Teams
-        # Posts two separate MessageCards to the Safety and Compliance
-        # Teams channel — Audra's action items first, then Jackson+Dan's.
-        # Reads output/safety-accountability-{date}.json written by the
-        # safety brief run above. Silent no-op if TEAMS_SAFETY_WEBHOOK
-        # is not set.
+      - name: Post accountability items to Teams (Adaptive Cards)
+        # Posts one full-width Adaptive Card per owner (Audra first, then
+        # Jackson+Dan) to the Safety and Compliance Teams channel.
+        # Cards include per-item action dropdowns, a notes field, and a
+        # Submit button that POSTs structured JSON to TEAMS_RESPONSE_WEBHOOK
+        # (Power Automate HTTP trigger) for audit logging.
+        # Silent no-op if TEAMS_SAFETY_WEBHOOK is not set.
         if: steps.ct_gate.outputs.skip != '1'
         env:
-          TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_SAFETY_WEBHOOK:   ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_RESPONSE_WEBHOOK: ${{ secrets.TEAMS_RESPONSE_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          python - <<'PY'
-          import json, os, datetime, requests
-          from pathlib import Path
-
-          webhook = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
-          if not webhook:
-              print("TEAMS_SAFETY_WEBHOOK not set — skipping Teams posts.")
-              raise SystemExit(0)
-
-          today = datetime.date.today()
-          run_url = os.environ.get("RUN_URL", "")
-          acc_path = Path(f"output/safety-accountability-{today.isoformat()}.json")
-          if not acc_path.exists():
-              print(f"Accountability JSON not found at {acc_path} — skipping.")
-              raise SystemExit(0)
-
-          data = json.loads(acc_path.read_text())
-
-          SEV_EMOJI  = {"critical": "🔴", "high": "🟠", "medium": "🟡"}
-          SEV_COLOR  = {"critical": "FF0000", "high": "FF8C00", "medium": "FFD700"}
-
-          def _subject(item: dict) -> str:
-              parts = [item.get("driver") or item.get("unit") or ""]
-              parts = [p for p in parts if p]
-              base  = (f"{', '.join(parts)} — " if parts else "") + item.get("detail", "")
-              days  = item.get("days_open", 1)
-              if days >= 3:
-                  base += f"  ⚠️ Day {days} open — ESCALATED"
-              elif days == 2:
-                  base += f"  ↩ Day {days} open"
-              return base
-
-          def _card_color(items: list[dict]) -> str:
-              for sev in ("critical", "high", "medium"):
-                  if any(i.get("severity") == sev for i in items):
-                      return SEV_COLOR[sev]
-              return "00B050"
-
-          def _facts(items: list[dict]) -> list[dict]:
-              # Sort: most days open first, then by severity.
-              sev_rank = {"critical": 0, "high": 1, "medium": 2}
-              sorted_items = sorted(
-                  items,
-                  key=lambda i: (-i.get("days_open", 1),
-                                 sev_rank.get(i.get("severity", "medium"), 2))
-              )
-              facts = []
-              for item in sorted_items:
-                  emoji = SEV_EMOJI.get(item.get("severity", "medium"), "🟡")
-                  cat   = item.get("category", "")
-                  name  = f"{emoji} {cat}"
-                  val   = _subject(item) + f"\n→ {item.get('prompt', '')}"
-                  facts.append({"name": name, "value": val})
-              return facts
-
-          def post_card(owner_label: str, items: list[dict]) -> None:
-              if not items:
-                  print(f"{owner_label}: no action items today — skipping post.")
-                  return
-              color     = _card_color(items)
-              new_count = sum(1 for i in items if i.get("days_open", 1) == 1)
-              cf_count  = sum(1 for i in items if i.get("days_open", 1) > 1)
-              esc_count = sum(1 for i in items if i.get("days_open", 1) >= 3)
-              parts = [f"{len(items)} action item(s)"]
-              if cf_count:
-                  parts.append(f"{cf_count} carried forward")
-              if esc_count:
-                  parts.append(f"⚠️ {esc_count} escalated (3+ days open)")
-              subtitle = " · ".join(parts) + " — reply with action taken"
-              payload = {
-                  "@type":    "MessageCard",
-                  "@context": "https://schema.org/extensions",
-                  "themeColor": color,
-                  "summary":  f"XFreight Safety Accountability — {today:%a %b %d} — {owner_label}",
-                  "sections": [{
-                      "activityTitle":    f"📋 {owner_label} — Safety Accountability | {today:%A, %B %d, %Y}",
-                      "activitySubtitle": subtitle,
-                      "facts": _facts(items),
-                  }],
-                  "potentialAction": [{
-                      "@type": "OpenUri",
-                      "name":  "View workflow run",
-                      "targets": [{"os": "default", "uri": run_url}],
-                  }] if run_url else [],
-              }
-              resp = requests.post(webhook, json=payload, timeout=30)
-              print(f"{owner_label} card: HTTP {resp.status_code} ({len(items)} items)")
-              if resp.status_code not in range(200, 300):
-                  print(f"  Response: {resp.text[:300]}")
-
-          post_card("AUDRA",         data.get("audra", []))
-          post_card("JACKSON + DAN", data.get("ops",   []))
-          PY
+        run: python -m src.teams_adaptive_cards
 
       - name: Notify on failure
         if: failure() && steps.ct_gate.outputs.skip != '1'
