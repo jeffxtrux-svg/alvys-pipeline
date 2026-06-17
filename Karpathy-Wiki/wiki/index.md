@@ -34,6 +34,20 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 - [[Playbook — Factoring Partner Switch]] — change providers without breaking cash flow.
 - [[Playbook — Equipment Inspection Backlog]] — response to past-due tractor/trailer inspections flagged on the brief.
 
+### Safety Accountability Playbooks
+
+Per-category response guides for the 9 accountability items surfaced in the Teams morning Adaptive Cards and the daily safety brief. Each playbook covers the regulation, the FMCSA consequence, the exact decision tree (1st Coach → 2nd Verbal → 3rd Written → 4th+ Escalate), literal action scripts, documentation requirements, and escalation paths. Source: `raw/xfreight-accountability-playbooks.md`.
+
+- [[Playbook — HOS Violation]] — Hours of Service violation (49 CFR Part 395); HOS Compliance BASIC (80th percentile); standard 4-tier warning ladder; roadside OOS enters at Level 3+. Owner: Audra.
+- [[Playbook — DVIR Defect]] — DVIR defect logged by driver (49 CFR Part 396.11/396.13); equipment-focused response (repair + sign-off before dispatch); discipline only if unit dispatched with known unrepaired defect. Owner: Audra + ops.
+- [[Playbook — Coaching Needed]] — Driver has 2+ unacknowledged Samsara safety events or open coaching session not closed; 14-day unacked = Level 1 trigger; ack derived from SafetyEvents `coachingStatus`, not CoachingSessions. Owner: Audra.
+- [[Playbook — DOT Inspection — Tractors]] — Tractor OVERDUE on 120-day company policy (not the 365-day federal limit); equipment scheduling action; Audra schedules, Dan+Jackson coordinate Truk-Way dispatch; X-Trux pays. Owner: Audra (+ Dan/Jackson for Truk-Way).
+- [[Playbook — DOT Inspection — Trailers]] — Trailer OVERDUE on 120-day company policy; Logistics-owned (Dan+Jackson); Audra's brief filters trailers out of her action items. Owner: Dan + Jackson.
+- [[Playbook — DVIR Compliance]] — Missing DVIR (driver did not submit required inspection report); 49 CFR Part 396.11; driver behavior failure, not equipment defect; standard 4-tier warning ladder. Owner: Audra.
+- [[Playbook — Prior Day Logs]] — Uncertified ELD logs (driver did not sign prior-day log within 24h per 49 CFR Part 395.8); HOS Compliance BASIC (80th percentile); standard 4-tier warning ladder. Owner: Audra.
+- [[Playbook — Low Safety Score]] — Samsara composite safety score below threshold; pattern indicator across all event types; CSA Unsafe Driving BASIC (65th percentile — most sensitive BASIC); standard 4-tier warning ladder. Owner: Audra.
+- [[Playbook — Speeding]] — Time-over-posted-limit % (49 CFR Part 392.6); CSA Unsafe Driving BASIC (65th percentile); non-linear entry (>=3% enters at Level 2 minimum); Bottom Line two-week = automatic Level 2. Owner: Audra.
+
 ---
 
 ## Company Structure
