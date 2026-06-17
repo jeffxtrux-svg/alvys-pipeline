@@ -547,22 +547,24 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                                  "Step 2 — coaching conversation within 5 business days "
                                                  "with outcome of challenge/factual decision recorded.")))
 
-    # Overdue annual inspections — tractors → Safety Mgr, trailers → Dispatch
+    # Overdue annual inspections — action items trigger at 150 days (30d past the
+    # 120-day company policy). Units appear on the equipment pages at 120 days;
+    # Teams alerts and TODAY action items don't escalate until 150 days.
     if equipment:
         od_t = [r for r in (equipment.get("tractors") or [])
-                if isinstance(r.get("annual_days"), int) and r["annual_days"] < 0]
+                if isinstance(r.get("annual_days"), int) and r["annual_days"] <= -30]
         od_r = [r for r in (equipment.get("trailers") or [])
-                if isinstance(r.get("annual_days"), int) and r["annual_days"] < 0]
+                if isinstance(r.get("annual_days"), int) and r["annual_days"] <= -30]
         for r in od_t[:3]:
             unit = r.get("unit", "?")
             days = abs(r.get("annual_days", 0))
             today_items.append(_action_row("TODAY", "Safety Mgr",
-                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy)"))
+                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy — exceeded 150-day action threshold)"))
         for r in od_r[:3]:
             unit = r.get("unit", "?")
             days = abs(r.get("annual_days", 0))
             today_items.append(_action_row("TODAY", "Dispatch",
-                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy)"))
+                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy — exceeded 150-day action threshold)"))
 
     # DVIR compliance <90% last 7d → Safety Mgr per driver
     if samsara_sheets:

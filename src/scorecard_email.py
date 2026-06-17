@@ -4731,7 +4731,7 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
             parts.append(f"<span style='background:{GOODBG};color:{GOOD};font-size:11px;padding:2px 7px;border-radius:4px;'>All current</span>")
         return f"<span style='font-size:12px;font-weight:700;color:{INK};margin-right:8px;'>{label}</span>" + "".join(parts)
 
-    def _section_block(rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
+    def _section_block(due_rows, kind, overdue_a, w30_a, w60_a, overdue_r, w30_r, w60_r):
         # The primary inspection pill describes the **120-day company policy**
         # — that's the threshold XFreight tracks against and what the
         # `Needs Insp · Xd past` badges measure. The federal 365-day rule
@@ -4746,19 +4746,38 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
         summary = (f"<div style='padding:10px 0 6px;'>"
                    + "&nbsp;&nbsp;".join(parts)
                    + "</div>")
-        return (f"{_section(kind + ' &mdash; ' + str(len(rows)) + ' units')}"
+        if not due_rows:
+            all_clear = (
+                f"<div style='border-left:4px solid {GOOD};background:{GOODBG};"
+                f"border-radius:6px;padding:10px 14px;margin:8px 0;'>"
+                f"<div style='font-size:10px;letter-spacing:1.5px;font-weight:800;"
+                f"color:{GOOD};margin-bottom:4px;'>&#10003; ALL CLEAR</div>"
+                f"<div style='font-size:12px;color:{INK};'>"
+                f"All {kind.lower()} are within the 120-day inspection policy.</div></div>"
+            )
+            return (f"{_section(kind + ' &mdash; All units current on 120-day policy')}"
+                    + summary + all_clear)
+        n = len(due_rows)
+        section_label = f"{kind} &mdash; {n} {'unit' if n == 1 else 'units'} at/past 120-day policy"
+        return (f"{_section(section_label)}"
                 + summary
-                + _equipment_table(rows, kind))
+                + _equipment_table(due_rows, kind))
 
     if kind == "tractors":
+        all_rows = equipment["tractors"]
+        due_rows = [r for r in all_rows
+                    if isinstance(r.get("annual_days"), int) and r["annual_days"] <= 0]
         body = _section_block(
-            equipment["tractors"], "Tractors",
+            due_rows, "Tractors",
             equipment["tractors_overdue_annual"], equipment["tractors_warn30_annual"], equipment["tractors_warn60_annual"],
             equipment["tractors_overdue_reg"],    equipment["tractors_warn30_reg"],    equipment["tractors_warn60_reg"],
         )
     else:
+        all_rows = equipment["trailers"]
+        due_rows = [r for r in all_rows
+                    if isinstance(r.get("annual_days"), int) and r["annual_days"] <= 0]
         body = _section_block(
-            equipment["trailers"], "Trailers",
+            due_rows, "Trailers",
             equipment["trailers_overdue_annual"], equipment["trailers_warn30_annual"], equipment["trailers_warn60_annual"],
             equipment["trailers_overdue_reg"],    equipment["trailers_warn30_reg"],    equipment["trailers_warn60_reg"],
         )
@@ -4772,7 +4791,8 @@ def build_page_equipment(equipment, date_str, kind="tractors", pg=4) -> str:
              f"All DOT inspections covered by X-Trux Inc. {sort_note} "
              f"Next Oil Due marked <span style='font-style:italic;'>est</span> is the current odometer rounded up to the next "
              f"{OIL_CHANGE_INTERVAL_MI // 1000}k mark &mdash; a rough estimate until the odometer at each oil change is logged in Alvys. "
-             f"<span style='font-weight:600;'>Note: overdue units appear in the executive overview only after 30 days past due.</span></div>")
+             f"Units appear on this page when they reach the 120-day policy date. "
+             f"Teams alerts and action items escalate at 150 days (30 days past policy).</div>")
 
     return header + f"<div style='padding:8px 24px 18px;'>{body}</div>"
 
