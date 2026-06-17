@@ -148,10 +148,18 @@ jobs:
         if: steps.ct_gate.outputs.skip != '1' && steps.marker.outputs.needs_send == '1'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          # Pass the production recipient lists explicitly. Without this the
+          # email workflow sees workflow_dispatch with empty inputs and falls
+          # back to jeff-only "quiet test" routing — which would silently
+          # bypass Audra TO + JB/Jeff CC on a recovery morning.
+          SAFETY_PROD_TO: ${{ secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net' }}
+          SAFETY_PROD_CC: ${{ secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
         run: |
           echo "Dispatching safety_compliance_email.yml via gh workflow run…"
-          gh workflow run safety_compliance_email.yml --ref main
-          echo "✓ Dispatched. Brief should land in ~3-5 minutes."
+          gh workflow run safety_compliance_email.yml --ref main \
+            --field "recipients=$SAFETY_PROD_TO" \
+            --field "cc_recipients=$SAFETY_PROD_CC"
+          echo "✓ Dispatched to production TO+CC lists. Brief should land in ~3-5 minutes."
 
       - name: Healthcheck summary
         if: steps.ct_gate.outputs.skip != '1'
