@@ -1,0 +1,97 @@
+# One-shot workflow — creates Accountability Log.xlsx in OneDrive/Safety/
+# and sets up the ActionLog table ready for Power Automate to write to.
+# Run once via workflow_dispatch; safe to re-run (uses conflictBehavior: replace).
+
+name: Create Accountability Log (one-time setup)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  create_log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install openpyxl msal requests python-dotenv
+
+      - name: Create and upload Accountability Log.xlsx
+        env:
+          AZURE_TENANT_ID:    ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:    ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:  ${{ secrets.ONEDRIVE_USER_UPN }}
+        run: |
+          python - <<'PY'
+          import io, os, requests
+          from openpyxl import Workbook
+          from openpyxl.worksheet.table import Table, TableStyleInfo
+          from openpyxl.utils import get_column_letter
+          from urllib.parse import quote
+          from src.onedrive_upload import get_token
+
+          # ── Build the workbook ──────────────────────────────────────────────
+          wb = Workbook()
+          ws = wb.active
+          ws.title = "ActionLog"
+
+          headers = ["Date", "Owner", "Category", "Driver/Unit",
+                     "Action Taken", "Notes", "Submitted At"]
+          ws.append(headers)
+
+          # Column widths
+          widths = [12, 18, 32, 24, 28, 40, 20]
+          for i, w in enumerate(widths, 1):
+              ws.column_dimensions[get_column_letter(i)].width = w
+
+          # Excel Table so Power Automate can target it by name
+          tbl = Table(displayName="ActionLog", ref="A1:G1")
+          tbl.tableStyleInfo = TableStyleInfo(
+              name="TableStyleMedium9", showFirstColumn=False,
+              showLastColumn=False, showRowStripes=True, showColumnStripes=False
+          )
+          ws.add_table(tbl)
+
+          buf = io.BytesIO()
+          wb.save(buf)
+          buf.seek(0)
+          data = buf.read()
+
+          # ── Upload via Microsoft Graph ──────────────────────────────────────
+          tenant  = os.environ["AZURE_TENANT_ID"]
+          cid     = os.environ["AZURE_CLIENT_ID"]
+          secret  = os.environ["AZURE_CLIENT_SECRET"]
+          upn     = os.environ["ONEDRIVE_USER_UPN"]
+
+          tok  = get_token(tenant, cid, secret)
+          hdrs = {"Authorization": f"Bearer {tok}",
+                  "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+          upn_enc  = quote(upn, safe="@.")
+          dest     = "Safety/Accountability Log.xlsx"
+          dest_enc = "/".join(quote(p, safe="") for p in dest.split("/"))
+          url = (f"https://graph.microsoft.com/v1.0"
+                 f"/users/{upn_enc}/drive/root:/{dest_enc}:/content"
+                 f"?@microsoft.graph.conflictBehavior=replace")
+
+          resp = requests.put(url, headers=hdrs, data=data, timeout=60)
+          if resp.status_code in (200, 201):
+              print(f"✓ Uploaded to OneDrive/Safety/Accountability Log.xlsx  [{len(data):,} bytes]")
+          else:
+              print(f"✗ Upload failed [{resp.status_code}]: {resp.text[:500]}")
+              raise SystemExit(1)
+          PY
