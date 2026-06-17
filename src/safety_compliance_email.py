@@ -727,6 +727,409 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
 
 
 # ----------------------------------------------------------------------
+# Structured accountability items — for Teams Adaptive Cards + JSON output
+# ----------------------------------------------------------------------
+
+_ACC_FOLDER = "Safety"
+
+
+def _acc_onedrive_path(d: datetime.date) -> str:
+    return f"{_ACC_FOLDER}/accountability-{d.isoformat()}.json"
+
+
+def _acc_local_path(d: datetime.date) -> Path:
+    return Path(f"output/accountability-{d.isoformat()}.json")
+
+
+def _accountability_key(item: dict) -> str:
+    cat  = (item.get("category") or "").lower().strip()
+    drv  = (item.get("driver") or "").lower().strip()
+    unit = (item.get("unit") or "").lower().strip()
+    if "dvir defect" in cat:
+        detail = (item.get("detail") or "").lower().strip()
+        return f"{cat}|{drv or unit}|{detail}"
+    if "needs disposition" in cat:
+        detail = (item.get("detail") or "").lower().strip()
+        return f"{cat}|{drv}|{detail}"
+    return f"{cat}|{drv or unit}"
+
+
+def _load_accountability_history(tok: str, upn: str, today: datetime.date,
+                                 days_back: int = 30) -> list:
+    """Return flat list of all items from last N days with _date added."""
+    all_items: list[dict] = []
+    for d in range(1, days_back + 1):
+        date = today - datetime.timedelta(days=d)
+        data = None
+        local = _acc_local_path(date)
+        if local.exists():
+            try:
+                data = json.loads(local.read_text())
+            except Exception:
+                pass
+        if data is None:
+            try:
+                raw = download_file(tok, upn, _acc_onedrive_path(date))
+                data = json.loads(raw)
+            except Exception:
+                pass
+        if data:
+            for item in (data.get("audra") or []) + (data.get("ops") or []):
+                cp = dict(item)
+                cp["_date"] = date.isoformat()
+                all_items.append(cp)
+    return all_items
+
+
+def _count_occurrences(history: list, driver_or_unit: str, category: str) -> int:
+    """Count unique days this driver/unit had this category in history."""
+    cat_norm = category.lower().strip()
+    du_norm  = (driver_or_unit or "").lower().strip()
+    seen_dates: set[str] = set()
+    for item in history:
+        item_cat  = (item.get("category") or "").lower().strip()
+        item_du   = (item.get("driver") or item.get("unit") or "").lower().strip()
+        item_date = item.get("_date", "")
+        if item_cat == cat_norm and item_du == du_norm and item_date not in seen_dates:
+            seen_dates.add(item_date)
+    return len(seen_dates)
+
+
+def _occurrence_label(n: int, category: str) -> str:
+    """Return escalation label for occurrence count > 1."""
+    if n <= 1:
+        return ""
+    cat = category.lower()
+    if "inspection" in cat or "dvir defect" in cat:
+        return f" ({n}x this unit in 30d — escalate if no action)"
+    if n == 2:
+        return " ⚠️ 2nd occurrence in 30d — verbal warning required"
+    if n == 3:
+        return " 🔴 3rd occurrence in 30d — written warning required"
+    return f" 🚨 {n}th occurrence in 30d — escalate to JB immediately"
+
+
+def _build_accountability_structured(
+    m: dict,
+    samsara: dict | None,
+    samba,
+    equipment,
+    alvys_drivers=None,
+    samsara_sheets=None,
+) -> tuple[list[dict], list[dict]]:
+    """Build structured accountability items for Teams Adaptive Cards.
+
+    Returns (audra_items, ops_items).  Each item is a dict with keys:
+        category, severity, driver, unit, detail, prompt
+    This mirrors the HTML built by _build_action_items() but in machine-readable form.
+    """
+    detail     = (samsara or {}).get("detail", {}) or {}
+    fleet      = (samsara or {}).get("fleet", {}) or {}
+    scores_all = fleet.get("scores_all") or []
+
+    audra_items: list[dict] = []
+    ops_items:   list[dict] = []
+
+    # HOS violations in last 24h
+    if m.get("hos_24h", 0) > 0:
+        n = m["hos_24h"]
+        item = {
+            "category": "HOS Violation",
+            "severity": "high",
+            "driver":   None,
+            "unit":     None,
+            "detail":   f"{n} violation{'s' if n != 1 else ''} in last 24h",
+            "prompt":   "Has driver been counseled? What corrective action was taken?",
+        }
+        ops_items.append(item)
+        audra_items.append(item)
+
+    # Open DVIR defects
+    unique_dvirs = _dedup_dvirs(detail.get("dvir", []) or [])
+    for r in unique_dvirs:
+        unit   = r.get("unit") or "?"
+        defect = r.get("defect") or "unspecified defect"
+        item = {
+            "category": "DVIR Defect",
+            "severity": "critical",
+            "driver":   r.get("driver") or None,
+            "unit":     unit,
+            "detail":   defect,
+            "prompt":   "Has defect been repaired and cleared in Samsara?",
+        }
+        audra_items.append(item)
+        ops_items.append(item)
+
+    # Safety events needing coaching (coaching_list, not yet acked)
+    coaching_list = (samsara or {}).get("coaching_list") or []
+    for c in coaching_list:
+        if c.get("acked"):
+            continue
+        drv   = c.get("driver", "Unknown")
+        n     = c.get("events", 1)
+        types = ", ".join(c.get("types") or []) or "safety event"
+        ops_items.append({
+            "category": "Safety Event — Coaching Needed",
+            "severity": "high",
+            "driver":   drv,
+            "unit":     None,
+            "detail":   f"{n} event{'s' if n != 1 else ''}: {types}",
+            "prompt":   "When will coaching be completed? What corrective action was taken?",
+        })
+
+    # Safety events needing disposition (from detail.events where status needs action)
+    _needs_disp_statuses = {
+        "needsCoaching", "needs_coaching", "NEEDS_COACHING",
+        "needsDisposition", "needs_disposition", "NEEDS_DISPOSITION",
+    }
+    for ev in (detail.get("events") or []):
+        if ev.get("status") not in _needs_disp_statuses:
+            continue
+        drv   = ev.get("driver") or "Unknown"
+        etype = ev.get("type") or ev.get("event_type") or "safety event"
+        edate = ""
+        raw_ts = ev.get("time") or ev.get("event_time") or ev.get("date") or ""
+        if raw_ts:
+            try:
+                edate = " on " + pd.Timestamp(raw_ts).strftime("%-m/%-d/%y")
+            except Exception:
+                pass
+        ops_items.append({
+            "category": "Safety Event — Needs Disposition",
+            "severity": "high",
+            "driver":   drv,
+            "unit":     None,
+            "detail":   f"{etype}{edate}",
+            "prompt":   "Has this event been dispositioned in Samsara? What coaching action was taken?",
+        })
+
+    # DOT inspection — Tractors (annual_days < 0 → overdue); both audra + ops
+    if equipment:
+        for r in (equipment.get("tractors") or []):
+            annual_days = r.get("annual_days")
+            if not isinstance(annual_days, int) or annual_days >= 0:
+                continue
+            unit = r.get("unit", "?")
+            over = abs(annual_days)
+            if over >= 120:
+                sev        = "critical"
+                prompt     = "UNIT IS OUT OF SERVICE. Must be inspected before moving."
+                detail_str = f"{over}d past 120d policy — DEADLINED"
+            elif over > 60:
+                sev        = "critical"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
+            else:
+                sev        = "high"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
+            item = {
+                "category": "DOT Inspection — Tractor",
+                "severity": sev,
+                "driver":   None,
+                "unit":     unit,
+                "detail":   detail_str,
+                "prompt":   prompt,
+            }
+            audra_items.append(item)
+            ops_items.append(item)
+
+        # DOT inspection — Trailers (ops only)
+        for r in (equipment.get("trailers") or []):
+            annual_days = r.get("annual_days")
+            if not isinstance(annual_days, int) or annual_days >= 0:
+                continue
+            unit = r.get("unit", "?")
+            over = abs(annual_days)
+            if over >= 120:
+                sev        = "critical"
+                prompt     = "UNIT IS OUT OF SERVICE. Must be inspected before moving."
+                detail_str = f"{over}d past 120d policy — DEADLINED"
+            elif over > 60:
+                sev        = "critical"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
+            else:
+                sev        = "high"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
+            ops_items.append({
+                "category": "DOT Inspection — Trailer",
+                "severity": sev,
+                "driver":   None,
+                "unit":     unit,
+                "detail":   detail_str,
+                "prompt":   prompt,
+            })
+
+    # DVIR compliance <90% last 7d
+    if samsara_sheets:
+        try:
+            comp_rows = compute_inspection_compliance(samsara_sheets, days=7)
+            for row in comp_rows:
+                exp  = row.get("expected_total", 0)
+                done = row.get("done_total", 0)
+                if exp <= 0:
+                    continue
+                pct = round(done / exp * 100)
+                if pct < 90:
+                    drv = row.get("driver", "Unknown")
+                    if pct == 0:
+                        sev = "critical"
+                    elif pct < 50:
+                        sev = "high"
+                    else:
+                        sev = "medium"
+                    ops_items.append({
+                        "category": "DVIR Compliance",
+                        "severity": sev,
+                        "driver":   drv,
+                        "unit":     None,
+                        "detail":   f"{pct}% completion last 7d ({done}/{exp})",
+                        "prompt":   "Has driver been notified? What corrective action was taken?",
+                    })
+        except Exception:
+            pass
+
+    # Prior-day logs not certified (on duty yesterday/today)
+    uncert       = detail.get("hos_uncert", []) or []
+    _today_d     = pd.Timestamp.now().date()
+    _yesterday_d = _today_d - pd.Timedelta(days=1)
+
+    def _span_end_ac(r: dict):
+        s   = r.get("span", "")
+        end = s.split("–")[-1].strip() if "–" in s else s.strip()
+        try:
+            return pd.to_datetime(end).date()
+        except Exception:
+            return None
+
+    on_duty_now = [
+        r for r in uncert
+        if (_span_end_ac(r) or pd.Timestamp.min.date()) >= _yesterday_d
+    ]
+    for r in on_duty_now:
+        drv  = r.get("driver", "Unknown Driver")
+        days = r.get("days_missing", 1)
+        ops_items.append({
+            "category": "Prior Day Logs Not Certified",
+            "severity": "medium",
+            "driver":   drv,
+            "unit":     None,
+            "detail":   f"{days}d outstanding",
+            "prompt":   "Has driver been notified to certify logs? What corrective action was taken?",
+        })
+
+    # Low safety score (<90)
+    for r in scores_all:
+        score = r.get("score")
+        if score is None or score >= 90:
+            continue
+        drv = r.get("driver", "Unknown")
+        ops_items.append({
+            "category": "Low Safety Score",
+            "severity": "high",
+            "driver":   drv,
+            "unit":     None,
+            "detail":   f"Score {score}",
+            "prompt":   "When will coaching be completed? Improvement plan documented?",
+        })
+
+    # Speeding (speed_pct_7d >= 1%)
+    for r in scores_all:
+        pct_7d = r.get("speed_pct_7d")
+        if not _isnum(pct_7d) or pct_7d < 1.0:
+            continue
+        drv = r.get("driver", "Unknown")
+        ops_items.append({
+            "category": "Speeding",
+            "severity": "high",
+            "driver":   drv,
+            "unit":     None,
+            "detail":   f"{pct_7d:.1f}% time speeding last 7d",
+            "prompt":   "Has driver been coached on speeding? What corrective action was taken?",
+        })
+
+    return audra_items, ops_items
+
+
+def _write_accountability_json(
+    today: datetime.date,
+    audra_items: list[dict],
+    ops_items: list[dict],
+    history: list[dict],
+    tok: str,
+    upn: str,
+) -> None:
+    """Enrich items with carry-forward (days_open) and occurrence counts,
+    then write to output/ and upload to OneDrive/Safety/."""
+    yesterday = today - datetime.timedelta(days=1)
+
+    # Build yesterday's key→days_open map for carry-forward
+    yesterday_keys: dict[str, int] = {}
+    for item in history:
+        if item.get("_date") == yesterday.isoformat():
+            key = _accountability_key(item)
+            yesterday_keys[key] = item.get("days_open", 1)
+
+    def _enrich(items: list[dict]) -> list[dict]:
+        enriched = []
+        for item in items:
+            item = dict(item)
+            key = _accountability_key(item)
+            prev_days = yesterday_keys.get(key, 0)
+            item["days_open"] = prev_days + 1 if prev_days else 1
+
+            drv_or_unit = item.get("driver") or item.get("unit") or ""
+            occ = _count_occurrences(history, drv_or_unit, item.get("category", ""))
+            item["occurrence"] = occ + 1  # +1 for today
+
+            label = _occurrence_label(item["occurrence"], item.get("category", ""))
+            if label:
+                item["prompt"] = item.get("prompt", "") + label
+
+            # Auto-escalate severity for repeat driver-based offenders
+            cat = (item.get("category") or "").lower()
+            if "inspection" not in cat and "dvir defect" not in cat:
+                if item["occurrence"] >= 3 and item.get("severity") != "critical":
+                    item["severity"] = "critical"
+                elif item["occurrence"] == 2 and item.get("severity") == "medium":
+                    item["severity"] = "high"
+
+            enriched.append(item)
+        return enriched
+
+    audra_enriched = _enrich(audra_items)
+    ops_enriched   = _enrich(ops_items)
+
+    payload = {
+        "date":  today.isoformat(),
+        "audra": audra_enriched,
+        "ops":   ops_enriched,
+    }
+
+    # Write locally (teams_adaptive_cards.py reads from output/)
+    local = _acc_local_path(today)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(json.dumps(payload, indent=2))
+    log.info("Accountability JSON written locally: %s (%d audra, %d ops)",
+             local, len(audra_enriched), len(ops_enriched))
+
+    # Upload to OneDrive/Safety/
+    try:
+        ensure_folder(tok, upn, _ACC_FOLDER)
+        upload_file(
+            tok, upn,
+            folder_path=_ACC_FOLDER,
+            filename=f"accountability-{today.isoformat()}.json",
+            file_path=local,
+        )
+        log.info("Accountability JSON uploaded to OneDrive/%s", _acc_onedrive_path(today))
+    except Exception as exc:
+        log.warning("Could not upload accountability JSON: %s", exc)
+
+
+# ----------------------------------------------------------------------
 # ALL CLEAR empty-state helper
 # ----------------------------------------------------------------------
 
@@ -1968,6 +2371,19 @@ def main() -> int:
     yesterday = today - datetime.timedelta(days=1)
     prev_scores = _read_prev_scores(tok, upn, yesterday)
     log.info("Previous scores loaded: %d drivers", len(prev_scores))
+
+    # Build structured accountability items (for Teams cards + history)
+    m_dict = compute_metrics(samsara)
+    audra_items, ops_items = _build_accountability_structured(
+        m_dict, samsara, samba, equipment, alvys_drivers, samsara_sheets)
+    log.info("Accountability items: %d audra, %d ops", len(audra_items), len(ops_items))
+
+    # Load history for carry-forward + occurrence counting
+    acc_history = _load_accountability_history(tok, upn, today)
+    log.info("Accountability history loaded: %d items over 30d", len(acc_history))
+
+    # Write accountability JSON (local output/ + OneDrive/Safety/)
+    _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn)
 
     email_html, pdf_html = _build_html_report(
         samsara, samsara_sheets, samba, csa, equipment, alvys_drivers,

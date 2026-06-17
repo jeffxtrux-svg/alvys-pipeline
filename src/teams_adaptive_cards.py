@@ -161,11 +161,17 @@ def _item_block(item: dict, idx: int) -> dict:
     prompt = item.get("prompt", "")
     days   = item.get("days_open", 1)
 
+    occ = item.get("occurrence", 1)
+
     header = f"{emoji} **{cat}**"
     if days >= 3:
         header += f"  ⚠️ Day {days} — ESCALATED"
     elif days > 1:
         header += f"  ↩ Day {days} open"
+    if occ >= 3:
+        header += f"  🚨 #{occ} in 30d"
+    elif occ == 2:
+        header += f"  ⚠️ 2nd in 30d"
 
     subject = (f"{drv} — " if drv else "") + detail
 
