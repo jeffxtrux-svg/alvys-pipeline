@@ -773,6 +773,8 @@ def _build_carried_forward(items: list) -> str:
             if owner else ""
         )
 
+        drv_html = (f"<span style='text-transform:uppercase;'>{drv}</span> &mdash; "
+                    if drv else "")
         rows_html += (
             f"<div style='display:flex;align-items:flex-start;gap:10px;"
             f"padding:10px 0;border-bottom:1px solid {LINE};'>"
@@ -782,8 +784,7 @@ def _build_carried_forward(items: list) -> str:
             f"DAY {days}</span>"
             f"<div>"
             f"<div style='font-size:12px;color:{INK};font-weight:700;line-height:1.4;'>"
-            f"{'<span style=\"text-transform:uppercase;\">' + drv + '</span> — ' if drv else ''}"
-            f"{cat}{esc_html}{owner_html}</div>"
+            f"{drv_html}{cat}{esc_html}{owner_html}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-top:2px;'>{detail}</div>"
             f"</div></div>"
         )
