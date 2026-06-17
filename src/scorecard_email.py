@@ -8260,6 +8260,66 @@ class _ReportResult(str):
 # ----------------------------------------------------------------------
 # Email send (Microsoft Graph)
 # ----------------------------------------------------------------------
+def _build_email_body_pages(full_html: str, pages: list[int]) -> str:
+    """Extract specific PDF pages from the brief HTML and wrap them as an
+    email body. Pages are 1-indexed and refer to the wrap() blocks separated
+    by the unique top-level page-break div.
+
+    The brief assembles its body as:
+        <doc opening>{wrap(p1)}{pb}{wrap(p2)}{pb}...{wrap(pN)}</body></html>
+
+    Splitting on the exact pb string gives us each wrap() block. Block 0 has
+    the doc opening prepended; the last block has </body></html> appended.
+    We strip those so each chunk is just its <div class='brief-wrap'>...</div>.
+    """
+    pb_marker = "<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
+    body_start = "<body style="
+    body_open_end = full_html.find(">", full_html.find(body_start)) + 1
+    body_close_idx = full_html.rfind("</body>")
+    body_inner = full_html[body_open_end:body_close_idx]
+    chunks = body_inner.split(pb_marker)
+    # Filter out empty/whitespace-only trailing chunk if present
+    chunks = [c.strip() for c in chunks if c.strip()]
+    selected: list[str] = []
+    for n in pages:
+        idx = n - 1
+        if 0 <= idx < len(chunks):
+            selected.append(chunks[idx])
+
+    # Preserve the in-document mobile_css block so the brief renders the
+    # same way it does standalone. The print_css is PDF-only and irrelevant
+    # to email rendering.
+    head_close = full_html.find("</head>")
+    head_inner = full_html[full_html.find("<head>") + len("<head>"):head_close]
+    # Keep only the mobile-friendly <style> block, drop the print_css.
+    head_keep = head_inner
+
+    cover = (
+        "<div style=\"font-family:-apple-system,'Helvetica Neue',Helvetica,"
+        "Arial,sans-serif;font-size:14px;color:#1a1a1a;line-height:1.5;"
+        "padding:18px 24px 6px;max-width:760px;margin:0 auto;\">"
+        "<div style=\"font-weight:700;letter-spacing:1.5px;font-size:11px;"
+        "color:#c41e2a;text-transform:uppercase;margin-bottom:10px;\">"
+        "XFreight &middot; Executive Brief</div>"
+        f"<p style=\"margin:0 0 6px;\">Daily XFreight Executive Brief "
+        f"for <b>{datetime.now():%A, %B %d, %Y}</b>.</p>"
+        "<p style=\"margin:0;color:#6b6b6b;font-size:12px;\">"
+        "Key pages are inline below. The full report is attached as a PDF."
+        "</p>"
+        "</div>"
+    )
+
+    body = cover + ("<div style='height:14px;'></div>").join(selected)
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"{head_keep}</head>"
+        f"<body style='margin:0;background:#f3f3f3;{FONT}'>"
+        f"{body}"
+        "</body></html>"
+    )
+
+
 def render_pdf(html: str) -> bytes | None:
     """Render the brief HTML to PDF bytes via WeasyPrint.
 
@@ -8707,25 +8767,14 @@ def main() -> int:
             "content_bytes": pdf_bytes,
             "mime": "application/pdf",
         })
-    # When the PDF rendered successfully, the email body is a short cover
-    # note pointing at the attachment. The full inline HTML body is only
-    # used as a fallback when PDF rendering failed, so the brief still
-    # reaches the recipient one way or another.
+    # When the PDF rendered successfully, the email body contains PDF pages
+    # 1-5 (executive overview + bill-by-bill matching + SambaSafety + Samsara
+    # safety detail) plus page 11 (fleet idle). The full report still ships
+    # as a PDF attachment for everything else. If PDF rendering failed, the
+    # fallback below uses the entire inline HTML body so the brief reaches
+    # the recipient one way or another.
     if pdf_bytes:
-        body_html = (
-            "<div style=\"font-family:-apple-system,'Helvetica Neue',Helvetica,"
-            "Arial,sans-serif;font-size:14px;color:#1a1a1a;line-height:1.5;"
-            "padding:24px;max-width:560px;\">"
-            "<div style=\"font-weight:700;letter-spacing:1.5px;font-size:11px;"
-            "color:#c41e2a;text-transform:uppercase;margin-bottom:14px;\">"
-            "XFreight &middot; Executive Brief</div>"
-            f"<p style=\"margin:0 0 12px;\">Your daily XFreight Executive Brief "
-            f"for <b>{datetime.now():%A, %B %d, %Y}</b> is attached as a PDF.</p>"
-            "<p style=\"margin:0;color:#6b6b6b;font-size:12.5px;\">"
-            "If the attachment doesn&rsquo;t open, reply to this email and "
-            "we&rsquo;ll resend.</p>"
-            "</div>"
-        )
+        body_html = _build_email_body_pages(str(html), pages=[1, 2, 3, 4, 5, 11])
     else:
         body_html = str(html)
     send_email(token, from_upn, to_emails, subject, body_html, attachments=attachments)
