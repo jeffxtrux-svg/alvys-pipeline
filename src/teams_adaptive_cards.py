@@ -1,25 +1,20 @@
 """Post per-owner Adaptive Cards to the Teams Safety & Compliance channel.
 
-Reads output/safety-accountability-{date}.json written by
+Reads output/accountability-{date}.json written by
 safety_compliance_email.py and posts one full-width Adaptive Card per
 owner (Audra first, then Jackson + Dan).
 
-Adaptive Cards vs the old MessageCard:
-  - Rich visual hierarchy: colored headers, per-item containers, severity
-    color coding, day-open badges.
-  - Per-item action dropdowns scoped to the category (DOT inspection items
-    get scheduling choices; safety events get coaching choices, etc.).
-  - Action.Http submit button POSTs structured JSON to a Power Automate
-    HTTP trigger (TEAMS_RESPONSE_WEBHOOK) so responses are logged to
-    OneDrive automatically.  Falls back to Action.OpenUrl (workflow run
-    link) when the secret is not set.
-  - msteams.width="Full" so the card spans the full channel width on
-    both desktop and mobile.
+Each card is a read-only summary of today's action items with severity
+badges, days-open carry-forward, and occurrence escalation flags.  A
+"📋 Record an action" button links to a Microsoft Form (TEAMS_FORM_URL)
+where the owner logs what they did; the form's Power Automate flow
+writes a row into Accountability Log.xlsx in OneDrive/Safety/ — no
+Premium license required.
 
 GitHub Secrets used:
-  TEAMS_SAFETY_WEBHOOK    — incoming webhook URL (existing)
-  TEAMS_RESPONSE_WEBHOOK  — Power Automate HTTP trigger URL (optional;
-                            enables structured response capture)
+  TEAMS_SAFETY_WEBHOOK  — incoming webhook URL
+  TEAMS_FORM_URL        — Microsoft Form fill-in URL (optional; button
+                          is hidden when not set)
 """
 
 import datetime
@@ -44,114 +39,11 @@ _SEV_RANK  = {"critical": 0, "high": 1, "medium": 2}
 
 
 # ---------------------------------------------------------------------------
-# Category-specific action choices
-# Shown in the per-item ChoiceSet so Audra / Jackson+Dan pick what they did.
-# ---------------------------------------------------------------------------
-
-def _choices_for(category: str) -> list[dict]:
-    cat = category.lower()
-    if "dot inspection" in cat:
-        return [
-            {"title": "Inspection scheduled — date set",  "value": "insp_scheduled"},
-            {"title": "Inspection scheduled — date TBD",  "value": "insp_scheduled_tbd"},
-            {"title": "Inspection completed",             "value": "insp_completed"},
-            {"title": "Unit deadlined / out of service",  "value": "deadlined"},
-            {"title": "Escalated to JB",                  "value": "escalated_jb"},
-            {"title": "Not yet actioned",                 "value": "pending"},
-        ]
-    if "safety event" in cat and "disposition" in cat:
-        return [
-            {"title": "Coached in Samsara",           "value": "coached_samsara"},
-            {"title": "Coached in person",            "value": "coached_person"},
-            {"title": "Verbal warning issued",        "value": "verbal_warning"},
-            {"title": "Written warning issued",       "value": "written_warning"},
-            {"title": "Dismissed — not driver fault", "value": "dismissed"},
-            {"title": "Escalated to JB",              "value": "escalated_jb"},
-            {"title": "Not yet actioned",             "value": "pending"},
-        ]
-    if "safety event" in cat or "coached" in cat:
-        return [
-            {"title": "Coaching completed in Samsara", "value": "coached_samsara"},
-            {"title": "Coaching completed in person",  "value": "coached_person"},
-            {"title": "Written warning issued",        "value": "written_warning"},
-            {"title": "Escalated to JB",               "value": "escalated_jb"},
-            {"title": "Not yet actioned",              "value": "pending"},
-        ]
-    if "hos violation" in cat:
-        return [
-            {"title": "Driver counseled",        "value": "counseled"},
-            {"title": "Verbal warning issued",   "value": "verbal_warning"},
-            {"title": "Written warning issued",  "value": "written_warning"},
-            {"title": "Escalated to JB",         "value": "escalated_jb"},
-            {"title": "Not yet actioned",        "value": "pending"},
-        ]
-    if "dvir compliance" in cat:
-        return [
-            {"title": "Driver notified to complete inspections", "value": "notified"},
-            {"title": "Driver counseled",                        "value": "counseled"},
-            {"title": "Written warning issued",                  "value": "written_warning"},
-            {"title": "Not yet actioned",                        "value": "pending"},
-        ]
-    if "prior day logs" in cat:
-        return [
-            {"title": "Driver notified to certify logs", "value": "notified"},
-            {"title": "Driver counseled",                "value": "counseled"},
-            {"title": "Not yet actioned",                "value": "pending"},
-        ]
-    if "cdl" in cat:
-        return [
-            {"title": "Renewal appointment scheduled", "value": "scheduled"},
-            {"title": "Renewal completed",             "value": "completed"},
-            {"title": "Driver pulled from dispatch",   "value": "pulled"},
-            {"title": "Escalated to JB",               "value": "escalated_jb"},
-            {"title": "Not yet actioned",              "value": "pending"},
-        ]
-    if "med card" in cat:
-        return [
-            {"title": "DOT physical scheduled", "value": "scheduled"},
-            {"title": "DOT physical completed", "value": "completed"},
-            {"title": "Driver pulled from dispatch", "value": "pulled"},
-            {"title": "Escalated to JB",            "value": "escalated_jb"},
-            {"title": "Not yet actioned",           "value": "pending"},
-        ]
-    if "disqualified" in cat:
-        return [
-            {"title": "Driver pulled from dispatch", "value": "pulled"},
-            {"title": "Termination initiated",       "value": "terminated"},
-            {"title": "Escalated to JB",             "value": "escalated_jb"},
-            {"title": "Not yet actioned",            "value": "pending"},
-        ]
-    if "dvir defect" in cat:
-        return [
-            {"title": "Defect repaired — cleared in Samsara", "value": "repaired"},
-            {"title": "Repair scheduled",                     "value": "repair_scheduled"},
-            {"title": "Unit taken out of service",            "value": "out_of_service"},
-            {"title": "Not yet actioned",                     "value": "pending"},
-        ]
-    if "low safety score" in cat or "speeding" in cat:
-        return [
-            {"title": "Coaching completed",      "value": "coached"},
-            {"title": "Verbal warning issued",   "value": "verbal_warning"},
-            {"title": "Written warning issued",  "value": "written_warning"},
-            {"title": "Improvement plan set",    "value": "plan_set"},
-            {"title": "Escalated to JB",         "value": "escalated_jb"},
-            {"title": "Not yet actioned",        "value": "pending"},
-        ]
-    # Default
-    return [
-        {"title": "Actioned — see notes", "value": "actioned"},
-        {"title": "Driver notified",      "value": "notified"},
-        {"title": "Escalated to JB",      "value": "escalated_jb"},
-        {"title": "Not yet actioned",     "value": "pending"},
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Card builder
 # ---------------------------------------------------------------------------
 
-def _item_block(item: dict, idx: int) -> dict:
-    """One Container block per accountability item with choice input."""
+def _item_block(item: dict) -> dict:
+    """One Container block per accountability item (read-only)."""
     sev    = item.get("severity", "medium")
     emoji  = _SEV_EMOJI.get(sev, "🟡")
     color  = _SEV_COLOR.get(sev, "Accent")
@@ -160,8 +52,7 @@ def _item_block(item: dict, idx: int) -> dict:
     detail = item.get("detail", "")
     prompt = item.get("prompt", "")
     days   = item.get("days_open", 1)
-
-    occ = item.get("occurrence", 1)
+    occ    = item.get("occurrence", 1)
 
     header = f"{emoji} **{cat}**"
     if days >= 3:
@@ -201,14 +92,6 @@ def _item_block(item: dict, idx: int) -> dict:
                 "spacing": "Small",
                 "color": "Default",
             },
-            {
-                "type": "Input.ChoiceSet",
-                "id": f"action_{idx}",
-                "placeholder": "Select action taken…",
-                "value": "pending",
-                "choices": _choices_for(cat),
-                "spacing": "Small",
-            },
         ],
     }
 
@@ -218,17 +101,16 @@ def build_owner_card(
     items: list[dict],
     today: datetime.date,
     run_url: str = "",
-    response_webhook: str = "",
+    form_url: str = "",
 ) -> dict:
     """Return the full Teams Adaptive Card payload for one owner."""
     if not items:
         return {}
 
-    sev_rank = _SEV_RANK
     sorted_items = sorted(
         items,
         key=lambda i: (-i.get("days_open", 1),
-                       sev_rank.get(i.get("severity", "medium"), 2)),
+                       _SEV_RANK.get(i.get("severity", "medium"), 2)),
     )
 
     n        = len(items)
@@ -245,7 +127,6 @@ def build_owner_card(
         parts.append(f"⚠️ {esc_cnt} escalated (3+ days open)")
     subtitle = " · ".join(parts)
 
-    # Header
     body: list[dict] = [
         {
             "type": "Container",
@@ -279,45 +160,15 @@ def build_owner_card(
         }
     ]
 
-    # Per-item blocks
-    for idx, item in enumerate(sorted_items):
-        body.append(_item_block(item, idx))
-
-    # General notes input
-    body.append({
-        "type": "Input.Text",
-        "id": "notes",
-        "label": "Notes / next steps",
-        "placeholder": "Dates, contacts, follow-up actions, escalations…",
-        "isMultiline": True,
-        "spacing": "Large",
-        "separator": True,
-    })
-
-    # Build Action.Http body template — references each per-item input.
-    # Teams substitutes ${input_id} with the user's selection before POSTing.
-    action_entries = ", ".join(
-        f'"item_{idx}": {{"category": {json.dumps(it.get("category",""))}, '
-        f'"driver": {json.dumps(it.get("driver") or it.get("unit") or "")}, '
-        f'"action": "${{{f"action_{idx}"}}}"}}'
-        for idx, it in enumerate(sorted_items)
-    )
-    http_body = (
-        f'{{"owner": {json.dumps(owner_label)}, '
-        f'"date": "{today.isoformat()}", '
-        f'"notes": "${{notes}}", '
-        f'"items": {{{action_entries}}}}}'
-    )
+    for item in sorted_items:
+        body.append(_item_block(item))
 
     actions: list[dict] = []
-    if response_webhook:
+    if form_url:
         actions.append({
-            "type": "Action.Http",
-            "title": "✓ Submit actions",
-            "method": "POST",
-            "url": response_webhook,
-            "headers": [{"name": "Content-Type", "value": "application/json"}],
-            "body": http_body,
+            "type": "Action.OpenUrl",
+            "title": "📋 Record an action",
+            "url": form_url,
             "style": "positive",
         })
     if run_url:
@@ -356,7 +207,7 @@ def post_adaptive_cards(
     acc_path: Path,
     webhook: str,
     run_url: str = "",
-    response_webhook: str = "",
+    form_url: str = "",
 ) -> None:
     """Read accountability JSON and POST Adaptive Cards to Teams webhook."""
     if not webhook:
@@ -378,7 +229,7 @@ def post_adaptive_cards(
         if not items:
             print(f"{label}: no action items today — skipping card.")
             return
-        payload = build_owner_card(label, items, today, run_url, response_webhook)
+        payload = build_owner_card(label, items, today, run_url, form_url)
         if not payload:
             return
         resp = _requests.post(webhook, json=payload, timeout=30)
@@ -395,22 +246,21 @@ def post_adaptive_cards(
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    webhook          = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
-    run_url          = os.environ.get("RUN_URL", "").strip()
-    response_webhook = os.environ.get("TEAMS_RESPONSE_WEBHOOK", "").strip()
+    webhook  = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
+    run_url  = os.environ.get("RUN_URL", "").strip()
+    form_url = os.environ.get("TEAMS_FORM_URL", "").strip()
 
     today = datetime.date.today()
-    acc_path = Path(f"output/safety-accountability-{today.isoformat()}.json")
+    acc_path = Path(f"output/accountability-{today.isoformat()}.json")
     if not acc_path.exists():
-        # One-day fallback for timezone edge cases
         yesterday = today - datetime.timedelta(days=1)
-        acc_path = Path(f"output/safety-accountability-{yesterday.isoformat()}.json")
+        acc_path = Path(f"output/accountability-{yesterday.isoformat()}.json")
 
     if not acc_path.exists():
         print(f"No accountability JSON found for {today} — skipping Teams post.")
         return 0
 
-    post_adaptive_cards(acc_path, webhook, run_url, response_webhook)
+    post_adaptive_cards(acc_path, webhook, run_url, form_url)
     return 0
 
 

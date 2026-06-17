@@ -125,8 +125,8 @@ jobs:
         # Silent no-op if TEAMS_SAFETY_WEBHOOK is not set.
         if: steps.ct_gate.outputs.skip != '1'
         env:
-          TEAMS_SAFETY_WEBHOOK:   ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
-          TEAMS_RESPONSE_WEBHOOK: ${{ secrets.TEAMS_RESPONSE_WEBHOOK }}
+          TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_FORM_URL:       ${{ secrets.TEAMS_FORM_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python -m src.teams_adaptive_cards
 
