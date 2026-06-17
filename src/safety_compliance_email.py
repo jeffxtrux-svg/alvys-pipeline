@@ -1915,7 +1915,10 @@ def main() -> int:
     to_emails = [e.strip() for e in
                  os.environ.get("SAFETY_TO_EMAILS", "jeff@xfreight.net").split(",")
                  if e.strip()]
-    log.info("Recipients: %s", to_emails)
+    cc_emails = [e.strip() for e in
+                 os.environ.get("SAFETY_CC_EMAILS", "").split(",")
+                 if e.strip()]
+    log.info("Recipients: TO=%s CC=%s", to_emails, cc_emails)
 
     tok = get_token(
         os.environ["AZURE_TENANT_ID"],
@@ -1980,7 +1983,8 @@ def main() -> int:
             "content_bytes": pdf,
             "mime": "application/pdf",
         }]
-    send_email(tok, upn, to_emails, subj, email_html, attachments=attachments)
+    send_email(tok, upn, to_emails, subj, email_html, attachments=attachments,
+               cc_emails=cc_emails or None)
 
     # Persist today's scores so tomorrow's run can detect improvements / declines
     scores_all = ((samsara or {}).get("fleet") or {}).get("scores_all") or []
