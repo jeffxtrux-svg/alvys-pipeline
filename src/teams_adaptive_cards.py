@@ -54,8 +54,12 @@ def _item_block(item: dict, form_url: str = "") -> dict:
     days   = item.get("days_open", 1)
     occ    = item.get("occurrence", 1)
 
+    actioned = item.get("actioned_yesterday", False)
+
     header = f"{emoji} **{cat}**"
-    if days >= 3:
+    if actioned:
+        header += "  ✅ Actioned"
+    elif days >= 3:
         header += f"  ⚠️ Day {days} — ESCALATED"
     elif days > 1:
         header += f"  ↩ Day {days} open"
