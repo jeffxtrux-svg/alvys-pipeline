@@ -5,11 +5,11 @@ safety_compliance_email.py and posts one full-width Adaptive Card per
 owner (Audra first, then Jackson + Dan).
 
 Each card is a read-only summary of today's action items with severity
-badges, days-open carry-forward, and occurrence escalation flags.  A
-"📋 Record an action" button links to a Microsoft Form (TEAMS_FORM_URL)
-where the owner logs what they did; the form's Power Automate flow
-writes a row into Accountability Log.xlsx in OneDrive/Safety/ — no
-Premium license required.
+badges, days-open carry-forward, and occurrence escalation flags.  Each
+item has its own "📋 Record action" button linking to a Microsoft Form
+(TEAMS_FORM_URL) where the owner logs what they did; the form's Power
+Automate flow writes a row into Accountability Log.xlsx in
+OneDrive/Safety/ — no Premium license required.
 
 GitHub Secrets used:
   TEAMS_SAFETY_WEBHOOK  — incoming webhook URL
@@ -42,8 +42,8 @@ _SEV_RANK  = {"critical": 0, "high": 1, "medium": 2}
 # Card builder
 # ---------------------------------------------------------------------------
 
-def _item_block(item: dict) -> dict:
-    """One Container block per accountability item (read-only)."""
+def _item_block(item: dict, form_url: str = "") -> dict:
+    """One Container block per accountability item with its own action button."""
     sev    = item.get("severity", "medium")
     emoji  = _SEV_EMOJI.get(sev, "🟡")
     color  = _SEV_COLOR.get(sev, "Accent")
@@ -66,33 +66,49 @@ def _item_block(item: dict) -> dict:
 
     subject = (f"{drv} — " if drv else "") + detail
 
+    block_items: list[dict] = [
+        {
+            "type": "TextBlock",
+            "text": header,
+            "wrap": True,
+            "weight": "Bolder",
+            "color": color,
+        },
+        {
+            "type": "TextBlock",
+            "text": subject,
+            "wrap": True,
+            "spacing": "None",
+        },
+        {
+            "type": "TextBlock",
+            "text": f"→ _{prompt}_",
+            "wrap": True,
+            "isSubtle": True,
+            "spacing": "Small",
+            "color": "Default",
+        },
+    ]
+
+    if form_url:
+        block_items.append({
+            "type": "ActionSet",
+            "spacing": "Small",
+            "actions": [
+                {
+                    "type": "Action.OpenUrl",
+                    "title": "📋 Record action",
+                    "url": form_url,
+                    "style": "positive",
+                }
+            ],
+        })
+
     return {
         "type": "Container",
         "separator": True,
         "spacing": "Medium",
-        "items": [
-            {
-                "type": "TextBlock",
-                "text": header,
-                "wrap": True,
-                "weight": "Bolder",
-                "color": color,
-            },
-            {
-                "type": "TextBlock",
-                "text": subject,
-                "wrap": True,
-                "spacing": "None",
-            },
-            {
-                "type": "TextBlock",
-                "text": f"→ _{prompt}_",
-                "wrap": True,
-                "isSubtle": True,
-                "spacing": "Small",
-                "color": "Default",
-            },
-        ],
+        "items": block_items,
     }
 
 
@@ -161,16 +177,9 @@ def build_owner_card(
     ]
 
     for item in sorted_items:
-        body.append(_item_block(item))
+        body.append(_item_block(item, form_url))
 
     actions: list[dict] = []
-    if form_url:
-        actions.append({
-            "type": "Action.OpenUrl",
-            "title": "📋 Record an action",
-            "url": form_url,
-            "style": "positive",
-        })
     if run_url:
         actions.append({
             "type": "Action.OpenUrl",
