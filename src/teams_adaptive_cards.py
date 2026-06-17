@@ -54,10 +54,6 @@ def _item_block(item: dict) -> dict:
     days   = item.get("days_open", 1)
     occ    = item.get("occurrence", 1)
 
-    occ = item.get("occurrence", 1)
-
-    occ = item.get("occurrence", 1)
-
     header = f"{emoji} **{cat}**"
     if days >= 3:
         header += f"  ⚠️ Day {days} — ESCALATED"
