@@ -23,6 +23,10 @@ on:
         description: 'Comma-separated recipient override (default: jeff only while testing)'
         required: false
         default: ''
+      cc_recipients:
+        description: 'Comma-separated CC override (default: empty on dispatch). Healthcheck recovery passes the production CC list here.'
+        required: false
+        default: ''
       skip_idempotency:
         description: "Set true to force-resend even if today's marker exists"
         type: boolean
@@ -105,7 +109,7 @@ jobs:
           #   last fallback → Audra TO + JB/Jeff CC (per owner approval
           #   2026-06-15; only Audra owns the brief, JB+Jeff stay informed)
           SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net') }}
-          SAFETY_CC_EMAILS: ${{ ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '') || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
+          SAFETY_CC_EMAILS: ${{ inputs.cc_recipients != '' && inputs.cc_recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '') || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
           # Push-triggered runs (mobile escape hatch) bypass the same-day
           # marker so the on-demand resend actually sends. The
           # skip_idempotency dispatch input does the same on demand.
@@ -225,7 +229,7 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           SAFETY_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && secrets.ONEDRIVE_USER_UPN || secrets.SAFETY_RECIPIENTS || 'audra@xfreight.net') }}
-          SAFETY_CC_EMAILS: ${{ ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '') || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
+          SAFETY_CC_EMAILS: ${{ inputs.cc_recipients != '' && inputs.cc_recipients || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && '') || secrets.SAFETY_CC_RECIPIENTS || 'jb@xfreight.net,jeff@xfreight.net' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python - <<'PY'

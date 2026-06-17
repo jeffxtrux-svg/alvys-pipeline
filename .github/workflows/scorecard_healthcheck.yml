@@ -151,10 +151,16 @@ jobs:
         if: steps.ct_gate.outputs.skip != '1' && steps.marker.outputs.needs_send == '1'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          # Pass the production recipient list explicitly. Without this the
+          # email workflow sees workflow_dispatch with empty inputs.recipients
+          # and falls back to ONEDRIVE_USER_UPN (jeff-only "quiet test" mode),
+          # which would silently bypass JB + Dan on a recovery morning.
+          SCORECARD_PROD_RECIPIENTS: ${{ secrets.SCORECARD_RECIPIENTS || 'jeff@xfreight.net,jb@xfreight.net,dan@xfreight.net' }}
         run: |
           echo "Dispatching scorecard_email.yml via gh workflow run…"
-          gh workflow run scorecard_email.yml --ref main
-          echo "✓ Dispatched. Brief should land in ~3-5 minutes."
+          gh workflow run scorecard_email.yml --ref main \
+            --field "recipients=$SCORECARD_PROD_RECIPIENTS"
+          echo "✓ Dispatched to production list. Brief should land in ~3-5 minutes."
 
       - name: Healthcheck summary
         if: steps.ct_gate.outputs.skip != '1'
