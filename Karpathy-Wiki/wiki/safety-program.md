@@ -3,7 +3,7 @@ title: Safety Program
 type: concept
 tags: [safety, compliance, samsara, sambasafety, fmcsa]
 sources: ["raw/xfreight-safety-program.md", "raw/xfreight-safety-program-policies.md", "raw/xfreight-driver-discipline-and-incidents.md"]
-related: ["[[FMCSA CSA Scorecard]]", "[[DOT Inspection Policy]]", "[[Driver Roster]]", "[[Key People]]", "[[Daily Scorecard Email]]", "[[Owner-Operator Program]]", "[[Coaching Ack]]"]
+related: ["[[FMCSA CSA Scorecard]]", "[[DOT Inspection Policy]]", "[[Driver Roster]]", "[[Key People]]", "[[Daily Scorecard Email]]", "[[Owner-Operator Program]]", "[[Coaching Ack]]", "[[Progressive Discipline Policy]]"]
 ---
 
 # Safety Program
@@ -102,17 +102,18 @@ Inspection dates come from Alvys Trucks / Trailers sheets with the `Maintenance`
 
 ## Discipline Framework
 
-Written warnings are the formal mechanism. Each letter:
-1. Names the specific incident (DOT inspection, location, date).
-2. Cites the specific regulation (49 CFR Part reference).
-3. States what's expected going forward.
-4. Filed in Sharefile incident archive (2014–current, organized by year + by driver).
+XFreight codified a formal **5-level progressive discipline policy** on June 16, 2026. See [[Progressive Discipline Policy]] for the full structure — two parallel tracks (OO contract vs. Truk-Way employee), entry-point rules for severe incidents, immediate-termination grounds, and the Samsara speed-flag → level mapping.
 
-Pattern: First writeup → warning; second → final warning + suspension consideration; third (or serious) → contract termination.
+Key integration points between the safety brief and the policy:
+- **Page 4 speed flags** map directly to Level 1–2 discipline entry points; Bottom Line escalation two consecutive weeks = automatic Level 2.
+- **Page 3 coaching backlog** — unacknowledged coaching after 14 days = Level 1 trigger.
+- **Page 10 CSA BASIC** — percentiles approaching thresholds (65th/80th) accelerate the escalation path.
 
-### Documented Incident
+Documentation standard: every letter names the specific incident, cites the 49 CFR Part, states expected change, requires driver signature. Jeff Hannahs drafts; Audra Newman files in Sharefile.
 
-- **Brad** (BradM, truck 43195) — March 12, 2026 DOT inspection in Wisconsin; chafed brake hoses (likely 49 CFR Part 393). Written warning issued by Jeff.
+### Known Active Case
+
+- **BradM (truck 43195)** — March 12, 2026 DOT inspection in Wisconsin; chafed brake hoses (49 CFR Part 393). Written warning by Jeff. Under the formal policy this is a **Level 2** action. Any subsequent violation triggers Level 3 review before next load assignment.
 
 ## Incident Records Location
 
@@ -140,3 +141,4 @@ DOT roadside inspections are NOT in Samsara. They flow: state reporting → FMCS
 - `raw/xfreight-safety-program.md` — code-level rubrics + constants.
 - `raw/xfreight-safety-program-policies.md` — business policies, applicant workflow, discipline.
 - `raw/xfreight-driver-discipline-and-incidents.md` — incident records location, DOT flow.
+- `raw/xfreight-progressive-discipline-policy.md` — formal 5-level discipline policy (June 16, 2026).

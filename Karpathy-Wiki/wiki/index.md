@@ -2,12 +2,12 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-16"
+last_compiled: "2026-06-17"
 ---
 
 # Wiki Index
 
-The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-16.
+The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-17.
 
 ## Meta
 
@@ -72,6 +72,7 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 ## Safety & Compliance
 
 - [[Safety Program]] — speed-over-limit rubric, coaching policy, MVR workflow, equipment inspections, and driver discipline framework.
+- [[Progressive Discipline Policy]] — formal 5-level discipline structure (drafted 2026-06-16, pending JB sign-off): two tracks (OO vs. Truk-Way employee), Samsara speed-flag triggers, 14-day coaching-backlog trigger, CSA escalation rules, immediate-termination grounds.
 - [[DOT Inspection Policy]] — 120-day company policy vs. 365-day federal annual: what each window means, who pays, and the language rules for "overdue" vs "out of service."
 - [[Driver Discipline and Incidents]] — written-warning framework, documented incidents (Brad/chafed-brake-hose), Sharefile record structure, and the pipeline's current coverage gap on historic incidents.
 - [[Coaching Ack]] — June 6, 2026 fix: coaching ack now derived from SafetyEvents `coachingStatus`, not the always-empty CoachingSessions sheet.

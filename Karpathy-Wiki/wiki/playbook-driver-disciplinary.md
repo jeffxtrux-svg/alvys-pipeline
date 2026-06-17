@@ -6,8 +6,8 @@ status: active
 owner: "Audra Newman (Safety — documentation + MVR); Dan Heeren (Ops coaching, company drivers); JB Sweere (OO separations)"
 last_revised: "2026-06-14"
 trigger: "Un-acked Samsara safety event >72h, two HOS violations in 30 days, driver named in customer escalation, DVIR defect unrepaired >7d, any DOT-recordable incident, MVR risk index change ≥2 categories"
-related: ["[[Safety Program]]", "[[FMCSA CSA Scorecard]]", "[[Owner-Operator Program]]", "[[Driver Roster]]", "[[Risk Register]]", "[[Decision Journal]]", "[[Playbook — Customer Escalation]]", "[[Coaching Ack]]"]
-sources: ["raw/xfreight-playbook-driver-disciplinary.md"]
+related: ["[[Safety Program]]", "[[FMCSA CSA Scorecard]]", "[[Owner-Operator Program]]", "[[Driver Roster]]", "[[Risk Register]]", "[[Decision Journal]]", "[[Playbook — Customer Escalation]]", "[[Coaching Ack]]", "[[Progressive Discipline Policy]]"]
+sources: ["raw/xfreight-playbook-driver-disciplinary.md", "raw/xfreight-progressive-discipline-policy.md"]
 ---
 
 # Playbook — Driver Disciplinary
@@ -34,11 +34,14 @@ sources: ["raw/xfreight-playbook-driver-disciplinary.md"]
 
 ## Steps
 
-1. **Same-day documentation** — Audra (Safety) logs the trigger event in the driver file: date, severity, source data (event ID, customer email, DOT report number). No verbal-only steps.
-2. **Coaching conversation within 5 business days** — Dan for ops issues, Audra for safety/MVR. Use the Samsara coaching workflow so the ack is recorded. Specific behavior, specific expectation, specific timeline.
-3. **Written warning if repeated** — second incident of the same type within 60 days = formal written warning, signed by driver, filed in Sharefile (Audra's system). See [[Safety Program]] for the file structure.
-4. **Performance improvement period** — 30 days of close monitoring (weekly Samsara review, weekly Dan check-in). Acceptance criteria written down upfront.
-5. **Separation if no improvement** — JB + Audra decision. Final paycheck per SD law, termination letter on file; driver removed from Samsara/Alvys/SambaSafety; license/medical cert returned; truck/trailer/fuel card recovered.
+The formal entry-point and level structure is in [[Progressive Discipline Policy]]. The playbook maps that level structure to concrete actions:
+
+1. **Same-day documentation (all levels)** — Audra (Safety) logs the trigger event in the driver file: date, severity, source data (event ID, customer email, DOT report number). No verbal-only steps — document before acting.
+2. **Level 1 — Verbal counseling within 5 business days** — Dan for ops/coaching issues, Audra for safety/MVR. Use the Samsara coaching workflow so the ack is recorded. Specific behavior, specific expectation, specific timeline.
+3. **Level 2 — Written warning** — second incident of the same type (or Bottom Line two consecutive weeks, or coaching unacked 14+ days). Formal written warning signed by driver, filed in Sharefile (Audra's system). See [[Safety Program]] for the file structure.
+4. **Level 3 — Strong written notice + restrictions** — moderate incident, repeat of Level 2, or first serious violation. Load/route restrictions apply. Jeff drafts, JB reviews.
+5. **Level 4 — Suspension + final warning** — 30 days close monitoring (weekly Samsara review, weekly Dan check-in). For OOs: load suspension 7–30 days. For employees: unpaid suspension 3–14 days. Acceptance criteria written down upfront; return to work requires management sign-off.
+6. **Level 5 / Separation** — JB + Audra decision. For OOs: contract suspension or termination. For employees: termination. Final paycheck per SD law, termination letter on file; driver removed from Samsara/Alvys/SambaSafety; license/medical cert returned; truck/trailer/fuel card recovered.
 
 ---
 
@@ -70,8 +73,9 @@ sources: ["raw/xfreight-playbook-driver-disciplinary.md"]
 
 ## Connections
 
+- [[Progressive Discipline Policy]] — the formal 5-level level structure this playbook applies; entry-point rules, immediate-termination grounds, CSA/speed mappings.
 - [[Safety Program]] — the full safety rubric, speed thresholds, and Sharefile file structure.
-- [[Coaching Ack]] — how the brief derives the Ack column from Samsara SafetyEvents.
+- [[Coaching Ack]] — how the brief derives the Ack column from Samsara SafetyEvents (14-day Level 1 trigger).
 - [[FMCSA CSA Scorecard]] — DOT-recordable incidents land on the BASIC percentile ranks.
 - [[Owner-Operator Program]] — lease termination differs from employment termination.
 - [[Driver Roster]] — update on separation.
@@ -80,3 +84,4 @@ sources: ["raw/xfreight-playbook-driver-disciplinary.md"]
 ## Sources
 
 - `raw/xfreight-playbook-driver-disciplinary.md`
+- `raw/xfreight-progressive-discipline-policy.md`
