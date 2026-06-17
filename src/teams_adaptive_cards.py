@@ -22,6 +22,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 try:
     import requests as _requests
@@ -36,6 +37,63 @@ except ImportError:
 _SEV_EMOJI = {"critical": "🔴", "high": "🟠", "medium": "🟡"}
 _SEV_COLOR = {"critical": "Attention", "high": "Warning", "medium": "Accent"}
 _SEV_RANK  = {"critical": 0, "high": 1, "medium": 2}
+_SEV_LABEL = {"critical": "Critical", "high": "High", "medium": "Medium"}
+
+# ---------------------------------------------------------------------------
+# Microsoft Forms pre-fill field IDs
+# Extracted from the "Get Pre-filled URL" feature on 2026-06-17.
+# ---------------------------------------------------------------------------
+
+_FF_DATE        = "rd58e61abbff8482ea492899559281c0a"
+_FF_NAME        = "r61a1c5b6d055470c95c0e2bbd7e4c5df"
+_FF_DRIVER_UNIT = "rf58da9be72cf416f8770d9826822a3cf"
+_FF_CATEGORY    = "reddebf51c37244608f4da3d764282741"
+_FF_SEVERITY    = "rc954b19326974b1491b6e514d1be602c"
+_FF_DETAIL      = "r1bf22e5124184daba438981e275b4947"
+_FF_DAYS_OPEN   = "r0b3154b6b58b4f9590d0a404408bc7fb"
+_FF_OCCURRENCES = "r6be0fbe806b84743995a97d5c3afde48"
+# Action Taken and Notes are left blank for the owner to fill in.
+
+# owner_label → form choice value (must match exactly)
+_OWNER_NAME = {"AUDRA": "Audra"}  # JACKSON + DAN: left blank (two people share card)
+
+
+def _prefill_url(
+    base_url: str,
+    item: dict,
+    today: datetime.date,
+    owner_label: str,
+) -> str:
+    """Return the base form URL with per-item fields pre-populated."""
+    if not base_url:
+        return base_url
+
+    def _qstr(val: str) -> str:
+        """Choice/date fields: wrap in JSON quotes then URL-encode."""
+        return quote(f'"{val}"', safe="")
+
+    def _qtxt(val: str) -> str:
+        """Text fields: URL-encode without extra quotes."""
+        return quote(val, safe="")
+
+    sev = _SEV_LABEL.get(item.get("severity", "medium"), "Medium")
+    drv = item.get("driver") or item.get("unit") or ""
+
+    params: list[str] = [
+        f"{_FF_DATE}={_qstr(today.isoformat())}",
+        f"{_FF_CATEGORY}={_qstr(item.get('category', ''))}",
+        f"{_FF_SEVERITY}={_qstr(sev)}",
+        f"{_FF_DRIVER_UNIT}={_qtxt(drv)}",
+        f"{_FF_DETAIL}={_qtxt(item.get('detail', ''))}",
+        f"{_FF_DAYS_OPEN}={item.get('days_open', 1)}",
+        f"{_FF_OCCURRENCES}={item.get('occurrence', 1)}",
+    ]
+
+    owner_name = _OWNER_NAME.get(owner_label)
+    if owner_name:
+        params.insert(1, f"{_FF_NAME}={_qstr(owner_name)}")
+
+    return base_url + "&" + "&".join(params)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +239,8 @@ def build_owner_card(
     ]
 
     for item in sorted_items:
-        body.append(_item_block(item, form_url))
+        item_url = _prefill_url(form_url, item, today, owner_label) if form_url else ""
+        body.append(_item_block(item, item_url))
 
     actions: list[dict] = []
     if run_url:
