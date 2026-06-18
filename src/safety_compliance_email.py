@@ -1250,11 +1250,17 @@ def _build_accountability_structured(
 
 
 def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> set[str]:
-    """Return normalized category names actioned in the log on check_date.
+    """Return tokens actioned in the log on check_date for suppression matching.
 
-    Reads Accountability Log.xlsx from OneDrive/Safety/ and returns a set of
-    lowercased category strings whose Date column matches check_date.  Fails
-    soft — returns empty set if the file is absent or unreadable.
+    Returns a flat set containing:
+      - Lowercased category names (exact match when category is not "other")
+      - "driver:<name>" tokens for every Driver/Unit value logged that day
+
+    Items in the next day's card are suppressed when their category OR their
+    driver/unit name appears in this set.  The driver-based token handles the
+    common case where the form's Category dropdown shows "Other" (i.e. the
+    pre-filled category choice didn't match a form option) — as long as the
+    Driver/Unit field is filled, the item is still recognised as actioned.
     """
     import io
     resolved: set[str] = set()
@@ -1262,11 +1268,11 @@ def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> s
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
-        # Normalise column names
         df.columns = [str(c).strip().lower() for c in df.columns]
         date_col = next((c for c in df.columns if "date" in c), None)
         cat_col  = next((c for c in df.columns if "category" in c), None)
-        if date_col is None or cat_col is None:
+        drv_col  = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        if date_col is None:
             return resolved
         for _, row in df.iterrows():
             raw_date = row[date_col]
@@ -1276,10 +1282,18 @@ def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> s
                 row_date = pd.Timestamp(raw_date).date()
             except Exception:
                 continue
-            if row_date == check_date:
+            if row_date != check_date:
+                continue
+            # Category match (skip generic "other" — useless for matching)
+            if cat_col:
                 cat = str(row[cat_col]).strip().lower()
-                if cat and cat != "nan":
+                if cat and cat not in ("nan", "other"):
                     resolved.add(cat)
+            # Driver/Unit match — always add so driver-based suppression works
+            if drv_col:
+                drv = str(row[drv_col]).strip().lower()
+                if drv and drv != "nan":
+                    resolved.add(f"driver:{drv}")
     except Exception as exc:
         log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
     return resolved
@@ -1312,8 +1326,15 @@ def _write_accountability_json(
             item = dict(item)
             key = _accountability_key(item)
             cat_norm = (item.get("category") or "").lower().strip()
-            # If this category was actioned yesterday, break the escalation chain.
-            if cat_norm in resolved_cats:
+            drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
+            # Suppress if category OR driver/unit was logged in yesterday's log.
+            # "driver:<name>" tokens handle the common case where the form's
+            # Category field shows "Other" (pre-fill didn't match a choice).
+            actioned = (
+                cat_norm in resolved_cats
+                or (drv_norm and f"driver:{drv_norm}" in resolved_cats)
+            )
+            if actioned:
                 prev_days = 0
                 item["actioned_yesterday"] = True
             else:
