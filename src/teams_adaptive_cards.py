@@ -115,10 +115,46 @@ def _item_block(item: dict, form_url: str = "") -> dict:
 
     actioned = item.get("actioned_yesterday", False)
 
-    header = f"{emoji} **{cat}**"
     if actioned:
-        header += "  ✅ Actioned"
-    elif days >= 3:
+        # Green completed block — no Record action button, dimmed text
+        header = f"✅ ~~{cat}~~" if cat else "✅ Completed"
+        subject = (f"{drv} — " if drv else "") + detail
+        block_items: list[dict] = [
+            {
+                "type": "TextBlock",
+                "text": header,
+                "wrap": True,
+                "weight": "Bolder",
+                "color": "Good",
+            },
+            {
+                "type": "TextBlock",
+                "text": subject,
+                "wrap": True,
+                "spacing": "None",
+                "isSubtle": True,
+            },
+            {
+                "type": "TextBlock",
+                "text": "✅ Action recorded",
+                "wrap": True,
+                "isSubtle": True,
+                "spacing": "Small",
+                "color": "Good",
+                "size": "Small",
+            },
+        ]
+        return {
+            "type": "Container",
+            "style": "good",
+            "separator": True,
+            "spacing": "Medium",
+            "items": block_items,
+        }
+
+    # Normal open item
+    header = f"{emoji} **{cat}**"
+    if days >= 3:
         header += f"  ⚠️ Day {days} — ESCALATED"
     elif days > 1:
         header += f"  ↩ Day {days} open"
@@ -129,7 +165,7 @@ def _item_block(item: dict, form_url: str = "") -> dict:
 
     subject = (f"{drv} — " if drv else "") + detail
 
-    block_items: list[dict] = [
+    block_items = [
         {
             "type": "TextBlock",
             "text": header,
@@ -242,36 +278,36 @@ def build_owner_card(
     if not items:
         return {}
 
-    # Items logged in yesterday's Accountability Log are suppressed from the
-    # active list — they were already addressed and don't need attention today.
-    actioned_yday = [i for i in items if i.get("actioned_yesterday")]
-    active_items  = [i for i in items if not i.get("actioned_yesterday")]
+    actioned_items = [i for i in items if i.get("actioned_yesterday")]
+    open_items     = [i for i in items if not i.get("actioned_yesterday")]
 
-    # If everything was actioned yesterday, post a brief "all clear" card
-    # rather than no card at all — so the channel confirms the check happened.
-    if not active_items:
-        return _all_clear_card(owner_label, today, len(actioned_yday), run_url)
+    # All clear — every item was actioned
+    if not open_items:
+        return _all_clear_card(owner_label, today, len(actioned_items), run_url)
 
-    sorted_items = sorted(
-        active_items,
+    # Open items sorted by urgency; actioned items appended at the bottom
+    sorted_open = sorted(
+        open_items,
         key=lambda i: (-i.get("days_open", 1),
                        _SEV_RANK.get(i.get("severity", "medium"), 2)),
     )
+    sorted_items = sorted_open + actioned_items
 
-    n        = len(active_items)
-    new_cnt  = sum(1 for i in active_items if i.get("days_open", 1) == 1)
-    cf_cnt   = sum(1 for i in active_items if i.get("days_open", 1) > 1)
-    esc_cnt  = sum(1 for i in active_items if i.get("days_open", 1) >= 3)
+    n_open   = len(open_items)
+    n_done   = len(actioned_items)
+    new_cnt  = sum(1 for i in open_items if i.get("days_open", 1) == 1)
+    cf_cnt   = sum(1 for i in open_items if i.get("days_open", 1) > 1)
+    esc_cnt  = sum(1 for i in open_items if i.get("days_open", 1) >= 3)
 
-    parts = [f"{n} action item(s)"]
+    parts = [f"{n_open} open"]
     if new_cnt:
         parts.append(f"{new_cnt} new today")
     if cf_cnt:
         parts.append(f"{cf_cnt} carried forward")
     if esc_cnt:
         parts.append(f"⚠️ {esc_cnt} escalated (3+ days open)")
-    if actioned_yday:
-        parts.append(f"✅ {len(actioned_yday)} suppressed (actioned yesterday)")
+    if n_done:
+        parts.append(f"✅ {n_done} completed")
     subtitle = " · ".join(parts)
 
     body: list[dict] = [
@@ -308,8 +344,12 @@ def build_owner_card(
     ]
 
     for item in sorted_items:
-        item_url = _prefill_url(form_url, item, today, owner_label) if form_url else ""
-        body.append(_item_block(item, item_url))
+        # Don't show "Record action" button on already-completed items
+        if item.get("actioned_yesterday"):
+            body.append(_item_block(item, ""))
+        else:
+            item_url = _prefill_url(form_url, item, today, owner_label) if form_url else ""
+            body.append(_item_block(item, item_url))
 
     actions: list[dict] = []
     if run_url:
