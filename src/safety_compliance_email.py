@@ -1019,13 +1019,18 @@ def _build_accountability_structured(
                 if days <= 7 else
                 "When is renewal scheduled? Confirm renewal plan with driver."
             )
+            try:
+                expires_iso = pd.Timestamp(exp).date().isoformat() if exp else None
+            except Exception:
+                expires_iso = None
             audra_items.append({
-                "category": "Driver License Expiring",
-                "severity": sev,
-                "driver":   nm,
-                "unit":     None,
-                "detail":   detail_str,
-                "prompt":   prompt,
+                "category":     "Driver License Expiring",
+                "severity":     sev,
+                "driver":       nm,
+                "unit":         None,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_expires_iso": expires_iso,
             })
 
     # DOT medical card expiring/expired → audra
@@ -1050,13 +1055,18 @@ def _build_accountability_structured(
                 sev        = "high"
                 detail_str = f"DOT medical expires in {days}d ({exp})"
                 prompt     = "Schedule appointment now and document appointment date in driver file."
+            try:
+                med_expires_iso = pd.Timestamp(exp).date().isoformat() if exp else None
+            except Exception:
+                med_expires_iso = None
             audra_items.append({
-                "category": "DOT Medical Card",
-                "severity": sev,
-                "driver":   nm,
-                "unit":     None,
-                "detail":   detail_str,
-                "prompt":   prompt,
+                "category":     "DOT Medical Card",
+                "severity":     sev,
+                "driver":       nm,
+                "unit":         None,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_expires_iso": med_expires_iso,
             })
 
     # SambaSafety risk flags → audra
@@ -1115,13 +1125,17 @@ def _build_accountability_structured(
                 sev        = "high"
                 prompt     = "Inspection must be scheduled immediately. When is appointment?"
                 detail_str = f"{over}d past 120d policy"
+            # Federal OOS: 245+ days past 120d policy = 365+ days since last inspection.
+            # These units cannot be suppressed — they stay on the card until inspected.
+            federal_oos = over >= 245
             item = {
-                "category": "DOT Inspection — Tractor",
-                "severity": sev,
-                "driver":   None,
-                "unit":     unit,
-                "detail":   detail_str,
-                "prompt":   prompt,
+                "category":     "DOT Inspection — Tractor",
+                "severity":     sev,
+                "driver":       None,
+                "unit":         unit,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_federal_oos": federal_oos,
             }
             audra_items.append(item)
             ops_items.append(item)
@@ -1145,13 +1159,15 @@ def _build_accountability_structured(
                 sev        = "high"
                 prompt     = "Inspection must be scheduled immediately. When is appointment?"
                 detail_str = f"{over}d past 120d policy"
+            federal_oos = over >= 245
             ops_items.append({
-                "category": "DOT Inspection — Trailer",
-                "severity": sev,
-                "driver":   None,
-                "unit":     unit,
-                "detail":   detail_str,
-                "prompt":   prompt,
+                "category":     "DOT Inspection — Trailer",
+                "severity":     sev,
+                "driver":       None,
+                "unit":         unit,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_federal_oos": federal_oos,
             })
 
     # DVIR compliance <90% last 7d → audra + ops (Safety Mgr owns coaching)
@@ -1249,31 +1265,35 @@ def _build_accountability_structured(
     return audra_items, ops_items
 
 
-def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> set[str]:
-    """Return tokens actioned in the log on check_date for suppression matching.
+def _load_accountability_log(
+    tok: str,
+    upn: str,
+    check_date: datetime.date,
+) -> "tuple[set[str], dict[str, datetime.date]]":
+    """Return tokens and CDL reinstatement dates from the log for check_date.
 
-    Returns a flat set containing:
-      - Lowercased category names (exact match when category is not "other")
-      - "driver:<name>" tokens for every Driver/Unit value logged that day
-
-    Items in the next day's card are suppressed when their category OR their
-    driver/unit name appears in this set.  The driver-based token handles the
-    common case where the form's Category dropdown shows "Other" (i.e. the
-    pre-filled category choice didn't match a form option) — as long as the
-    Driver/Unit field is filled, the item is still recognised as actioned.
+    Returns (resolved, cdl_dates) where:
+      resolved   — flat set of lowercased category names and "driver:<name>"
+                   tokens (used for actioned-yesterday matching).
+      cdl_dates  — dict mapping drv_norm → reinstatement date parsed from the
+                   Action Taken / Notes column for CDL Disqualified rows.
     """
     import io
+    from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
+    cdl_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
         df.columns = [str(c).strip().lower() for c in df.columns]
-        date_col = next((c for c in df.columns if "date" in c), None)
-        cat_col  = next((c for c in df.columns if "category" in c), None)
-        drv_col  = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        date_col   = next((c for c in df.columns if "date" in c), None)
+        cat_col    = next((c for c in df.columns if "category" in c), None)
+        drv_col    = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        action_col = next((c for c in df.columns if "action" in c), None)
+        notes_col  = next((c for c in df.columns if "note" in c), None)
         if date_col is None:
-            return resolved
+            return resolved, cdl_dates
         for _, row in df.iterrows():
             raw_date = row[date_col]
             if pd.isna(raw_date):
@@ -1284,19 +1304,31 @@ def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> s
                 continue
             if row_date != check_date:
                 continue
-            # Category match (skip generic "other" — useless for matching)
+            cat = ""
             if cat_col:
                 cat = str(row[cat_col]).strip().lower()
                 if cat and cat not in ("nan", "other"):
                     resolved.add(cat)
-            # Driver/Unit match — always add so driver-based suppression works
+            drv = ""
             if drv_col:
                 drv = str(row[drv_col]).strip().lower()
                 if drv and drv != "nan":
                     resolved.add(f"driver:{drv}")
+            # For CDL Disqualified rows, try to extract a reinstatement date
+            # from the free-text Action Taken / Notes fields.
+            is_cdl = "cdl" in cat or "disqualif" in cat
+            if is_cdl and drv:
+                text = " ".join(filter(None, [
+                    str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
+                    str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
+                ]))
+                parsed = extract_date_from_text(text)
+                if parsed and parsed > check_date:
+                    cdl_dates[drv] = parsed
+                    log.info("CDL reinstatement date for %s: %s", drv, parsed.isoformat())
     except Exception as exc:
         log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
-    return resolved
+    return resolved, cdl_dates
 
 
 def _write_accountability_json(
@@ -1307,11 +1339,25 @@ def _write_accountability_json(
     tok: str,
     upn: str,
     resolved_cats: set[str] | None = None,
+    cdl_reinstate_dates: "dict[str, datetime.date] | None" = None,
 ) -> None:
     """Enrich items with carry-forward (days_open) and occurrence counts,
     then write to output/ and upload to OneDrive/Safety/."""
+    from src.suppression_registry import (
+        load_registry, save_registry, prune,
+        is_suppressed, add_suppression, apply_resolved_to_registry,
+    )
+
     yesterday = today - datetime.timedelta(days=1)
     resolved_cats = resolved_cats or set()
+
+    # Load suppression registry; record new suppressions for items actioned yesterday.
+    registry = load_registry(tok, upn)
+    prune(registry, today)
+    all_items_combined = list(audra_items) + list(ops_items)
+    apply_resolved_to_registry(registry, resolved_cats, all_items_combined, yesterday,
+                               cdl_dates=cdl_reinstate_dates)
+    save_registry(tok, upn, registry)
 
     # Build yesterday's key→days_open map for carry-forward
     yesterday_keys: dict[str, int] = {}
@@ -1325,11 +1371,17 @@ def _write_accountability_json(
         for item in items:
             item = dict(item)
             key = _accountability_key(item)
-            cat_norm = (item.get("category") or "").lower().strip()
-            drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
-            # Suppress if category OR driver/unit was logged in yesterday's log.
-            # "driver:<name>" tokens handle the common case where the form's
-            # Category field shows "Other" (pre-fill didn't match a choice).
+            cat_norm  = (item.get("category") or "").lower().strip()
+            drv_norm  = (item.get("driver") or item.get("unit") or "").lower().strip()
+
+            # Skip items suppressed by the registry (actioned within their window).
+            if is_suppressed(registry, cat_norm, drv_norm, today):
+                log.info("Suppressed (registry): [%s / %s]", cat_norm, drv_norm)
+                continue
+
+            # Mark items actioned yesterday (from Accountability Log) — shows green
+            # checkmark on today's card even though the suppression already prevents
+            # them from appearing on tomorrow's card.
             actioned = (
                 cat_norm in resolved_cats
                 or (drv_norm and f"driver:{drv_norm}" in resolved_cats)
@@ -2648,13 +2700,16 @@ def main() -> int:
 
     # Check yesterday's Accountability Log to break escalation chain for actioned items
     yesterday = today - datetime.timedelta(days=1)
-    resolved_cats = _load_accountability_log(tok, upn, yesterday)
+    resolved_cats, cdl_reinstate_dates = _load_accountability_log(tok, upn, yesterday)
     if resolved_cats:
         log.info("Resolved categories (actioned yesterday): %s", resolved_cats)
+    if cdl_reinstate_dates:
+        log.info("CDL reinstatement dates: %s", cdl_reinstate_dates)
 
     # Write accountability JSON (local output/ + OneDrive/Safety/)
     _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn,
-                               resolved_cats=resolved_cats)
+                               resolved_cats=resolved_cats,
+                               cdl_reinstate_dates=cdl_reinstate_dates)
 
     # Compute carried-forward items for the "OPEN — ACTION PENDING" section:
     # any item from today's list that also appeared in yesterday's JSON

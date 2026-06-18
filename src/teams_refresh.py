@@ -23,34 +23,46 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+import json
+
 from src.onedrive_upload import download_file, get_token
+from src.suppression_registry import (
+    load_registry, save_registry, prune,
+    apply_resolved_to_registry,
+)
 from src.teams_adaptive_cards import post_adaptive_cards
 
 _ACC_FOLDER = "Safety"
 
 
-def _load_resolved_today(tok: str, upn: str, today: datetime.date) -> set[str]:
-    """Return suppression tokens from Accountability Log.xlsx for today.
+def _load_resolved_today(
+    tok: str,
+    upn: str,
+    today: datetime.date,
+) -> "tuple[set[str], dict[str, datetime.date]]":
+    """Return resolved tokens and CDL reinstatement dates from the log for today.
 
-    Returns a flat set of:
-      - Lowercased category names (when category is not "other")
-      - "driver:<name>" tokens for every Driver/Unit logged today
-
-    Matches items by category OR driver name so suppression works even when
-    the form's Category field shows "Other" (pre-fill choice mismatch).
+    Returns (resolved, cdl_dates) where:
+      resolved  — flat set of lowercased category names and "driver:<name>" tokens.
+      cdl_dates — drv_norm → reinstatement date parsed from Action Taken / Notes
+                  for CDL Disqualified rows.
     """
+    from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
+    cdl_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
         df.columns = [str(c).strip().lower() for c in df.columns]
-        date_col = next((c for c in df.columns if "date" in c), None)
-        cat_col  = next((c for c in df.columns if "category" in c), None)
-        drv_col  = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        date_col   = next((c for c in df.columns if "date" in c), None)
+        cat_col    = next((c for c in df.columns if "category" in c), None)
+        drv_col    = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        action_col = next((c for c in df.columns if "action" in c), None)
+        notes_col  = next((c for c in df.columns if "note" in c), None)
         if date_col is None:
             print("Accountability Log.xlsx: date column not found.")
-            return resolved
+            return resolved, cdl_dates
         for _, row in df.iterrows():
             raw_date = row[date_col]
             if pd.isna(raw_date):
@@ -61,17 +73,29 @@ def _load_resolved_today(tok: str, upn: str, today: datetime.date) -> set[str]:
                 continue
             if row_date != today:
                 continue
+            cat = ""
             if cat_col:
                 cat = str(row[cat_col]).strip().lower()
                 if cat and cat not in ("nan", "other"):
                     resolved.add(cat)
+            drv = ""
             if drv_col:
                 drv = str(row[drv_col]).strip().lower()
                 if drv and drv != "nan":
                     resolved.add(f"driver:{drv}")
+            is_cdl = "cdl" in cat or "disqualif" in cat
+            if is_cdl and drv:
+                text = " ".join(filter(None, [
+                    str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
+                    str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
+                ]))
+                parsed = extract_date_from_text(text)
+                if parsed and parsed > today:
+                    cdl_dates[drv] = parsed
+                    print(f"CDL reinstatement date for {drv}: {parsed.isoformat()}")
     except Exception as exc:
         print(f"Could not read Accountability Log.xlsx: {exc}")
-    return resolved
+    return resolved, cdl_dates
 
 
 def main() -> int:
@@ -105,8 +129,23 @@ def main() -> int:
             print(f"No accountability JSON found for {today}: {exc}")
             return 0
 
-    resolved_today = _load_resolved_today(tok, upn, today)
+    resolved_today, cdl_dates = _load_resolved_today(tok, upn, today)
     print(f"Actioned today: {sorted(resolved_today) or 'none'}")
+    if cdl_dates:
+        print(f"CDL reinstatement dates: {cdl_dates}")
+
+    # Update suppression registry so tomorrow's brief skips newly actioned items.
+    if resolved_today:
+        try:
+            acc_data   = json.loads(acc_path.read_bytes())
+            all_items  = acc_data.get("audra", []) + acc_data.get("ops", [])
+            registry   = load_registry(tok, upn)
+            prune(registry, today)
+            apply_resolved_to_registry(registry, resolved_today, all_items, today,
+                                       cdl_dates=cdl_dates)
+            save_registry(tok, upn, registry)
+        except Exception as exc:
+            print(f"Warning: could not update suppression registry: {exc}")
 
     post_adaptive_cards(acc_path, webhook, run_url, form_url,
                         resolved_today=resolved_today)
