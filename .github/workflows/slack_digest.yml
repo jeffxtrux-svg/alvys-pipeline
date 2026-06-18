@@ -72,7 +72,7 @@ jobs:
       - name: Compose and post digest
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          RUN_URL: ${{ github.event.workflow_run.html_url || (github.server_url + '/' + github.repository + '/actions/runs/' + github.run_id) }}
+          RUN_URL: ${{ github.event.workflow_run.html_url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             python -m src.slack_digest --dry-run
