@@ -280,8 +280,13 @@ def post_adaptive_cards(
     webhook: str,
     run_url: str = "",
     form_url: str = "",
+    resolved_today: "set[str] | None" = None,
 ) -> None:
-    """Read accountability JSON and POST Adaptive Cards to Teams webhook."""
+    """Read accountability JSON and POST Adaptive Cards to Teams webhook.
+
+    resolved_today: category names (case-insensitive) actioned today.
+    Matching items get the ✅ Actioned badge without waiting for tomorrow.
+    """
     if not webhook:
         print("TEAMS_SAFETY_WEBHOOK not set — skipping Teams posts.")
         return
@@ -297,7 +302,21 @@ def post_adaptive_cards(
         data.get("date", datetime.date.today().isoformat())
     )
 
+    resolved_norm = {c.lower() for c in (resolved_today or set())}
+
+    def _apply_resolved(items: list[dict]) -> list[dict]:
+        if not resolved_norm:
+            return items
+        result = []
+        for item in items:
+            item = dict(item)
+            if item.get("category", "").lower() in resolved_norm:
+                item["actioned_yesterday"] = True
+            result.append(item)
+        return result
+
     def _post(label: str, items: list[dict]) -> None:
+        items = _apply_resolved(items)
         if not items:
             print(f"{label}: no action items today — skipping card.")
             return

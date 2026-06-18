@@ -1,0 +1,101 @@
+"""Re-post Teams accountability cards with up-to-date ✅ marks.
+
+Reads today's accountability JSON (written by the 5am safety brief run) from
+OneDrive and today's entries from Accountability Log.xlsx, then re-posts the
+per-owner Adaptive Cards with ✅ Actioned on items logged today.
+
+No email is sent and no report is re-generated.
+
+GitHub Secrets used:
+  TEAMS_SAFETY_WEBHOOK
+  TEAMS_FORM_URL        (optional)
+  AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+  ONEDRIVE_USER_UPN
+"""
+from __future__ import annotations
+
+import datetime
+import io
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+from src.onedrive_upload import download_file, get_token
+from src.teams_adaptive_cards import post_adaptive_cards
+
+_ACC_FOLDER = "Safety"
+
+
+def _load_resolved_today(tok: str, upn: str, today: datetime.date) -> set[str]:
+    """Return normalized category names logged in Accountability Log.xlsx today."""
+    resolved: set[str] = set()
+    try:
+        raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
+        xl  = pd.ExcelFile(io.BytesIO(raw))
+        df  = xl.parse(xl.sheet_names[0])
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        date_col = next((c for c in df.columns if "date" in c), None)
+        cat_col  = next((c for c in df.columns if "category" in c), None)
+        if date_col is None or cat_col is None:
+            print("Accountability Log.xlsx: date or category column not found.")
+            return resolved
+        for _, row in df.iterrows():
+            raw_date = row[date_col]
+            if pd.isna(raw_date):
+                continue
+            try:
+                row_date = pd.Timestamp(raw_date).date()
+            except Exception:
+                continue
+            if row_date == today:
+                cat = str(row[cat_col]).strip().lower()
+                if cat and cat != "nan":
+                    resolved.add(cat)
+    except Exception as exc:
+        print(f"Could not read Accountability Log.xlsx: {exc}")
+    return resolved
+
+
+def main() -> int:
+    webhook  = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
+    run_url  = os.environ.get("RUN_URL", "").strip()
+    form_url = os.environ.get("TEAMS_FORM_URL", "").strip()
+
+    tenant = os.environ.get("AZURE_TENANT_ID", "").strip()
+    client = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    secret = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+    upn    = os.environ.get("ONEDRIVE_USER_UPN", "").strip()
+
+    if not all([tenant, client, secret, upn]):
+        print("Missing Azure credentials — cannot load OneDrive data.")
+        return 1
+
+    tok   = get_token(tenant, client, secret)
+    today = datetime.date.today()
+
+    # Find today's accountability JSON — prefer local, fall back to OneDrive.
+    acc_path = Path(f"output/accountability-{today.isoformat()}.json")
+    if not acc_path.exists():
+        try:
+            raw = download_file(
+                tok, upn, f"{_ACC_FOLDER}/accountability-{today.isoformat()}.json"
+            )
+            acc_path.parent.mkdir(parents=True, exist_ok=True)
+            acc_path.write_bytes(raw)
+            print(f"Downloaded accountability JSON for {today} from OneDrive.")
+        except Exception as exc:
+            print(f"No accountability JSON found for {today}: {exc}")
+            return 0
+
+    resolved_today = _load_resolved_today(tok, upn, today)
+    print(f"Actioned today: {sorted(resolved_today) or 'none'}")
+
+    post_adaptive_cards(acc_path, webhook, run_url, form_url,
+                        resolved_today=resolved_today)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
