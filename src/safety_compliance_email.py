@@ -1310,8 +1310,20 @@ def _write_accountability_json(
 ) -> None:
     """Enrich items with carry-forward (days_open) and occurrence counts,
     then write to output/ and upload to OneDrive/Safety/."""
+    from src.suppression_registry import (
+        load_registry, save_registry, prune,
+        is_suppressed, add_suppression, apply_resolved_to_registry,
+    )
+
     yesterday = today - datetime.timedelta(days=1)
     resolved_cats = resolved_cats or set()
+
+    # Load suppression registry; record new suppressions for items actioned yesterday.
+    registry = load_registry(tok, upn)
+    prune(registry, today)
+    all_items_combined = list(audra_items) + list(ops_items)
+    apply_resolved_to_registry(registry, resolved_cats, all_items_combined, yesterday)
+    save_registry(tok, upn, registry)
 
     # Build yesterday's key→days_open map for carry-forward
     yesterday_keys: dict[str, int] = {}
@@ -1325,11 +1337,17 @@ def _write_accountability_json(
         for item in items:
             item = dict(item)
             key = _accountability_key(item)
-            cat_norm = (item.get("category") or "").lower().strip()
-            drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
-            # Suppress if category OR driver/unit was logged in yesterday's log.
-            # "driver:<name>" tokens handle the common case where the form's
-            # Category field shows "Other" (pre-fill didn't match a choice).
+            cat_norm  = (item.get("category") or "").lower().strip()
+            drv_norm  = (item.get("driver") or item.get("unit") or "").lower().strip()
+
+            # Skip items suppressed by the registry (actioned within their window).
+            if is_suppressed(registry, cat_norm, drv_norm, today):
+                log.info("Suppressed (registry): [%s / %s]", cat_norm, drv_norm)
+                continue
+
+            # Mark items actioned yesterday (from Accountability Log) — shows green
+            # checkmark on today's card even though the suppression already prevents
+            # them from appearing on tomorrow's card.
             actioned = (
                 cat_norm in resolved_cats
                 or (drv_norm and f"driver:{drv_norm}" in resolved_cats)

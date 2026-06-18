@@ -23,7 +23,13 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+import json
+
 from src.onedrive_upload import download_file, get_token
+from src.suppression_registry import (
+    load_registry, save_registry, prune,
+    apply_resolved_to_registry,
+)
 from src.teams_adaptive_cards import post_adaptive_cards
 
 _ACC_FOLDER = "Safety"
@@ -107,6 +113,18 @@ def main() -> int:
 
     resolved_today = _load_resolved_today(tok, upn, today)
     print(f"Actioned today: {sorted(resolved_today) or 'none'}")
+
+    # Update suppression registry so tomorrow's brief skips newly actioned items.
+    if resolved_today:
+        try:
+            acc_data   = json.loads(acc_path.read_bytes())
+            all_items  = acc_data.get("audra", []) + acc_data.get("ops", [])
+            registry   = load_registry(tok, upn)
+            prune(registry, today)
+            apply_resolved_to_registry(registry, resolved_today, all_items, today)
+            save_registry(tok, upn, registry)
+        except Exception as exc:
+            print(f"Warning: could not update suppression registry: {exc}")
 
     post_adaptive_cards(acc_path, webhook, run_url, form_url,
                         resolved_today=resolved_today)
