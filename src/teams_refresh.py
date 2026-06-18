@@ -19,6 +19,7 @@ import io
 import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -88,7 +89,7 @@ def main() -> int:
         return 1
 
     tok   = get_token(tenant, client, secret)
-    today = datetime.date.today()
+    today = datetime.datetime.now(ZoneInfo("America/Chicago")).date()
 
     # Find today's accountability JSON — prefer local, fall back to OneDrive.
     acc_path = Path(f"output/accountability-{today.isoformat()}.json")

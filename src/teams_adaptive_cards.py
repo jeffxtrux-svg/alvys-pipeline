@@ -23,6 +23,7 @@ import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 try:
     import requests as _requests
@@ -412,7 +413,7 @@ def main() -> int:
     run_url  = os.environ.get("RUN_URL", "").strip()
     form_url = os.environ.get("TEAMS_FORM_URL", "").strip()
 
-    today = datetime.date.today()
+    today = datetime.datetime.now(ZoneInfo("America/Chicago")).date()
     acc_path = Path(f"output/accountability-{today.isoformat()}.json")
     if not acc_path.exists():
         yesterday = today - datetime.timedelta(days=1)
