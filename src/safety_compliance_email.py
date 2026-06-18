@@ -939,7 +939,7 @@ def _build_accountability_structured(
         audra_items.append(item)
         ops_items.append(item)
 
-    # Safety events needing coaching (coaching_list, not yet acked)
+    # Safety events needing coaching (coaching_list, not yet acked) → audra + ops
     coaching_list = (samsara or {}).get("coaching_list") or []
     for c in coaching_list:
         if c.get("acked"):
@@ -947,16 +947,18 @@ def _build_accountability_structured(
         drv   = c.get("driver", "Unknown")
         n     = c.get("events", 1)
         types = ", ".join(c.get("types") or []) or "safety event"
-        ops_items.append({
+        item = {
             "category": "Safety Event — Coaching Needed",
             "severity": "high",
             "driver":   drv,
             "unit":     None,
             "detail":   f"{n} event{'s' if n != 1 else ''}: {types}",
             "prompt":   "When will coaching be completed? What corrective action was taken?",
-        })
+        }
+        audra_items.append(item)
+        ops_items.append(item)
 
-    # Safety events needing disposition (from detail.events where status needs action)
+    # Safety events needing disposition → audra + ops
     _needs_disp_statuses = {
         "needsCoaching", "needs_coaching", "NEEDS_COACHING",
         "needsDisposition", "needs_disposition", "NEEDS_DISPOSITION",
@@ -973,14 +975,125 @@ def _build_accountability_structured(
                 edate = " on " + pd.Timestamp(raw_ts).strftime("%-m/%-d/%y")
             except Exception:
                 pass
-        ops_items.append({
+        item = {
             "category": "Safety Event — Needs Disposition",
             "severity": "high",
             "driver":   drv,
             "unit":     None,
             "detail":   f"{etype}{edate}",
             "prompt":   "Has this event been dispositioned in Samsara? What coaching action was taken?",
-        })
+        }
+        audra_items.append(item)
+        ops_items.append(item)
+
+    # CDL disqualified → audra (critical)
+    if samba and samba.get("invalid_licenses"):
+        for d in (samba["invalid_licenses"] or [])[:3]:
+            nm     = d.get("name") or "Unknown"
+            status = (d.get("status") or "INVALID").upper()
+            audra_items.append({
+                "category": "CDL Disqualified",
+                "severity": "critical",
+                "driver":   nm,
+                "unit":     None,
+                "detail":   f"CDL {status} — cannot legally operate CMV",
+                "prompt":   "PULL FROM SERVICE immediately. Document action taken.",
+            })
+
+    # Driver's license expiration → audra
+    if samba and samba.get("license_issues"):
+        for d in samba["license_issues"]:
+            days = d.get("days_to_exp")
+            if days is None or days < 0:
+                continue
+            nm  = d.get("name", "Unknown")
+            exp = d.get("exp") or ""
+            try:
+                exp_fmt = pd.Timestamp(exp).strftime("%-m/%-d/%Y") if exp else ""
+            except Exception:
+                exp_fmt = str(exp)[:10] if exp else ""
+            sev        = "critical" if days <= 7 else "high"
+            detail_str = f"Expires in {days}d ({exp_fmt})" if exp_fmt else f"Expires in {days}d"
+            prompt     = (
+                "Confirm appointment is booked, document appointment date."
+                if days <= 7 else
+                "When is renewal scheduled? Confirm renewal plan with driver."
+            )
+            audra_items.append({
+                "category": "Driver License Expiring",
+                "severity": sev,
+                "driver":   nm,
+                "unit":     None,
+                "detail":   detail_str,
+                "prompt":   prompt,
+            })
+
+    # DOT medical card expiring/expired → audra
+    if alvys_drivers:
+        for d in (alvys_drivers.get("medical_critical_14") or []):
+            nm   = d.get("name") or "Unknown"
+            days = d.get("medical_days", 0)
+            exp  = d.get("medical_exp") or ""
+            if days <= 0:
+                sev        = "critical"
+                detail_str = "Medical card EXPIRED"
+                prompt     = "PULL FROM SERVICE immediately."
+            elif days <= 3:
+                sev        = "critical"
+                detail_str = f"DOT physical in {days}d ({exp})"
+                prompt     = "Confirm appointment is booked, document appointment date."
+            elif days <= 7:
+                sev        = "critical"
+                detail_str = f"DOT medical expires in {days}d ({exp})"
+                prompt     = "Confirm appointment is scheduled and document appointment date in driver file."
+            else:
+                sev        = "high"
+                detail_str = f"DOT medical expires in {days}d ({exp})"
+                prompt     = "Schedule appointment now and document appointment date in driver file."
+            audra_items.append({
+                "category": "DOT Medical Card",
+                "severity": sev,
+                "driver":   nm,
+                "unit":     None,
+                "detail":   detail_str,
+                "prompt":   prompt,
+            })
+
+    # SambaSafety risk flags → audra
+    if samba and samba.get("high_risk"):
+        for d in (samba["high_risk"] or [])[:3]:
+            nm = d.get("name") or d.get("driver") or "Unknown"
+            audra_items.append({
+                "category": "SambaSafety Risk Flag",
+                "severity": "high",
+                "driver":   nm,
+                "unit":     None,
+                "detail":   "Flagged as elevated risk",
+                "prompt":   "Review SambaSafety risk flag. What corrective action is being taken?",
+            })
+
+    # MVR violations → audra
+    if samba and samba.get("violations"):
+        for v in samba["violations"]:
+            nm   = v.get("name", "Unknown")
+            vtyp = v.get("type", "violation")
+            pts  = v.get("points")
+            sev_label = (v.get("severity") or "").strip()
+            vd   = v.get("date")
+            try:
+                date_fmt = pd.Timestamp(vd).strftime("%-m/%-d/%y")
+            except Exception:
+                date_fmt = str(vd)[:10] if vd else "?"
+            pts_note = f" | {int(pts)} pts" if _isnum(pts) else ""
+            sev_note = f" | {sev_label}" if sev_label else ""
+            audra_items.append({
+                "category": "MVR Violation",
+                "severity": "high",
+                "driver":   nm,
+                "unit":     None,
+                "detail":   f"{vtyp} ({date_fmt}{pts_note}{sev_note})",
+                "prompt":   "Challenge the violation OR acknowledge as factual. Document decision and action taken.",
+            })
 
     # DOT inspection — Tractors (annual_days < 0 → overdue); both audra + ops
     if equipment:
@@ -1041,7 +1154,7 @@ def _build_accountability_structured(
                 "prompt":   prompt,
             })
 
-    # DVIR compliance <90% last 7d
+    # DVIR compliance <90% last 7d → audra + ops (Safety Mgr owns coaching)
     if samsara_sheets:
         try:
             comp_rows = compute_inspection_compliance(samsara_sheets, days=7)
@@ -1059,14 +1172,16 @@ def _build_accountability_structured(
                         sev = "high"
                     else:
                         sev = "medium"
-                    ops_items.append({
+                    item = {
                         "category": "DVIR Compliance",
                         "severity": sev,
                         "driver":   drv,
                         "unit":     None,
                         "detail":   f"{pct}% completion last 7d ({done}/{exp})",
                         "prompt":   "Has driver been notified? What corrective action was taken?",
-                    })
+                    }
+                    audra_items.append(item)
+                    ops_items.append(item)
         except Exception:
             pass
 
@@ -1099,20 +1214,22 @@ def _build_accountability_structured(
             "prompt":   "Has driver been notified to certify logs? What corrective action was taken?",
         })
 
-    # Low safety score (<90)
+    # Low safety score (<90) → audra + ops (Safety Mgr leads coaching plan)
     for r in scores_all:
         score = r.get("score")
         if score is None or score >= 90:
             continue
         drv = r.get("driver", "Unknown")
-        ops_items.append({
+        item = {
             "category": "Low Safety Score",
             "severity": "high",
             "driver":   drv,
             "unit":     None,
             "detail":   f"Score {score}",
             "prompt":   "When will coaching be completed? Improvement plan documented?",
-        })
+        }
+        audra_items.append(item)
+        ops_items.append(item)
 
     # Speeding (speed_pct_7d >= 1%)
     for r in scores_all:
