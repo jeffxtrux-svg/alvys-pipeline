@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Alvys Pipeline</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0EA5E9">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Alvys">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1 id="view-title">Dashboard</h1>
+      <button id="refresh-btn" class="icon-btn" title="Reload file" aria-label="Reload file">↻</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Empty state / loader -->
+    <section id="view-empty" class="view">
+      <div class="empty">
+        <div class="empty-icon">📊</div>
+        <h2>No data loaded</h2>
+        <p>Load your <code>Alvys_Master.xlsx</code> from this device, OneDrive, or a URL.</p>
+        <label class="btn primary">
+          Choose file
+          <input id="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+        </label>
+        <button id="url-btn" class="btn">Load from URL…</button>
+        <p class="hint">Files are parsed on this device and never uploaded.</p>
+      </div>
+    </section>
+
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view hidden">
+      <div class="meta-card">
+        <div class="meta-row"><span>File</span><strong id="meta-name">—</strong></div>
+        <div class="meta-row"><span>Loaded</span><strong id="meta-loaded">—</strong></div>
+        <div class="meta-row"><span>Rows</span><strong id="meta-rows">—</strong></div>
+      </div>
+      <div class="kpi-grid" id="kpi-grid"></div>
+      <h3 class="section-title">Recent loads</h3>
+      <ul class="list" id="recent-loads"></ul>
+    </section>
+
+    <!-- List views (Loads / Trips / Fuel) share this template -->
+    <section id="view-list" class="view hidden">
+      <div class="search-wrap">
+        <input id="search-input" type="search" placeholder="Search…" autocomplete="off" autocapitalize="off">
+        <select id="status-filter"><option value="">All statuses</option></select>
+      </div>
+      <ul class="list" id="list-rows"></ul>
+      <div id="list-empty" class="empty small hidden"><p>No matching rows.</p></div>
+    </section>
+
+    <!-- Detail view -->
+    <section id="view-detail" class="view hidden">
+      <button id="back-btn" class="back">← Back</button>
+      <h2 id="detail-title">Detail</h2>
+      <div class="detail" id="detail-body"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view hidden">
+      <h3 class="section-title">Data source</h3>
+      <div class="meta-card">
+        <label class="field">
+          <span>Default URL</span>
+          <input id="default-url" type="url" placeholder="https://…/Alvys_Master.xlsx">
+        </label>
+        <button id="save-url" class="btn primary small">Save URL</button>
+      </div>
+
+      <h3 class="section-title">Local data</h3>
+      <div class="meta-card">
+        <div class="meta-row"><span>File</span><strong id="set-meta-name">—</strong></div>
+        <div class="meta-row"><span>Loaded</span><strong id="set-meta-loaded">—</strong></div>
+        <button id="clear-data" class="btn danger small">Clear cached data</button>
+      </div>
+
+      <h3 class="section-title">About</h3>
+      <div class="meta-card">
+        <p class="hint">
+          A personal, fully on-device viewer for the
+          <a href="https://github.com/jeffxtrux-svg/alvys-pipeline" target="_blank" rel="noopener">alvys-pipeline</a>
+          project. No data leaves this device.
+        </p>
+        <div class="meta-row"><span>App version</span><strong id="app-version">—</strong></div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-tab="dashboard"><span>📊</span><label>Dashboard</label></button>
+    <button class="tab" data-tab="loads"><span>📦</span><label>Loads</label></button>
+    <button class="tab" data-tab="trips"><span>🚛</span><label>Trips</label></button>
+    <button class="tab" data-tab="fuel"><span>⛽</span><label>Fuel</label></button>
+    <button class="tab" data-tab="settings"><span>⚙️</span><label>Settings</label></button>
+  </nav>
+
+  <!-- Loading overlay -->
+  <div id="loading" class="loading hidden"><div class="spinner"></div><p id="loading-msg">Loading…</p></div>
+
+  <!-- URL prompt -->
+  <dialog id="url-dialog">
+    <form method="dialog" id="url-form">
+      <h3>Load from URL</h3>
+      <p class="hint">Paste a direct link to <code>Alvys_Master.xlsx</code> (OneDrive share link, GitHub raw, etc.).</p>
+      <input id="url-input" type="url" placeholder="https://…/Alvys_Master.xlsx" required>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn">Cancel</button>
+        <button id="url-submit" value="ok" class="btn primary">Load</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- SheetJS for xlsx parsing (cached by service worker after first load) -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
