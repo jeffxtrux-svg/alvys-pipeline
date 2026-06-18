@@ -174,6 +174,62 @@ def _item_block(item: dict, form_url: str = "") -> dict:
     }
 
 
+def _all_clear_card(
+    owner_label: str,
+    today: datetime.date,
+    suppressed_count: int,
+    run_url: str = "",
+) -> dict:
+    """Return a compact 'all clear' card when every item was actioned yesterday."""
+    body: list[dict] = [
+        {
+            "type": "Container",
+            "style": "good",
+            "bleed": True,
+            "items": [
+                {
+                    "type": "TextBlock",
+                    "text": f"✅ {owner_label} — Safety Accountability",
+                    "weight": "Bolder",
+                    "size": "Large",
+                    "color": "Light",
+                    "wrap": True,
+                },
+                {
+                    "type": "TextBlock",
+                    "text": today.strftime("%A, %B %-d, %Y"),
+                    "color": "Light",
+                    "spacing": "None",
+                    "isSubtle": True,
+                },
+                {
+                    "type": "TextBlock",
+                    "text": f"All {suppressed_count} item(s) from yesterday were actioned — no new items today.",
+                    "color": "Light",
+                    "spacing": "None",
+                    "wrap": True,
+                },
+            ],
+        }
+    ]
+    actions: list[dict] = []
+    if run_url:
+        actions.append({"type": "Action.OpenUrl", "title": "View workflow run", "url": run_url})
+    card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": body,
+        "actions": actions,
+        "msteams": {"width": "Full"},
+    }
+    return {
+        "type": "message",
+        "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+                         "contentUrl": None, "content": card}],
+    }
+
+
 def build_owner_card(
     owner_label: str,
     items: list[dict],
@@ -185,16 +241,26 @@ def build_owner_card(
     if not items:
         return {}
 
+    # Items logged in yesterday's Accountability Log are suppressed from the
+    # active list — they were already addressed and don't need attention today.
+    actioned_yday = [i for i in items if i.get("actioned_yesterday")]
+    active_items  = [i for i in items if not i.get("actioned_yesterday")]
+
+    # If everything was actioned yesterday, post a brief "all clear" card
+    # rather than no card at all — so the channel confirms the check happened.
+    if not active_items:
+        return _all_clear_card(owner_label, today, len(actioned_yday), run_url)
+
     sorted_items = sorted(
-        items,
+        active_items,
         key=lambda i: (-i.get("days_open", 1),
                        _SEV_RANK.get(i.get("severity", "medium"), 2)),
     )
 
-    n        = len(items)
-    new_cnt  = sum(1 for i in items if i.get("days_open", 1) == 1)
-    cf_cnt   = sum(1 for i in items if i.get("days_open", 1) > 1)
-    esc_cnt  = sum(1 for i in items if i.get("days_open", 1) >= 3)
+    n        = len(active_items)
+    new_cnt  = sum(1 for i in active_items if i.get("days_open", 1) == 1)
+    cf_cnt   = sum(1 for i in active_items if i.get("days_open", 1) > 1)
+    esc_cnt  = sum(1 for i in active_items if i.get("days_open", 1) >= 3)
 
     parts = [f"{n} action item(s)"]
     if new_cnt:
@@ -203,6 +269,8 @@ def build_owner_card(
         parts.append(f"{cf_cnt} carried forward")
     if esc_cnt:
         parts.append(f"⚠️ {esc_cnt} escalated (3+ days open)")
+    if actioned_yday:
+        parts.append(f"✅ {len(actioned_yday)} suppressed (actioned yesterday)")
     subtitle = " · ".join(parts)
 
     body: list[dict] = [
