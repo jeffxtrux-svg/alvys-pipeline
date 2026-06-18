@@ -29,7 +29,15 @@ _ACC_FOLDER = "Safety"
 
 
 def _load_resolved_today(tok: str, upn: str, today: datetime.date) -> set[str]:
-    """Return normalized category names logged in Accountability Log.xlsx today."""
+    """Return suppression tokens from Accountability Log.xlsx for today.
+
+    Returns a flat set of:
+      - Lowercased category names (when category is not "other")
+      - "driver:<name>" tokens for every Driver/Unit logged today
+
+    Matches items by category OR driver name so suppression works even when
+    the form's Category field shows "Other" (pre-fill choice mismatch).
+    """
     resolved: set[str] = set()
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
@@ -38,8 +46,9 @@ def _load_resolved_today(tok: str, upn: str, today: datetime.date) -> set[str]:
         df.columns = [str(c).strip().lower() for c in df.columns]
         date_col = next((c for c in df.columns if "date" in c), None)
         cat_col  = next((c for c in df.columns if "category" in c), None)
-        if date_col is None or cat_col is None:
-            print("Accountability Log.xlsx: date or category column not found.")
+        drv_col  = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        if date_col is None:
+            print("Accountability Log.xlsx: date column not found.")
             return resolved
         for _, row in df.iterrows():
             raw_date = row[date_col]
@@ -49,10 +58,16 @@ def _load_resolved_today(tok: str, upn: str, today: datetime.date) -> set[str]:
                 row_date = pd.Timestamp(raw_date).date()
             except Exception:
                 continue
-            if row_date == today:
+            if row_date != today:
+                continue
+            if cat_col:
                 cat = str(row[cat_col]).strip().lower()
-                if cat and cat != "nan":
+                if cat and cat not in ("nan", "other"):
                     resolved.add(cat)
+            if drv_col:
+                drv = str(row[drv_col]).strip().lower()
+                if drv and drv != "nan":
+                    resolved.add(f"driver:{drv}")
     except Exception as exc:
         print(f"Could not read Accountability Log.xlsx: {exc}")
     return resolved

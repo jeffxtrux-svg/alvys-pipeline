@@ -378,7 +378,10 @@ def post_adaptive_cards(
         result = []
         for item in items:
             item = dict(item)
-            if item.get("category", "").lower() in resolved_norm:
+            cat = item.get("category", "").lower()
+            drv = (item.get("driver") or item.get("unit") or "").lower()
+            if (cat in resolved_norm or
+                    (drv and f"driver:{drv}" in resolved_norm)):
                 item["actioned_yesterday"] = True
             result.append(item)
         return result
