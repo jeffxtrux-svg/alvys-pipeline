@@ -398,8 +398,34 @@ def main() -> int:
     log.info("Routable loads (have truck + undelivered stop + dest coords): %d",
              len(load_rows))
 
+    # Diagnostic: when we can't extract any rows, dump the shape of the first
+    # active load so we can see exactly what field names Alvys returns. Drops
+    # itself once we know the structure.
+    if not load_rows and active:
+        import json
+        sample = active[0]
+        log.warning("=== DIAGNOSTIC: no routable loads. First active load keys: ===")
+        log.warning("Top-level keys: %s", sorted(sample.keys()))
+        log.warning("Truck field: %r", sample.get("Truck"))
+        log.warning("Tractor field: %r", sample.get("Tractor"))
+        log.warning("Trip field keys: %s",
+                    sorted((sample.get("Trip") or {}).keys()) if sample.get("Trip") else "(none)")
+        log.warning("Trips field len: %s",
+                    len(sample.get("Trips") or []))
+        if sample.get("Trips"):
+            log.warning("Trips[0] keys: %s", sorted(sample["Trips"][0].keys()))
+        stops = sample.get("Stops") or []
+        log.warning("Stops count: %d", len(stops))
+        if stops:
+            log.warning("First stop keys: %s", sorted(stops[0].keys()))
+            log.warning("First stop Address: %s",
+                        json.dumps(stops[0].get("Address"), default=str)[:800])
+        log.warning("Trucks_by_id sample (first 3): %s",
+                    list(trucks_by_id.items())[:3])
+        log.warning("=== END DIAGNOSTIC ===")
+
     # --- Pull current locations from Samsara ----------------------------
-    samsara = SamsaraClient(token=os.environ["SAMSARA_API_TOKEN"])
+    samsara = SamsaraClient(api_token=os.environ["SAMSARA_API_TOKEN"])
     locations = samsara.fetch_locations()
     locs_by_truck = _locations_by_truck_name(locations)
     log.info("Resolved current GPS for %d trucks", len(locs_by_truck))
