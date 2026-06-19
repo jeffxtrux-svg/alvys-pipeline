@@ -15,7 +15,6 @@ v1 scope:
     are shown; everything else is hidden
 
 Roadmap (deferred — design supports both):
-  v2: Teams Adaptive Card alerts when delta < -45 min (truck late)
   v2: Customer/broker email notifications when ETA within 45 min of appt
   v2: Contact email + phone column (broker contact if brokered,
       consignee contact if customer-direct)
@@ -25,8 +24,9 @@ Env vars (all required unless noted):
   ALVYS_CLIENT_ID / ALVYS_CLIENT_SECRET
   SAMSARA_API_TOKEN
   MAPBOX_TOKEN                       — secret token with directions:read
+  TEAMS_ETA_WEBHOOK (optional)       — Power Automate webhook URL; alerts when
+                                       any load is 45+ min behind schedule
   ETA_ONEDRIVE_FOLDER (optional)     — default "ETA"
-  ETA_LATE_THRESHOLD_MIN (optional)  — default 0 (any negative delta is late)
 """
 
 from __future__ import annotations
@@ -229,6 +229,82 @@ def _mapbox_duration_seconds(
             log.warning("Mapbox %s request failed: %s", profile, e)
             return None
     return None
+
+
+# ----------------------------------------------------------------------
+# Teams alert
+# ----------------------------------------------------------------------
+_LATE_THRESHOLD_MIN = -45
+
+
+def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
+    """POST an Adaptive Card to the Teams Power Automate webhook."""
+    if not late_rows or not webhook_url:
+        return
+
+    def _col(text: str, width: str = "auto", bold: bool = False,
+             color: str = "Default", wrap: bool = False) -> dict:
+        return {
+            "type": "Column", "width": width,
+            "items": [{"type": "TextBlock", "text": text, "size": "Small",
+                       "weight": "Bolder" if bold else "Default",
+                       "color": color, "wrap": wrap}],
+        }
+
+    body: list[dict] = [
+        {"type": "TextBlock", "text": "⚠️ Drivers Running Late",
+         "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
+        {"type": "TextBlock",
+         "text": f"{len(late_rows)} load(s) are 45+ min behind schedule — as of "
+                 f"{datetime.now(CT):%I:%M %p CT}",
+         "size": "Small", "spacing": "None", "wrap": True},
+        {"type": "TextBlock", "text": " ", "spacing": "Small"},
+        {"type": "ColumnSet", "columns": [
+            _col("Truck", "auto", bold=True),
+            _col("Destination", "stretch", bold=True),
+            _col("Appt", "auto", bold=True),
+            _col("ETA", "auto", bold=True),
+            _col("Late", "auto", bold=True, color="Attention"),
+        ]},
+    ]
+
+    for r in sorted(late_rows, key=lambda x: x.get("delta_min") or 0):
+        mins_late = abs(r["delta_min"])
+        hrs, m = divmod(mins_late, 60)
+        late_str = f"{hrs}h {m}m" if hrs else f"{m}m"
+        dest = (f"{r['consignee_city']}, {r['consignee_state']}".strip(", ")
+                or r["consignee"] or "—")
+        body.append({
+            "type": "ColumnSet", "separator": True,
+            "columns": [
+                _col(r["truck_name"], "auto", bold=True, wrap=False),
+                _col(dest, "stretch", wrap=True),
+                _col(_fmt_dt_ct(r["appt_dt"]), "auto", wrap=False),
+                _col(_fmt_dt_ct(r.get("eta_dt")), "auto", wrap=False),
+                _col(late_str, "auto", bold=True, color="Attention", wrap=False),
+            ],
+        })
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": body,
+            },
+        }],
+    }
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=15)
+        if resp.status_code not in (200, 202):
+            log.warning("Teams alert HTTP %d: %s", resp.status_code, resp.text[:300])
+        else:
+            log.info("Teams alert posted for %d late load(s)", len(late_rows))
+    except Exception as e:
+        log.warning("Teams alert failed: %s", e)
 
 
 # ----------------------------------------------------------------------
@@ -485,6 +561,18 @@ def main() -> int:
         rows_with_eta.append({**row, "eta_dt": eta_dt, "delta_min": delta_min})
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
+
+    # --- Teams alert for loads 45+ min late -----------------------------
+    teams_webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
+    if teams_webhook:
+        late = [r for r in rows_with_eta
+                if r.get("delta_min") is not None and r["delta_min"] <= _LATE_THRESHOLD_MIN]
+        if late:
+            _post_teams_alert(teams_webhook, late)
+        else:
+            log.info("No loads 45+ min late — Teams alert skipped")
+    else:
+        log.info("TEAMS_ETA_WEBHOOK not set — skipping alert")
 
     # --- Render + upload ------------------------------------------------
     generated_at = datetime.now(timezone.utc)

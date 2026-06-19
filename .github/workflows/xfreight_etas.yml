@@ -22,6 +22,8 @@
 #   ALVYS_CLIENT_ID, ALVYS_CLIENT_SECRET, ALVYS_TENANT_IDS
 #   SAMSARA_API_TOKEN
 #   MAPBOX_TOKEN          — Mapbox secret token with directions:read scope
+#   TEAMS_ETA_WEBHOOK     — Power Automate webhook URL (optional); posts an
+#                           Adaptive Card to Teams when any load is 45+ min late
 
 name: XFreight ETAs (every 30 min)
 
@@ -70,4 +72,5 @@ jobs:
           ALVYS_TENANT_IDS:    ${{ secrets.ALVYS_TENANT_IDS }}
           SAMSARA_API_TOKEN:   ${{ secrets.SAMSARA_API_TOKEN }}
           MAPBOX_TOKEN:        ${{ secrets.MAPBOX_TOKEN }}
+          TEAMS_ETA_WEBHOOK:   ${{ secrets.TEAMS_ETA_WEBHOOK }}
         run: python -m src.xfreight_etas
