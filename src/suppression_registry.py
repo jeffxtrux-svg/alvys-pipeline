@@ -43,21 +43,28 @@ _FILENAME = "suppression-registry.json"
 _OD_PATH  = f"{_FOLDER}/{_FILENAME}"
 
 # Fallback window (days) for categories without smart logic.
-# Categories absent from this dict AND not handled by add_suppression_smart
-# are never suppressed via the registry.
+# Any category not listed here gets a 1-day default (see add_suppression) so
+# the user's "actioned" form submission always honors at least one day,
+# regardless of whether the category was anticipated.
 _FALLBACK_DAYS: dict[str, int] = {
-    "cdl disqualified":          1,    # overridden by reinstatement date if provided
-    "driver license expiring":   1,    # overridden by expiry-date logic
-    "dot medical card":          1,    # overridden by expiry-date logic
-    "mvr violation":             1,
-    "dot inspection — tractor":  7,    # overridden; blocked when federal OOS
-    "dot inspection — trailer":  7,    # overridden; blocked when federal OOS
-    "hos violation":             1,
-    "dvir compliance":           7,
-    "speeding":                  7,
-    "low safety score":          7,
-    "sambasafety risk flag":   180,
+    "cdl disqualified":              1,    # overridden by reinstatement date if provided
+    "driver license expiring":       1,    # overridden by expiry-date logic
+    "dot medical card":              1,    # overridden by expiry-date logic
+    "mvr violation":                 1,
+    "dot inspection — tractor":      7,    # overridden; blocked when federal OOS
+    "dot inspection — trailer":      7,    # overridden; blocked when federal OOS
+    "hos violation":                 1,
+    "dvir compliance":               7,
+    "dvir defect":                   1,    # cleared in Samsara when defect resolved
+    "speeding":                      7,
+    "low safety score":              7,
+    "sambasafety risk flag":       180,
+    "safety event — coaching needed":  1,  # cleared in Samsara when coached
+    "safety event — needs disposition":1,  # cleared in Samsara when dispositioned
+    "prior day logs not certified":  1,    # cleared in HOS when driver certifies
 }
+# Default suppression window (days) for any user-actioned category not above.
+_DEFAULT_DAYS = 1
 
 # Days before expiry at which License / Med Card items reappear and stay on.
 _LICENSE_REFIRE_DAYS = 3
@@ -158,13 +165,15 @@ def add_suppression(
 ) -> None:
     """Add or refresh a suppression using the standard fallback window.
 
-    No-ops if the category has no entry in _FALLBACK_DAYS.
+    Falls back to _DEFAULT_DAYS (1 day) for categories not in _FALLBACK_DAYS,
+    so the user's "actioned" form submission always honors at least one day
+    regardless of whether the category was anticipated when this code was
+    written. Without this default, brand-new category strings the user
+    actions via the form would silently re-fire on the next brief.
     """
     cat_norm  = (category or "").lower().strip()
     subj_norm = (subject  or "").lower().strip()
-    days = _FALLBACK_DAYS.get(cat_norm)
-    if not days:
-        return
+    days = _FALLBACK_DAYS.get(cat_norm, _DEFAULT_DAYS)
     until = (today + datetime.timedelta(days=days)).isoformat()
     _set_suppression(registry, cat_norm, subj_norm, until, today)
 
