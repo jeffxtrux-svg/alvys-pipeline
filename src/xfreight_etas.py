@@ -124,12 +124,30 @@ def _is_brokered(load: dict) -> bool:
     return str(load.get("BrokerageStatus") or "").lower() == "brokered"
 
 
-def _extract_load_row(load: dict, trucks_by_id: dict) -> dict | None:
+def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict) -> dict | None:
     """Pull the v1 report columns out of one Alvys load record. Returns None
     if the load isn't routable (no truck assignment, no undelivered stop,
-    or no geocoded destination)."""
-    truck_id = _g(load, "Truck", "Id") or _g(load, "Trip", "Truck", "Id")
-    truck_name = trucks_by_id.get(str(truck_id)) if truck_id else None
+    or no geocoded destination).
+
+    Truck assignment lives on the Trip (not the Load). We join by LoadNumber.
+    Coordinates are on the Stop under a 'Coordinates' key (not Address.Latitude).
+    """
+    load_num = str(load.get("LoadNumber") or "")
+    trip = trips_by_load.get(load_num) if load_num else None
+
+    truck_name = None
+    if trip:
+        truck_obj = trip.get("Truck") or {}
+        if isinstance(truck_obj, dict):
+            # Try the truck name/number directly on the nested object first
+            truck_name = (truck_obj.get("TruckNum") or truck_obj.get("TruckNumber")
+                         or truck_obj.get("Number") or truck_obj.get("Name"))
+            if not truck_name:
+                # Fall back to the trucks_by_id lookup via Truck.Id
+                truck_id = truck_obj.get("Id")
+                if truck_id:
+                    truck_name = trucks_by_id.get(str(truck_id)) or None
+
     if not truck_name:
         return None
 
@@ -137,8 +155,10 @@ def _extract_load_row(load: dict, trucks_by_id: dict) -> dict | None:
     if not next_stop:
         return None
 
-    dest_lat = _g(next_stop, "Address", "Latitude")
-    dest_lng = _g(next_stop, "Address", "Longitude")
+    # Coordinates live under the "Coordinates" key, not inside Address
+    coords = next_stop.get("Coordinates") or {}
+    dest_lat = coords.get("Latitude") if isinstance(coords, dict) else None
+    dest_lng = coords.get("Longitude") if isinstance(coords, dict) else None
     if dest_lat is None or dest_lng is None:
         return None
 
@@ -370,10 +390,14 @@ def main() -> int:
         client_secret=os.environ["ALVYS_CLIENT_SECRET"],
     )
     trucks = alvys.fetch_trucks()
-    trucks_by_id = {
-        str(t.get("Id")): (t.get("TruckNumber") or t.get("Number") or "")
-        for t in trucks if t.get("Id")
-    }
+    trucks_by_id = {}
+    for t in trucks:
+        tid = str(t.get("Id") or "")
+        if not tid:
+            continue
+        num = (t.get("TruckNum") or t.get("TruckNumber")
+               or t.get("Number") or t.get("Name") or "")
+        trucks_by_id[tid] = str(num)
     log.info("Indexed %d trucks", len(trucks_by_id))
 
     # Active loads: status filter + ~7 day updatedAt window
@@ -390,38 +414,50 @@ def main() -> int:
     ]
     log.info("Filtered to %d active X-Trux loads", len(active))
 
+    # Trips carry truck assignment — loads don't embed it.
+    raw_trips = alvys.fetch_trips(start_date)
+    trips_by_load: dict[str, dict] = {}
+    for trip in raw_trips:
+        ln = str(trip.get("LoadNumber") or "")
+        if ln and ln not in trips_by_load:
+            trips_by_load[ln] = trip
+    log.info("Indexed %d trips (%d unique load numbers)", len(raw_trips), len(trips_by_load))
+
     load_rows: list[dict] = []
     for L in active:
-        row = _extract_load_row(L, trucks_by_id)
+        row = _extract_load_row(L, trucks_by_id, trips_by_load)
         if row:
             load_rows.append(row)
     log.info("Routable loads (have truck + undelivered stop + dest coords): %d",
              len(load_rows))
 
-    # Diagnostic: when we can't extract any rows, dump the shape of the first
-    # active load so we can see exactly what field names Alvys returns. Drops
-    # itself once we know the structure.
+    # Diagnostic: when we can't extract any rows, dump load + trip + truck shape.
     if not load_rows and active:
         import json
         sample = active[0]
-        log.warning("=== DIAGNOSTIC: no routable loads. First active load keys: ===")
-        log.warning("Top-level keys: %s", sorted(sample.keys()))
-        log.warning("Truck field: %r", sample.get("Truck"))
-        log.warning("Tractor field: %r", sample.get("Tractor"))
-        log.warning("Trip field keys: %s",
-                    sorted((sample.get("Trip") or {}).keys()) if sample.get("Trip") else "(none)")
-        log.warning("Trips field len: %s",
-                    len(sample.get("Trips") or []))
-        if sample.get("Trips"):
-            log.warning("Trips[0] keys: %s", sorted(sample["Trips"][0].keys()))
+        sample_ln = str(sample.get("LoadNumber") or "")
+        sample_trip = trips_by_load.get(sample_ln)
+        log.warning("=== DIAGNOSTIC: no routable loads ===")
+        log.warning("Load top-level keys: %s", sorted(sample.keys()))
         stops = sample.get("Stops") or []
         log.warning("Stops count: %d", len(stops))
         if stops:
             log.warning("First stop keys: %s", sorted(stops[0].keys()))
             log.warning("First stop Address: %s",
-                        json.dumps(stops[0].get("Address"), default=str)[:800])
-        log.warning("Trucks_by_id sample (first 3): %s",
-                    list(trucks_by_id.items())[:3])
+                        json.dumps(stops[0].get("Address"), default=str)[:400])
+            log.warning("First stop Coordinates: %s",
+                        json.dumps(stops[0].get("Coordinates"), default=str)[:400])
+        log.warning("trips_by_load has load %r? %s", sample_ln, sample_trip is not None)
+        if sample_trip:
+            log.warning("Trip top-level keys: %s", sorted(sample_trip.keys()))
+            truck_obj = sample_trip.get("Truck")
+            log.warning("Trip.Truck field: %s", json.dumps(truck_obj, default=str)[:800])
+        else:
+            log.warning("No matching trip — active load numbers vs trip load numbers (sample):")
+            active_lns = [str(L.get("LoadNumber") or "") for L in active[:5]]
+            trip_lns = list(trips_by_load.keys())[:5]
+            log.warning("  active: %s  trips: %s", active_lns, trip_lns)
+        log.warning("Trucks_by_id sample (first 3): %s", list(trucks_by_id.items())[:3])
         log.warning("=== END DIAGNOSTIC ===")
 
     # --- Pull current locations from Samsara ----------------------------
