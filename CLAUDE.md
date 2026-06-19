@@ -120,7 +120,7 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `samsara_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `qb_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `sambasafety_refresh.yml` (CSV-drop) | 1am + 3am (pre-brief) + every 2h 4am–6pm | `0 0,6-23 * * *` (hourly arms) | `{1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18}` |
-| `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | `30 9,10`, `0 18,19`, `30 22,23 * * *` | `{4, 13, 17}` |
+| `sheets_refresh.yml` | 5am / 9am / 12pm / 3pm / 6pm (2 cron arms per slot) | `0,30 0,10,11,14,15,17,18,20,21,23 * * *` | `{5, 9, 12, 15, 18}` |
 | `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups at 5:15 / 5:30 / 6:30 / 7am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5`, skip `6` |
 | `scorecard_healthcheck.yml` (recover dropped runs) | 6:00am — checks OneDrive marker; dispatches scorecard if missing | `0 11,12 * * *` | `{6}` |
 | `safety_compliance_email.yml` (Audra's safety brief) | 5:00am (primary) + backups at 5:30 / 6:30 | `0 10`, `30 10`, `0 11`, `30 11 * * *` | `≥ 5`, skip `6` |
