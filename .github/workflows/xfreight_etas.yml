@@ -1,0 +1,73 @@
+# XFreight ETAs — live X-Trux load tracker that refreshes every 30 min.
+#
+# What it does:
+#   1. Pulls active X-Trux loads from Alvys (status Dispatched / In Transit)
+#   2. Pulls current truck GPS from Samsara
+#   3. Asks Mapbox Directions (traffic-aware) for drive time truck → next stop
+#   4. Computes ETA = now + duration; delta = appt − ETA
+#   5. Writes XFreight_ETAs.html + .xlsx to OneDrive ETA/ folder
+#      (replaces in place, so a single pinned URL is always current)
+#
+# Why every 30 min: short enough that "live" feels live for dispatch, long
+# enough that Mapbox usage stays well under the free tier even with ~20 active
+# trucks (≈30k calls/mo vs Mapbox's 100k/mo free Directions allotment).
+#
+# Reliability note: GitHub cron is best-effort. Dropping a slot loses one
+# 30-min snapshot, which is acceptable for a live tracker — the next slot
+# fires 30 min later and the OneDrive file refreshes. No healthcheck needed.
+#
+# Required GitHub Secrets:
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   ONEDRIVE_USER_UPN
+#   ALVYS_CLIENT_ID, ALVYS_CLIENT_SECRET, ALVYS_TENANT_IDS
+#   SAMSARA_API_TOKEN
+#   MAPBOX_TOKEN          — Mapbox secret token with directions:read scope
+
+name: XFreight ETAs (every 30 min)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/xfreight_etas.yml
+      - src/xfreight_etas.py
+  schedule:
+    # Every 30 min, around the clock. The script itself is fast (~10–20s)
+    # so total weekly CI usage is well under the free Actions allotment.
+    - cron: '*/30 * * * *'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  publish_etas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build and publish XFreight ETAs
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:   ${{ secrets.ONEDRIVE_USER_UPN }}
+          ALVYS_CLIENT_ID:     ${{ secrets.ALVYS_CLIENT_ID }}
+          ALVYS_CLIENT_SECRET: ${{ secrets.ALVYS_CLIENT_SECRET }}
+          ALVYS_TENANT_IDS:    ${{ secrets.ALVYS_TENANT_IDS }}
+          SAMSARA_API_TOKEN:   ${{ secrets.SAMSARA_API_TOKEN }}
+          MAPBOX_TOKEN:        ${{ secrets.MAPBOX_TOKEN }}
+        run: python -m src.xfreight_etas
