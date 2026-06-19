@@ -2820,6 +2820,14 @@ def main() -> int:
     # Compute carried-forward items for the "OPEN — ACTION PENDING" section:
     # any item from today's list that also appeared in yesterday's JSON
     # (days_open > 1 means it was open yesterday and is still open today).
+    # Honor the suppression registry — items the user actioned in the
+    # Accountability Log are no longer "open / action pending" even though
+    # they appear in today's raw lists (the suppression filter inside
+    # _write_accountability_json removes them from the per-owner cards, but
+    # this section iterates the raw lists separately).
+    from src.suppression_registry import load_registry, is_suppressed as _supp_check
+    _cf_registry = load_registry(tok, upn)
+
     yesterday_acc = today - datetime.timedelta(days=1)
     yesterday_keys: dict[str, int] = {
         _accountability_key(item): item.get("days_open", 1)
@@ -2828,7 +2836,13 @@ def main() -> int:
     }
     seen_cf_keys: set = set()
     carried_forward: list = []
+    _cf_suppressed = 0
     for item in audra_items + ops_items:
+        cat_norm = (item.get("category") or "").lower().strip()
+        drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
+        if _supp_check(_cf_registry, cat_norm, drv_norm, today):
+            _cf_suppressed += 1
+            continue
         key = _accountability_key(item)
         if key in seen_cf_keys:
             continue
@@ -2836,7 +2850,8 @@ def main() -> int:
         prev = yesterday_keys.get(key, 0)
         if prev > 0:
             carried_forward.append({**item, "days_open": prev + 1})
-    log.info("Carried-forward items: %d", len(carried_forward))
+    log.info("Carried-forward items: %d (suppressed %d via registry)",
+             len(carried_forward), _cf_suppressed)
 
     email_html, pdf_html = _build_html_report(
         samsara, samsara_sheets, samba, csa, equipment, alvys_drivers,
