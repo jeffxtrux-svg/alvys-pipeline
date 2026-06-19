@@ -121,7 +121,9 @@ def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
         if not name:
             continue
         drive = (rec.get("clocks") or {}).get("drive") or {}
-        remaining_ms = drive.get("remainingMs")
+        # Samsara HOS endpoint uses driveRemainingDurationMs (confirmed from live data)
+        remaining_ms = (drive.get("driveRemainingDurationMs")
+                        or drive.get("remainingMs"))
         remaining_s = drive.get("remainingSeconds")
         if remaining_ms is not None:
             idx[name.lower()] = int(remaining_ms) // 1000
@@ -815,11 +817,6 @@ def main() -> int:
     log.info("Resolved current GPS for %d trucks", len(locs_by_truck))
 
     hos_clocks = samsara.fetch_hos_clocks()
-    if hos_clocks:
-        sample = hos_clocks[0]
-        log.info("HOS sample keys: %s", sorted(sample.keys()))
-        log.info("HOS sample driver field: %s", sample.get("driver"))
-        log.info("HOS sample clocks field: %s", sample.get("clocks"))
     hos_index = _build_hos_index(hos_clocks)
     log.info("Indexed HOS remaining drive time for %d drivers", len(hos_index))
 
