@@ -252,15 +252,6 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
     if not late_rows or not webhook_url:
         return
 
-    def _col(text: str, width: str = "auto", bold: bool = False,
-             color: str = "Default", wrap: bool = False) -> dict:
-        return {
-            "type": "Column", "width": width,
-            "items": [{"type": "TextBlock", "text": text, "size": "Small",
-                       "weight": "Bolder" if bold else "Default",
-                       "color": color, "wrap": wrap}],
-        }
-
     body: list[dict] = [
         {"type": "TextBlock", "text": "⚠️ Drivers Running Late",
          "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
@@ -268,32 +259,46 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
          "text": f"{len(late_rows)} load(s) are 45+ min behind schedule — as of "
                  f"{datetime.now(CT):%I:%M %p CT}",
          "size": "Small", "spacing": "None", "wrap": True},
-        {"type": "TextBlock", "text": " ", "spacing": "Small"},
-        {"type": "ColumnSet", "columns": [
-            _col("Truck", "auto", bold=True),
-            _col("Driver", "stretch", bold=True),
-            _col("Destination", "stretch", bold=True),
-            _col("Appt", "auto", bold=True),
-            _col("ETA", "auto", bold=True),
-            _col("Late", "auto", bold=True, color="Attention"),
-        ]},
     ]
 
     for r in sorted(late_rows, key=lambda x: x.get("delta_min") or 0):
         mins_late = abs(r["delta_min"])
         hrs, m = divmod(mins_late, 60)
-        late_str = f"{hrs}h {m}m" if hrs else f"{m}m"
+        late_str = f"{hrs}h {m}m late" if hrs else f"{m}m late"
         dest = (f"{r['consignee_city']}, {r['consignee_state']}".strip(", ")
                 or r["consignee"] or "—")
+        driver = r.get("driver_name") or "—"
         body.append({
-            "type": "ColumnSet", "separator": True,
-            "columns": [
-                _col(r["truck_name"], "auto", bold=True, wrap=False),
-                _col(r.get("driver_name") or "—", "stretch", wrap=True),
-                _col(dest, "stretch", wrap=True),
-                _col(_fmt_dt_ct(r["appt_dt"]), "auto", wrap=False),
-                _col(_fmt_dt_ct(r.get("eta_dt")), "auto", wrap=False),
-                _col(late_str, "auto", bold=True, color="Attention", wrap=False),
+            "type": "Container",
+            "separator": True,
+            "spacing": "Medium",
+            "items": [
+                {
+                    "type": "ColumnSet",
+                    "columns": [
+                        {
+                            "type": "Column", "width": "stretch",
+                            "items": [{"type": "TextBlock",
+                                       "text": f"**Truck {r['truck_name']}** — {driver}",
+                                       "wrap": True}],
+                        },
+                        {
+                            "type": "Column", "width": "auto",
+                            "items": [{"type": "TextBlock", "text": f"**{late_str}**",
+                                       "color": "Attention", "weight": "Bolder",
+                                       "wrap": False}],
+                        },
+                    ],
+                },
+                {
+                    "type": "FactSet",
+                    "spacing": "Small",
+                    "facts": [
+                        {"title": "Destination", "value": dest},
+                        {"title": "Appt", "value": _fmt_dt_ct(r["appt_dt"]) or "—"},
+                        {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
+                    ],
+                },
             ],
         })
 
@@ -306,6 +311,18 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
                 "type": "AdaptiveCard",
                 "version": "1.4",
                 "body": body,
+                "actions": [
+                    {"type": "Action.Submit", "title": "✓ Notified Customer",
+                     "data": {"action": "notified_customer"}},
+                    {"type": "Action.Submit", "title": "✓ Notified Broker",
+                     "data": {"action": "notified_broker"}},
+                    {"type": "Action.Submit", "title": "✓ Notified Shipper",
+                     "data": {"action": "notified_shipper"}},
+                    {"type": "Action.Submit", "title": "📅 Rescheduled",
+                     "data": {"action": "rescheduled"}},
+                    {"type": "Action.Submit", "title": "🔧 Working On It",
+                     "data": {"action": "working_on_it"}},
+                ],
             },
         }],
     }
