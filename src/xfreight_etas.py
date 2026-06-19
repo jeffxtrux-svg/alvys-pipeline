@@ -121,9 +121,12 @@ def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
         if not name:
             continue
         drive = (rec.get("clocks") or {}).get("drive") or {}
-        remaining = drive.get("remainingSeconds")
-        if remaining is not None:
-            idx[name.lower()] = int(remaining)
+        remaining_ms = drive.get("remainingMs")
+        remaining_s = drive.get("remainingSeconds")
+        if remaining_ms is not None:
+            idx[name.lower()] = int(remaining_ms) // 1000
+        elif remaining_s is not None:
+            idx[name.lower()] = int(remaining_s)
     return idx
 
 
