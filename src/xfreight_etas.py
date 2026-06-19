@@ -353,11 +353,16 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
 
 
 # ----------------------------------------------------------------------
+<<<<<<< HEAD
 # Teams alert — OneDrive state helpers
 # ----------------------------------------------------------------------
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
+=======
+# Teams alert — state-tracked Power Automate webhook
+# ----------------------------------------------------------------------
+>>>>>>> 4181d51 (Fix stale appointment dates and replace Graph API Teams path with webhook)
 def _load_teams_state(token: str, user_upn: str, folder: str) -> dict:
     """Download eta_state.json from OneDrive; return {} if absent or unreadable."""
     path = f"{folder}/{_TEAMS_STATE_FILE}"
@@ -392,15 +397,20 @@ def _save_teams_state(token: str, user_upn: str, folder: str, state: dict) -> No
         log.warning("Teams state save failed: %s", exc)
 
 
+<<<<<<< HEAD
 # ----------------------------------------------------------------------
 # Teams alert — state-tracked webhook (posts only on change; all-clear on resolve)
 # ----------------------------------------------------------------------
 def _build_clear_card() -> dict:
     """Adaptive Card posted when all previously-late loads have cleared."""
+=======
+def _build_clear_card() -> dict:
+>>>>>>> 4181d51 (Fix stale appointment dates and replace Graph API Teams path with webhook)
     return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
         "version": "1.4",
+<<<<<<< HEAD
         "body": [
             {"type": "TextBlock", "text": "✅ All Loads Back On Schedule",
              "weight": "Bolder", "size": "Large", "color": "Good", "wrap": True},
@@ -409,11 +419,21 @@ def _build_clear_card() -> dict:
                      f"{datetime.now(CT):%I:%M %p CT}",
              "size": "Small", "spacing": "None", "wrap": True},
         ],
+=======
+        "body": [{
+            "type": "TextBlock",
+            "text": "✅ All loads back on schedule",
+            "weight": "Bolder",
+            "size": "Medium",
+            "color": "Good",
+        }],
+>>>>>>> 4181d51 (Fix stale appointment dates and replace Graph API Teams path with webhook)
     }
 
 
 def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str,
                         late_rows: list[dict]) -> None:
+<<<<<<< HEAD
     """Post to the Teams webhook only when the set of late loads changes.
 
     - New load(s) became 45+ min late → POST card with all current late loads.
@@ -430,11 +450,24 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
 
     if curr_load_nos == prev_load_nos:
         log.info("Teams: late-load set unchanged (%d loads) — no card posted",
+=======
+    """Post to the Power Automate webhook only when the late-load set changes.
+    State is tracked in eta_state.json on OneDrive so each 30-min run only posts
+    when something actually changes. Posts an all-clear card when the set empties.
+    """
+    state = _load_teams_state(token, user_upn, folder)
+    prev_load_nos = set(state.get("late_load_nos", []))
+    curr_load_nos = {str(r["load_no"]) for r in late_rows}
+
+    if curr_load_nos == prev_load_nos:
+        log.info("Teams webhook: late-load set unchanged (%d loads) — skipping",
+>>>>>>> 4181d51 (Fix stale appointment dates and replace Graph API Teams path with webhook)
                  len(curr_load_nos))
         return
 
     if curr_load_nos:
         card = _build_teams_card(late_rows)
+<<<<<<< HEAD
         new_state: dict = {
             "alerted_load_nos": sorted(curr_load_nos),
             "last_alerted": datetime.now(timezone.utc).isoformat(),
@@ -449,11 +482,23 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         "type": "message",
         "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
                          "content": card}],
+=======
+    else:
+        card = _build_clear_card()
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": card,
+        }],
+>>>>>>> 4181d51 (Fix stale appointment dates and replace Graph API Teams path with webhook)
     }
     try:
         resp = requests.post(webhook_url, json=payload, timeout=15)
         if resp.status_code not in (200, 202):
             log.warning("Teams webhook HTTP %d: %s", resp.status_code, resp.text[:300])
+<<<<<<< HEAD
             return
         log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
                  else len(curr_load_nos))
@@ -461,6 +506,21 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         log.warning("Teams webhook failed: %s", exc)
         return
     _save_teams_state(token, user_upn, folder, new_state)
+=======
+            return  # don't update state if post failed
+        if curr_load_nos:
+            log.info("Teams webhook: posted alert for %d late load(s)", len(curr_load_nos))
+        else:
+            log.info("Teams webhook: posted all-clear card")
+    except Exception as exc:
+        log.warning("Teams webhook failed: %s", exc)
+        return
+
+    _save_teams_state(token, user_upn, folder, {
+        "late_load_nos": sorted(curr_load_nos),
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    })
+>>>>>>> 4181d51 (Fix stale appointment dates and replace Graph API Teams path with webhook)
 
 
 # ----------------------------------------------------------------------
