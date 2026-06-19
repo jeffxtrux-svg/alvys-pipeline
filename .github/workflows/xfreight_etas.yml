@@ -30,6 +30,11 @@ name: XFreight ETAs (every 30 min)
 
 on:
   workflow_dispatch:
+    inputs:
+      wipe_state:
+        description: 'Delete eta_state.json from OneDrive (clears Teams alert state)'
+        type: boolean
+        default: false
   push:
     paths:
       - .github/workflows/xfreight_etas.yml
@@ -61,6 +66,34 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Wipe Teams alert state
+        if: ${{ inputs.wipe_state == true }}
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:   ${{ secrets.ONEDRIVE_USER_UPN }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests
+          # Get Graph token
+          r = requests.post(
+            f"https://login.microsoftonline.com/{os.environ['AZURE_TENANT_ID']}/oauth2/v2.0/token",
+            data={"grant_type":"client_credentials","client_id":os.environ['AZURE_CLIENT_ID'],
+                  "client_secret":os.environ['AZURE_CLIENT_SECRET'],
+                  "scope":"https://graph.microsoft.com/.default"})
+          token = r.json()["access_token"]
+          upn = os.environ['ONEDRIVE_USER_UPN']
+          url = f"https://graph.microsoft.com/v1.0/users/{upn}/drive/root:/ETA/eta_state.json:/content"
+          resp = requests.delete(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+          if resp.status_code == 204:
+            print("eta_state.json deleted — Teams alert state wiped")
+          elif resp.status_code == 404:
+            print("eta_state.json not found (already clear)")
+          else:
+            print(f"Unexpected status {resp.status_code}: {resp.text[:200]}")
+          EOF
 
       - name: Build and publish XFreight ETAs
         env:
