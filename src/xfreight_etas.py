@@ -466,13 +466,33 @@ def _build_clear_card() -> dict:
     }
 
 
+def _build_resolved_card(resolved_load_nos: set[str]) -> dict:
+    """Adaptive Card posted for each batch of loads that drop off the late list."""
+    loads_str = ", ".join(f"#{ln}" for ln in sorted(resolved_load_nos))
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
+            {"type": "TextBlock",
+             "text": f"✅ Resolved — Load{'s' if len(resolved_load_nos) > 1 else ''} "
+                     f"{loads_str} no longer behind schedule",
+             "weight": "Bolder", "size": "Medium", "color": "Good", "wrap": True},
+            {"type": "TextBlock",
+             "text": f"As of {datetime.now(CT):%I:%M %p CT} — "
+                     "previous alert for this load is superseded.",
+             "size": "Small", "color": "Good", "spacing": "None", "wrap": True},
+        ],
+    }
+
+
 def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str,
                         late_rows: list[dict]) -> None:
     """Post to the Teams webhook when the set of late loads changes OR an
     appointment is updated for a load that is already in the alerted set.
 
     - New load(s) became 45+ min late → POST card with all current late loads.
-    - Load(s) resolved while others remain late → POST updated card.
+    - Load(s) resolved → POST "✅ Resolved" card for those loads THEN updated list.
     - All late loads cleared → POST "✅ All loads back on schedule" card.
     - Appointment changed for an already-alerted load → POST updated card.
     - Same late-load set + same appointments → skip (no card posted).
@@ -504,6 +524,31 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         log.info("Teams: appointment changed for load(s) %s — posting updated card",
                  appt_changed_loads)
 
+    resolved_loads = prev_load_nos - curr_load_nos
+
+    def _post(card: dict) -> bool:
+        payload = {
+            "type": "message",
+            "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+                             "content": card}],
+        }
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=15)
+            if resp.status_code not in (200, 202):
+                log.warning("Teams webhook HTTP %d: %s",
+                            resp.status_code, resp.text[:300])
+                return False
+            return True
+        except Exception as exc:
+            log.warning("Teams webhook failed: %s", exc)
+            return False
+
+    # Post a "resolved" card for any load(s) that just dropped off the late list.
+    # This explicitly supersedes the previous alert so the channel history is clear.
+    if resolved_loads:
+        log.info("Teams: posting resolved card for load(s) %s", sorted(resolved_loads))
+        _post(_build_resolved_card(resolved_loads))
+
     if curr_load_nos:
         card = _build_teams_card(late_rows)
         new_state: dict = {
@@ -517,21 +562,10 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         new_state = {}
         log_msg = "Teams: posted all-clear notification (%d loads cleared)"
 
-    payload = {
-        "type": "message",
-        "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
-                         "content": card}],
-    }
-    try:
-        resp = requests.post(webhook_url, json=payload, timeout=15)
-        if resp.status_code not in (200, 202):
-            log.warning("Teams webhook HTTP %d: %s", resp.status_code, resp.text[:300])
-            return
-        log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
-                 else len(curr_load_nos))
-    except Exception as exc:
-        log.warning("Teams webhook failed: %s", exc)
+    if not _post(card):
         return
+    log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
+             else len(curr_load_nos))
     _save_teams_state(token, user_upn, folder, new_state)
 
 
