@@ -2749,7 +2749,9 @@ def main() -> int:
         log.warning("SambaSafety Master not found — driver compliance page will show limited data.")
     samba = compute_sambasafety(samba_sheets) if samba_sheets else None
     csa = compute_csa_scorecard(samba_sheets) if samba_sheets else None
-    _post_csa_threshold_alert(csa, webhook, tok, upn, today)
+    csa_webhook = (os.environ.get("TEAMS_CSA_WEBHOOK")
+                   or os.environ.get("TEAMS_SAFETY_WEBHOOK", "")).strip()
+    _post_csa_threshold_alert(csa, csa_webhook, tok, upn, today)
 
     # Alvys Pipeline (optional — graceful fallback if missing)
     pipeline_path = os.environ.get("ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
