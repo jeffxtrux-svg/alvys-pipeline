@@ -226,6 +226,16 @@ paired trailer text via `safety_relevant_signals`).
     needs scheduling; it is **still federally legal to run**. To actually be
     past the federal 365d a unit would have to be **245+ days past the company
     120d policy** (365 − 120 = 245).
+  - **Teams card alert thresholds (separate from the 120d policy):**
+    - Tractors: Teams accountability card fires at **150 days** since last
+      inspection (30d past 120d policy). Units between 120–149d appear on the
+      equipment brief page but do not generate a Teams card.
+    - Trailers: Teams accountability card fires at **180 days** since last
+      inspection (60d past 120d policy). Units between 120–179d appear on the
+      brief page only.
+    - This separation reduces Teams card noise for units just past the policy
+      line while ensuring hardware with real urgency (150d/180d+) gets an
+      actionable card immediately.
   - When writing prose / playbooks / risk entries about equipment compliance,
     a unit past only the 120d company policy is **flagged as needing
     inspection** — it remains in service. Do not call it "out of service" at
