@@ -815,6 +815,11 @@ def main() -> int:
     log.info("Resolved current GPS for %d trucks", len(locs_by_truck))
 
     hos_clocks = samsara.fetch_hos_clocks()
+    if hos_clocks:
+        sample = hos_clocks[0]
+        log.info("HOS sample keys: %s", sorted(sample.keys()))
+        log.info("HOS sample driver field: %s", sample.get("driver"))
+        log.info("HOS sample clocks field: %s", sample.get("clocks"))
     hos_index = _build_hos_index(hos_clocks)
     log.info("Indexed HOS remaining drive time for %d drivers", len(hos_index))
 
