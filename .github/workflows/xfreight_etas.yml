@@ -22,10 +22,9 @@
 #   ALVYS_CLIENT_ID, ALVYS_CLIENT_SECRET, ALVYS_TENANT_IDS
 #   SAMSARA_API_TOKEN
 #   MAPBOX_TOKEN          — Mapbox secret token with directions:read scope
-#   TEAMS_TEAM_ID         — Teams team GUID (optional); enables live-card mode
-#   TEAMS_CHANNEL_ID      — Teams channel GUID (optional); pair with TEAMS_TEAM_ID
-#   TEAMS_ETA_WEBHOOK     — Power Automate webhook URL (optional fallback; used only
-#                           when TEAMS_TEAM_ID/CHANNEL_ID are not set)
+#   TEAMS_ETA_WEBHOOK     — Power Automate webhook URL (optional); posts an Adaptive
+#                           Card to Teams when loads go 45+ min late, updates on each
+#                           state change, and sends an all-clear when all loads clear
 
 name: XFreight ETAs (every 30 min)
 
@@ -74,7 +73,5 @@ jobs:
           ALVYS_TENANT_IDS:    ${{ secrets.ALVYS_TENANT_IDS }}
           SAMSARA_API_TOKEN:   ${{ secrets.SAMSARA_API_TOKEN }}
           MAPBOX_TOKEN:        ${{ secrets.MAPBOX_TOKEN }}
-          TEAMS_TEAM_ID:       ${{ secrets.TEAMS_TEAM_ID }}
-          TEAMS_CHANNEL_ID:    ${{ secrets.TEAMS_CHANNEL_ID }}
           TEAMS_ETA_WEBHOOK:   ${{ secrets.TEAMS_ETA_WEBHOOK }}
         run: python -m src.xfreight_etas

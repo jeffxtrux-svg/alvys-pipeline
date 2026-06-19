@@ -24,10 +24,10 @@ Env vars (all required unless noted):
   ALVYS_CLIENT_ID / ALVYS_CLIENT_SECRET
   SAMSARA_API_TOKEN
   MAPBOX_TOKEN                       — secret token with directions:read
-  TEAMS_TEAM_ID (optional)           — Teams team GUID; enables live card mode
-  TEAMS_CHANNEL_ID (optional)        — Teams channel GUID; pair with TEAMS_TEAM_ID
-  TEAMS_ETA_WEBHOOK (optional)       — Power Automate webhook fallback (used only
-                                       when TEAMS_TEAM_ID/CHANNEL_ID are not set)
+  TEAMS_ETA_WEBHOOK (optional)       — Power Automate webhook URL; posts an Adaptive
+                                       Card when loads go 45+ min late, updates when
+                                       the load set changes, and sends an all-clear
+                                       card when all loads deliver
   ETA_ONEDRIVE_FOLDER (optional)     — default "ETA"
 """
 
@@ -248,7 +248,6 @@ def _mapbox_duration_seconds(
 # Teams alert
 # ----------------------------------------------------------------------
 _LATE_THRESHOLD_MIN = -45
-_GRAPH = "https://graph.microsoft.com/v1.0"
 _TEAMS_STATE_FILE = "eta_state.json"
 
 
@@ -346,82 +345,15 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
 
 
 # ----------------------------------------------------------------------
-# Teams alert — Graph API (live card: post / update / delete)
+# Teams alert — OneDrive state helpers
 # ----------------------------------------------------------------------
-def _graph_hdrs(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-
-def _graph_message_payload(card: dict) -> dict:
-    """Wrap an Adaptive Card dict in the Graph API channel-message envelope."""
-    att_id = "eta_card"
-    return {
-        "body": {
-            "contentType": "html",
-            "content": f'<attachment id="{att_id}"></attachment>',
-        },
-        "attachments": [
-            {
-                "id": att_id,
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": json.dumps(card),
-            }
-        ],
-    }
-
-
-def _teams_post(token: str, team_id: str, channel_id: str,
-                late_rows: list[dict]) -> str | None:
-    """POST a new card to the channel. Returns the new message ID, or None on error."""
-    url = f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages"
-    payload = _graph_message_payload(_build_teams_card(late_rows))
-    try:
-        resp = requests.post(url, headers=_graph_hdrs(token), json=payload, timeout=20)
-        if resp.status_code == 201:
-            msg_id = resp.json().get("id")
-            log.info("Teams: posted alert for %d late load(s), msg=%s",
-                     len(late_rows), msg_id)
-            return msg_id
-        log.warning("Teams POST %d: %s", resp.status_code, resp.text[:300])
-    except Exception as exc:
-        log.warning("Teams POST failed: %s", exc)
-    return None
-
-
-def _teams_patch(token: str, team_id: str, channel_id: str,
-                 msg_id: str, late_rows: list[dict]) -> bool:
-    """PATCH an existing card with the current late load set. Returns True on success."""
-    url = f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages/{msg_id}"
-    payload = _graph_message_payload(_build_teams_card(late_rows))
-    try:
-        resp = requests.patch(url, headers=_graph_hdrs(token), json=payload, timeout=20)
-        if resp.status_code in (200, 204):
-            log.info("Teams: updated alert for %d late load(s)", len(late_rows))
-            return True
-        log.warning("Teams PATCH %d: %s", resp.status_code, resp.text[:300])
-    except Exception as exc:
-        log.warning("Teams PATCH failed: %s", exc)
-    return False
-
-
-def _teams_delete(token: str, team_id: str, channel_id: str, msg_id: str) -> bool:
-    """Soft-delete the alert card (shows 'This message was deleted' in Teams)."""
-    url = f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages/{msg_id}"
-    try:
-        resp = requests.delete(url, headers=_graph_hdrs(token), timeout=20)
-        if resp.status_code in (200, 204):
-            log.info("Teams: deleted alert card %s — all loads on schedule", msg_id)
-            return True
-        log.warning("Teams DELETE %d: %s", resp.status_code, resp.text[:300])
-    except Exception as exc:
-        log.warning("Teams DELETE failed: %s", exc)
-    return False
+_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
 def _load_teams_state(token: str, user_upn: str, folder: str) -> dict:
     """Download eta_state.json from OneDrive; return {} if absent or unreadable."""
     path = f"{folder}/{_TEAMS_STATE_FILE}"
-    url = f"{_GRAPH}/users/{user_upn}/drive/root:/{path}:/content"
+    url = f"{_GRAPH_BASE}/users/{user_upn}/drive/root:/{path}:/content"
     try:
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
         if resp.status_code == 200:
@@ -436,7 +368,7 @@ def _load_teams_state(token: str, user_upn: str, folder: str) -> dict:
 def _save_teams_state(token: str, user_upn: str, folder: str, state: dict) -> None:
     """Upload eta_state.json to OneDrive (simple PUT, small file)."""
     path = f"{folder}/{_TEAMS_STATE_FILE}"
-    url = f"{_GRAPH}/users/{user_upn}/drive/root:/{path}:/content"
+    url = f"{_GRAPH_BASE}/users/{user_upn}/drive/root:/{path}:/content"
     try:
         resp = requests.put(
             url,
@@ -452,65 +384,75 @@ def _save_teams_state(token: str, user_upn: str, folder: str, state: dict) -> No
         log.warning("Teams state save failed: %s", exc)
 
 
-def _sync_teams_alert(token: str, user_upn: str, folder: str,
-                      team_id: str, channel_id: str,
-                      late_rows: list[dict]) -> None:
-    """Keep exactly one live alert card in Teams:
-    - If loads are late and no card exists → POST new card, save id.
-    - If loads are late and card exists → PATCH card with current loads.
-    - If no loads are late and card exists → DELETE card, clear state.
-    - If no loads and no card → nothing to do.
-    On PATCH 404 (card manually deleted) the function falls back to POST.
+# ----------------------------------------------------------------------
+# Teams alert — state-tracked webhook (posts only on change; all-clear on resolve)
+# ----------------------------------------------------------------------
+def _build_clear_card() -> dict:
+    """Adaptive Card posted when all previously-late loads have cleared."""
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": [
+            {"type": "TextBlock", "text": "✅ All Loads Back On Schedule",
+             "weight": "Bolder", "size": "Large", "color": "Good", "wrap": True},
+            {"type": "TextBlock",
+             "text": f"No loads are 45+ min behind schedule — as of "
+                     f"{datetime.now(CT):%I:%M %p CT}",
+             "size": "Small", "spacing": "None", "wrap": True},
+        ],
+    }
+
+
+def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str,
+                        late_rows: list[dict]) -> None:
+    """Post to the Teams webhook only when the set of late loads changes.
+
+    - New load(s) became 45+ min late → POST card with all current late loads.
+    - Load(s) resolved while others remain late → POST updated card.
+    - All late loads cleared → POST "✅ All loads back on schedule" card.
+    - Same late-load set as last post → skip (no new card posted).
+
+    State (which load numbers were last alerted) is stored in OneDrive so it
+    persists across the 30-min runs.
     """
     state = _load_teams_state(token, user_upn, folder)
-    msg_id = state.get("teams_message_id")
+    prev_load_nos = set(state.get("alerted_load_nos") or [])
+    curr_load_nos = {str(r["load_no"]) for r in late_rows if r.get("load_no")}
 
-    if late_rows:
-        if msg_id:
-            ok = _teams_patch(token, team_id, channel_id, msg_id, late_rows)
-            if not ok:
-                # Card is gone (manually deleted or permissions issue) — post fresh
-                msg_id = _teams_post(token, team_id, channel_id, late_rows)
-                if msg_id:
-                    state["teams_message_id"] = msg_id
-        else:
-            msg_id = _teams_post(token, team_id, channel_id, late_rows)
-            if msg_id:
-                state["teams_message_id"] = msg_id
-        state["last_updated"] = datetime.now(timezone.utc).isoformat()
-        _save_teams_state(token, user_upn, folder, state)
-    else:
-        if msg_id:
-            _teams_delete(token, team_id, channel_id, msg_id)
-            _save_teams_state(token, user_upn, folder, {})
-        else:
-            log.info("Teams: no late loads and no active alert")
-
-
-# ----------------------------------------------------------------------
-# Teams alert — Power Automate webhook fallback
-# ----------------------------------------------------------------------
-def _post_teams_webhook(webhook_url: str, late_rows: list[dict]) -> None:
-    """POST an Adaptive Card to a Power Automate incoming-webhook URL (fallback path).
-    Used only when TEAMS_TEAM_ID/CHANNEL_ID are not configured. No delete capability.
-    """
-    if not late_rows or not webhook_url:
+    if curr_load_nos == prev_load_nos:
+        log.info("Teams: late-load set unchanged (%d loads) — no card posted",
+                 len(curr_load_nos))
         return
+
+    if curr_load_nos:
+        card = _build_teams_card(late_rows)
+        new_state: dict = {
+            "alerted_load_nos": sorted(curr_load_nos),
+            "last_alerted": datetime.now(timezone.utc).isoformat(),
+        }
+        log_msg = "Teams: posted updated alert for %d late load(s)"
+    else:
+        card = _build_clear_card()
+        new_state = {}
+        log_msg = "Teams: posted all-clear notification (%d loads cleared)"
+
     payload = {
         "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": _build_teams_card(late_rows),
-        }],
+        "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+                         "content": card}],
     }
     try:
         resp = requests.post(webhook_url, json=payload, timeout=15)
         if resp.status_code not in (200, 202):
             log.warning("Teams webhook HTTP %d: %s", resp.status_code, resp.text[:300])
-        else:
-            log.info("Teams webhook: posted alert for %d late load(s)", len(late_rows))
+            return
+        log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
+                 else len(curr_load_nos))
     except Exception as exc:
         log.warning("Teams webhook failed: %s", exc)
+        return
+    _save_teams_state(token, user_upn, folder, new_state)
 
 
 # ----------------------------------------------------------------------
@@ -786,19 +728,11 @@ def main() -> int:
     # --- Teams alert for loads 45+ min late -----------------------------
     late = [r for r in rows_with_eta
             if r.get("delta_min") is not None and r["delta_min"] <= _LATE_THRESHOLD_MIN]
-    team_id = os.environ.get("TEAMS_TEAM_ID", "").strip()
-    channel_id = os.environ.get("TEAMS_CHANNEL_ID", "").strip()
-    if team_id and channel_id:
-        # Live-card mode: one card that updates in place; deleted when all loads clear
-        _sync_teams_alert(tok, user_upn, folder, team_id, channel_id, late)
-    elif os.environ.get("TEAMS_ETA_WEBHOOK", "").strip():
-        # Fallback: Power Automate webhook (posts new card each run, no delete)
-        if late:
-            _post_teams_webhook(os.environ["TEAMS_ETA_WEBHOOK"].strip(), late)
-        else:
-            log.info("No loads 45+ min late — Teams webhook skipped")
+    webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
+    if webhook:
+        _sync_teams_webhook(webhook, tok, user_upn, folder, late)
     else:
-        log.info("TEAMS_TEAM_ID/CHANNEL_ID not set — skipping Teams alert")
+        log.info("TEAMS_ETA_WEBHOOK not set — skipping Teams alert")
 
     # --- Render + upload ------------------------------------------------
     generated_at = datetime.now(timezone.utc)
