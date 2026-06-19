@@ -164,6 +164,17 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
     if not next_stop:
         return None
 
+    # Diagnostic: dump all date/time/schedule fields so we can find the
+    # right field when Alvys reschedules an appointment.
+    _date_keys = {k: v for k, v in next_stop.items()
+                  if any(x in str(k).lower()
+                         for x in ["appt", "date", "time", "schedule", "arrival",
+                                    "window", "request", "deliver", "depart"])}
+    log.warning("STOP_FIELDS load=%s stop_type=%s: %s",
+                load.get("LoadNumber") or load.get("Number"),
+                next_stop.get("StopType") or next_stop.get("Type"),
+                _date_keys)
+
     # Coordinates live under the "Coordinates" key, not inside Address
     coords = next_stop.get("Coordinates") or {}
     dest_lat = coords.get("Latitude") if isinstance(coords, dict) else None
