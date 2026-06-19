@@ -261,13 +261,14 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
          "size": "Small", "spacing": "None", "wrap": True},
     ]
 
-    for r in sorted(late_rows, key=lambda x: x.get("delta_min") or 0):
+    for idx, r in enumerate(sorted(late_rows, key=lambda x: x.get("delta_min") or 0)):
         mins_late = abs(r["delta_min"])
         hrs, m = divmod(mins_late, 60)
         late_str = f"{hrs}h {m}m late" if hrs else f"{m}m late"
         dest = (f"{r['consignee_city']}, {r['consignee_state']}".strip(", ")
                 or r["consignee"] or "—")
         driver = r.get("driver_name") or "—"
+        p = f"l{idx}"  # unique prefix per load within this card
         body.append({
             "type": "Container",
             "separator": True,
@@ -299,6 +300,39 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
                     ],
                 },
+                # Per-load action buttons — each toggles its own status chip
+                {
+                    "type": "ActionSet",
+                    "spacing": "Small",
+                    "actions": [
+                        {"type": "Action.ToggleVisibility", "title": "✓ Notified Customer",
+                         "targetElements": [f"{p}_cust"]},
+                        {"type": "Action.ToggleVisibility", "title": "✓ Notified Broker",
+                         "targetElements": [f"{p}_brkr"]},
+                        {"type": "Action.ToggleVisibility", "title": "✓ Notified Shipper",
+                         "targetElements": [f"{p}_shpr"]},
+                        {"type": "Action.ToggleVisibility", "title": "📅 Rescheduled",
+                         "targetElements": [f"{p}_rsch"]},
+                        {"type": "Action.ToggleVisibility", "title": "🔧 Working On It",
+                         "targetElements": [f"{p}_work"]},
+                    ],
+                },
+                # Status chips — hidden until the matching button is pressed
+                {"type": "TextBlock", "id": f"{p}_cust", "isVisible": False,
+                 "text": "✅ Customer notified", "color": "Good",
+                 "size": "Small", "spacing": "None", "wrap": False},
+                {"type": "TextBlock", "id": f"{p}_brkr", "isVisible": False,
+                 "text": "✅ Broker notified", "color": "Good",
+                 "size": "Small", "spacing": "None", "wrap": False},
+                {"type": "TextBlock", "id": f"{p}_shpr", "isVisible": False,
+                 "text": "✅ Shipper notified", "color": "Good",
+                 "size": "Small", "spacing": "None", "wrap": False},
+                {"type": "TextBlock", "id": f"{p}_rsch", "isVisible": False,
+                 "text": "📅 Rescheduled", "color": "Good",
+                 "size": "Small", "spacing": "None", "wrap": False},
+                {"type": "TextBlock", "id": f"{p}_work", "isVisible": False,
+                 "text": "🔧 Working on it", "color": "Warning",
+                 "size": "Small", "spacing": "None", "wrap": False},
             ],
         })
 
@@ -311,18 +345,6 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
                 "type": "AdaptiveCard",
                 "version": "1.4",
                 "body": body,
-                "actions": [
-                    {"type": "Action.Submit", "title": "✓ Notified Customer",
-                     "data": {"action": "notified_customer"}},
-                    {"type": "Action.Submit", "title": "✓ Notified Broker",
-                     "data": {"action": "notified_broker"}},
-                    {"type": "Action.Submit", "title": "✓ Notified Shipper",
-                     "data": {"action": "notified_shipper"}},
-                    {"type": "Action.Submit", "title": "📅 Rescheduled",
-                     "data": {"action": "rescheduled"}},
-                    {"type": "Action.Submit", "title": "🔧 Working On It",
-                     "data": {"action": "working_on_it"}},
-                ],
             },
         }],
     }
