@@ -47,21 +47,21 @@ _OD_PATH  = f"{_FOLDER}/{_FILENAME}"
 # the user's "actioned" form submission always honors at least one day,
 # regardless of whether the category was anticipated.
 _FALLBACK_DAYS: dict[str, int] = {
-    "cdl disqualified":              1,    # overridden by reinstatement date if provided
-    "driver license expiring":       1,    # overridden by expiry-date logic
-    "dot medical card":              1,    # overridden by expiry-date logic
-    "mvr violation":                 1,
-    "dot inspection — tractor":      7,    # overridden; blocked when federal OOS
-    "dot inspection — trailer":      7,    # overridden; blocked when federal OOS
-    "hos violation":                 1,
-    "dvir compliance":               7,
-    "dvir defect":                   1,    # cleared in Samsara when defect resolved
-    "speeding":                      7,
-    "low safety score":              7,
-    "sambasafety risk flag":       180,
-    "safety event — coaching needed":  1,  # cleared in Samsara when coached
+    "cdl disqualified":               1,    # overridden by reinstatement date if provided
+    "driver license expiring":        1,    # overridden by expiry-date logic
+    "dot medical card":               1,    # overridden by expiry-date logic
+    "mvr violation":                  1,
+    "dot inspection — tractor":       7,    # overridden; blocked when federal OOS (365d)
+    "dot inspection — trailer":       7,    # overridden; blocked when federal OOS (365d)
+    "hos violation":                  1,
+    "dvir compliance":                7,
+    "dvir defect":                    1,    # cleared in Samsara when defect resolved
+    "speeding":                       7,
+    "low safety score":               7,
+    "sambasafety risk flag":        180,
+    "safety event — coaching needed": 1,   # cleared in Samsara when coached
     "safety event — needs disposition":1,  # cleared in Samsara when dispositioned
-    "prior day logs not certified":  1,    # cleared in HOS when driver certifies
+    "prior day logs not certified":   1,    # cleared in HOS when driver certifies
 }
 # Default suppression window (days) for any user-actioned category not above.
 _DEFAULT_DAYS = 1

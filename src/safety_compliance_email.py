@@ -547,24 +547,25 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                                  "Step 2 — coaching conversation within 5 business days "
                                                  "with outcome of challenge/factual decision recorded.")))
 
-    # Overdue annual inspections — action items trigger at 150 days (30d past the
-    # 120-day company policy). Units appear on the equipment pages at 120 days;
-    # Teams alerts and TODAY action items don't escalate until 150 days.
+    # Overdue annual inspections — action items trigger at 150 days for tractors
+    # (30d past 120d company policy) and 180 days for trailers (60d past policy).
+    # Units appear on the equipment pages at 120 days; Teams cards don't fire
+    # until the higher threshold to reduce noise on units recently past due.
     if equipment:
         od_t = [r for r in (equipment.get("tractors") or [])
                 if isinstance(r.get("annual_days"), int) and r["annual_days"] <= -30]
         od_r = [r for r in (equipment.get("trailers") or [])
-                if isinstance(r.get("annual_days"), int) and r["annual_days"] <= -30]
+                if isinstance(r.get("annual_days"), int) and r["annual_days"] <= -60]
         for r in od_t[:3]:
             unit = r.get("unit", "?")
             days = abs(r.get("annual_days", 0))
             today_items.append(_action_row("TODAY", "Safety Mgr",
-                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy — exceeded 150-day action threshold)"))
+                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy — exceeded 150-day tractor action threshold)"))
         for r in od_r[:3]:
             unit = r.get("unit", "?")
             days = abs(r.get("annual_days", 0))
             today_items.append(_action_row("TODAY", "Dispatch",
-                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy — exceeded 150-day action threshold)"))
+                                           f"Schedule inspection: unit {unit} ({days}d past 120-day policy — exceeded 180-day trailer action threshold)"))
 
     # DVIR compliance <90% last 7d → Safety Mgr per driver
     if samsara_sheets:
@@ -1105,28 +1106,32 @@ def _build_accountability_structured(
                 "prompt":   "Challenge the violation OR acknowledge as factual. Document decision and action taken.",
             })
 
-    # DOT inspection — Tractors (annual_days < 0 → overdue); both audra + ops
+    # DOT inspection — Tractors: Teams cards fire at 150d since last inspection
+    # (30d past the 120d company policy). Both audra + ops owners.
     if equipment:
         for r in (equipment.get("tractors") or []):
             annual_days = r.get("annual_days")
-            if not isinstance(annual_days, int) or annual_days >= 0:
-                continue
+            if not isinstance(annual_days, int) or annual_days > -30:
+                continue   # not yet at 150-day tractor threshold
             unit = r.get("unit", "?")
-            over = abs(annual_days)
-            if over >= 120:
+            over = abs(annual_days)   # days past 120d policy
+            if over >= 245:
                 sev        = "critical"
-                prompt     = "UNIT IS OUT OF SERVICE. Must be inspected before moving."
+                prompt     = "UNIT IS FEDERALLY OUT OF SERVICE. Do not move until inspected."
+                detail_str = f"{over}d past 120d policy ({120 + over}d since inspection) — FEDERAL OOS"
+            elif over >= 120:
+                sev        = "critical"
+                prompt     = "UNIT IS PAST COMPANY DEADLINE. Inspection required before dispatch."
                 detail_str = f"{over}d past 120d policy — DEADLINED"
-            elif over > 60:
+            elif over >= 60:
                 sev        = "critical"
-                prompt     = "Inspection must be scheduled immediately. When is appointment?"
-                detail_str = f"{over}d past 120d policy"
+                prompt     = "Inspection must be scheduled immediately. When is the appointment?"
+                detail_str = f"{over}d past 120d policy — schedule now"
             else:
                 sev        = "high"
-                prompt     = "Inspection must be scheduled immediately. When is appointment?"
-                detail_str = f"{over}d past 120d policy"
+                prompt     = "Inspection must be scheduled. When is the appointment?"
+                detail_str = f"{over}d past 120d policy — schedule inspection"
             # Federal OOS: 245+ days past 120d policy = 365+ days since last inspection.
-            # These units cannot be suppressed — they stay on the card until inspected.
             federal_oos = over >= 245
             item = {
                 "category":     "DOT Inspection — Tractor",
@@ -1140,25 +1145,26 @@ def _build_accountability_structured(
             audra_items.append(item)
             ops_items.append(item)
 
-        # DOT inspection — Trailers (ops only)
+        # DOT inspection — Trailers: Teams cards fire at 180d since last inspection
+        # (60d past the 120d company policy). Ops owners only.
         for r in (equipment.get("trailers") or []):
             annual_days = r.get("annual_days")
-            if not isinstance(annual_days, int) or annual_days >= 0:
-                continue
+            if not isinstance(annual_days, int) or annual_days > -60:
+                continue   # not yet at 180-day trailer threshold
             unit = r.get("unit", "?")
             over = abs(annual_days)
-            if over >= 120:
+            if over >= 245:
                 sev        = "critical"
-                prompt     = "UNIT IS OUT OF SERVICE. Must be inspected before moving."
+                prompt     = "UNIT IS FEDERALLY OUT OF SERVICE. Do not move until inspected."
+                detail_str = f"{over}d past 120d policy ({120 + over}d since inspection) — FEDERAL OOS"
+            elif over >= 120:
+                sev        = "critical"
+                prompt     = "UNIT IS PAST COMPANY DEADLINE. Inspection required before dispatch."
                 detail_str = f"{over}d past 120d policy — DEADLINED"
-            elif over > 60:
-                sev        = "critical"
-                prompt     = "Inspection must be scheduled immediately. When is appointment?"
-                detail_str = f"{over}d past 120d policy"
             else:
                 sev        = "high"
-                prompt     = "Inspection must be scheduled immediately. When is appointment?"
-                detail_str = f"{over}d past 120d policy"
+                prompt     = "Inspection must be scheduled. When is the appointment?"
+                detail_str = f"{over}d past 120d policy — schedule inspection"
             federal_oos = over >= 245
             ops_items.append({
                 "category":     "DOT Inspection — Trailer",
