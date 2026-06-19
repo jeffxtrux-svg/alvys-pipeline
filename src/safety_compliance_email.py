@@ -1302,7 +1302,9 @@ def _load_accountability_log(
                 row_date = pd.Timestamp(raw_date).date()
             except Exception:
                 continue
-            if row_date != check_date:
+            # Accept check_date and check_date+1: Power Automate uses UTC,
+            # so late CT submissions (after ~6 pm) get stamped with tomorrow's date.
+            if row_date not in (check_date, check_date + datetime.timedelta(days=1)):
                 continue
             cat = ""
             if cat_col:
@@ -1329,6 +1331,83 @@ def _load_accountability_log(
     except Exception as exc:
         log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
     return resolved, cdl_dates
+
+
+# ---------------------------------------------------------------------------
+# CSA BASIC threshold alert
+# ---------------------------------------------------------------------------
+
+def _post_csa_threshold_alert(
+    csa: dict,
+    webhook: str,
+    tok: str,
+    upn: str,
+    today: datetime.date,
+) -> None:
+    """Post a Teams alert when any CSA BASIC is at or above its intervention threshold.
+
+    Fires at most once per day — guarded by Safety/csa-alert-{date}.txt on OneDrive.
+    No-ops when csa is None, no BASICs are flagged, or webhook is unset.
+    """
+    if not csa or not webhook:
+        return
+    flagged = [b for b in csa.get("basics", []) if b.get("intervention")]
+    if not flagged:
+        return
+
+    # Daily idempotency marker
+    marker = f"Safety/csa-alert-{today.isoformat()}.txt"
+    try:
+        from src.onedrive_upload import download_file, ensure_folder, upload_file
+        try:
+            download_file(tok, upn, marker)
+            log.info("CSA threshold alert already posted today — skipping.")
+            return
+        except Exception:
+            pass  # not found — proceed
+
+        rows = "\n".join(
+            f"  • {b['category']}: {int(b['percentile'])}th pct "
+            f"(threshold {b['threshold']}th)"
+            for b in sorted(flagged, key=lambda b: -(b["percentile"] or 0))
+        )
+        body: dict = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "B01C2E",
+            "summary": f"⚠️ CSA BASIC Alert — {len(flagged)} BASIC(s) above intervention threshold",
+            "sections": [
+                {
+                    "activityTitle": "⚠️ FMCSA CSA BASIC — Intervention Threshold Crossed",
+                    "activitySubtitle": (
+                        f"X-Trux Inc. (DOT #{csa.get('dot_number', '841776')}) · "
+                        f"Snapshot {csa.get('snapshot_date', today.isoformat())}"
+                    ),
+                    "text": (
+                        f"**{len(flagged)} BASIC{'s' if len(flagged) > 1 else ''} "
+                        f"at or above FMCSA intervention threshold:**\n\n{rows}\n\n"
+                        "Action required: review the CSA scorecard page in today's safety "
+                        "brief and contact counsel if Unsafe Driving or Crash Indicator "
+                        "is flagged."
+                    ),
+                }
+            ],
+        }
+        import requests as _req
+        resp = _req.post(webhook, json=body, timeout=15)
+        resp.raise_for_status()
+        log.info("CSA threshold alert posted (%d BASIC(s) flagged).", len(flagged))
+
+        # Write marker so we don't re-alert today
+        tmp_marker = Path("output") / f"csa-alert-{today.isoformat()}.txt"
+        tmp_marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp_marker.write_text(f"CSA alert posted {today.isoformat()}")
+        ensure_folder(tok, upn, "Safety")
+        upload_file(tok, upn, folder_path="Safety",
+                    filename=f"csa-alert-{today.isoformat()}.txt",
+                    file_path=tmp_marker)
+    except Exception as exc:
+        log.warning("Could not post CSA threshold alert: %s", exc)
 
 
 def _write_accountability_json(
@@ -2670,6 +2749,7 @@ def main() -> int:
         log.warning("SambaSafety Master not found — driver compliance page will show limited data.")
     samba = compute_sambasafety(samba_sheets) if samba_sheets else None
     csa = compute_csa_scorecard(samba_sheets) if samba_sheets else None
+    _post_csa_threshold_alert(csa, webhook, tok, upn, today)
 
     # Alvys Pipeline (optional — graceful fallback if missing)
     pipeline_path = os.environ.get("ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
@@ -2710,6 +2790,25 @@ def main() -> int:
     _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn,
                                resolved_cats=resolved_cats,
                                cdl_reinstate_dates=cdl_reinstate_dates)
+
+    # Recurrence registry — flag items with 3+ appearances in 90 days and
+    # track first-seen date for coaching escalation timer.
+    try:
+        from src.recurrence_registry import (
+            load_registry as _load_rec, save_registry as _save_rec,
+            prune as _prune_rec, record_appearances, flag_recurring_items,
+        )
+        rec_registry = _load_rec(tok, upn)
+        _prune_rec(rec_registry, today)
+        all_items_for_rec = list(audra_items) + list(ops_items)
+        flag_recurring_items(rec_registry, all_items_for_rec, today)
+        record_appearances(rec_registry, all_items_for_rec, today)
+        _save_rec(tok, upn, rec_registry)
+        recurring_count = sum(1 for i in all_items_for_rec if i.get("_recurring"))
+        if recurring_count:
+            log.warning("%d item(s) flagged as recurring (3+ in 90d).", recurring_count)
+    except Exception as exc:
+        log.warning("Recurrence registry update failed: %s", exc)
 
     # Compute carried-forward items for the "OPEN — ACTION PENDING" section:
     # any item from today's list that also appeared in yesterday's JSON

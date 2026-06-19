@@ -71,7 +71,10 @@ def _load_resolved_today(
                 row_date = pd.Timestamp(raw_date).date()
             except Exception:
                 continue
-            if row_date != today:
+            # Accept today and today-1: Power Automate UTC stamping can shift
+            # late CT submissions one day forward; accept yesterday's entries here
+            # so afternoon form submits are not missed on the same-day refresh.
+            if row_date not in (today, today - datetime.timedelta(days=1)):
                 continue
             cat = ""
             if cat_col:

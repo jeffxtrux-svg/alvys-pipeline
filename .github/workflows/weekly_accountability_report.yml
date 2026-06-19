@@ -62,7 +62,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.ct_gate.outputs.skip != '1'
-        run: pip install requests msal python-dotenv pandas openpyxl
+        run: pip install -r requirements.txt
 
       - name: Build and send Weekly Accountability Pattern Report
         if: steps.ct_gate.outputs.skip != '1'
