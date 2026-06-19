@@ -197,6 +197,7 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "dest_lat": float(dest_lat),
         "dest_lng": float(dest_lng),
         "broker": load.get("CustomerName") if _is_brokered(load) else "",
+        "customer_name": load.get("CustomerName") or "",
         "office": _g(load, "Office", "Name") or _g(load, "Trip", "Office", "Name") or "",
         "driver_name": driver_name or "",
         "sales_agent": (users_by_id or {}).get(
@@ -309,6 +310,9 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                     "type": "FactSet",
                     "spacing": "Small",
                     "facts": [
+                        {"title": "Load #", "value": str(r.get("load_no") or "—")},
+                        {"title": "Broker" if r.get("broker") else "Customer",
+                         "value": r.get("customer_name") or "—"},
                         {"title": "Destination", "value": dest},
                         {"title": "Appt", "value": _fmt_dt_ct(r["appt_dt"]) or "—"},
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
