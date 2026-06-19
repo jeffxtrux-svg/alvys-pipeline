@@ -107,6 +107,44 @@ def _fmt_delta(minutes: int | None) -> tuple[str, str]:
 
 
 # ----------------------------------------------------------------------
+# HOS helpers
+# ----------------------------------------------------------------------
+_HOS_REST_SECONDS = 10 * 3600  # federal property-carrier mandatory break
+
+
+def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
+    """{driver_name_lower: remaining_drive_seconds} from Samsara HOS clocks."""
+    idx: dict[str, int] = {}
+    for rec in hos_clocks:
+        drv = rec.get("driver") or {}
+        name = (drv.get("name") or "").strip()
+        if not name:
+            continue
+        drive = (rec.get("clocks") or {}).get("drive") or {}
+        remaining = drive.get("remainingSeconds")
+        if remaining is not None:
+            idx[name.lower()] = int(remaining)
+    return idx
+
+
+def _hos_remaining(hos_index: dict[str, int], driver_name: str) -> int | None:
+    """Return remaining drive seconds for a driver, or None if not found."""
+    if not driver_name or not hos_index:
+        return None
+    return hos_index.get(driver_name.lower().strip())
+
+
+def _fmt_hos(remaining_seconds: int | None) -> str:
+    """Format remaining drive seconds as 'Xh Ym' or '—'."""
+    if remaining_seconds is None:
+        return "—"
+    if remaining_seconds <= 0:
+        return "0h 0m"
+    h, m = divmod(remaining_seconds // 60, 60)
+    return f"{h}h {m}m"
+
+
+# ----------------------------------------------------------------------
 # Alvys load extraction
 # ----------------------------------------------------------------------
 def _next_undelivered_stop(load: dict) -> dict | None:
@@ -309,9 +347,15 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                     "type": "FactSet",
                     "spacing": "Small",
                     "facts": [
+                        {"title": "Load #", "value": str(r.get("load_no") or "—")},
+                        {"title": "Broker" if r.get("broker") else "Customer",
+                         "value": r.get("customer_name") or "—"},
                         {"title": "Destination", "value": dest},
                         {"title": "Appt", "value": _fmt_dt_ct(r["appt_dt"]) or "—"},
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
+                        {"title": "HOS Left",
+                         "value": (_fmt_hos(r.get("hos_remaining_s"))
+                                   + (" ⚠️ +10h rest factored in" if r.get("hos_delay") else ""))},
                         {"title": "Sales Agent", "value": r.get("sales_agent") or "—"},
                     ],
                 },
@@ -514,8 +558,8 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
                 f"<th style='padding:8px 10px;text-align:left;font-size:10px;"
                 f"text-transform:uppercase;letter-spacing:0.8px;color:{MUTE};'>"
                 f"{h}</th>"
-                for h in ("Truck", "Shipper", "Shipper City", "Consignee",
-                          "Consignee City", "Appt", "ETA", "Delta", "Broker"))
+                for h in ("Truck", "Driver", "Shipper", "Shipper City", "Consignee",
+                          "Consignee City", "Appt", "ETA", "Delta", "HOS Left", "Broker"))
             + "</tr></thead>"
         )
 
@@ -524,9 +568,12 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
             delta_txt, delta_color = _fmt_delta(r.get("delta_min"))
             shipper_loc = f"{r['shipper_city']}, {r['shipper_state']}".strip(", ")
             consignee_loc = f"{r['consignee_city']}, {r['consignee_state']}".strip(", ")
+            hos_txt = _fmt_hos(r.get("hos_remaining_s"))
+            hos_color = RED if r.get("hos_delay") else MUTE
             tbody_rows += (
                 f"<tr style='border-bottom:1px solid {LINE};'>"
                 f"<td style='padding:8px 10px;font-weight:700;'>{r['truck_name']}</td>"
+                f"<td style='padding:8px 10px;color:{MUTE};'>{r.get('driver_name') or '—'}</td>"
                 f"<td style='padding:8px 10px;'>{r['shipper'] or '—'}</td>"
                 f"<td style='padding:8px 10px;color:{MUTE};'>{shipper_loc or '—'}</td>"
                 f"<td style='padding:8px 10px;'>{r['consignee'] or '—'}</td>"
@@ -534,6 +581,8 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
                 f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_dt_ct(r['appt_dt'])}</td>"
                 f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_dt_ct(r.get('eta_dt'))}</td>"
                 f"<td style='padding:8px 10px;color:{delta_color};font-weight:700;white-space:nowrap;'>{delta_txt}</td>"
+                f"<td style='padding:8px 10px;color:{hos_color};white-space:nowrap;font-weight:{'700' if r.get('hos_delay') else '400'};'>"
+                f"{hos_txt}{'*' if r.get('hos_delay') else ''}</td>"
                 f"<td style='padding:8px 10px;color:{MUTE};'>{r['broker'] or '—'}</td>"
                 f"</tr>"
             )
@@ -561,7 +610,9 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
         f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};'>"
         f"Delta = ETA &minus; appointment. Red = &ge;45 min late &middot; "
         f"amber = late (under 45 min) &middot; green = within 30 min early. "
-        f"ETA from Samsara GPS &rarr; Mapbox driving-traffic.</div>"
+        f"ETA from Samsara GPS &rarr; Mapbox driving-traffic. "
+        f"HOS Left = driver&rsquo;s remaining legal drive time from Samsara; "
+        f"* means a 10-hour mandatory rest was added to ETA.</div>"
         "</body></html>"
     )
 
@@ -576,12 +627,12 @@ def _render_xlsx(rows: list[dict], generated_at: datetime) -> bytes:
     ws.title = "ETAs"
 
     ws.append([f"XFreight ETAs — generated {generated_at.astimezone(CT):%a %b %d, %I:%M %p} CT"])
-    ws.merge_cells("A1:I1")
+    ws.merge_cells("A1:K1")
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([])
 
-    headers = ["Truck", "Shipper", "Shipper City", "Consignee", "Consignee City",
-               "Appt (CT)", "ETA (CT)", "Delta (min)", "Broker"]
+    headers = ["Truck", "Driver", "Shipper", "Shipper City", "Consignee", "Consignee City",
+               "Appt (CT)", "ETA (CT)", "Delta (min)", "HOS Left", "Broker"]
     ws.append(headers)
     hdr_fill = PatternFill("solid", fgColor="FAFAFA")
     for col_idx in range(1, len(headers) + 1):
@@ -591,8 +642,12 @@ def _render_xlsx(rows: list[dict], generated_at: datetime) -> bytes:
         c.alignment = Alignment(horizontal="left")
 
     for r in rows:
+        hos_cell = _fmt_hos(r.get("hos_remaining_s"))
+        if r.get("hos_delay"):
+            hos_cell += " (+ 10h rest)"
         ws.append([
             r["truck_name"],
+            r.get("driver_name") or "",
             r["shipper"],
             f"{r['shipper_city']}, {r['shipper_state']}".strip(", "),
             r["consignee"],
@@ -600,10 +655,11 @@ def _render_xlsx(rows: list[dict], generated_at: datetime) -> bytes:
             _fmt_dt_ct(r["appt_dt"]),
             _fmt_dt_ct(r.get("eta_dt")),
             r.get("delta_min", ""),
+            hos_cell,
             r["broker"],
         ])
 
-    widths = [10, 28, 22, 28, 22, 22, 22, 14, 22]
+    widths = [10, 22, 28, 22, 28, 22, 22, 22, 14, 14, 22]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + i)].width = w
 
@@ -748,11 +804,15 @@ def main() -> int:
         log.warning("Trucks_by_id sample (first 3): %s", list(trucks_by_id.items())[:3])
         log.warning("=== END DIAGNOSTIC ===")
 
-    # --- Pull current locations from Samsara ----------------------------
+    # --- Pull current locations + HOS from Samsara ----------------------
     samsara = SamsaraClient(api_token=os.environ["SAMSARA_API_TOKEN"])
     locations = samsara.fetch_locations()
     locs_by_truck = _locations_by_truck_name(locations)
     log.info("Resolved current GPS for %d trucks", len(locs_by_truck))
+
+    hos_clocks = samsara.fetch_hos_clocks()
+    hos_index = _build_hos_index(hos_clocks)
+    log.info("Indexed HOS remaining drive time for %d drivers", len(hos_index))
 
     # --- Compute ETA per load via Mapbox --------------------------------
     now = datetime.now(timezone.utc)
@@ -771,14 +831,32 @@ def main() -> int:
             log.info("SKIP load %s (truck %s): Mapbox returned no route",
                      row["load_no"], row["truck_name"])
             continue
-        eta_dt = now + timedelta(seconds=duration_s)
+
+        # HOS cap: if driver runs out of legal drive time before arriving,
+        # add the federal 10-hour mandatory rest to the ETA.
+        hos_remaining_s = _hos_remaining(hos_index, row.get("driver_name", ""))
+        hos_delay_s = 0
+        if hos_remaining_s is not None and duration_s > hos_remaining_s:
+            hos_delay_s = _HOS_REST_SECONDS
+            log.info("  load %s HOS cap: driver %s has %.1fh left, route %.1fh → +10h rest",
+                     row["load_no"], row.get("driver_name"),
+                     hos_remaining_s / 3600, duration_s / 3600)
+
+        eta_dt = now + timedelta(seconds=duration_s + hos_delay_s)
         delta_min = None
         if row["appt_dt"]:
             delta_min = int(round((row["appt_dt"] - eta_dt).total_seconds() / 60))
-        log.info("load %s truck %-6s  appt=%s  eta=%s  delta=%s min",
+        log.info("load %s truck %-6s  hos=%s  appt=%s  eta=%s  delta=%s min",
                  row["load_no"], row["truck_name"],
+                 _fmt_hos(hos_remaining_s),
                  _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min)
-        rows_with_eta.append({**row, "eta_dt": eta_dt, "delta_min": delta_min})
+        rows_with_eta.append({
+            **row,
+            "eta_dt": eta_dt,
+            "delta_min": delta_min,
+            "hos_remaining_s": hos_remaining_s,
+            "hos_delay": hos_delay_s > 0,
+        })
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
 
