@@ -87,7 +87,7 @@ def _prefill_url(
         f"{_FF_DRIVER_UNIT}={_qtxt(drv)}",
         f"{_FF_DETAIL}={_qtxt(item.get('detail', ''))}",
         f"{_FF_DAYS_OPEN}={item.get('days_open', 1)}",
-        f"{_FF_OCCURRENCES}={item.get('occurrence', 1)}",
+        f"{_FF_OCCURRENCES}={item.get('_recurrence_count') or item.get('occurrence', 1)}",
     ]
 
     owner_name = _OWNER_NAME.get(owner_label)
@@ -152,16 +152,27 @@ def _item_block(item: dict, form_url: str = "") -> dict:
             "items": block_items,
         }
 
+    is_coaching = "coaching needed" in cat.lower()
+    rec_count   = item.get("_recurrence_count", 0)
+    first_days  = item.get("_first_seen_days", days)
+
     # Normal open item
     header = f"{emoji} **{cat}**"
-    if days >= 3:
+    # Day-open indicator (coaching gets a stronger escalation at day 5)
+    if is_coaching and first_days >= 5:
+        header += f"  🔴 Day {first_days} — Supervisor follow-up required"
+    elif days >= 3:
         header += f"  ⚠️ Day {days} — ESCALATED"
     elif days > 1:
         header += f"  ↩ Day {days} open"
+    # 30-day occurrence badge
     if occ >= 3:
         header += f"  🚨 #{occ} in 30d"
     elif occ == 2:
         header += f"  ⚠️ 2nd in 30d"
+    # 90-day chronic pattern badge — overrides 30d badge when triggered
+    if rec_count >= 3:
+        header += f"  🔁 {rec_count}x in 90d — Progressive discipline"
 
     subject = (f"{drv} — " if drv else "") + detail
 
