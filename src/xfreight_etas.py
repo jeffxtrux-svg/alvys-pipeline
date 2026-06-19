@@ -50,10 +50,7 @@ log = logging.getLogger("xfreight_etas")
 
 CT = ZoneInfo("America/Chicago")
 ACTIVE_STATUSES = ["Dispatched", "In Transit"]
-MAPBOX_DIRECTIONS_URL = (
-    "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/"
-    "{from_lng},{from_lat};{to_lng},{to_lat}"
-)
+_MAPBOX_BASE = "https://api.mapbox.com/directions/v5/mapbox"
 
 
 # ----------------------------------------------------------------------
@@ -207,30 +204,31 @@ def _mapbox_duration_seconds(
     token: str, from_lat: float, from_lng: float,
     to_lat: float, to_lng: float, timeout: int = 15,
 ) -> float | None:
-    """Query Mapbox Directions (driving-traffic profile). Returns the
-    duration of the first route in seconds, or None on failure."""
-    url = MAPBOX_DIRECTIONS_URL.format(
-        from_lng=from_lng, from_lat=from_lat,
-        to_lng=to_lng, to_lat=to_lat,
-    )
-    try:
-        resp = requests.get(
-            url,
-            params={"access_token": token, "geometries": "geojson", "overview": "false"},
-            timeout=timeout,
-        )
-        if resp.status_code != 200:
-            log.warning("Mapbox %s,%s → %s,%s HTTP %d: %s",
-                        from_lat, from_lng, to_lat, to_lng,
-                        resp.status_code, resp.text[:200])
+    """Query Mapbox Directions and return drive-time in seconds.
+
+    Tries driving-traffic (requires sk. token) first; falls back to driving
+    (works with pk. token) on 401 so the report works immediately with a
+    public token and upgrades automatically when rotated to secret token.
+    """
+    coords = f"{from_lng},{from_lat};{to_lng},{to_lat}"
+    params = {"access_token": token, "geometries": "geojson", "overview": "false"}
+    for profile in ("driving-traffic", "driving"):
+        url = f"{_MAPBOX_BASE}/{profile}/{coords}"
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            if resp.status_code == 401 and profile == "driving-traffic":
+                log.info("Mapbox driving-traffic → 401 (pk. token?), retrying with driving")
+                continue
+            if resp.status_code != 200:
+                log.warning("Mapbox %s→%s HTTP %d: %s",
+                            profile, coords[:30], resp.status_code, resp.text[:200])
+                return None
+            routes = (resp.json() or {}).get("routes") or []
+            return float(routes[0].get("duration") or 0) if routes else None
+        except Exception as e:
+            log.warning("Mapbox %s request failed: %s", profile, e)
             return None
-        routes = (resp.json() or {}).get("routes") or []
-        if not routes:
-            return None
-        return float(routes[0].get("duration") or 0)
-    except Exception as e:
-        log.warning("Mapbox request failed: %s", e)
-        return None
+    return None
 
 
 # ----------------------------------------------------------------------
