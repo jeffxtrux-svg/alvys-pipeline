@@ -315,7 +315,7 @@ HTML = """<!DOCTYPE html>
     </div>
     <div class="cover-meta">
       Prepared by XFreight Operations &nbsp;·&nbsp; Safety &amp; Compliance Division &nbsp;·&nbsp; Confidential<br>
-      <strong>Living Document</strong> — Revision 1.0, June 2026 &nbsp;·&nbsp; Updated as the program evolves
+      <strong>Living Document</strong> — Revision 1.1, June 2026 &nbsp;·&nbsp; Phases 1–3 complete
     </div>
   </div>
 </div>
@@ -892,13 +892,13 @@ HTML = """<!DOCTYPE html>
       </tr>
       <tr>
         <td style="padding:8px 10px; font-weight:bold; color:#1a3a6b;">Phase 2</td>
-        <td style="padding:8px 10px;">Recurrence detection — accountability log flags items where the same driver/category reappears 3+ times in 90 days; triggers formal progressive discipline workflow notification automatically</td>
-        <td style="padding:8px 10px; text-align:center; color:#888;">Planned</td>
+        <td style="padding:8px 10px;">90-day recurrence registry — same driver/category appearing 3+ times in 90 days triggers a <strong>🔁 Progressive discipline</strong> badge on the Teams card and flags the item for formal PD workflow. Coaching sessions open 5+ days without acknowledgment show a <strong>🔴 Supervisor follow-up required</strong> escalation.</td>
+        <td style="padding:8px 10px; text-align:center; font-weight:bold; color:#2e7d32;">&#10003; Complete</td>
       </tr>
       <tr style="background:#f0f5fb;">
         <td style="padding:8px 10px; font-weight:bold; color:#1a3a6b;">Phase 3</td>
-        <td style="padding:8px 10px;">Monthly CSA scorecard trend comparison with directional arrows; automatic Teams alert if any BASIC crosses the FMCSA intervention threshold before the morning brief catches it</td>
-        <td style="padding:8px 10px; text-align:center; color:#888;">Planned</td>
+        <td style="padding:8px 10px;">CSA BASIC threshold alert — each morning after the scorecard CSV is processed, the system posts an immediate Teams alert if any BASIC reaches its FMCSA intervention threshold (Unsafe Driving/Crash Indicator ≥ 65th pct; all others ≥ 80th pct). Fires once per day via an OneDrive marker.</td>
+        <td style="padding:8px 10px; text-align:center; font-weight:bold; color:#2e7d32;">&#10003; Complete</td>
       </tr>
       <tr>
         <td style="padding:8px 10px; font-weight:bold; color:#1a3a6b;">Phase 4</td>
@@ -920,7 +920,7 @@ HTML = """<!DOCTYPE html>
 
 <div class="section" style="margin-top:32px; border-top:2px solid #1a3a6b; padding-top:18px;">
   <p class="small" style="text-align:center; color:#888;">
-    XFreight Safety &amp; Compliance Program &nbsp;·&nbsp; X-Trux Inc. · X-Linx &nbsp;·&nbsp; Revision 1.0 — June 2026 &nbsp;·&nbsp; Confidential &amp; Proprietary<br>
+    XFreight Safety &amp; Compliance Program &nbsp;·&nbsp; X-Trux Inc. · X-Linx &nbsp;·&nbsp; Revision 1.1 — June 2026 &nbsp;·&nbsp; Confidential &amp; Proprietary<br>
     Questions: contact the Safety Manager or Operations leadership.
   </p>
 </div>
