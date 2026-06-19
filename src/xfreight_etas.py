@@ -418,29 +418,47 @@ def _build_clear_card() -> dict:
 
 def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str,
                         late_rows: list[dict]) -> None:
-    """Post to the Teams webhook only when the set of late loads changes.
+    """Post to the Teams webhook when the set of late loads changes OR an
+    appointment is updated for a load that is already in the alerted set.
 
     - New load(s) became 45+ min late → POST card with all current late loads.
     - Load(s) resolved while others remain late → POST updated card.
     - All late loads cleared → POST "✅ All loads back on schedule" card.
-    - Same late-load set as last post → skip (no new card posted).
+    - Appointment changed for an already-alerted load → POST updated card.
+    - Same late-load set + same appointments → skip (no card posted).
 
-    State (which load numbers were last alerted) is stored in OneDrive so it
-    persists across the 30-min runs.
+    State is stored in OneDrive (eta_state.json) and persists across 30-min runs.
     """
     state = _load_teams_state(token, user_upn, folder)
     prev_load_nos = set(state.get("alerted_load_nos") or [])
-    curr_load_nos = {str(r["load_no"]) for r in late_rows if r.get("load_no")}
+    prev_appts: dict = state.get("alerted_appts") or {}
 
-    if curr_load_nos == prev_load_nos:
+    curr_load_nos = {str(r["load_no"]) for r in late_rows if r.get("load_no")}
+    curr_appts = {
+        str(r["load_no"]): r["appt_dt"].isoformat() if r.get("appt_dt") else ""
+        for r in late_rows if r.get("load_no")
+    }
+
+    # Detect appointment changes for loads that are in both sets
+    appt_changed_loads = [
+        ln for ln in curr_load_nos & prev_load_nos
+        if curr_appts.get(ln) != prev_appts.get(ln)
+    ]
+
+    if curr_load_nos == prev_load_nos and not appt_changed_loads:
         log.info("Teams: late-load set unchanged (%d loads) — no card posted",
                  len(curr_load_nos))
         return
+
+    if appt_changed_loads:
+        log.info("Teams: appointment changed for load(s) %s — posting updated card",
+                 appt_changed_loads)
 
     if curr_load_nos:
         card = _build_teams_card(late_rows)
         new_state: dict = {
             "alerted_load_nos": sorted(curr_load_nos),
+            "alerted_appts": curr_appts,
             "last_alerted": datetime.now(timezone.utc).isoformat(),
         }
         log_msg = "Teams: posted updated alert for %d late load(s)"
@@ -671,7 +689,9 @@ def main() -> int:
     log.info("Filtered to %d active X-Trux loads", len(active))
 
     # Trips carry truck assignment — loads don't embed it.
-    raw_trips = alvys.fetch_trips(start_date)
+    # Use fetch_active_trips (no date filter) so long-haul loads whose truck was
+    # assigned >7 days ago but whose appointment changed today are still included.
+    raw_trips = alvys.fetch_active_trips()
     trips_by_load: dict[str, dict] = {}
     for trip in raw_trips:
         ln = str(trip.get("LoadNumber") or "")

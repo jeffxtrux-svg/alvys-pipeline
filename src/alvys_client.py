@@ -165,6 +165,18 @@ class AlvysClient:
         log.info("Total trips fetched: %d", len(items))
         return items
 
+    def fetch_active_trips(self) -> list[dict]:
+        """Fetch all currently Dispatched / In-Transit trips with no date filter.
+
+        Used by the ETA tracker so long-haul loads (truck assigned >7 days ago,
+        appointment changed today) are never dropped from the window.
+        """
+        log.info("Fetching all active trips (Dispatched + In Transit)")
+        body = {"status": ["Dispatched", "In Transit"]}
+        items = list(self._paginate_search("/trips/search", body))
+        log.info("Total active trips fetched: %d", len(items))
+        return items
+
     def fetch_fuel(self, start_date: str) -> list[dict]:
         log.info("Fetching fuel transactions from %s onward", start_date)
         end_date = time.strftime("%Y-%m-%dT23:59:59Z")
