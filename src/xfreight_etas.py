@@ -121,7 +121,8 @@ def _is_brokered(load: dict) -> bool:
     return str(load.get("BrokerageStatus") or "").lower() == "brokered"
 
 
-def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict) -> dict | None:
+def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
+                      drivers_by_id: dict | None = None) -> dict | None:
     """Pull the v1 report columns out of one Alvys load record. Returns None
     if the load isn't routable (no truck assignment, no undelivered stop,
     or no geocoded destination).
@@ -133,17 +134,25 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict) -> di
     trip = trips_by_load.get(load_num) if load_num else None
 
     truck_name = None
+    driver_name = None
     if trip:
         truck_obj = trip.get("Truck") or {}
         if isinstance(truck_obj, dict):
-            # Try the truck name/number directly on the nested object first
             truck_name = (truck_obj.get("TruckNum") or truck_obj.get("TruckNumber")
                          or truck_obj.get("Number") or truck_obj.get("Name"))
             if not truck_name:
-                # Fall back to the trucks_by_id lookup via Truck.Id
                 truck_id = truck_obj.get("Id")
                 if truck_id:
                     truck_name = trucks_by_id.get(str(truck_id)) or None
+
+        driver1_obj = trip.get("Driver1") or {}
+        if isinstance(driver1_obj, dict):
+            driver_name = (driver1_obj.get("FullName") or driver1_obj.get("Name")
+                           or driver1_obj.get("DisplayName"))
+            if not driver_name and drivers_by_id:
+                driver_id = driver1_obj.get("Id")
+                if driver_id:
+                    driver_name = drivers_by_id.get(str(driver_id))
 
     if not truck_name:
         return None
@@ -177,6 +186,7 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict) -> di
         "dest_lng": float(dest_lng),
         "broker": load.get("CustomerName") if _is_brokered(load) else "",
         "office": _g(load, "Office", "Name") or _g(load, "Trip", "Office", "Name") or "",
+        "driver_name": driver_name or "",
     }
 
 
@@ -261,6 +271,7 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
         {"type": "TextBlock", "text": " ", "spacing": "Small"},
         {"type": "ColumnSet", "columns": [
             _col("Truck", "auto", bold=True),
+            _col("Driver", "stretch", bold=True),
             _col("Destination", "stretch", bold=True),
             _col("Appt", "auto", bold=True),
             _col("ETA", "auto", bold=True),
@@ -278,6 +289,7 @@ def _post_teams_alert(webhook_url: str, late_rows: list[dict]) -> None:
             "type": "ColumnSet", "separator": True,
             "columns": [
                 _col(r["truck_name"], "auto", bold=True, wrap=False),
+                _col(r.get("driver_name") or "—", "stretch", wrap=True),
                 _col(dest, "stretch", wrap=True),
                 _col(_fmt_dt_ct(r["appt_dt"]), "auto", wrap=False),
                 _col(_fmt_dt_ct(r.get("eta_dt")), "auto", wrap=False),
@@ -474,6 +486,16 @@ def main() -> int:
         trucks_by_id[tid] = str(num)
     log.info("Indexed %d trucks", len(trucks_by_id))
 
+    raw_drivers = alvys.fetch_drivers()
+    drivers_by_id = {}
+    for d in raw_drivers:
+        did = str(d.get("Id") or "")
+        if not did:
+            continue
+        name = (d.get("FullName") or d.get("Name") or d.get("DisplayName") or "")
+        drivers_by_id[did] = str(name)
+    log.info("Indexed %d drivers", len(drivers_by_id))
+
     # Active loads: status filter + ~7 day updatedAt window
     start_date = (datetime.now(CT) - timedelta(days=7)).strftime("%Y-%m-%d")
     all_loads = alvys.fetch_loads(start_date)
@@ -499,7 +521,7 @@ def main() -> int:
 
     load_rows: list[dict] = []
     for L in active:
-        row = _extract_load_row(L, trucks_by_id, trips_by_load)
+        row = _extract_load_row(L, trucks_by_id, trips_by_load, drivers_by_id)
         if row:
             load_rows.append(row)
     log.info("Routable loads (have truck + undelivered stop + dest coords): %d",
