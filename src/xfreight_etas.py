@@ -705,9 +705,21 @@ def main() -> int:
 
     load_rows: list[dict] = []
     for L in active:
+        ln = str(L.get("LoadNumber") or "")
         row = _extract_load_row(L, trucks_by_id, trips_by_load, drivers_by_id, users_by_id)
         if row:
             load_rows.append(row)
+        else:
+            # Diagnostic: log why each active load was dropped
+            next_s = _next_undelivered_stop(L)
+            trip = trips_by_load.get(ln)
+            truck_obj = (trip.get("Truck") or {}) if trip else {}
+            coords = (next_s.get("Coordinates") or {}) if next_s else {}
+            log.info("SKIP load %s: trip=%s truck_obj=%s next_stop=%s coords=%s",
+                     ln, "found" if trip else "MISSING",
+                     truck_obj.get("TruckNum") or truck_obj.get("Number") or truck_obj,
+                     "found" if next_s else "MISSING",
+                     coords)
     log.info("Routable loads (have truck + undelivered stop + dest coords): %d",
              len(load_rows))
 
@@ -752,18 +764,24 @@ def main() -> int:
     for row in load_rows:
         gps = locs_by_truck.get(row["truck_name"])
         if not gps:
-            continue  # hide trucks we can't locate
+            log.info("SKIP load %s (truck %s): no Samsara GPS",
+                     row["load_no"], row["truck_name"])
+            continue
         duration_s = _mapbox_duration_seconds(
             mapbox_token, gps["lat"], gps["lng"],
             row["dest_lat"], row["dest_lng"],
         )
         if duration_s is None:
+            log.info("SKIP load %s (truck %s): Mapbox returned no route",
+                     row["load_no"], row["truck_name"])
             continue
         eta_dt = now + timedelta(seconds=duration_s)
         delta_min = None
         if row["appt_dt"]:
             delta_min = int(round((row["appt_dt"] - eta_dt).total_seconds() / 60))
-            # Positive delta = early; negative delta = late
+        log.info("load %s truck %-6s  appt=%s  eta=%s  delta=%s min",
+                 row["load_no"], row["truck_name"],
+                 _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min)
         rows_with_eta.append({**row, "eta_dt": eta_dt, "delta_min": delta_min})
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
