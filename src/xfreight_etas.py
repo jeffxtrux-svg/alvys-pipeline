@@ -133,7 +133,8 @@ def _is_brokered(load: dict) -> bool:
 
 
 def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
-                      drivers_by_id: dict | None = None) -> dict | None:
+                      drivers_by_id: dict | None = None,
+                      users_by_id: dict | None = None) -> dict | None:
     """Pull the v1 report columns out of one Alvys load record. Returns None
     if the load isn't routable (no truck assignment, no undelivered stop,
     or no geocoded destination).
@@ -198,6 +199,8 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "broker": load.get("CustomerName") if _is_brokered(load) else "",
         "office": _g(load, "Office", "Name") or _g(load, "Trip", "Office", "Name") or "",
         "driver_name": driver_name or "",
+        "sales_agent": (users_by_id or {}).get(
+            str(load.get("CustomerSalesAgentId") or "")) or "",
     }
 
 
@@ -309,6 +312,7 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                         {"title": "Destination", "value": dest},
                         {"title": "Appt", "value": _fmt_dt_ct(r["appt_dt"]) or "—"},
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
+                        {"title": "Sales Agent", "value": r.get("sales_agent") or "—"},
                     ],
                 },
                 {
@@ -700,6 +704,18 @@ def main() -> int:
         drivers_by_id[did] = str(name)
     log.info("Indexed %d drivers", len(drivers_by_id))
 
+    raw_users = alvys.fetch_users()
+    users_by_id = {}
+    for u in raw_users:
+        uid = str(u.get("Id") or "")
+        if not uid:
+            continue
+        name = (u.get("FullName") or u.get("DisplayName") or u.get("Name")
+                or f"{u.get('FirstName', '')} {u.get('LastName', '')}".strip())
+        if name:
+            users_by_id[uid] = name
+    log.info("Indexed %d users", len(users_by_id))
+
     # Active loads: status filter + ~7 day updatedAt window
     start_date = (datetime.now(CT) - timedelta(days=7)).strftime("%Y-%m-%d")
     all_loads = alvys.fetch_loads(start_date)
@@ -725,7 +741,7 @@ def main() -> int:
 
     load_rows: list[dict] = []
     for L in active:
-        row = _extract_load_row(L, trucks_by_id, trips_by_load, drivers_by_id)
+        row = _extract_load_row(L, trucks_by_id, trips_by_load, drivers_by_id, users_by_id)
         if row:
             load_rows.append(row)
     log.info("Routable loads (have truck + undelivered stop + dest coords): %d",
