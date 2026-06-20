@@ -2953,6 +2953,12 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         return False
                     return s.lower() == s
                 uncert = uncert[~uncert["_driver"].apply(_looks_like_placeholder)]
+                # Drivers with any HOS log for today are actively on duty/driving.
+                active_today = set(
+                    hos_daily.assign(_d=_to_naive_dt(hos_daily[date_col]),
+                                     _drv=hos_daily[drv_col].astype(str).str.strip())
+                    .pipe(lambda df: df[df["_d"] >= _today_chi]["_drv"].unique())
+                )
                 rows: list[dict] = []
                 for drv, grp in uncert.groupby("_driver"):
                     days = grp["_date"].dropna()
@@ -2964,6 +2970,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         "days_missing": int(len(grp)),
                         "span": span,
                         "latest": latest,
+                        "active_today": drv in active_today,
                     })
                 rows.sort(key=lambda r: (-r["days_missing"], r["driver"]))
                 out["detail"]["hos_uncert"] = rows[:30]

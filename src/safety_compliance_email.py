@@ -691,7 +691,7 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         except Exception:
             return None
     on_duty_now = sorted(
-        [r for r in uncert if (_span_end_ai(r) or pd.Timestamp.min.date()) >= _yesterday],
+        [r for r in uncert if r.get("active_today")],
         key=lambda x: -x.get("days_missing", 0))
     for r in on_duty_now:
         drv  = r.get("driver", "Unknown Driver")
@@ -1216,7 +1216,7 @@ def _build_accountability_structured(
 
     on_duty_now = [
         r for r in uncert
-        if (_span_end_ac(r) or pd.Timestamp.min.date()) >= _yesterday_d
+        if r.get("active_today")
     ]
     for r in on_duty_now:
         drv  = r.get("driver", "Unknown Driver")
