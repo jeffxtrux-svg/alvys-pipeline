@@ -728,6 +728,83 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
     return html, sm_count, di_count, total_count
 
 
+def _build_carried_forward(items: list) -> str:
+    """Render the 'OPEN — ACTION PENDING' section for items carried from yesterday.
+
+    Items are pre-sorted by days_open desc then severity. Each shows a DAY-N
+    badge (amber=2d, orange=3d, red=4+d), driver/unit, category, and detail.
+    Items open 3+ days show an ESCALATED flag.
+    """
+    if not items:
+        return ""
+
+    CF_BLUE = "#1a3a6b"
+    SEV_RANK = {"critical": 0, "high": 1, "medium": 2}
+    items_sorted = sorted(
+        items,
+        key=lambda x: (-x.get("days_open", 2), SEV_RANK.get(x.get("severity", "medium"), 2)),
+    )
+
+    rows_html = ""
+    for item in items_sorted:
+        days   = item.get("days_open", 2)
+        drv    = (item.get("driver") or item.get("unit") or "").strip()
+        cat    = item.get("category", "")
+        detail = item.get("detail", "")
+        owner  = item.get("owner", "")
+
+        if days >= 4:
+            badge_bg = BAD
+        elif days >= 3:
+            badge_bg = "#c47a00"  # deep amber
+        else:
+            badge_bg = "#b06000"  # warm amber
+
+        esc_html = ""
+        if days >= 3:
+            esc_html = (
+                f"<span style='background:{BADBG};color:{BAD};font-size:9px;"
+                f"font-weight:800;padding:2px 6px;border-radius:3px;"
+                f"margin-left:8px;letter-spacing:0.5px;'>ESCALATED</span>"
+            )
+
+        owner_html = (
+            f"<span style='color:{MUTE};font-size:10px;margin-left:8px;'>{owner}</span>"
+            if owner else ""
+        )
+
+        drv_html = (f"<span style='text-transform:uppercase;'>{drv}</span> &mdash; "
+                    if drv else "")
+        rows_html += (
+            f"<div style='display:flex;align-items:flex-start;gap:10px;"
+            f"padding:10px 0;border-bottom:1px solid {LINE};'>"
+            f"<span style='background:{badge_bg};color:#fff;font-size:9px;"
+            f"font-weight:800;letter-spacing:0.5px;padding:3px 7px;border-radius:4px;"
+            f"white-space:nowrap;min-width:46px;text-align:center;flex-shrink:0;'>"
+            f"DAY {days}</span>"
+            f"<div>"
+            f"<div style='font-size:12px;color:{INK};font-weight:700;line-height:1.4;'>"
+            f"{drv_html}{cat}{esc_html}{owner_html}</div>"
+            f"<div style='font-size:11px;color:{MUTE};margin-top:2px;'>{detail}</div>"
+            f"</div></div>"
+        )
+
+    n = len(items_sorted)
+    subtitle = (
+        f"{n} item{'s' if n != 1 else ''} carried forward — "
+        f"still open in today's data, no resolution detected in live systems. "
+        f"Reply to this email or Teams card with action taken."
+    )
+    return (
+        f"<div style='padding:16px 24px 4px;'>"
+        f"<div style='font-size:10px;letter-spacing:1.5px;text-transform:uppercase;"
+        f"color:{CF_BLUE};font-weight:700;margin-bottom:4px;'>OPEN — ACTION PENDING</div>"
+        f"<div style='font-size:11px;color:{MUTE};margin-bottom:8px;'>{subtitle}</div>"
+        f"<div style='border-left:3px solid {CF_BLUE};padding-left:12px;'>"
+        f"{rows_html}</div></div>"
+    )
+
+
 # ----------------------------------------------------------------------
 # Structured accountability items — for Teams Adaptive Cards + JSON output
 # ----------------------------------------------------------------------
@@ -862,7 +939,7 @@ def _build_accountability_structured(
         audra_items.append(item)
         ops_items.append(item)
 
-    # Safety events needing coaching (coaching_list, not yet acked)
+    # Safety events needing coaching (coaching_list, not yet acked) → audra + ops
     coaching_list = (samsara or {}).get("coaching_list") or []
     for c in coaching_list:
         if c.get("acked"):
@@ -870,16 +947,18 @@ def _build_accountability_structured(
         drv   = c.get("driver", "Unknown")
         n     = c.get("events", 1)
         types = ", ".join(c.get("types") or []) or "safety event"
-        ops_items.append({
+        item = {
             "category": "Safety Event — Coaching Needed",
             "severity": "high",
             "driver":   drv,
             "unit":     None,
             "detail":   f"{n} event{'s' if n != 1 else ''}: {types}",
             "prompt":   "When will coaching be completed? What corrective action was taken?",
-        })
+        }
+        audra_items.append(item)
+        ops_items.append(item)
 
-    # Safety events needing disposition (from detail.events where status needs action)
+    # Safety events needing disposition → audra + ops
     _needs_disp_statuses = {
         "needsCoaching", "needs_coaching", "NEEDS_COACHING",
         "needsDisposition", "needs_disposition", "NEEDS_DISPOSITION",
@@ -896,14 +975,135 @@ def _build_accountability_structured(
                 edate = " on " + pd.Timestamp(raw_ts).strftime("%-m/%-d/%y")
             except Exception:
                 pass
-        ops_items.append({
+        item = {
             "category": "Safety Event — Needs Disposition",
             "severity": "high",
             "driver":   drv,
             "unit":     None,
             "detail":   f"{etype}{edate}",
             "prompt":   "Has this event been dispositioned in Samsara? What coaching action was taken?",
-        })
+        }
+        audra_items.append(item)
+        ops_items.append(item)
+
+    # CDL disqualified → audra (critical)
+    if samba and samba.get("invalid_licenses"):
+        for d in (samba["invalid_licenses"] or [])[:3]:
+            nm     = d.get("name") or "Unknown"
+            status = (d.get("status") or "INVALID").upper()
+            audra_items.append({
+                "category": "CDL Disqualified",
+                "severity": "critical",
+                "driver":   nm,
+                "unit":     None,
+                "detail":   f"CDL {status} — cannot legally operate CMV",
+                "prompt":   "PULL FROM SERVICE immediately. Document action taken.",
+            })
+
+    # Driver's license expiration → audra
+    if samba and samba.get("license_issues"):
+        for d in samba["license_issues"]:
+            days = d.get("days_to_exp")
+            if days is None or days < 0:
+                continue
+            nm  = d.get("name", "Unknown")
+            exp = d.get("exp") or ""
+            try:
+                exp_fmt = pd.Timestamp(exp).strftime("%-m/%-d/%Y") if exp else ""
+            except Exception:
+                exp_fmt = str(exp)[:10] if exp else ""
+            sev        = "critical" if days <= 7 else "high"
+            detail_str = f"Expires in {days}d ({exp_fmt})" if exp_fmt else f"Expires in {days}d"
+            prompt     = (
+                "Confirm appointment is booked, document appointment date."
+                if days <= 7 else
+                "When is renewal scheduled? Confirm renewal plan with driver."
+            )
+            try:
+                expires_iso = pd.Timestamp(exp).date().isoformat() if exp else None
+            except Exception:
+                expires_iso = None
+            audra_items.append({
+                "category":     "Driver License Expiring",
+                "severity":     sev,
+                "driver":       nm,
+                "unit":         None,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_expires_iso": expires_iso,
+            })
+
+    # DOT medical card expiring/expired → audra
+    if alvys_drivers:
+        for d in (alvys_drivers.get("medical_critical_14") or []):
+            nm   = d.get("name") or "Unknown"
+            days = d.get("medical_days", 0)
+            exp  = d.get("medical_exp") or ""
+            if days <= 0:
+                sev        = "critical"
+                detail_str = "Medical card EXPIRED"
+                prompt     = "PULL FROM SERVICE immediately."
+            elif days <= 3:
+                sev        = "critical"
+                detail_str = f"DOT physical in {days}d ({exp})"
+                prompt     = "Confirm appointment is booked, document appointment date."
+            elif days <= 7:
+                sev        = "critical"
+                detail_str = f"DOT medical expires in {days}d ({exp})"
+                prompt     = "Confirm appointment is scheduled and document appointment date in driver file."
+            else:
+                sev        = "high"
+                detail_str = f"DOT medical expires in {days}d ({exp})"
+                prompt     = "Schedule appointment now and document appointment date in driver file."
+            try:
+                med_expires_iso = pd.Timestamp(exp).date().isoformat() if exp else None
+            except Exception:
+                med_expires_iso = None
+            audra_items.append({
+                "category":     "DOT Medical Card",
+                "severity":     sev,
+                "driver":       nm,
+                "unit":         None,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_expires_iso": med_expires_iso,
+            })
+
+    # SambaSafety risk flags → audra
+    if samba and samba.get("high_risk"):
+        for d in (samba["high_risk"] or [])[:3]:
+            nm = d.get("name") or d.get("driver") or "Unknown"
+            audra_items.append({
+                "category": "SambaSafety Risk Flag",
+                "severity": "high",
+                "driver":   nm,
+                "unit":     None,
+                "detail":   "Flagged as elevated risk",
+                "prompt":   "Review SambaSafety risk flag. What corrective action is being taken?",
+            })
+
+    # MVR violations → audra
+    if samba and samba.get("violations"):
+        for v in samba["violations"]:
+            nm   = v.get("name", "Unknown")
+            vtyp = v.get("type", "violation")
+            pts  = v.get("points")
+            sev_label = (v.get("severity") or "").strip()
+            vd   = v.get("date")
+            try:
+                date_fmt = pd.Timestamp(vd).strftime("%-m/%-d/%y")
+            except Exception:
+                date_fmt = str(vd)[:10] if vd else "?"
+            pts_note = f" | {int(pts)} pts" if _isnum(pts) else ""
+            sev_note = f" | {sev_label}" if sev_label else ""
+            audra_items.append({
+                "category": "MVR Violation",
+                "severity": "high",
+                "driver":   nm,
+                "unit":     None,
+                "detail":   f"{vtyp} ({date_fmt}{pts_note}{sev_note})",
+                "prompt":   "Challenge the violation OR acknowledge as factual. Document decision and action taken.",
+            })
 
     # DOT inspection — Tractors (annual_days < 0 → overdue); both audra + ops
     if equipment:
@@ -925,13 +1125,17 @@ def _build_accountability_structured(
                 sev        = "high"
                 prompt     = "Inspection must be scheduled immediately. When is appointment?"
                 detail_str = f"{over}d past 120d policy"
+            # Federal OOS: 245+ days past 120d policy = 365+ days since last inspection.
+            # These units cannot be suppressed — they stay on the card until inspected.
+            federal_oos = over >= 245
             item = {
-                "category": "DOT Inspection — Tractor",
-                "severity": sev,
-                "driver":   None,
-                "unit":     unit,
-                "detail":   detail_str,
-                "prompt":   prompt,
+                "category":     "DOT Inspection — Tractor",
+                "severity":     sev,
+                "driver":       None,
+                "unit":         unit,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_federal_oos": federal_oos,
             }
             audra_items.append(item)
             ops_items.append(item)
@@ -955,16 +1159,18 @@ def _build_accountability_structured(
                 sev        = "high"
                 prompt     = "Inspection must be scheduled immediately. When is appointment?"
                 detail_str = f"{over}d past 120d policy"
+            federal_oos = over >= 245
             ops_items.append({
-                "category": "DOT Inspection — Trailer",
-                "severity": sev,
-                "driver":   None,
-                "unit":     unit,
-                "detail":   detail_str,
-                "prompt":   prompt,
+                "category":     "DOT Inspection — Trailer",
+                "severity":     sev,
+                "driver":       None,
+                "unit":         unit,
+                "detail":       detail_str,
+                "prompt":       prompt,
+                "_federal_oos": federal_oos,
             })
 
-    # DVIR compliance <90% last 7d
+    # DVIR compliance <90% last 7d → audra + ops (Safety Mgr owns coaching)
     if samsara_sheets:
         try:
             comp_rows = compute_inspection_compliance(samsara_sheets, days=7)
@@ -982,14 +1188,16 @@ def _build_accountability_structured(
                         sev = "high"
                     else:
                         sev = "medium"
-                    ops_items.append({
+                    item = {
                         "category": "DVIR Compliance",
                         "severity": sev,
                         "driver":   drv,
                         "unit":     None,
                         "detail":   f"{pct}% completion last 7d ({done}/{exp})",
                         "prompt":   "Has driver been notified? What corrective action was taken?",
-                    })
+                    }
+                    audra_items.append(item)
+                    ops_items.append(item)
         except Exception:
             pass
 
@@ -1022,20 +1230,22 @@ def _build_accountability_structured(
             "prompt":   "Has driver been notified to certify logs? What corrective action was taken?",
         })
 
-    # Low safety score (<90)
+    # Low safety score (<90) → audra + ops (Safety Mgr leads coaching plan)
     for r in scores_all:
         score = r.get("score")
         if score is None or score >= 90:
             continue
         drv = r.get("driver", "Unknown")
-        ops_items.append({
+        item = {
             "category": "Low Safety Score",
             "severity": "high",
             "driver":   drv,
             "unit":     None,
             "detail":   f"Score {score}",
             "prompt":   "When will coaching be completed? Improvement plan documented?",
-        })
+        }
+        audra_items.append(item)
+        ops_items.append(item)
 
     # Speeding (speed_pct_7d >= 1%)
     for r in scores_all:
@@ -1055,25 +1265,62 @@ def _build_accountability_structured(
     return audra_items, ops_items
 
 
-def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> set[str]:
-    """Return normalized category names actioned in the log on check_date.
+def _post_admin_alert(webhook: str, title: str, text: str) -> None:
+    """Post a plain Teams MessageCard for infra/config alerts. Fails soft."""
+    if not webhook:
+        return
+    try:
+        import requests as _req
+        _req.post(webhook, json={
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "B01C2E",
+            "summary": title,
+            "sections": [{"activityTitle": title, "text": text}],
+        }, timeout=10)
+    except Exception as exc:
+        log.warning("Could not post admin alert to Teams: %s", exc)
 
-    Reads Accountability Log.xlsx from OneDrive/Safety/ and returns a set of
-    lowercased category strings whose Date column matches check_date.  Fails
-    soft — returns empty set if the file is absent or unreadable.
+
+def _load_accountability_log(
+    tok: str,
+    upn: str,
+    check_date: datetime.date,
+    webhook: str = "",
+) -> "tuple[set[str], dict[str, datetime.date]]":
+    """Return tokens and CDL reinstatement dates from the log for check_date.
+
+    Returns (resolved, cdl_dates) where:
+      resolved   — flat set of lowercased category names and "driver:<name>"
+                   tokens (used for actioned-yesterday matching).
+      cdl_dates  — dict mapping drv_norm → reinstatement date parsed from the
+                   Action Taken / Notes column for CDL Disqualified rows.
     """
     import io
+    from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
+    cdl_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
-        # Normalise column names
         df.columns = [str(c).strip().lower() for c in df.columns]
-        date_col = next((c for c in df.columns if "date" in c), None)
-        cat_col  = next((c for c in df.columns if "category" in c), None)
-        if date_col is None or cat_col is None:
-            return resolved
+        date_col   = next((c for c in df.columns if "date" in c), None)
+        cat_col    = next((c for c in df.columns if "category" in c), None)
+        drv_col    = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        action_col = next((c for c in df.columns if "action" in c), None)
+        notes_col  = next((c for c in df.columns if "note" in c), None)
+        if date_col is None:
+            cols = ", ".join(df.columns.tolist()) or "(empty)"
+            log.warning("Accountability Log.xlsx: date column not found. Columns: %s", cols)
+            _post_admin_alert(
+                webhook,
+                "⚠️ Accountability Log format changed — suppression disabled",
+                f"The date column could not be found in **Accountability Log.xlsx**. "
+                f"Suppression, resolution matching, and EOD summary will not work until "
+                f"the column header is restored. Columns found: `{cols}`",
+            )
+            return resolved, cdl_dates
         for _, row in df.iterrows():
             raw_date = row[date_col]
             if pd.isna(raw_date):
@@ -1082,13 +1329,112 @@ def _load_accountability_log(tok: str, upn: str, check_date: datetime.date) -> s
                 row_date = pd.Timestamp(raw_date).date()
             except Exception:
                 continue
-            if row_date == check_date:
+            # Accept check_date and check_date+1: Power Automate uses UTC,
+            # so late CT submissions (after ~6 pm) get stamped with tomorrow's date.
+            if row_date not in (check_date, check_date + datetime.timedelta(days=1)):
+                continue
+            cat = ""
+            if cat_col:
                 cat = str(row[cat_col]).strip().lower()
-                if cat and cat != "nan":
+                if cat and cat not in ("nan", "other"):
                     resolved.add(cat)
+            drv = ""
+            if drv_col:
+                drv = str(row[drv_col]).strip().lower()
+                if drv and drv != "nan":
+                    resolved.add(f"driver:{drv}")
+            # For CDL Disqualified rows, try to extract a reinstatement date
+            # from the free-text Action Taken / Notes fields.
+            is_cdl = "cdl" in cat or "disqualif" in cat
+            if is_cdl and drv:
+                text = " ".join(filter(None, [
+                    str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
+                    str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
+                ]))
+                parsed = extract_date_from_text(text)
+                if parsed and parsed > check_date:
+                    cdl_dates[drv] = parsed
+                    log.info("CDL reinstatement date for %s: %s", drv, parsed.isoformat())
     except Exception as exc:
         log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
-    return resolved
+    return resolved, cdl_dates
+
+
+# ---------------------------------------------------------------------------
+# CSA BASIC threshold alert
+# ---------------------------------------------------------------------------
+
+def _post_csa_threshold_alert(
+    csa: dict,
+    webhook: str,
+    tok: str,
+    upn: str,
+    today: datetime.date,
+) -> None:
+    """Post a Teams alert when any CSA BASIC is at or above its intervention threshold.
+
+    Fires at most once per day — guarded by Safety/csa-alert-{date}.txt on OneDrive.
+    No-ops when csa is None, no BASICs are flagged, or webhook is unset.
+    """
+    if not csa or not webhook:
+        return
+    flagged = [b for b in csa.get("basics", []) if b.get("intervention")]
+    if not flagged:
+        return
+
+    # Daily idempotency marker
+    marker = f"Safety/csa-alert-{today.isoformat()}.txt"
+    try:
+        from src.onedrive_upload import download_file, ensure_folder, upload_file
+        try:
+            download_file(tok, upn, marker)
+            log.info("CSA threshold alert already posted today — skipping.")
+            return
+        except Exception:
+            pass  # not found — proceed
+
+        rows = "\n".join(
+            f"  • {b['category']}: {int(b['percentile'])}th pct "
+            f"(threshold {b['threshold']}th)"
+            for b in sorted(flagged, key=lambda b: -(b["percentile"] or 0))
+        )
+        body: dict = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "B01C2E",
+            "summary": f"⚠️ CSA BASIC Alert — {len(flagged)} BASIC(s) above intervention threshold",
+            "sections": [
+                {
+                    "activityTitle": "⚠️ FMCSA CSA BASIC — Intervention Threshold Crossed",
+                    "activitySubtitle": (
+                        f"X-Trux Inc. (DOT #{csa.get('dot_number', '841776')}) · "
+                        f"Snapshot {csa.get('snapshot_date', today.isoformat())}"
+                    ),
+                    "text": (
+                        f"**{len(flagged)} BASIC{'s' if len(flagged) > 1 else ''} "
+                        f"at or above FMCSA intervention threshold:**\n\n{rows}\n\n"
+                        "Action required: review the CSA scorecard page in today's safety "
+                        "brief and contact counsel if Unsafe Driving or Crash Indicator "
+                        "is flagged."
+                    ),
+                }
+            ],
+        }
+        import requests as _req
+        resp = _req.post(webhook, json=body, timeout=15)
+        resp.raise_for_status()
+        log.info("CSA threshold alert posted (%d BASIC(s) flagged).", len(flagged))
+
+        # Write marker so we don't re-alert today
+        tmp_marker = Path("output") / f"csa-alert-{today.isoformat()}.txt"
+        tmp_marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp_marker.write_text(f"CSA alert posted {today.isoformat()}")
+        ensure_folder(tok, upn, "Safety")
+        upload_file(tok, upn, folder_path="Safety",
+                    filename=f"csa-alert-{today.isoformat()}.txt",
+                    file_path=tmp_marker)
+    except Exception as exc:
+        log.warning("Could not post CSA threshold alert: %s", exc)
 
 
 def _write_accountability_json(
@@ -1099,11 +1445,30 @@ def _write_accountability_json(
     tok: str,
     upn: str,
     resolved_cats: set[str] | None = None,
+    cdl_reinstate_dates: "dict[str, datetime.date] | None" = None,
 ) -> None:
     """Enrich items with carry-forward (days_open) and occurrence counts,
     then write to output/ and upload to OneDrive/Safety/."""
+    from src.suppression_registry import (
+        load_registry, save_registry, prune,
+        is_suppressed, add_suppression, apply_resolved_to_registry,
+    )
+
     yesterday = today - datetime.timedelta(days=1)
     resolved_cats = resolved_cats or set()
+
+    # Load suppression registry; record new suppressions for items actioned yesterday.
+    # Pass `today` (not `yesterday`) — add_suppression computes until = today + N_days,
+    # then is_suppressed checks `today < until`. If we pass yesterday for a 1-day
+    # window, until = yesterday+1 = today, and `today < today` is False, so the
+    # actioned item re-fires on today's brief. Passing today gives until = tomorrow,
+    # `today < tomorrow` = True, item correctly hidden today and re-fires tomorrow.
+    registry = load_registry(tok, upn)
+    prune(registry, today)
+    all_items_combined = list(audra_items) + list(ops_items)
+    apply_resolved_to_registry(registry, resolved_cats, all_items_combined, today,
+                               cdl_dates=cdl_reinstate_dates)
+    save_registry(tok, upn, registry)
 
     # Build yesterday's key→days_open map for carry-forward
     yesterday_keys: dict[str, int] = {}
@@ -1117,9 +1482,22 @@ def _write_accountability_json(
         for item in items:
             item = dict(item)
             key = _accountability_key(item)
-            cat_norm = (item.get("category") or "").lower().strip()
-            # If this category was actioned yesterday, break the escalation chain.
-            if cat_norm in resolved_cats:
+            cat_norm  = (item.get("category") or "").lower().strip()
+            drv_norm  = (item.get("driver") or item.get("unit") or "").lower().strip()
+
+            # Skip items suppressed by the registry (actioned within their window).
+            if is_suppressed(registry, cat_norm, drv_norm, today):
+                log.info("Suppressed (registry): [%s / %s]", cat_norm, drv_norm)
+                continue
+
+            # Mark items actioned yesterday (from Accountability Log) — shows green
+            # checkmark on today's card even though the suppression already prevents
+            # them from appearing on tomorrow's card.
+            actioned = (
+                cat_norm in resolved_cats
+                or (drv_norm and f"driver:{drv_norm}" in resolved_cats)
+            )
+            if actioned:
                 prev_days = 0
                 item["actioned_yesterday"] = True
             else:
@@ -1199,7 +1577,7 @@ def _all_clear_row(msg: str, span: int = 6) -> str:
 def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
                         total: int, date_str: str, samba, equipment,
                         alvys_drivers=None, samsara_sheets=None,
-                        prev_scores=None) -> str:
+                        prev_scores=None, carried_forward=None) -> str:
     """Page 1: Overview — Bottom Line · Urgent · Risk Watch · Action Items."""
     header = _sc_header(
         "Safety &amp; Compliance · Daily Overview", pg, total, date_str, section="EVENTS")
@@ -1303,13 +1681,15 @@ def build_page_overview(samsara: dict | None, metrics: dict, pg: int,
         f"</div>"
     )
 
+    cf_html = _build_carried_forward(carried_forward or [])
     return (header
             + bottom_line_block
             + urgent_block
             + rw_title
             + _build_risk_watch(metrics, samsara, samba, equipment)
             + ai_title
-            + ai_html)
+            + ai_html
+            + cf_html)
 
 
 def _extra_trends(samsara: dict | None,
@@ -2217,7 +2597,8 @@ def build_page_knowledge_base(pg: int, total: int, date_str: str) -> str:
 
 def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
                        samba, csa, equipment, alvys_drivers,
-                       date_str: str, prev_scores: dict | None = None) -> str:
+                       date_str: str, prev_scores: dict | None = None,
+                       carried_forward: list | None = None) -> str:
     """Assemble the full safety report HTML matching the June 15 2026 format.
 
     Page order:
@@ -2249,7 +2630,7 @@ def _build_html_report(samsara: dict | None, samsara_sheets: dict | None,
     pages.append(build_page_overview(
         samsara, metrics, 1, total, date_str, samba, equipment,
         alvys_drivers=alvys_drivers, samsara_sheets=samsara_sheets,
-        prev_scores=prev_scores))
+        prev_scores=prev_scores, carried_forward=carried_forward))
 
     # 2 — Safety Metrics
     pages.append(build_page_metrics(samsara, metrics, 2, total, date_str,
@@ -2400,6 +2781,9 @@ def main() -> int:
         log.warning("SambaSafety Master not found — driver compliance page will show limited data.")
     samba = compute_sambasafety(samba_sheets) if samba_sheets else None
     csa = compute_csa_scorecard(samba_sheets) if samba_sheets else None
+    csa_webhook = (os.environ.get("TEAMS_CSA_WEBHOOK")
+                   or os.environ.get("TEAMS_SAFETY_WEBHOOK", "")).strip()
+    _post_csa_threshold_alert(csa, csa_webhook, tok, upn, today)
 
     # Alvys Pipeline (optional — graceful fallback if missing)
     pipeline_path = os.environ.get("ALVYS_PIPELINE_PATH", "Alvys Pipeline.xlsx")
@@ -2430,17 +2814,78 @@ def main() -> int:
 
     # Check yesterday's Accountability Log to break escalation chain for actioned items
     yesterday = today - datetime.timedelta(days=1)
-    resolved_cats = _load_accountability_log(tok, upn, yesterday)
+    resolved_cats, cdl_reinstate_dates = _load_accountability_log(
+        tok, upn, yesterday,
+        webhook=os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip(),
+    )
     if resolved_cats:
         log.info("Resolved categories (actioned yesterday): %s", resolved_cats)
+    if cdl_reinstate_dates:
+        log.info("CDL reinstatement dates: %s", cdl_reinstate_dates)
 
     # Write accountability JSON (local output/ + OneDrive/Safety/)
     _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn,
-                               resolved_cats=resolved_cats)
+                               resolved_cats=resolved_cats,
+                               cdl_reinstate_dates=cdl_reinstate_dates)
+
+    # Recurrence registry — flag items with 3+ appearances in 90 days and
+    # track first-seen date for coaching escalation timer.
+    try:
+        from src.recurrence_registry import (
+            load_registry as _load_rec, save_registry as _save_rec,
+            prune as _prune_rec, record_appearances, flag_recurring_items,
+        )
+        rec_registry = _load_rec(tok, upn)
+        _prune_rec(rec_registry, today)
+        all_items_for_rec = list(audra_items) + list(ops_items)
+        flag_recurring_items(rec_registry, all_items_for_rec, today)
+        record_appearances(rec_registry, all_items_for_rec, today)
+        _save_rec(tok, upn, rec_registry)
+        recurring_count = sum(1 for i in all_items_for_rec if i.get("_recurring"))
+        if recurring_count:
+            log.warning("%d item(s) flagged as recurring (3+ in 90d).", recurring_count)
+    except Exception as exc:
+        log.warning("Recurrence registry update failed: %s", exc)
+
+    # Compute carried-forward items for the "OPEN — ACTION PENDING" section:
+    # any item from today's list that also appeared in yesterday's JSON
+    # (days_open > 1 means it was open yesterday and is still open today).
+    # Honor the suppression registry — items the user actioned in the
+    # Accountability Log are no longer "open / action pending" even though
+    # they appear in today's raw lists (the suppression filter inside
+    # _write_accountability_json removes them from the per-owner cards, but
+    # this section iterates the raw lists separately).
+    from src.suppression_registry import load_registry, is_suppressed as _supp_check
+    _cf_registry = load_registry(tok, upn)
+
+    yesterday_acc = today - datetime.timedelta(days=1)
+    yesterday_keys: dict[str, int] = {
+        _accountability_key(item): item.get("days_open", 1)
+        for item in acc_history
+        if item.get("_date") == yesterday_acc.isoformat()
+    }
+    seen_cf_keys: set = set()
+    carried_forward: list = []
+    _cf_suppressed = 0
+    for item in audra_items + ops_items:
+        cat_norm = (item.get("category") or "").lower().strip()
+        drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
+        if _supp_check(_cf_registry, cat_norm, drv_norm, today):
+            _cf_suppressed += 1
+            continue
+        key = _accountability_key(item)
+        if key in seen_cf_keys:
+            continue
+        seen_cf_keys.add(key)
+        prev = yesterday_keys.get(key, 0)
+        if prev > 0:
+            carried_forward.append({**item, "days_open": prev + 1})
+    log.info("Carried-forward items: %d (suppressed %d via registry)",
+             len(carried_forward), _cf_suppressed)
 
     email_html, pdf_html = _build_html_report(
         samsara, samsara_sheets, samba, csa, equipment, alvys_drivers,
-        date_str, prev_scores=prev_scores)
+        date_str, prev_scores=prev_scores, carried_forward=carried_forward)
     pdf = _render_pdf(pdf_html)
 
     subj = f"XFreight Safety & Compliance Report — {today.strftime('%B %-d, %Y')}"
