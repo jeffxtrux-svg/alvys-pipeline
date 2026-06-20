@@ -24,7 +24,8 @@ from dotenv import load_dotenv
 from src.onedrive_upload import download_file as _od_download, get_token
 from src.scorecard_email import (send_email, XFREIGHT_RED, INK, MUTE, LINE,
                                   GOOD, GOODBG, WARN, WARNBG, BAD, BADBG,
-                                  FONT, FONT_SERIF)
+                                  FONT, FONT_SERIF,
+                                  TARGET_RPM, TARGET_DEADHEAD)
 
 log = logging.getLogger("decision_report")
 
@@ -41,10 +42,12 @@ _XF_SVG = (
     "font-size='22' letter-spacing='-0.5' fill='#fff'>XFREIGHT</text></svg>"
 )
 
-# Scenario modeling constants — all overridable from env for tuning.
-_RPM_TARGET          = float(os.environ.get("SCENARIO_RPM_TARGET",          "3.00"))
+# Scenario modeling constants.  RPM + deadhead targets imported from scorecard_email
+# (where they're pulled from the Goals workbooks) so the scenario cards stay in sync
+# with the official goals automatically.  Override via env only if you need to test.
+_RPM_TARGET          = float(os.environ.get("SCENARIO_RPM_TARGET",          str(TARGET_RPM)))
+_DH_TARGET_PCT       = float(os.environ.get("SCENARIO_DH_TARGET_PCT",       str(TARGET_DEADHEAD * 100)))
 _COST_PER_EMPTY_MILE = float(os.environ.get("SCENARIO_COST_PER_EMPTY_MILE", "1.20"))
-_DH_TARGET_PCT       = float(os.environ.get("SCENARIO_DH_TARGET_PCT",       "4.5"))
 _AR_COLLECT_RATE     = float(os.environ.get("SCENARIO_AR_COLLECT_RATE",      "0.50"))
 
 # Fallback static prompts — used when ANTHROPIC_API_KEY is absent.
