@@ -179,8 +179,9 @@ def main() -> None:
     # Upload to OneDrive
     graph_token = get_token(az_tenant, az_client, az_secret)
     ensure_folder(graph_token, upn, "Ramp")
-    upload_file(graph_token, upn, "Ramp/Ramp_Master.xlsx", out_path.read_bytes())
-    log.info("Uploaded to OneDrive/Ramp/ ✓  bills=%d  txns=%d", len(bills_df), len(txns_df))
+    upload_file(graph_token, upn, "Ramp", "Ramp_Master.xlsx", out_path)
+    log.info("Uploaded to OneDrive/Ramp/ ✓  bills=%d  txns=%d  users=%d",
+             len(bills_df), len(txns_df), len(users_df))
 
 
 if __name__ == "__main__":
