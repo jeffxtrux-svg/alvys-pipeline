@@ -46,7 +46,8 @@ _XF_SVG = (
 # (where they're pulled from the Goals workbooks) so the scenario cards stay in sync
 # with the official goals automatically.  Override via env only if you need to test.
 _RPM_TARGET          = float(os.environ.get("SCENARIO_RPM_TARGET",          str(TARGET_RPM)))
-_DH_TARGET_PCT       = float(os.environ.get("SCENARIO_DH_TARGET_PCT",       str(TARGET_DEADHEAD * 100)))
+# 5.75% is the operational goal (buffer below the 6% ceiling in TARGET_DEADHEAD)
+_DH_TARGET_PCT       = float(os.environ.get("SCENARIO_DH_TARGET_PCT",       "5.75"))
 _COST_PER_EMPTY_MILE = float(os.environ.get("SCENARIO_COST_PER_EMPTY_MILE", "1.20"))
 _AR_COLLECT_RATE     = float(os.environ.get("SCENARIO_AR_COLLECT_RATE",      "0.50"))
 
