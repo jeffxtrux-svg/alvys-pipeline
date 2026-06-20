@@ -151,13 +151,21 @@ def main() -> None:
     log.info("  %d bills", len(bills_df))
 
     log.info("Pulling Ramp card transactions (from %s)…", from_date)
-    txns = ramp.transactions(from_date=from_date)
-    txns_df = _transactions_df(txns)
-    log.info("  %d transactions", len(txns_df))
+    try:
+        txns = ramp.transactions(from_date=from_date)
+        txns_df = _transactions_df(txns)
+        log.info("  %d transactions", len(txns_df))
+    except Exception as exc:
+        log.warning("  transactions skipped (%s) — enable transactions:read scope in Ramp Developer App", exc)
+        txns_df = pd.DataFrame()
 
     log.info("Pulling Ramp users…")
-    users_df = _users_df(ramp.users())
-    log.info("  %d users", len(users_df))
+    try:
+        users_df = _users_df(ramp.users())
+        log.info("  %d users", len(users_df))
+    except Exception as exc:
+        log.warning("  users skipped (%s) — enable users:read scope in Ramp Developer App", exc)
+        users_df = pd.DataFrame()
 
     # Write Excel
     out_path = Path("output/ramp/Ramp_Master.xlsx")
