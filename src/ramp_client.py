@@ -83,18 +83,31 @@ class RampClient:
         return resp.json()
 
     def _paginate(self, path: str, params: dict[str, Any] | None = None) -> Iterator[dict]:
-        """Yield every item across all pages using Ramp's cursor pagination."""
+        """Yield every item across all pages using Ramp's cursor pagination.
+
+        Ramp's page.next is the full URL of the next page, not just a cursor token.
+        Follow it directly instead of injecting it as a query param.
+        """
         p = dict(params or {})
         p.setdefault("page_size", 100)
+        next_url: str | None = None
+
         while True:
-            data = self._get(path, p)
-            items = data.get("data", [])
-            yield from items
-            # Ramp returns next cursor in page.next
-            next_cursor = (data.get("page") or {}).get("next")
-            if not next_cursor:
+            if next_url:
+                resp = requests.get(
+                    next_url,
+                    headers={"Authorization": f"Bearer {self._token()}"},
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            else:
+                data = self._get(path, p)
+
+            yield from data.get("data", [])
+            next_url = (data.get("page") or {}).get("next") or None
+            if not next_url:
                 break
-            p["start"] = next_cursor
 
     # ── public endpoints ─────────────────────────────────────────────────────
 
