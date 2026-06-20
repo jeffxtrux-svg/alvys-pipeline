@@ -1,0 +1,65 @@
+# Accounting reconciliation — Ramp AP vs QuickBooks AP
+# Runs at 9am CT daily (after QB 8am and Ramp 8:15am runs complete).
+# Also available as workflow_call so refresh_all.yml can chain it.
+#
+# Output: OneDrive/Reconciliation/Recon_Master.xlsx
+#   Summary       — flag counts at a glance
+#   AP_Not_In_QB  — Ramp bills not yet in QB (action list for Audra)
+#   AP_In_Both    — matched bills (confirmation)
+#   QB_Only       — manually-entered QB AP with no Ramp counterpart
+#
+# GitHub Secrets required (all shared with existing connectors):
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, ONEDRIVE_USER_UPN
+
+name: Accounting Reconciliation
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    # 9am CT — arm both CDT (UTC-5) and CST (UTC-6) slots + backup
+    - cron: '0 14 * * *'    # 9am CDT / 8am CST (gate rejects 8am CST)
+    - cron: '30 14 * * *'   # 9:30am CDT / 8:30am CST (gate rejects)
+    - cron: '0 15 * * *'    # 10am CDT (gate rejects) / 9am CST primary
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Gate to 9-10am CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          case "$CT_HOUR" in
+            9|10) echo "Target slot — proceeding." ;;
+            *)    echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: actions/checkout@v4
+        if: steps.ct_gate.outputs.skip != '1'
+
+      - uses: actions/setup-python@v5
+        if: steps.ct_gate.outputs.skip != '1'
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Run reconciliation
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:   ${{ secrets.ONEDRIVE_USER_UPN }}
+        run: python -m src.accounting_reconciliation
