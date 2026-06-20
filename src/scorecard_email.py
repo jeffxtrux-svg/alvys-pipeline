@@ -1109,7 +1109,8 @@ def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int 
     rev_col = _find_col(loads, ["customer revenue", "revenue"])
 
     sub = loads.copy()
-    sub = sub[sub[status_col].astype(str).str.strip().str.lower() == "delivered"]
+    _delivered_statuses = {"delivered", "released"}
+    sub = sub[sub[status_col].astype(str).str.strip().str.lower().isin(_delivered_statuses)]
     sub = sub[pd.to_datetime(sub[inv_col], errors="coerce").isna()]   # not yet invoiced
 
     office_col = _find_col(sub, OFFICE_COL_NEEDLES)
