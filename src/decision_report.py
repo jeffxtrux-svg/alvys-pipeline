@@ -12,12 +12,16 @@ back to the static prompts.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, date
+from operator import ge as _op_ge, gt as _op_gt, le as _op_le, lt as _op_lt, eq as _op_eq
 from zoneinfo import ZoneInfo
+
+import yaml
 
 from dotenv import load_dotenv
 
@@ -400,6 +404,273 @@ def _generate_decision_prompts(trend: "pd.DataFrame | None",
 
 
 # ----------------------------------------------------------------------
+# Decision grading — reads decision-outcomes.yml, grades against KPI trend
+# ----------------------------------------------------------------------
+
+_OUTCOMES_YML  = "Karpathy-Wiki/wiki/decision-outcomes.yml"
+_GRADE_JSON    = "Karpathy-Wiki/wiki/decision-grades.json"
+
+# Maps metric dot-paths from decision-outcomes.yml to KPI trend column names.
+# Add entries here as new metrics land in the KPI trend.
+_METRIC_MAP = {
+    "DeadheadPct":                      "DeadheadPct",
+    "RPM_OwnFleet":                     "RPM_OwnFleet",
+    "AR_Open":                          "AR_Open",
+    "AR_60Plus":                        "AR_60Plus",
+    "AP_GapCount":                      "AP_GapCount",
+    "AP_GapAmount":                     "AP_GapAmount",
+    "FleetSafetyScore":                 "FleetSafetyScore",
+    "LoadsMTD":                         "LoadsMTD",
+    "RevenueTotalMTD":                  "RevenueTotalMTD",
+    # Legacy dot-path aliases in the original outcomes.yml
+    "alvys.dead_head_pct":              "DeadheadPct",
+    # Not yet in KPI trend — grade stays pending until added
+    "alvys_entities.X-Trux.margin_pct": None,
+    "equipment.tractors_overdue_annual": None,
+}
+
+_GRADE_EMOJI = {"confirmed": "✓", "mixed": "~", "wrong": "✗", "pending": "⏳"}
+_GRADE_COLOR = {"confirmed": GOOD, "mixed": WARN, "wrong": BAD, "pending": MUTE}
+
+_OPS = {">=": _op_ge, ">": _op_gt, "<=": _op_le, "<": _op_lt, "==": _op_eq}
+
+
+def _load_outcomes() -> list:
+    try:
+        with open(_OUTCOMES_YML, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return (data or {}).get("decisions", [])
+    except Exception as exc:
+        log.info("decision-outcomes.yml not readable: %s", exc)
+        return []
+
+
+def _grade_one(decision: dict, latest: dict) -> "tuple[str, str]":
+    try:
+        check_after = date.fromisoformat(str(decision.get("check_after", "")))
+    except ValueError:
+        return "pending", "Invalid check_after date"
+
+    if date.today() < check_after:
+        return "pending", f"{(check_after - date.today()).days}d until check"
+
+    check  = decision.get("check", {})
+    metric = check.get("metric", "")
+    col    = _METRIC_MAP.get(metric)
+    if col is None:
+        return "pending", f"'{metric}' not yet in KPI trend"
+
+    raw = latest.get(col)
+    if raw is None or (isinstance(raw, float) and raw != raw):
+        return "pending", f"No data for {col}"
+
+    value = float(raw)
+    kind  = check.get("kind", "")
+
+    if kind == "range":
+        lo, hi = check.get("min"), check.get("max")
+        if lo is not None and value < float(lo):
+            return ("wrong" if check.get("wrong_below") else "mixed"), \
+                   f"{col}={value:.4g} below min {lo}"
+        if hi is not None and value > float(hi):
+            return ("wrong" if check.get("wrong_above") else "mixed"), \
+                   f"{col}={value:.4g} above max {hi}"
+        return "confirmed", f"{col}={value:.4g} in [{lo}, {hi}]"
+
+    if kind == "comparison":
+        direction  = check.get("direction", ">=")
+        threshold  = float(check.get("threshold", 0))
+        passes     = _OPS.get(direction, _op_ge)(value, threshold)
+        grade      = check.get("on_pass" if passes else "on_fail", "pending")
+        arrow      = "✓" if passes else "✗"
+        return grade, f"{col}={value:.4g} {direction} {threshold} {arrow}"
+
+    return "pending", "Unknown check kind"
+
+
+def _grade_decisions(trend: "pd.DataFrame | None", outcomes: list) -> dict:
+    """Grade every outcome entry against the latest KPI row."""
+    if not outcomes:
+        return {}
+    latest: dict = {}
+    if trend is not None and not trend.empty:
+        row = trend.iloc[-1]
+        latest = {c: row.get(c) for c in trend.columns}
+
+    grades = {}
+    for d in outcomes:
+        did         = d.get("id", "unknown")
+        grade, why  = _grade_one(d, latest)
+        grades[did] = {
+            "title":        d.get("title", did),
+            "journal_date": d.get("journal_date", ""),
+            "grade":        grade,
+            "reason":       why,
+        }
+    return grades
+
+
+def _write_grades(grades: dict) -> None:
+    try:
+        payload = {"generated": date.today().isoformat(), "grades": grades}
+        with open(_GRADE_JSON, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        log.info("Wrote decision grades → %s", _GRADE_JSON)
+    except Exception as exc:
+        log.warning("Could not write decision-grades.json: %s", exc)
+
+
+def _render_grades_section(grades: dict) -> str:
+    if not grades:
+        return ""
+    rows_html = ""
+    for g in grades.values():
+        grade = g["grade"]
+        emoji = _GRADE_EMOJI.get(grade, "⏳")
+        color = _GRADE_COLOR.get(grade, MUTE)
+        rows_html += (
+            f"<tr style='background:#fff;'>"
+            f"<td style='padding:6px 10px;font-size:12px;color:{MUTE};"
+            f"border-bottom:1px solid {LINE};white-space:nowrap;'>{g['journal_date']}</td>"
+            f"<td style='padding:6px 10px;font-size:13px;border-bottom:1px solid {LINE};'>"
+            f"{g['title']}</td>"
+            f"<td style='padding:6px 10px;font-size:13px;font-weight:700;color:{color};"
+            f"text-align:center;border-bottom:1px solid {LINE};'>{emoji} {grade}</td>"
+            f"<td style='padding:6px 10px;font-size:11px;color:{MUTE};"
+            f"border-bottom:1px solid {LINE};'>{g['reason']}</td>"
+            f"</tr>"
+        )
+    th_style = (f"text-align:left;padding:6px 10px;font-size:11px;text-transform:uppercase;"
+                f"letter-spacing:.4px;color:{MUTE};border-bottom:2px solid {LINE};")
+    header = (
+        f"<h2 style='{FONT_SERIF}font-size:16px;font-weight:400;color:{INK};"
+        f"margin:22px 0 8px;border-bottom:1px solid {LINE};padding-bottom:4px;'>"
+        f"Decision grades</h2>"
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='border-collapse:collapse;margin:0 0 6px;'>"
+        f"<thead><tr>"
+        f"<th style='{th_style}'>Date</th>"
+        f"<th style='{th_style}'>Decision</th>"
+        f"<th style='{th_style}text-align:center;'>Grade</th>"
+        f"<th style='{th_style}'>Basis (live KPI data)</th>"
+        f"</tr></thead><tbody>{rows_html}</tbody></table>"
+    )
+    note = (
+        f"<div style='font-size:11px;color:{MUTE};margin-bottom:18px;'>"
+        f"✓ confirmed &nbsp;&nbsp; ~ mixed &nbsp;&nbsp; ✗ wrong &nbsp;&nbsp; ⏳ pending. "
+        f"Graded from KPI trend. Metrics not yet in the trend remain pending.</div>"
+    )
+    return header + note
+
+
+# ----------------------------------------------------------------------
+# CFO narrative — Claude writes a 3-4 sentence executive summary
+# ----------------------------------------------------------------------
+
+def _compute_kpi_deltas(trend: "pd.DataFrame | None") -> list:
+    """Week-over-week delta for each KPI, sorted by alert severity then magnitude."""
+    if trend is None or len(trend) < 2:
+        return []
+    latest, prior = trend.iloc[-1], trend.iloc[-2]
+    deltas = []
+    for col, label, fmt, prefix, suffix, lower_better in _KPI_DEFS:
+        curr = _safe_float(latest.get(col))
+        prev = _safe_float(prior.get(col))
+        if curr is None or prev is None or prev == 0:
+            continue
+        delta_pct = (curr - prev) / abs(prev)
+        # A movement is an "alert" if it worsened by >10%
+        worsened_pct = delta_pct if lower_better else -delta_pct
+        deltas.append({
+            "label":       label,
+            "current":     curr,
+            "prior":       prev,
+            "delta_pct":   delta_pct,
+            "direction":   ("improved" if (delta_pct < 0 if lower_better else delta_pct > 0)
+                            else "declined"),
+            "is_alert":    worsened_pct > 0.10,
+            "fmt": fmt, "prefix": prefix, "suffix": suffix,
+        })
+    deltas.sort(key=lambda d: (not d["is_alert"], -abs(d["delta_pct"])))
+    return deltas
+
+
+def _generate_cfo_narrative(trend: "pd.DataFrame | None",
+                             scenarios: list,
+                             grades: dict) -> str:
+    """Call Claude haiku for a 3-4 sentence CFO executive summary. Returns plain text."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key or trend is None or trend.empty:
+        return ""
+
+    snapshot = _build_kpi_snapshot_text(trend)
+    deltas   = _compute_kpi_deltas(trend)
+
+    delta_lines = []
+    for d in deltas[:7]:
+        curr_s = _fmt(d["current"], d["fmt"], d["prefix"], d["suffix"])
+        prev_s = _fmt(d["prior"],   d["fmt"], d["prefix"], d["suffix"])
+        delta_lines.append(
+            f"  {d['label']}: {prev_s} → {curr_s} "
+            f"({d['delta_pct']:+.1%}, {d['direction']}"
+            + (" ⚠ ALERT" if d["is_alert"] else "") + ")"
+        )
+
+    grade_lines = [
+        f"  {g['title']}: {g['grade']} — {g['reason']}"
+        for g in grades.values() if g["grade"] != "pending"
+    ]
+
+    user_parts = [snapshot]
+    if delta_lines:
+        user_parts.append("Week-over-week changes:\n" + "\n".join(delta_lines))
+    scenario_text = _build_scenario_text(scenarios or [])
+    if scenario_text:
+        user_parts.append(scenario_text)
+    if grade_lines:
+        user_parts.append("Decision grades this week:\n" + "\n".join(grade_lines))
+    user_parts.append("Write the executive briefing.")
+
+    system = (
+        "You are the CFO of XFreight, a small trucking company "
+        "(X-Trux asset carrier + X-Linx brokerage, Sioux Falls SD). "
+        "Write a 3-4 sentence executive briefing for the Monday morning meeting. "
+        "Be specific: name the metric, the direction, and the dollar or percentage impact. "
+        "Call out any ⚠ ALERT items first. End with the single most important action this week. "
+        "Plain business prose only — no bullet points, no markdown headers."
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=280,
+            system=system,
+            messages=[{"role": "user", "content": "\n\n".join(user_parts)}],
+        )
+        narrative = msg.content[0].text.strip()
+        log.info("Claude generated CFO narrative (%d chars).", len(narrative))
+        return narrative
+    except Exception as exc:
+        log.warning("CFO narrative failed: %s", exc)
+        return ""
+
+
+def _render_cfo_narrative(narrative: str) -> str:
+    if not narrative:
+        return ""
+    return (
+        f"<div style='background:#f8f9fc;border-left:4px solid {XFREIGHT_RED};"
+        f"border-radius:0 6px 6px 0;padding:14px 16px;margin:16px 0 20px;'>"
+        f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:.5px;"
+        f"color:{MUTE};margin-bottom:8px;'>Executive summary — this week</div>"
+        f"<div style='font-size:14px;color:{INK};line-height:1.65;'>{narrative}</div>"
+        f"</div>"
+    )
+
+
+# ----------------------------------------------------------------------
 # Minimal markdown -> inline-styled HTML (the subset our wiki pages use).
 # Inline styles + table layout keep it email-client safe (Outlook/Gmail).
 # ----------------------------------------------------------------------
@@ -527,7 +798,9 @@ def _prompt_appendix(prompts: list[tuple[str, str]] | None = None) -> str:
 def build_decision_report(date_str: str, risk_md: str, decision_md: str,
                            kpi_trend: "pd.DataFrame | None" = None,
                            prompts: "list[tuple[str, str]] | None" = None,
-                           scenarios: "list | None" = None) -> str:
+                           scenarios: "list | None" = None,
+                           grades: "dict | None" = None,
+                           narrative: str = "") -> str:
     header = (
         f"<table width='100%' cellpadding='0' cellspacing='0' style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 0 14px;'>"
         f"<tr><td valign='middle'>{_XF_SVG}"
@@ -536,13 +809,17 @@ def build_decision_report(date_str: str, risk_md: str, decision_md: str,
         f"<td align='right' valign='middle' style='font-size:11px;color:{MUTE};'>{date_str}</td></tr></table>")
     kpi_html      = _render_kpi_table(kpi_trend)
     scenario_html = _render_scenario_table(scenarios or [])
+    grades_html   = _render_grades_section(grades or {})
+    narrative_html = _render_cfo_narrative(narrative)
     risk_html     = _md_to_html(risk_md) if risk_md else f"<p style='color:{MUTE};'>Risk register not found.</p>"
     decision_html = _md_to_html(decision_md) if decision_md else f"<p style='color:{MUTE};'>Decision journal not found.</p>"
     return (
         f"<div style=\"max-width:720px;margin:0 auto;padding:8px 18px 24px;{FONT}\">"
         f"{header}"
+        f"{narrative_html}"
         f"{kpi_html}"
         f"{scenario_html}"
+        f"{grades_html}"
         f"{_claude_section(prompts)}"
         f"{risk_html}"
         f"<div style='height:8px;'></div>"
@@ -584,21 +861,29 @@ def main() -> int:
     risk_md    = _read_wiki("risk-register.md")
     decision_md = _read_wiki("decision-journal.md")
 
-    # KPI trend + scenarios + Claude synthesis (all optional — degrade gracefully)
+    # KPI trend + scenarios + grading + narrative + Claude prompts (all optional)
     kpi_trend = None
     scenarios = None
+    grades    = None
+    narrative = ""
     prompts   = None
     if all([tenant, client, secret, upn]):
         token     = get_token(tenant, client, secret)
         kpi_trend = _load_kpi_trend(token, upn)
         scenarios = _build_scenarios(kpi_trend)
+        outcomes  = _load_outcomes()
+        grades    = _grade_decisions(kpi_trend, outcomes)
+        if grades:
+            _write_grades(grades)
+        narrative = _generate_cfo_narrative(kpi_trend, scenarios or [], grades or {})
         prompts   = _generate_decision_prompts(kpi_trend, risk_md, scenarios=scenarios)
     else:
         token = None
 
     html    = build_decision_report(date_str, risk_md, decision_md,
                                     kpi_trend=kpi_trend, prompts=prompts,
-                                    scenarios=scenarios)
+                                    scenarios=scenarios, grades=grades,
+                                    narrative=narrative)
     subject = f"XFreight Risk & Decisions — {date_str}"
 
     if "--dry" in sys.argv:
