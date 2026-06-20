@@ -1,0 +1,66 @@
+# Daily KPI append — reads pipeline outputs and appends one row to
+# KPI_History/KPI_Trend.xlsx in OneDrive.
+#
+# Runs at 6:30am CT daily, after QB (8am→ no, wait — 6:30am runs after the
+# 4am Alvys/QB/Ramp batch completes). The recon run is at 9am so AP gap
+# columns may show the prior-day value until the 9am recon finishes.
+#
+# Target: 6:30am CT  →  CDT arm 11:30 UTC + CST arm 12:30 UTC
+# Gate:   CT hour 6
+
+name: Daily KPI Append
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 11 * * *'   # 6:30am CDT (UTC-5)
+    - cron: '30 12 * * *'   # 6:30am CST (UTC-6)
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Gate to 6am CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          case "$CT_HOUR" in
+            6) echo "Target slot — proceeding." ;;
+            *) echo "Off-target — skipping."; echo "skip=1" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: actions/checkout@v4
+        if: steps.ct_gate.outputs.skip != '1'
+
+      - uses: actions/setup-python@v5
+        if: steps.ct_gate.outputs.skip != '1'
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Append KPIs
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:   ${{ secrets.ONEDRIVE_USER_UPN }}
+        run: python -m src.kpi_append
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.ct_gate.outputs.skip != '1'
+        with:
+          name: kpi-output-${{ github.run_id }}
+          path: output/kpi/
+          retention-days: 7

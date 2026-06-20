@@ -1,21 +1,17 @@
 """Weekly Risk & Decisions report — a SECONDARY email, separate from the daily
 executive brief.
 
-Renders the knowledge base's two decision-support pages —
-`Karpathy-Wiki/wiki/risk-register.md` and `decision-journal.md` — into a clean,
-XFreight-branded HTML email and sends it via Microsoft Graph (reusing the daily
-brief's auth + send path). Includes "Discuss with Claude" links that open a new
-chat seeded with a starter question per topic.
-
-This is deliberately decoupled from `scorecard_email.py`: the daily brief is
-untouched. Run weekly (Monday 7am CT) from `.github/workflows/decision_report.yml`,
-or on demand via workflow_dispatch / editing that workflow file.
+v2: reads KPI_History/KPI_Trend.xlsx from OneDrive and renders a 4-week trend
+table at the top of the email.  If ANTHROPIC_API_KEY is set, calls claude-haiku
+to generate 3 tailored decision prompts from the live numbers; otherwise falls
+back to the static prompts.
 
     python -m src.decision_report          # build + send
     python -m src.decision_report --dry     # build + write /tmp preview, no send
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
@@ -25,17 +21,15 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-from src.onedrive_upload import get_token
-# Reuse the brief's Graph send + brand palette so the two reports look like
-# siblings and there's one auth path to maintain.
+from src.onedrive_upload import download_file as _od_download, get_token
 from src.scorecard_email import (send_email, XFREIGHT_RED, INK, MUTE, LINE,
-                                  GOOD, GOODBG, BAD, BADBG, FONT, FONT_SERIF)
+                                  GOOD, GOODBG, WARN, WARNBG, BAD, BADBG,
+                                  FONT, FONT_SERIF)
 
 log = logging.getLogger("decision_report")
 
 WIKI_DIR = os.environ.get("DECISION_REPORT_WIKI_DIR", "Karpathy-Wiki/wiki")
 
-# XFreight wordmark (same SVG the daily brief uses).
 _XF_SVG = (
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 220 38' width='150' height='26' "
     "role='img' aria-label='XFreight'><rect width='220' height='38' rx='2' fill='#c41e2a'/>"
@@ -47,10 +41,8 @@ _XF_SVG = (
     "font-size='22' letter-spacing='-0.5' fill='#fff'>XFREIGHT</text></svg>"
 )
 
-# Starter prompts for the "Discuss with Claude" buttons. Each opens a new chat
-# pre-seeded with the question (and the text is shown for copy-paste in case the
-# prefill doesn't carry through).
-CLAUDE_PROMPTS = [
+# Fallback static prompts — used when ANTHROPIC_API_KEY is absent.
+_STATIC_PROMPTS = [
     ("Review my top risks",
      "Walk me through XFreight's current top risks from the risk register and what I should do about each this week."),
     ("Grade open decisions",
@@ -61,10 +53,216 @@ CLAUDE_PROMPTS = [
 
 
 def _claude_link(prompt: str) -> str:
-    """A claude.ai 'new chat' URL seeded with prompt. Degrades gracefully — if the
-    query param isn't honored, the link still opens a fresh chat."""
     from urllib.parse import quote
     return f"https://claude.ai/new?q={quote(prompt)}"
+
+
+# ----------------------------------------------------------------------
+# KPI trend — load from OneDrive + render 4-week table
+# ----------------------------------------------------------------------
+
+import pandas as pd  # noqa: E402 (after stdlib imports above)
+
+
+def _load_kpi_trend(tok: str, upn: str) -> pd.DataFrame | None:
+    try:
+        raw = _od_download(tok, upn, "KPI_History/KPI_Trend.xlsx")
+        df = pd.read_excel(io.BytesIO(raw))
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).sort_values("Date")
+        return df
+    except Exception as exc:
+        log.info("KPI trend not yet available: %s", exc)
+        return None
+
+
+def _delta_arrow(current, prior) -> str:
+    """↑ / ↓ / — based on numeric direction."""
+    try:
+        c, p = float(current), float(prior)
+        if c > p:
+            return f"<span style='color:{GOOD};'>&#9650;</span>"
+        if c < p:
+            return f"<span style='color:{BAD};'>&#9660;</span>"
+        return "—"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt(val, fmt: str = ".0f", prefix: str = "", suffix: str = "") -> str:
+    try:
+        return f"{prefix}{float(val):{fmt}}{suffix}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+_KPI_DEFS = [
+    # (column, label, fmt, prefix, suffix, lower_is_better)
+    ("LoadsMTD",        "Loads MTD",          ".0f",  "",  "",   False),
+    ("RevenueTotalMTD", "Revenue MTD",         ",.0f", "$", "",   False),
+    ("RPM_OwnFleet",    "RPM (own fleet)",     ".4f",  "$", "",   False),
+    ("DeadheadPct",     "Deadhead %",          ".2f",  "",  "%",  True),
+    ("AR_Open",         "AR Open",             ",.0f", "$", "",   True),
+    ("AR_60Plus",       "AR 60+ Days",         ",.0f", "$", "",   True),
+    ("AP_GapCount",     "Ramp AP Gap (bills)", ".0f",  "",  "",   True),
+    ("AP_GapAmount",    "Ramp AP Gap ($)",     ",.0f", "$", "",   True),
+    ("FleetSafetyScore","Fleet Safety Score",  ".1f",  "",  "",   False),
+]
+
+
+def _render_kpi_table(trend: pd.DataFrame) -> str:
+    """4-week snapshot table with week-over-week delta arrows."""
+    if trend is None or trend.empty:
+        return ""
+    # Take the last 4 distinct Friday-ish snapshots (one per week).
+    # Since we append daily, group by ISO week and take the last row each week.
+    trend = trend.copy()
+    trend["Week"] = trend["Date"].dt.isocalendar().week.astype(str) + "-" + \
+                    trend["Date"].dt.isocalendar().year.astype(str)
+    by_week = trend.groupby("Week", sort=False).last().reset_index()
+    by_week = by_week.sort_values("Date").tail(4).reset_index(drop=True)
+
+    if len(by_week) < 1:
+        return ""
+
+    # Header row: metric name + one column per week
+    week_labels = [row["Date"].strftime("%-m/%-d") for _, row in by_week.iterrows()]
+    th_cells = "".join(
+        f"<th style='text-align:right;padding:6px 10px;font-size:11px;"
+        f"text-transform:uppercase;letter-spacing:.4px;color:{MUTE};"
+        f"border-bottom:2px solid {LINE};'>{w}</th>"
+        for w in week_labels
+    )
+    header = (
+        f"<tr>"
+        f"<th style='text-align:left;padding:6px 10px;font-size:11px;"
+        f"text-transform:uppercase;letter-spacing:.4px;color:{MUTE};"
+        f"border-bottom:2px solid {LINE};'>Metric</th>"
+        + th_cells + "</tr>"
+    )
+
+    rows_html = ""
+    for col, label, fmt, prefix, suffix, lower_better in _KPI_DEFS:
+        if col not in by_week.columns:
+            continue
+        vals = by_week[col].tolist()
+        cells = ""
+        for i, v in enumerate(vals):
+            formatted = _fmt(v, fmt, prefix, suffix)
+            arrow = ""
+            if i > 0:
+                better = (v < vals[i-1]) if lower_better else (v > vals[i-1])
+                worse  = (v > vals[i-1]) if lower_better else (v < vals[i-1])
+                if better:
+                    arrow = f"&nbsp;<span style='color:{GOOD};font-size:10px;'>&#9650;</span>"
+                elif worse:
+                    arrow = f"&nbsp;<span style='color:{BAD};font-size:10px;'>&#9660;</span>"
+            cells += (
+                f"<td style='text-align:right;padding:6px 10px;font-size:13px;"
+                f"border-bottom:1px solid {LINE};'>{formatted}{arrow}</td>"
+            )
+        bg = "#f8fafc" if len(rows_html) % 200 < 100 else "#fff"
+        rows_html += (
+            f"<tr style='background:#fff;'>"
+            f"<td style='padding:6px 10px;font-size:13px;color:{INK};"
+            f"border-bottom:1px solid {LINE};font-weight:500;'>{label}</td>"
+            + cells + "</tr>"
+        )
+
+    table = (
+        f"<h2 style='{FONT_SERIF}font-size:16px;font-weight:400;color:{INK};"
+        f"margin:22px 0 8px;border-bottom:1px solid {LINE};padding-bottom:4px;'>"
+        f"KPI Snapshot — last 4 weeks</h2>"
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='border-collapse:collapse;margin:0 0 18px;'>"
+        f"<thead>{header}</thead><tbody>{rows_html}</tbody></table>"
+        f"<div style='font-size:11px;color:{MUTE};margin-bottom:18px;'>"
+        f"&#9650; = improved vs prior week &nbsp;&nbsp; &#9660; = declined. "
+        f"Deadhead % and AP gap: lower is better.</div>"
+    )
+    return table
+
+
+# ----------------------------------------------------------------------
+# Claude synthesis — generate 3 tailored decision prompts from live data
+# ----------------------------------------------------------------------
+
+def _build_kpi_snapshot_text(trend: pd.DataFrame | None) -> str:
+    """Flat text summary of the latest KPI row for Claude's context window."""
+    if trend is None or trend.empty:
+        return "KPI data not yet available."
+    latest = trend.iloc[-1]
+    prior  = trend.iloc[-2] if len(trend) >= 2 else None
+    lines  = [f"XFreight KPI snapshot as of {latest['Date'].strftime('%Y-%m-%d')}:"]
+    for col, label, fmt, prefix, suffix, _ in _KPI_DEFS:
+        val = latest.get(col)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        formatted = _fmt(val, fmt, prefix, suffix)
+        delta = ""
+        if prior is not None:
+            prev = prior.get(col)
+            try:
+                pct = (float(val) - float(prev)) / abs(float(prev)) * 100 if prev else 0
+                delta = f" ({pct:+.1f}% vs prior week)"
+            except (TypeError, ValueError):
+                pass
+        lines.append(f"  {label}: {formatted}{delta}")
+    return "\n".join(lines)
+
+
+def _generate_decision_prompts(trend: pd.DataFrame | None,
+                                risk_md: str) -> list[tuple[str, str]]:
+    """Call claude-haiku to generate 3 tailored decision prompts.
+    Falls back to _STATIC_PROMPTS if ANTHROPIC_API_KEY is absent or the call fails."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        log.info("ANTHROPIC_API_KEY not set — using static decision prompts.")
+        return _STATIC_PROMPTS
+
+    snapshot_text = _build_kpi_snapshot_text(trend)
+    # Trim risk register to first 3000 chars so it fits in haiku's context cheaply
+    risk_excerpt = risk_md[:3000] if risk_md else "Risk register not available."
+
+    system = (
+        "You are a strategic advisor to XFreight, a small trucking company with two "
+        "operating entities (X-Trux asset carrier + X-Linx brokerage). Your job is to "
+        "generate exactly 3 short, specific, actionable decision prompts for the owner "
+        "this week based on current KPI data and the risk register. Each prompt should "
+        "be 10-20 words, start with an action verb, and reference a real number from "
+        "the KPI snapshot. Return ONLY a JSON array of 3 objects: "
+        '[{"label": "short button label (3-5 words)", "prompt": "full question for Claude"}].'
+        " Do not include any explanation outside the JSON array."
+    )
+    user = (
+        f"{snapshot_text}\n\n"
+        f"Risk register excerpt:\n{risk_excerpt}\n\n"
+        "Generate 3 decision prompts for this week."
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        import json
+        raw = msg.content[0].text.strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL).strip()
+        items = json.loads(raw)
+        result = [(str(i.get("label", "")).strip(),
+                   str(i.get("prompt", "")).strip()) for i in items[:3]]
+        if all(label and prompt for label, prompt in result):
+            log.info("Claude generated %d tailored decision prompts.", len(result))
+            return result
+    except Exception as exc:
+        log.warning("Claude API call failed — using static prompts: %s", exc)
+
+    return _STATIC_PROMPTS
 
 
 # ----------------------------------------------------------------------
@@ -165,50 +363,57 @@ def _md_to_html(md: str) -> str:
 # ----------------------------------------------------------------------
 # Report shell
 # ----------------------------------------------------------------------
-def _claude_section() -> str:
+def _claude_section(prompts: list[tuple[str, str]] | None = None) -> str:
+    prompts = prompts or _STATIC_PROMPTS
     btns = []
-    for label, prompt in CLAUDE_PROMPTS:
+    for label, prompt in prompts:
         href = _claude_link(prompt)
         btns.append(
             f"<a href='{href}' style='display:inline-block;background:{XFREIGHT_RED};color:#fff;"
             f"text-decoration:none;font-size:12px;font-weight:700;padding:8px 14px;border-radius:6px;"
             f"margin:0 8px 8px 0;'>{label} &rarr;</a>")
     return (f"<div style='background:{GOODBG};border:1px solid #cfe6d8;border-radius:8px;padding:14px 16px;margin:14px 0 18px;'>"
-            f"<div style='font-size:13px;font-weight:700;color:{INK};margin-bottom:8px;'>Discuss deeper with Claude</div>"
+            f"<div style='font-size:13px;font-weight:700;color:{INK};margin-bottom:8px;'>Decisions to consider this week</div>"
             f"<div>{''.join(btns)}</div>"
             f"<div style='font-size:11px;color:{MUTE};margin-top:4px;'>Each opens a new Claude chat with a starter question you can edit. "
             f"If the prompt doesn't carry over, it's listed at the bottom of this email to copy.</div></div>")
 
 
-def _prompt_appendix() -> str:
+def _prompt_appendix(prompts: list[tuple[str, str]] | None = None) -> str:
+    prompts = prompts or _STATIC_PROMPTS
     rows = "".join(
         f"<div style='margin:6px 0;'><span style='font-weight:700;color:{INK};font-size:12px;'>{label}:</span> "
         f"<span style='color:{MUTE};font-size:12px;'>{prompt}</span></div>"
-        for label, prompt in CLAUDE_PROMPTS)
+        for label, prompt in prompts)
     return (f"<div style='margin-top:18px;border-top:1px solid {LINE};padding-top:12px;'>"
             f"<div style='font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:{MUTE};margin-bottom:6px;'>"
             f"Starter prompts (copy into Claude)</div>{rows}</div>")
 
 
-def build_decision_report(date_str: str, risk_md: str, decision_md: str) -> str:
+def build_decision_report(date_str: str, risk_md: str, decision_md: str,
+                           kpi_trend: "pd.DataFrame | None" = None,
+                           prompts: list[tuple[str, str]] | None = None) -> str:
     header = (
         f"<table width='100%' cellpadding='0' cellspacing='0' style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 0 14px;'>"
         f"<tr><td valign='middle'>{_XF_SVG}"
         f"<div style='{FONT_SERIF}font-style:italic;font-size:16px;color:{INK};margin-top:8px;'>Risk &amp; Decisions Report</div>"
         f"<div style='font-size:12px;color:{MUTE};margin-top:2px;'>Weekly &middot; separate from the daily executive brief</div></td>"
         f"<td align='right' valign='middle' style='font-size:11px;color:{MUTE};'>{date_str}</td></tr></table>")
+    kpi_html = _render_kpi_table(kpi_trend)
     risk_html = _md_to_html(risk_md) if risk_md else f"<p style='color:{MUTE};'>Risk register not found.</p>"
     decision_html = _md_to_html(decision_md) if decision_md else f"<p style='color:{MUTE};'>Decision journal not found.</p>"
     return (
         f"<div style=\"max-width:720px;margin:0 auto;padding:8px 18px 24px;{FONT}\">"
         f"{header}"
-        f"{_claude_section()}"
+        f"{kpi_html}"
+        f"{_claude_section(prompts)}"
         f"{risk_html}"
         f"<div style='height:8px;'></div>"
         f"{decision_html}"
-        f"{_prompt_appendix()}"
+        f"{_prompt_appendix(prompts)}"
         f"<div style='margin-top:18px;border-top:1px solid {LINE};padding-top:10px;font-size:11px;color:{MUTE};'>"
         f"Source: Karpathy-Wiki knowledge base (Risk Register + Decision Journal). "
+        f"KPI data from OneDrive pipeline. "
         f"This is a standalone weekly report — the daily executive brief is unchanged.</div>"
         f"</div>")
 
@@ -233,10 +438,27 @@ def main() -> int:
                         datefmt="%H:%M:%S")
     load_dotenv()
 
-    date_str = _today_central()
-    risk_md = _read_wiki("risk-register.md")
+    tenant = os.environ.get("AZURE_TENANT_ID")
+    client = os.environ.get("AZURE_CLIENT_ID")
+    secret = os.environ.get("AZURE_CLIENT_SECRET")
+    upn    = os.environ.get("ONEDRIVE_USER_UPN")
+
+    date_str   = _today_central()
+    risk_md    = _read_wiki("risk-register.md")
     decision_md = _read_wiki("decision-journal.md")
-    html = build_decision_report(date_str, risk_md, decision_md)
+
+    # KPI trend + Claude synthesis (both optional — degrade gracefully)
+    kpi_trend = None
+    prompts   = None
+    if all([tenant, client, secret, upn]):
+        token     = get_token(tenant, client, secret)
+        kpi_trend = _load_kpi_trend(token, upn)
+        prompts   = _generate_decision_prompts(kpi_trend, risk_md)
+    else:
+        token = None
+
+    html    = build_decision_report(date_str, risk_md, decision_md,
+                                    kpi_trend=kpi_trend, prompts=prompts)
     subject = f"XFreight Risk & Decisions — {date_str}"
 
     if "--dry" in sys.argv:
@@ -246,16 +468,13 @@ def main() -> int:
         log.info("Dry run — wrote %s (%d bytes), no email sent.", out, len(html))
         return 0
 
-    tenant = os.environ.get("AZURE_TENANT_ID")
-    client = os.environ.get("AZURE_CLIENT_ID")
-    secret = os.environ.get("AZURE_CLIENT_SECRET")
-    upn = os.environ.get("ONEDRIVE_USER_UPN")
     if not all([tenant, client, secret, upn]):
         sys.exit("ERROR: AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET and ONEDRIVE_USER_UPN are required")
-    from_upn = os.environ.get("SCORECARD_FROM_UPN", upn)
-    to_emails = [e.strip() for e in os.environ.get("DECISION_REPORT_TO_EMAILS", "jeff@xfreight.net").split(",") if e.strip()]
+    from_upn  = os.environ.get("SCORECARD_FROM_UPN", upn)
+    to_emails = [e.strip() for e in
+                 os.environ.get("DECISION_REPORT_TO_EMAILS", "jeff@xfreight.net").split(",")
+                 if e.strip()]
 
-    token = get_token(tenant, client, secret)
     send_email(token, from_upn, to_emails, subject, html)
     log.info("Risk & Decisions report sent to %s", ", ".join(to_emails))
     return 0
