@@ -885,7 +885,7 @@ def _occurrence_label(n: int, category: str) -> str:
         return " ⚠️ 2nd occurrence in 30d — verbal warning required"
     if n == 3:
         return " 🔴 3rd occurrence in 30d — written warning required"
-    return f" 🚨 {n}th occurrence in 30d — escalate to JB immediately"
+    return f" 🚨 {n}th occurrence in 30d — management escalation required"
 
 
 def _build_accountability_structured(
