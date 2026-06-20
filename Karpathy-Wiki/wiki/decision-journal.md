@@ -20,7 +20,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 | 2026-06-14 | Role-focused brief delivery | Faster accountability per area | Pending |
 | 2026-06-13 | Acrisure billing settled at $18K (paid) | $95K ask → $18K, near floor | **Confirmed** |
 | 2026-06 | Billion Auto renewed (lanes + FSC) | Secures ~$47K/mo + fuel protection | **Confirmed** |
-| 2026-06 | Factoring: selected Triumph | Cash-flow relief once onboarded | Pending — ~6/16–17 |
+| 2026-06 | Factoring: selected Triumph @ 1.25% | Cash-flow relief; AR 60+ → near zero | Pending — live 6/23 |
 | 2026-06-13 | X-Trux P&L hold-out at ≥74% margin | P&L matches Power BI, reflects own-fleet | Pending |
 | 2026-06-13 | Deadhead / RPM = own-fleet only | 5.448% true own-fleet deadhead | Pending |
 | 2026-06-12 | Retire SambaSafety API → CSV-drop | Compliance/CSA data keeps flowing | Pending — review ~7/12 |
@@ -37,8 +37,9 @@ A running log of XFreight's consequential decisions — each with the **rational
 ## 2026-06 — Billion Auto contract renewed (lanes maintained + FSC added)
 **Decision.** Renew the Billion Auto dedicated agreement. **Outcome.** Renewed — both the **Rapid City** and **Mason City** dedicated lanes maintained, and a **fuel surcharge added for protection this year**. Graded **confirmed**. **Why it matters.** Secures ~$47K/mo of daily-volume revenue (the portfolio's most immediate revenue risk) and the FSC hedges fuel-price exposure going forward. See [[Billion Auto]], [[Customer Portfolio]].
 
-## 2026-06 — Selected Triumph for invoice factoring
-**Decision.** Choose **Triumph** for factoring (over Pathward / OTR / eCapital); onboarding expected ~June 16–17, 2026. **Rationale.** Relieve cash flow on slow-pay AR. **The catch.** Onboarding required clearing the existing operating loan — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the difference. **Predicted outcome.** Shorter AR-to-cash cycle, easier cash flow. **Actual.** _Pending — onboarding ~6/16–17; then watch AR aging shorten._ See [[Factoring]], [[Financial Performance]], [[Risk Register]].
+## 2026-06 — Selected Triumph for invoice factoring at 1.25%
+
+**Decision.** Choose **Triumph** for factoring (over Pathward / OTR / eCapital) at **1.25% flat on both X-Trux and X-Linx**. Go-live: **Monday June 23, 2026** (buyout approved). **Rationale.** LOC was near-max and bank ~$26K overdrawn in April 2026 despite positive net income — a structural collections-lag problem, not a profitability problem. Factoring delivers cash in 24–48h and moves collections to Triumph. **Rate context.** Scott at Triumph negotiated from 1% ask (denied — volume too low; needs to double to ~$880K/month) to 1.25%. At current ~$438K/month revenue run rate, fee = ~$5,475/month. **The catch.** Onboarding required clearing the existing First Dakota operating loan — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the difference. **RPM implication.** Factoring adds ~$0.034/mile; to net $2.92 RPM goal, must bill at ~$2.96 gross. **Predicted outcome.** AR 60+ bucket near zero within 60–90 days; cash flow predictable; collections burden removed. **Actual.** _Pending — live 6/23; watch AR_Open and AR_60Plus KPI trend fall over coming weeks._ See [[Factoring]], [[Financial Performance]], [[Risk Register]], [[Rate-Per-Mile Goal]].
 
 ## 2026-06-13 — X-Trux P&L hold-out at ≥74% Corrected Margin
 **Decision.** Exclude X-Trux loads that are status "Open" OR have Corrected Margin % = (Revenue − Driver Rate)/Revenue ≥ 74% from the entity P&L. **Rationale.** Those are office loads brokered to outside carriers with a tiny placeholder driver rate; counting them inflates own-fleet P&L. **Assumption.** ≥74% margin reliably identifies brokered/under-costed loads. **Predicted outcome.** Brief P&L matches Power BI to the penny and reflects true own-fleet economics. **Actual.** _TBD — watch for genuine high-margin own-fleet loads wrongly held out._ See [[Brokerage X-Linx]], [[Rate-Per-Mile Goal]].
