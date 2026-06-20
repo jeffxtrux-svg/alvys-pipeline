@@ -41,6 +41,12 @@ _XF_SVG = (
     "font-size='22' letter-spacing='-0.5' fill='#fff'>XFREIGHT</text></svg>"
 )
 
+# Scenario modeling constants — all overridable from env for tuning.
+_RPM_TARGET          = float(os.environ.get("SCENARIO_RPM_TARGET",          "3.00"))
+_COST_PER_EMPTY_MILE = float(os.environ.get("SCENARIO_COST_PER_EMPTY_MILE", "1.20"))
+_DH_TARGET_PCT       = float(os.environ.get("SCENARIO_DH_TARGET_PCT",       "4.5"))
+_AR_COLLECT_RATE     = float(os.environ.get("SCENARIO_AR_COLLECT_RATE",      "0.50"))
+
 # Fallback static prompts — used when ANTHROPIC_API_KEY is absent.
 _STATIC_PROMPTS = [
     ("Review my top risks",
@@ -184,6 +190,126 @@ def _render_kpi_table(trend: pd.DataFrame) -> str:
 
 
 # ----------------------------------------------------------------------
+# Scenario modeling — 3 forward-looking what-if calculations
+# ----------------------------------------------------------------------
+
+def _safe_float(v) -> "float | None":
+    try:
+        f = float(v)
+        return None if f != f else f  # NaN guard
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_scenarios(trend: "pd.DataFrame | None") -> list:
+    """Compute 3 scenarios from the latest KPI row.
+    Returns an empty list if data is insufficient."""
+    if trend is None or trend.empty:
+        return []
+    latest = trend.iloc[-1]
+    out = []
+
+    rpm    = _safe_float(latest.get("RPM_OwnFleet"))
+    rev    = _safe_float(latest.get("RevenueXTruxMTD"))
+    dh     = _safe_float(latest.get("DeadheadPct"))
+    ar60   = _safe_float(latest.get("AR_60Plus"))
+
+    # 1. RPM lift — only if below target
+    if rpm and rpm > 0 and rev and rev > 0 and _RPM_TARGET > rpm:
+        miles = rev / rpm
+        delta = (_RPM_TARGET - rpm) * miles
+        out.append({
+            "kind": "Revenue",
+            "label": f"Raise RPM to ${_RPM_TARGET:.2f}",
+            "impact": f"+${delta:,.0f}/mo",
+            "desc": (f"Rate gap ${rpm:.4f} → ${_RPM_TARGET:.2f}/mi "
+                     f"on {miles:,.0f} est. own-fleet miles MTD"),
+        })
+
+    # 2. Deadhead cut — only if above target
+    if dh and dh > _DH_TARGET_PCT and rpm and rpm > 0 and rev:
+        miles = rev / rpm
+        saved = (dh - _DH_TARGET_PCT) / 100 * miles
+        savings = saved * _COST_PER_EMPTY_MILE
+        out.append({
+            "kind": "Cost",
+            "label": f"Cut Deadhead {dh:.1f}% → {_DH_TARGET_PCT}%",
+            "impact": f"+${savings:,.0f}/mo",
+            "desc": (f"{saved:,.0f} fewer empty miles "
+                     f"× ${_COST_PER_EMPTY_MILE:.2f}/mi cost saved"),
+        })
+
+    # 3. AR 60+ collection
+    if ar60 and ar60 > 0:
+        cash = ar60 * _AR_COLLECT_RATE
+        out.append({
+            "kind": "Cash",
+            "label": f"Collect {int(_AR_COLLECT_RATE*100)}% of 60+ AR",
+            "impact": f"+${cash:,.0f} cash",
+            "desc": (f"${ar60:,.0f} overdue × "
+                     f"{int(_AR_COLLECT_RATE*100)}% assumed collectible"),
+        })
+
+    return out
+
+
+def _build_scenario_text(scenarios: list) -> str:
+    if not scenarios:
+        return ""
+    lines = ["Scenario modeling (this month's opportunity set):"]
+    for s in scenarios:
+        lines.append(f"  {s['label']}: {s['impact']} — {s['desc']}")
+    return "\n".join(lines)
+
+
+def _render_scenario_table(scenarios: list) -> str:
+    if not scenarios:
+        return ""
+    n = len(scenarios)
+    col_w = f"{100 // n}%"
+
+    def _card(s: dict, i: int) -> str:
+        pad = (
+            "0 8px 0 0" if i == 0
+            else "0 0 0 8px" if i == n - 1
+            else "0 4px"
+        )
+        return (
+            f"<td width='{col_w}' style='padding:{pad};vertical-align:top;'>"
+            f"<div style='background:#f8fafc;border:1px solid {LINE};"
+            f"border-radius:8px;padding:12px 14px;'>"
+            f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:.5px;"
+            f"color:{MUTE};margin-bottom:6px;'>{s['kind']}</div>"
+            f"<div style='font-size:22px;font-weight:700;color:{GOOD};line-height:1.1;"
+            f"margin-bottom:4px;'>{s['impact']}</div>"
+            f"<div style='font-size:12px;font-weight:600;color:{INK};margin-bottom:6px;'>"
+            f"{s['label']}</div>"
+            f"<div style='font-size:11px;color:{MUTE};border-top:1px solid {LINE};"
+            f"padding-top:6px;'>{s['desc']}</div>"
+            f"</div></td>"
+        )
+
+    tds = "".join(_card(s, i) for i, s in enumerate(scenarios))
+    heading = (
+        f"<h2 style='{FONT_SERIF}font-size:16px;font-weight:400;color:{INK};"
+        f"margin:22px 0 10px;border-bottom:1px solid {LINE};padding-bottom:4px;'>"
+        f"What-If Scenarios — this month</h2>"
+    )
+    table = (
+        f"<table width='100%' cellpadding='0' cellspacing='0' "
+        f"style='border-collapse:collapse;margin:0 0 6px;'>"
+        f"<tr>{tds}</tr></table>"
+    )
+    note = (
+        f"<div style='font-size:11px;color:{MUTE};margin-bottom:18px;'>"
+        f"RPM target ${_RPM_TARGET:.2f}/mi &middot; deadhead target {_DH_TARGET_PCT}% &middot; "
+        f"AR collect rate {int(_AR_COLLECT_RATE*100)}% &middot; "
+        f"empty-mile cost est. ${_COST_PER_EMPTY_MILE:.2f}/mi.</div>"
+    )
+    return heading + table + note
+
+
+# ----------------------------------------------------------------------
 # Claude synthesis — generate 3 tailored decision prompts from live data
 # ----------------------------------------------------------------------
 
@@ -211,8 +337,9 @@ def _build_kpi_snapshot_text(trend: pd.DataFrame | None) -> str:
     return "\n".join(lines)
 
 
-def _generate_decision_prompts(trend: pd.DataFrame | None,
-                                risk_md: str) -> list[tuple[str, str]]:
+def _generate_decision_prompts(trend: "pd.DataFrame | None",
+                                risk_md: str,
+                                scenarios: list | None = None) -> list[tuple[str, str]]:
     """Call claude-haiku to generate 3 tailored decision prompts.
     Falls back to _STATIC_PROMPTS if ANTHROPIC_API_KEY is absent or the call fails."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -234,10 +361,13 @@ def _generate_decision_prompts(trend: pd.DataFrame | None,
         '[{"label": "short button label (3-5 words)", "prompt": "full question for Claude"}].'
         " Do not include any explanation outside the JSON array."
     )
+    scenario_text = _build_scenario_text(scenarios or [])
     user = (
         f"{snapshot_text}\n\n"
-        f"Risk register excerpt:\n{risk_excerpt}\n\n"
-        "Generate 3 decision prompts for this week."
+        + (f"{scenario_text}\n\n" if scenario_text else "")
+        + f"Risk register excerpt:\n{risk_excerpt}\n\n"
+        + "Generate 3 decision prompts for this week — "
+        + "reference specific scenario dollar amounts where relevant."
     )
 
     try:
@@ -392,20 +522,23 @@ def _prompt_appendix(prompts: list[tuple[str, str]] | None = None) -> str:
 
 def build_decision_report(date_str: str, risk_md: str, decision_md: str,
                            kpi_trend: "pd.DataFrame | None" = None,
-                           prompts: list[tuple[str, str]] | None = None) -> str:
+                           prompts: "list[tuple[str, str]] | None" = None,
+                           scenarios: "list | None" = None) -> str:
     header = (
         f"<table width='100%' cellpadding='0' cellspacing='0' style='border-bottom:4px solid {XFREIGHT_RED};padding:6px 0 14px;'>"
         f"<tr><td valign='middle'>{_XF_SVG}"
         f"<div style='{FONT_SERIF}font-style:italic;font-size:16px;color:{INK};margin-top:8px;'>Risk &amp; Decisions Report</div>"
         f"<div style='font-size:12px;color:{MUTE};margin-top:2px;'>Weekly &middot; separate from the daily executive brief</div></td>"
         f"<td align='right' valign='middle' style='font-size:11px;color:{MUTE};'>{date_str}</td></tr></table>")
-    kpi_html = _render_kpi_table(kpi_trend)
-    risk_html = _md_to_html(risk_md) if risk_md else f"<p style='color:{MUTE};'>Risk register not found.</p>"
+    kpi_html      = _render_kpi_table(kpi_trend)
+    scenario_html = _render_scenario_table(scenarios or [])
+    risk_html     = _md_to_html(risk_md) if risk_md else f"<p style='color:{MUTE};'>Risk register not found.</p>"
     decision_html = _md_to_html(decision_md) if decision_md else f"<p style='color:{MUTE};'>Decision journal not found.</p>"
     return (
         f"<div style=\"max-width:720px;margin:0 auto;padding:8px 18px 24px;{FONT}\">"
         f"{header}"
         f"{kpi_html}"
+        f"{scenario_html}"
         f"{_claude_section(prompts)}"
         f"{risk_html}"
         f"<div style='height:8px;'></div>"
@@ -447,18 +580,21 @@ def main() -> int:
     risk_md    = _read_wiki("risk-register.md")
     decision_md = _read_wiki("decision-journal.md")
 
-    # KPI trend + Claude synthesis (both optional — degrade gracefully)
+    # KPI trend + scenarios + Claude synthesis (all optional — degrade gracefully)
     kpi_trend = None
+    scenarios = None
     prompts   = None
     if all([tenant, client, secret, upn]):
         token     = get_token(tenant, client, secret)
         kpi_trend = _load_kpi_trend(token, upn)
-        prompts   = _generate_decision_prompts(kpi_trend, risk_md)
+        scenarios = _build_scenarios(kpi_trend)
+        prompts   = _generate_decision_prompts(kpi_trend, risk_md, scenarios=scenarios)
     else:
         token = None
 
     html    = build_decision_report(date_str, risk_md, decision_md,
-                                    kpi_trend=kpi_trend, prompts=prompts)
+                                    kpi_trend=kpi_trend, prompts=prompts,
+                                    scenarios=scenarios)
     subject = f"XFreight Risk & Decisions — {date_str}"
 
     if "--dry" in sys.argv:
