@@ -20,14 +20,20 @@ log = logging.getLogger("ramp_client")
 TOKEN_URL = "https://api.ramp.com/developer/v1/token"
 BASE_URL  = "https://api.ramp.com/developer/v1"
 
-# Scopes for read-only pipeline access
+# Scopes confirmed available on this Ramp app (transactions:read not in plan)
 _SCOPES = " ".join([
+    "accounting:read",
+    "bank_feeds:read",
     "bills:read",
-    "transactions:read",
-    "users:read",
-    "receipts:read",
-    "departments:read",
     "business:read",
+    "custom_forms:read",
+    "departments:read",
+    "entities:read",
+    "locations:read",
+    "offline_access",
+    "openid",
+    "users:read",
+    "vendors:read",
 ])
 
 
@@ -134,3 +140,10 @@ class RampClient:
 
     def departments(self) -> list[dict]:
         return list(self._paginate("/departments"))
+
+    def vendors(self) -> list[dict]:
+        return list(self._paginate("/vendors"))
+
+    def bank_feeds(self) -> list[dict]:
+        """Card transaction data via bank_feeds endpoint (fallback for transactions:read)."""
+        return list(self._paginate("/bank_feeds"))

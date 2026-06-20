@@ -150,22 +150,36 @@ def main() -> None:
     bills_df = _bills_df(bills)
     log.info("  %d bills", len(bills_df))
 
-    log.info("Pulling Ramp card transactions (from %s)…", from_date)
+    log.info("Pulling Ramp card transactions…")
+    txns_df = pd.DataFrame()
     try:
         txns = ramp.transactions(from_date=from_date)
         txns_df = _transactions_df(txns)
-        log.info("  %d transactions", len(txns_df))
-    except Exception as exc:
-        log.warning("  transactions skipped (%s) — enable transactions:read scope in Ramp Developer App", exc)
-        txns_df = pd.DataFrame()
+        log.info("  %d transactions (transactions:read)", len(txns_df))
+    except Exception:
+        log.info("  transactions:read unavailable — trying bank_feeds…")
+        try:
+            feeds = ramp.bank_feeds()
+            txns_df = pd.DataFrame(feeds)
+            log.info("  %d bank_feed records", len(txns_df))
+        except Exception as exc2:
+            log.warning("  card data unavailable: %s", exc2)
 
     log.info("Pulling Ramp users…")
     try:
         users_df = _users_df(ramp.users())
         log.info("  %d users", len(users_df))
     except Exception as exc:
-        log.warning("  users skipped (%s) — enable users:read scope in Ramp Developer App", exc)
+        log.warning("  users skipped: %s", exc)
         users_df = pd.DataFrame()
+
+    log.info("Pulling Ramp vendors…")
+    try:
+        vendors_df = pd.DataFrame(ramp.vendors())
+        log.info("  %d vendors", len(vendors_df))
+    except Exception as exc:
+        log.warning("  vendors skipped: %s", exc)
+        vendors_df = pd.DataFrame()
 
     # Write Excel
     out_path = Path("output/ramp/Ramp_Master.xlsx")
@@ -174,14 +188,15 @@ def main() -> None:
         bills_df.to_excel(writer, sheet_name="Bills", index=False)
         txns_df.to_excel(writer, sheet_name="Transactions", index=False)
         users_df.to_excel(writer, sheet_name="Users", index=False)
+        vendors_df.to_excel(writer, sheet_name="Vendors", index=False)
     log.info("Wrote %s", out_path)
 
     # Upload to OneDrive
     graph_token = get_token(az_tenant, az_client, az_secret)
     ensure_folder(graph_token, upn, "Ramp")
     upload_file(graph_token, upn, "Ramp", "Ramp_Master.xlsx", out_path)
-    log.info("Uploaded to OneDrive/Ramp/ ✓  bills=%d  txns=%d  users=%d",
-             len(bills_df), len(txns_df), len(users_df))
+    log.info("Uploaded to OneDrive/Ramp/ ✓  bills=%d  txns=%d  users=%d  vendors=%d",
+             len(bills_df), len(txns_df), len(users_df), len(vendors_df))
 
 
 if __name__ == "__main__":
