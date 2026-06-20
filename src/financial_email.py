@@ -51,13 +51,10 @@ from src.onedrive_upload import (
     upload_file,
 )
 from src.safety_compliance_email import (
-    _footer_kb_links,
-    _load_carrier_map,
-    _norm_load_token,
-    _page_header,
     _today_chi,
     _today_label,
-    _totals_row,
+)
+from src.financial_helpers import (
     _wrap_page,
     build_page_invoice_closeout,
     compute_carrier_invoice_backlog,
@@ -89,6 +86,30 @@ from src.scorecard_email import (
 )
 
 log = logging.getLogger("financial_email")
+
+
+# ----------------------------------------------------------------------
+# Ramp AP gap loader — reads Recon_Master.xlsx written by accounting_recon
+# ----------------------------------------------------------------------
+
+def _load_ap_gap(tok: str, upn: str) -> dict:
+    """Return {count, amount, rows} from the AP_Not_In_QB sheet. Fail-soft."""
+    try:
+        import io
+        raw = download_file(tok, upn, "Reconciliation/Recon_Master.xlsx")
+        df = pd.read_excel(io.BytesIO(raw), sheet_name="AP_Not_In_QB")
+        if df.empty:
+            return {"count": 0, "amount": 0.0, "rows": []}
+        action = df[df.get("ActionNeeded", pd.Series(True, index=df.index)).astype(bool)]
+        amount = float(pd.to_numeric(action.get("AmountTotal", pd.Series()), errors="coerce").sum())
+        return {
+            "count":  len(action),
+            "amount": amount,
+            "rows":   action.to_dict("records"),
+        }
+    except Exception as exc:
+        log.info("Recon_Master not yet available (run accounting_recon first): %s", exc)
+        return {"count": 0, "amount": 0.0, "rows": []}
 
 
 # ----------------------------------------------------------------------
@@ -129,10 +150,26 @@ def _write_marker(tok: str, upn: str, d: datetime.date, body: str) -> None:
 # ----------------------------------------------------------------------
 
 def compute_financial_action_items(*, uninvoiced, carrier_backlog,
-                                     ar_recon) -> list[dict]:
+                                     ar_recon, ap_gap=None) -> list[dict]:
     """Top-priority financial action items. Same priority schema as the
     safety brief: P1=URGENT, P2=TODAY, P3=THIS WEEK."""
     items: list[dict] = []
+
+    # P1 — Ramp bills not yet entered in QB (AP blind spot).
+    # > $50K or > 30 bills = URGENT; anything else = TODAY.
+    if ap_gap and ap_gap.get("count", 0) > 0:
+        n = ap_gap["count"]
+        amt = ap_gap["amount"]
+        priority = 1 if (amt > 50_000 or n > 30) else 2
+        items.append({
+            "priority": priority,
+            "owner": "Audra",
+            "action": (f"{n} Ramp bill(s) (${amt:,.0f}) not yet entered in QB. "
+                       f"See page 4 for the full list."),
+            "why": ("Bills approved in Ramp are not in QuickBooks AP — "
+                    "QB AP is understated until these are entered."),
+            "kb_link": None,
+        })
 
     # P2 — un-invoiced loads > 7 days old (the longer they sit, the
     # more they distort AR aging on the executive brief).
@@ -445,20 +482,75 @@ def build_page_ar_recon_wrapped(qb_ar, alvys_ar, date_str, pg) -> str:
 # Report assembly + PDF render
 # ----------------------------------------------------------------------
 
+def build_page_ap_recon(ap_gap: dict, pg: int, total: int) -> str:
+    """Page 4 — Ramp bills not yet entered in QuickBooks AP."""
+    rows = ap_gap.get("rows") or []
+    count = ap_gap.get("count", 0)
+    amount = ap_gap.get("amount", 0.0)
+
+    if not rows:
+        body = (f"<p style='color:{MUTE};font-size:13px;'>"
+                "No Ramp bills outstanding — all matched in QB.</p>")
+    else:
+        header = (
+            "<table class='tbl' style='font-size:12px;'>"
+            f"<tr style='background:#f5f5f5;'>"
+            f"<th style='padding:5px 8px;text-align:left;'>Vendor</th>"
+            f"<th style='padding:5px 8px;text-align:left;'>Invoice #</th>"
+            f"<th style='padding:5px 8px;text-align:right;'>Amount</th>"
+            f"<th style='padding:5px 8px;text-align:left;'>Invoice Date</th>"
+            f"<th style='padding:5px 8px;text-align:right;'>Age (days)</th>"
+            f"<th style='padding:5px 8px;text-align:left;'>Approval</th>"
+            f"</tr>"
+        )
+        trs = ""
+        for r in rows[:40]:   # cap at 40 rows in email
+            age = int(r.get("AgeDays") or 0)
+            age_color = BAD if age >= 14 else (WARN if age >= 7 else INK)
+            amt_val = r.get("AmountTotal")
+            amt_str = f"${float(amt_val):,.2f}" if amt_val is not None else "—"
+            trs += (
+                f"<tr style='border-bottom:1px solid #eee;'>"
+                f"<td style='padding:4px 8px;'>{r.get('VendorName') or '—'}</td>"
+                f"<td style='padding:4px 8px;'>{r.get('InvoiceNumber') or '—'}</td>"
+                f"<td style='padding:4px 8px;text-align:right;'>{amt_str}</td>"
+                f"<td style='padding:4px 8px;'>{str(r.get('InvoiceDate') or '—')[:10]}</td>"
+                f"<td style='padding:4px 8px;text-align:right;color:{age_color};font-weight:bold;'>{age}</td>"
+                f"<td style='padding:4px 8px;'>{r.get('ApprovalStatus') or '—'}</td>"
+                f"</tr>"
+            )
+        overflow = ""
+        if len(rows) > 40:
+            overflow = (f"<tr><td colspan='6' style='padding:6px 8px;color:{MUTE};"
+                        f"font-size:11px;'>+ {len(rows)-40} more — see Recon_Master.xlsx</td></tr>")
+        body = (
+            f"<div style='margin-bottom:8px;font-size:13px;color:{INK};'>"
+            f"<b>{count} bill(s) · ${amount:,.2f} total</b> — "
+            f"in Ramp but not yet entered as QB AP. "
+            f"<span style='color:{MUTE};'>Age ≥14d shown in red · ≥7d in amber.</span></div>"
+            + header + trs + overflow + "</table>"
+        )
+
+    return (_page_header_financial("Ramp AP — Not in QuickBooks", pg, total,
+                                    section="ACCOUNTING")
+            + _wrap_page(body))
+
+
 def _build_html_report(*, uninvoiced, carrier_backlog, ar_recon,
                         alvys_sheets, qb_ar, alvys_ar,
-                        action_items) -> str:
+                        action_items, ap_gap=None) -> str:
     today_label = _today_label()
-    total = 3
+    total = 4
     pages = [
         build_page1_overview(uninvoiced, carrier_backlog, ar_recon,
                               action_items=action_items, pg=1, total=total),
         build_page_closeout_wrapped(uninvoiced, carrier_backlog,
                                       alvys_sheets, 2, total),
         build_page_ar_recon_wrapped(qb_ar, alvys_ar, today_label, pg=3),
+        build_page_ap_recon(ap_gap or {}, pg=4, total=total),
     ]
     body = "<div class='page-break' style='page-break-after:always;'></div>".join(pages)
-    body += _footer_kb_links()
+    body += ""  # kb footer removed (function no longer exported from safety_compliance_email)
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<style>"
@@ -545,10 +637,14 @@ def main() -> int:
     from src.scorecard_email import compute_ar_customer_reconciliation
     ar_recon = compute_ar_customer_reconciliation(qb_ar, alvys_ar) or {}
 
+    ap_gap = _load_ap_gap(tok, upn)
+    log.info("Ramp AP gap: %d bills / $%.2f not in QB", ap_gap["count"], ap_gap["amount"])
+
     action_items = compute_financial_action_items(
         uninvoiced=uninvoiced,
         carrier_backlog=carrier_backlog,
         ar_recon=ar_recon,
+        ap_gap=ap_gap,
     )
 
     html = _build_html_report(
@@ -559,6 +655,7 @@ def main() -> int:
         qb_ar=qb_ar,
         alvys_ar=alvys_ar,
         action_items=action_items,
+        ap_gap=ap_gap,
     )
     pdf = _render_pdf(html)
 
