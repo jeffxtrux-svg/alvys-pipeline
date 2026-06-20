@@ -119,6 +119,87 @@ def _load_ramp_bills(graph_token: str, upn: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ── verification helpers ──────────────────────────────────────────────────────
+
+def _word_overlap(a: str, b: str) -> int:
+    """0-100 score: what % of the shorter name's words appear in the longer name.
+    Used to surface QB vendors that are probably the same entity as a Ramp vendor
+    but spelled differently (e.g. 'COMDATA NETWORK' vs 'COMDATA INC')."""
+    wa = set(a.split())
+    wb = set(b.split())
+    if not wa or not wb:
+        return 0
+    return int(100 * len(wa & wb) / min(len(wa), len(wb)))
+
+
+def _nearest_qb_match(vendor_norm: str, amount: float | None,
+                       qb: pd.DataFrame) -> dict:
+    """For a Ramp bill that didn't match QB, find the closest QB vendor by word
+    overlap.  Returns dict with BestQBVendor, BestQBMatchScore, BestQBAmount,
+    BestQBInvNum, AmtDiff so the reader can spot false-negative matches."""
+    if qb.empty or not vendor_norm:
+        return {"BestQBVendor": "", "BestQBMatchScore": 0,
+                "BestQBAmount": None, "BestQBInvNum": "", "AmtDiff": None}
+    best_score = -1
+    best_row: dict = {}
+    for _, qr in qb.iterrows():
+        score = _word_overlap(vendor_norm, str(qr.get("VendorNorm", "")))
+        if score > best_score:
+            best_score = score
+            best_row = qr.to_dict()
+    qb_amt = pd.to_numeric(best_row.get("Open Balance"), errors="coerce") if best_row else None
+    amt_diff: float | None = None
+    if amount is not None and qb_amt is not None and not pd.isna(qb_amt):
+        amt_diff = round(float(amount) - float(qb_amt), 2)
+    return {
+        "BestQBVendor":    best_row.get("Vendor", "") if best_row else "",
+        "BestQBMatchScore": best_score,
+        "BestQBAmount":    float(qb_amt) if qb_amt is not None and not pd.isna(qb_amt) else None,
+        "BestQBInvNum":    best_row.get("Num", "") if best_row else "",
+        "AmtDiff":         amt_diff,
+    }
+
+
+def _flag_ramp_duplicates(not_in_qb: pd.DataFrame) -> pd.Series:
+    """Within the AP_Not_In_QB list, flag any bill that looks like a duplicate
+    of another: same normalised vendor + amount within 5% + invoice dates within
+    30 days.  Returns a Series of string labels (empty string = no dupe detected)."""
+    labels = [""] * len(not_in_qb)
+    if not_in_qb.empty:
+        return pd.Series(labels, index=not_in_qb.index)
+    rows = not_in_qb.reset_index(drop=True)
+    amounts = pd.to_numeric(rows["AmountTotal"], errors="coerce")
+    dates = pd.to_datetime(rows.get("InvoiceDate", pd.Series(dtype="object")),
+                           errors="coerce")
+    for i in range(len(rows)):
+        if labels[i]:          # already flagged as dupe of something
+            continue
+        vn_i = str(rows.at[i, "VendorNorm"] if "VendorNorm" in rows.columns else "")
+        amt_i = amounts.iloc[i]
+        dt_i = dates.iloc[i]
+        for j in range(i + 1, len(rows)):
+            vn_j = str(rows.at[j, "VendorNorm"] if "VendorNorm" in rows.columns else "")
+            if vn_i != vn_j or not vn_i:
+                continue
+            amt_j = amounts.iloc[j]
+            if pd.isna(amt_i) or pd.isna(amt_j) or amt_i == 0:
+                continue
+            if abs(amt_i - amt_j) / max(abs(amt_i), 1) > 0.05:
+                continue
+            # Same vendor + same amount ± 5% — check date proximity
+            dt_j = dates.iloc[j]
+            if not pd.isna(dt_i) and not pd.isna(dt_j):
+                if abs((dt_i - dt_j).days) > 30:
+                    continue
+            # Flags both: whichever has the later CreatedAt is the likely dupe
+            bill_i = str(rows.at[i, "BillId"] or "")
+            bill_j = str(rows.at[j, "BillId"] or "")
+            labels[j] = f"POSSIBLE DUPE of {bill_i}"
+            if not labels[i]:
+                labels[i] = f"POSSIBLE DUPE (see {bill_j})"
+    return pd.Series(labels, index=not_in_qb.index)
+
+
 # ── reconciliation ────────────────────────────────────────────────────────────
 
 def reconcile(qb: pd.DataFrame, ramp: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -145,6 +226,7 @@ def reconcile(qb: pd.DataFrame, ramp: pd.DataFrame) -> dict[str, pd.DataFrame]:
         row = {
             "BillId":          bill.get("BillId"),
             "VendorName":      bill.get("VendorName"),
+            "VendorNorm":      bill.get("VendorNorm", ""),
             "InvoiceNumber":   bill.get("InvoiceNumber"),
             "InvoiceDate":     bill.get("InvoiceDate"),
             "AmountTotal":     bill.get("AmountTotal"),
@@ -168,6 +250,37 @@ def reconcile(qb: pd.DataFrame, ramp: pd.DataFrame) -> dict[str, pd.DataFrame]:
     if not not_in_qb.empty:
         not_in_qb["ActionNeeded"] = not_in_qb["AgeDays"] >= AP_LAG_DAYS
         not_in_qb.sort_values("AgeDays", ascending=False, inplace=True)
+
+        # ── verification columns ──────────────────────────────────────────────
+        # Nearest QB match — lets the reader spot false-negative matches where
+        # the same vendor is spelled differently in Ramp vs QB.
+        match_cols = not_in_qb.apply(
+            lambda r: pd.Series(_nearest_qb_match(
+                r.get("VendorNorm", ""),
+                pd.to_numeric(r.get("AmountTotal"), errors="coerce"),
+                qb,
+            )),
+            axis=1,
+        )
+        not_in_qb = pd.concat([not_in_qb, match_cols], axis=1)
+
+        # Intra-Ramp duplicate detection
+        not_in_qb["RampDupeFlag"] = _flag_ramp_duplicates(not_in_qb)
+
+        # Summary review flag — one column to scan
+        def _review_flag(row) -> str:
+            flags = []
+            if row.get("RampDupeFlag"):
+                flags.append(row["RampDupeFlag"])
+            score = row.get("BestQBMatchScore", 0) or 0
+            if score >= 60:
+                flags.append(
+                    f"REVIEW: QB has '{row.get('BestQBVendor', '')}' "
+                    f"(similarity {score}%, QB open ${row.get('BestQBAmount') or 0:,.0f})"
+                )
+            return " | ".join(flags)
+
+        not_in_qb["ReviewFlag"] = not_in_qb.apply(_review_flag, axis=1)
 
     # ── QB bills with no Ramp counterpart (manually entered) ─────────────────
     qb_only_rows: list[dict] = []
