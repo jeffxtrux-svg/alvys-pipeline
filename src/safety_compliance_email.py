@@ -1739,20 +1739,10 @@ def _extra_trends(samsara: dict | None,
         drv = _find_col(hos, ["driver name", "driver"])
         if not dc or not drv:
             return {}
-        # Include ALL drive/onduty columns — both certified (dutyStatusDurations.*)
-        # and pending (pendingDutyStatusDurations.*) so recent uncertified log days
-        # (where certified driveDurationMs=0 but pending > 0) are counted correctly.
-        drive_cols = [c for c in hos.columns if "drivedurationms" in str(c).lower()]
-        onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
-        activity_cols = drive_cols + onduty_cols
-        h = hos[[dc, drv] + activity_cols].copy()
+        # Samsara only emits HOS rows for actual working days — no activity filter.
+        h = hos[[dc, drv]].copy()
         h["_dt"] = _to_naive_dt(h[dc])
         h["_drv"] = h[drv].astype(str).str.strip()
-        if activity_cols:
-            active = pd.Series([False] * len(h), index=h.index)
-            for col in activity_cols:
-                active |= pd.to_numeric(h[col], errors="coerce").fillna(0) > 0
-            h = h[active]
         h = h[h["_drv"].ne("") & h["_dt"].notna()]
         result: dict = {}
         for _, row in h.iterrows():
@@ -2377,18 +2367,19 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
 
 def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
                            total: int, date_str: str) -> str:
-    """DVIR inspection detail — last 14 days, grouped by driver.
+    """DVIR inspection detail — last 7 days, grouped by driver.
 
     Per-driver header shows name, inspection count, required/completed/missing/%.
     Row columns: Date/Time · Location · Vehicle · Trailer · Type · Safe · Defects
                  · Mechanic Notes.
     Data source: DVIR_Inspections sheet (one row per inspection leg).
+    Cross-check footer uses compute_inspection_compliance so total matches tile.
     """
     header = _sc_header(
-        "DVIR Inspection Detail — last 14 days", pg, total, date_str, section="EQUIPMENT")
+        "DVIR Inspection Detail — last 7 days", pg, total, date_str, section="EQUIPMENT")
 
     now = pd.Timestamp.now()
-    cutoff_14d = now - pd.Timedelta(days=14)
+    cutoff_7d = now - pd.Timedelta(days=7)
 
     # ── Load DVIR_Inspections ────────────────────────────────────────────────
     insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
@@ -2409,7 +2400,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
             df_i = insp_df.copy()
             df_i["_dt"] = pd.to_datetime(df_i[dc], errors="coerce", utc=True).dt.tz_localize(None)
             df_i["_drv"] = df_i[drv].astype(str).str.strip()
-            df_i = df_i[(df_i["_dt"] >= cutoff_14d) & df_i["_drv"].ne("")]
+            df_i = df_i[(df_i["_dt"] >= cutoff_7d) & df_i["_drv"].ne("")]
             df_i = df_i.sort_values("_dt", ascending=False)
 
             for _, row in df_i.iterrows():
@@ -2437,24 +2428,17 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
                 })
 
     # ── Load worked days for expected calculation ────────────────────────────
+    # Samsara only emits HOS rows for actual working days — no activity filter.
     worked: dict[str, int] = {}
     hos_df = (samsara_sheets or {}).get("HOS_DailyLogs")
     if hos_df is not None and not hos_df.empty:
         hdc  = _find_col(hos_df, ["log date", "starttime", "date"])
         hdrv = _find_col(hos_df, ["driver name", "driver"])
-        hdrvc = _find_col(hos_df, ["drivems", "drive ms"])
-        hdutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
         if hdc and hdrv:
             h7 = hos_df.copy()
             h7["_dt"] = pd.to_datetime(h7[hdc], errors="coerce", utc=True).dt.tz_localize(None)
             h7["_drv"] = h7[hdrv].astype(str).str.strip()
-            h7 = h7[(h7["_dt"] >= cutoff_14d) & h7["_drv"].ne("")]
-            if hdrvc or hdutc:
-                act = pd.Series([False] * len(h7), index=h7.index)
-                for col in [hdrvc, hdutc]:
-                    if col:
-                        act |= pd.to_numeric(h7[col], errors="coerce").fillna(0) > 0
-                h7 = h7[act]
+            h7 = h7[(h7["_dt"] >= cutoff_7d) & h7["_drv"].ne("")]
             for d, grp in h7.groupby("_drv"):
                 worked[d] = grp["_dt"].dt.date.nunique()
 
@@ -2473,7 +2457,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
 
     def _driver_block(drv: str, rows: list[dict]) -> str:
         days    = worked.get(drv, 0)
-        exp     = days * 2
+        exp     = days * 4   # pre+post × tractor+trailer (matches tile formula)
         done    = len(rows)
         missing = max(0, exp - done)
         pct     = round(done / exp * 100) if exp > 0 else 0
@@ -2522,11 +2506,31 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
         )
         return drv_header + table
 
+    # ── Cross-check footer: exact tile numbers via compute_inspection_compliance ─
+    _xc_rows  = compute_inspection_compliance(samsara_sheets, days=7)
+    _xc_done  = sum(r.get("done_total", 0) for r in _xc_rows)
+    _xc_exp   = sum(r.get("expected_total", 0) for r in _xc_rows)
+    _xc_pct   = min(round(_xc_done / _xc_exp * 100), 100) if _xc_exp > 0 else 0
+    _xc_color = BAD if _xc_pct < 80 else (WARN if _xc_pct < 95 else GOOD)
+    cross_check = (
+        f"<div style='margin:24px 0 0;padding:14px 18px;"
+        f"border-top:3px solid {INK};border-bottom:3px solid {INK};"
+        f"background:#f5f5f5;display:flex;justify-content:space-between;align-items:center;'>"
+        f"<span style='font-size:9.5px;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:0.8px;color:{MUTE};'>"
+        f"Fleet total &mdash; matches DVIR Compliance tile exactly</span>"
+        f"<span style='font-size:12px;color:{INK};'>"
+        f"Done:&nbsp;<b>{_xc_done}</b>&ensp;|&ensp;"
+        f"Expected:&nbsp;<b>{_xc_exp}</b>&ensp;|&ensp;"
+        f"<span style='color:{_xc_color};font-weight:800;font-size:15px;'>{_xc_pct}%</span>"
+        f"</span></div>"
+    ) if _xc_exp > 0 else ""
+
     if not driver_inspections:
         body = (
             f"<div style='padding:24px;'>"
             + _all_clear_row(
-                "No DVIR inspection data for the last 14 days — "
+                "No DVIR inspection data for the last 7 days — "
                 "DVIR_Inspections sheet will populate after the next Samsara refresh.",
                 span=8)
             + f"</div>"
@@ -2535,12 +2539,12 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
         blocks = "".join(
             _driver_block(drv, rows)
             for drv, rows in sorted(driver_inspections.items()))
-        body = f"<div style='padding:0 24px 24px;'>{blocks}</div>"
+        body = f"<div style='padding:0 24px 24px;'>{blocks}{cross_check}</div>"
 
     return (
         header
         + f"<div style='padding:0 24px 4px;'>"
-        + _section("DVIR inspection log — last 14 days")
+        + _section("DVIR inspection log — last 7 days")
         + f"</div>"
         + body
     )

@@ -3995,20 +3995,10 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     if not (hos_name_col and hos_date_col):
         return []
 
-    # Check ALL drive/onduty columns — certified (dutyStatusDurations.*) and
-    # pending (pendingDutyStatusDurations.*) — so uncertified recent log days
-    # where certified driveDurationMs=0 but pending > 0 are not filtered out.
-    drive_cols = [c for c in hos.columns if "drivedurationms" in str(c).lower()]
-    onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
-    activity_cols = drive_cols + onduty_cols
+    # Samsara only emits HOS daily log rows for actual working days —
+    # no activity-duration filter needed (and it breaks on uncertified recent logs).
     hos_dt = _to_naive_dt(hos[hos_date_col])
-    if activity_cols:
-        active = pd.Series(False, index=hos.index)
-        for col in activity_cols:
-            active |= pd.to_numeric(hos[col], errors="coerce").fillna(0) > 0
-    else:
-        active = pd.Series(True, index=hos.index)
-    hos_window = hos[active & (hos_dt >= window_start)].copy()
+    hos_window = hos[hos_dt >= window_start].copy()
     if hos_window.empty:
         return []
     working_days_by_driver = (
