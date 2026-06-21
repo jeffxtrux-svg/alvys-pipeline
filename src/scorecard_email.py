@@ -1465,11 +1465,14 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
     # mismatch (see also: column logic alignment a few lines below).
     if "Driver Rate" in sub.columns:
         sub = sub[_col(sub, "Driver Rate").fillna(0) > 0]
-    # Scope to the X-Trux + XFreight asset fleet (matches the X-Trux Overview
-    # section where these charts now live; X-Linx brokerage is excluded).
+    # Scope to the X-Trux + XFreight own-fleet (matches the Rev/Mile tile and
+    # Power BI). _own_fleet_mask drops X-Trux loads brokered to outside carriers
+    # (Corrected Margin % >= holdout) — their miles belong to the carrier, not
+    # our trucks, so including them overstates chart RPM vs the tile.
     office_col = _find_col(sub, OFFICE_COL_NEEDLES)
     if office_col:
         sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    sub = sub[_own_fleet_mask(sub)]
     dates = _to_naive_dt(sub[date_col])
     keep = dates.notna()
     sub = sub.loc[keep]
