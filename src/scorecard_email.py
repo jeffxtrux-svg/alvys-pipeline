@@ -5749,6 +5749,104 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             goal_note = _brief("Rate-per-mile cost is pending the QuickBooks P&amp;L this run "
                                "(office overhead comes from X-Trux + X-Linx Total Expenses).", "mute")
 
+    # RPM synopsis — secondary bottom line explaining the direction, what's
+    # driving it, and where the fleet needs to be. Appears beneath the goal tiles.
+    rpm_synopsis = ""
+    if _isnum(_xt_rpm):
+        _syn: list[str] = []
+
+        # Month-over-month direction (current MTD vs prior completed month bar)
+        if _rpm_c_values and len(_rpm_c_values) >= 2 and _rpm_c_values[-2] > 0:
+            _prev_rpm = _rpm_c_values[-2]
+            _curr_rpm = _rpm_c_values[-1]
+            _delta    = _curr_rpm - _prev_rpm
+            _arrow    = "▲" if _delta >= 0 else "▼"
+            _prev_lbl = (_rpm_c_labels[-2].replace("*", "") if _rpm_c_labels and len(_rpm_c_labels) >= 2 else "prior month")
+            _syn.append(
+                f"Revenue/mile is {_arrow}&nbsp;<b>{'up' if _delta >= 0 else 'down'} {rpm2(abs(_delta))}</b> "
+                f"vs {_prev_lbl} ({rpm(_prev_rpm)}&nbsp;&rarr;&nbsp;{rpm(_xt_rpm)} MTD*)."
+            )
+
+        # Dead-head: quantify the revenue cost or credit vs target
+        _dh     = _xt_asset.get("deadhead")
+        _mi_mtd = fleet.get("miles")
+        if _isnum(_dh) and _isnum(_mi_mtd) and _mi_mtd:
+            _dh_vs = _dh - TARGET_DEADHEAD
+            if _dh_vs > 0.003:
+                _extra = int(_dh_vs * _mi_mtd)
+                _syn.append(
+                    f"Dead-head at {pct(_dh)} is {pct(abs(_dh_vs))} above the {pct(TARGET_DEADHEAD)} target — "
+                    f"the extra {num(_extra)} empty miles cost approximately "
+                    f"<b>{money(_dh_vs * _mi_mtd * _xt_rpm)}</b> in unrealized revenue this month."
+                )
+            elif _dh_vs < -0.003:
+                _syn.append(
+                    f"Dead-head at {pct(_dh)} is {pct(abs(_dh_vs))} below the {pct(TARGET_DEADHEAD)} target — "
+                    f"efficient routing is protecting revenue/mile this month."
+                )
+            else:
+                _syn.append(f"Dead-head at {pct(_dh)} is on plan ({pct(TARGET_DEADHEAD)} goal).")
+
+        # Direct vs broker rate premium — highest-leverage customer-mix signal
+        if (_rpm_d_values and _rpm_b_values
+                and _rpm_d_values[-1] > 0 and _rpm_b_values[-1] > 0):
+            _d_cur  = _rpm_d_values[-1]
+            _b_cur  = _rpm_b_values[-1]
+            _prem   = _d_cur - _b_cur
+            if abs(_prem) > 0.01:
+                _prem_desc = ("premium for direct — growing direct volume is the highest-leverage rate lever available"
+                              if _prem > 0 else
+                              "premium for broker this month — spot market rates are unusually strong")
+                _syn.append(
+                    f"Direct customers run at {rpm(_d_cur)}/mi vs broker at {rpm(_b_cur)}/mi "
+                    f"({rpm(abs(_prem))}/mi {_prem_desc})."
+                )
+
+        # Gap to goal in dollars — makes the shortfall concrete
+        _goal_rpm_v   = g.get("goal_rpm")   if g else None
+        _cost_rpm_v   = g.get("cost_per_mile") if g else None
+        _target_mar_v = g.get("target_margin") if g else None
+        if _isnum(_goal_rpm_v):
+            _gap = _goal_rpm_v - _xt_rpm
+            _gap_total = (_gap * _mi_mtd) if _isnum(_mi_mtd) and _mi_mtd else None
+            if _gap > 0.005:
+                _gap_str = (
+                    f"Against the <b>{rpm(_goal_rpm_v)}/mi</b> goal ({pct(_target_mar_v)} net margin target), "
+                    f"the fleet is <b>{rpm(_gap)}/mi short"
+                    + (f" — approximately <b>{money(_gap_total)}</b> in unrealized margin on this month&rsquo;s mileage" if _isnum(_gap_total) else "")
+                    + ".</b>"
+                )
+                if _isnum(_cost_rpm_v):
+                    if _xt_rpm >= _cost_rpm_v:
+                        _gap_str += (
+                            f" Operations are profitable (above the {rpm(_cost_rpm_v)} break-even) "
+                            f"but have not yet reached the profit margin target."
+                        )
+                    else:
+                        _gap_str += (
+                            f" <b>⚠ Current rate is below fully-loaded break-even ({rpm(_cost_rpm_v)}/mi) — "
+                            f"operations are running at a loss on fully-loaded cost this month.</b>"
+                        )
+                _syn.append(_gap_str)
+            else:
+                _syn.append(
+                    f"At {rpm(_xt_rpm)}/mi the fleet is at or above the {rpm(_goal_rpm_v)}/mi profit goal — "
+                    f"on target margin or better."
+                )
+
+        # Closing call-to-action: where we need to be and how to get there
+        _tgt = _goal_rpm_v or TARGET_RPM
+        _syn.append(
+            f"<b>Where we need to be:</b> <b>{rpm(_tgt)}/mi</b> to reach the "
+            f"{pct(_target_mar_v or 0.05)} net margin target. "
+            f"Primary levers: ① negotiate higher rates on broker spot loads, "
+            f"② shift volume toward higher-rate direct customers, "
+            f"③ keep dead-head at or below {pct(TARGET_DEADHEAD)}."
+        )
+
+        _syn_kind = "good" if (_isnum(_goal_rpm_v) and _xt_rpm >= _goal_rpm_v) else "bad"
+        rpm_synopsis = _brief(" ".join(_syn), _syn_kind)
+
     # X-Trux cost / goal / actual revenue per mile — 6-month trend. Cost and goal
     # only render when the QB overhead leg is available (held flat at the YTD rate);
     # actual rev/mile always renders. Lets the goal read as a living line.
@@ -6295,7 +6393,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
         f"{mtd_note}"
         f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
-        + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
+        + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}{rpm_synopsis}"
            + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
            if goal_tiles else "")
         + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
