@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.decision_report import (  # noqa: E402
-    _md_to_html, _inline, _claude_link, build_decision_report, CLAUDE_PROMPTS)
+    _md_to_html, _inline, _claude_link, build_decision_report, _STATIC_PROMPTS)
 
 
 def test_md_strips_frontmatter_and_renders_table_bold_wikilinks():
@@ -63,7 +63,7 @@ def test_build_report_has_both_sections_and_claude():
     assert "claude.ai/new" in html                                   # discuss-with-Claude links
     assert "Monday, June 15, 2026" in html
     # All starter prompts are present for copy-paste fallback.
-    for _label, prompt in CLAUDE_PROMPTS:
+    for _label, prompt in _STATIC_PROMPTS:
         assert prompt in html
 
 
