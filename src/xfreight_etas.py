@@ -168,27 +168,38 @@ def _remaining_undelivered_stops(load: dict) -> list[dict]:
 
 def _stop_appt_iso(stop: dict) -> str | None:
     """ISO string used for delta calculation (ETA vs. deadline).
-    - APPT → AppointmentDate (fixed time)
+    - APPT  → AppointmentDate (fixed time; truck is late if ETA > appt)
     - WINDOW → StopWindow.End (late only when truck misses the window close)
-    - FCFS → None (no appointment constraint)
+    - FCFS with End → StopWindow.End (receiver closes at End; arriving later = late)
+    - FCFS with no End → None (open-ended FCFS; no hard deadline to track)
     """
     stype = (stop.get("ScheduleType") or "").upper()
     window = stop.get("StopWindow") or {}
     if stype == "APPT":
         return stop.get("AppointmentDate")
+    end = window.get("End")
+    begin = window.get("Begin")
+    if end:
+        # Both WINDOW and FCFS: if a window closes, arriving after close = late.
+        return end
     if stype == "FCFS":
+        # FCFS with no End — truly open-ended (dock open, first come first served).
         return None
-    # WINDOW (or blank/unknown) — use End so the truck is only "late" after the window closes.
-    return window.get("End") or window.get("Begin") or stop.get("AppointmentDate")
+    # WINDOW or unknown type with only Begin (or AppointmentDate fallback)
+    return begin or stop.get("AppointmentDate")
 
 
 def _stop_window_begin_iso(stop: dict) -> str | None:
-    """For WINDOW stops, returns the window open time (display only; not used for delta)."""
+    """Window open time for display purposes (shown as 'Begin – End' in Appt column).
+    Only returned when End also exists, so the display always shows a complete range."""
     stype = (stop.get("ScheduleType") or "").upper()
-    if stype in ("APPT", "FCFS"):
+    if stype == "APPT":
         return None
     window = stop.get("StopWindow") or {}
-    return window.get("Begin")
+    # Show Begin only when End is also present — avoids a half-range like "8am –"
+    if window.get("End") and window.get("Begin"):
+        return window.get("Begin")
+    return None
 
 
 def _is_brokered(load: dict) -> bool:
