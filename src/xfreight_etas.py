@@ -167,13 +167,28 @@ def _remaining_undelivered_stops(load: dict) -> list[dict]:
 
 
 def _stop_appt_iso(stop: dict) -> str | None:
-    """Best appointment ISO string from a stop, regardless of ScheduleType.
-    APPT stops carry AppointmentDate; FCFS stops carry StopWindow.Begin."""
+    """ISO string used for delta calculation (ETA vs. deadline).
+    - APPT → AppointmentDate (fixed time)
+    - WINDOW → StopWindow.End (late only when truck misses the window close)
+    - FCFS → None (no appointment constraint)
+    """
     stype = (stop.get("ScheduleType") or "").upper()
+    window = stop.get("StopWindow") or {}
     if stype == "APPT":
         return stop.get("AppointmentDate")
+    if stype == "FCFS":
+        return None
+    # WINDOW (or blank/unknown) — use End so the truck is only "late" after the window closes.
+    return window.get("End") or window.get("Begin") or stop.get("AppointmentDate")
+
+
+def _stop_window_begin_iso(stop: dict) -> str | None:
+    """For WINDOW stops, returns the window open time (display only; not used for delta)."""
+    stype = (stop.get("ScheduleType") or "").upper()
+    if stype in ("APPT", "FCFS"):
+        return None
     window = stop.get("StopWindow") or {}
-    return window.get("Begin") or window.get("End") or stop.get("AppointmentDate")
+    return window.get("Begin")
 
 
 def _is_brokered(load: dict) -> bool:
@@ -248,6 +263,7 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "consignee_city": _g(last_stop, "Address", "City") or "",
         "consignee_state": _g(last_stop, "Address", "State") or "",
         "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
+        "appt_window_begin_dt": _parse_iso(_stop_window_begin_iso(last_stop)),
         "route_waypoints": route_waypoints,
         "broker": load.get("CustomerName") if _is_brokered(load) else "",
         "customer_name": load.get("CustomerName") or "",
@@ -372,7 +388,12 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                         {"title": "Broker" if r.get("broker") else "Customer",
                          "value": r.get("customer_name") or "—"},
                         {"title": "Destination", "value": dest},
-                        {"title": "Appt", "value": _fmt_dt_ct(r["appt_dt"]) or "—"},
+                        {"title": "Appt",
+                         "value": (
+                             f"{_fmt_dt_ct(r['appt_window_begin_dt'])} – {_fmt_dt_ct(r['appt_dt'])}"
+                             if r.get("appt_window_begin_dt")
+                             else _fmt_dt_ct(r["appt_dt"]) or "—"
+                         )},
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
                         {"title": "HOS Left",
                          "value": (_fmt_hos(r.get("hos_remaining_s"))
@@ -588,6 +609,16 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
 # Report rendering
 # ----------------------------------------------------------------------
 INK = "#1a1a1a"
+
+
+def _fmt_appt_cell(row: dict) -> str:
+    """Format the Appt column value.  WINDOW stops show 'Begin – End'; APPT shows the fixed time."""
+    end_str = _fmt_dt_ct(row.get("appt_dt"))
+    begin_dt = row.get("appt_window_begin_dt")
+    if begin_dt:
+        begin_str = _fmt_dt_ct(begin_dt)
+        return f"{begin_str}&nbsp;–&nbsp;{end_str}"
+    return end_str or "—"
 MUTE = "#6b6b6b"
 AMBER = "#d97706"
 LINE = "#e5e5e5"
@@ -643,7 +674,7 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
                 f"<td style='padding:8px 10px;color:{MUTE};'>{shipper_loc or '—'}</td>"
                 f"<td style='padding:8px 10px;'>{r['consignee'] or '—'}</td>"
                 f"<td style='padding:8px 10px;color:{MUTE};'>{consignee_loc or '—'}</td>"
-                f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_dt_ct(r['appt_dt'])}</td>"
+                f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_appt_cell(r)}</td>"
                 f"<td style='padding:8px 10px;white-space:nowrap;'>{eta_str}</td>"
                 f"<td style='padding:8px 10px;color:{delta_color};font-weight:700;white-space:nowrap;'>{delta_txt}</td>"
                 f"<td style='padding:8px 10px;color:{hos_color};white-space:nowrap;font-weight:{'700' if r.get('hos_delay') else '400'};'>"
@@ -718,7 +749,8 @@ def _render_xlsx(rows: list[dict], generated_at: datetime) -> bytes:
             f"{r['shipper_city']}, {r['shipper_state']}".strip(", "),
             r["consignee"],
             f"{r['consignee_city']}, {r['consignee_state']}".strip(", "),
-            _fmt_dt_ct(r["appt_dt"]),
+            (f"{_fmt_dt_ct(r['appt_window_begin_dt'])} – {_fmt_dt_ct(r['appt_dt'])}"
+             if r.get("appt_window_begin_dt") else _fmt_dt_ct(r["appt_dt"])),
             _fmt_dt_ct(r.get("eta_dt")),
             r.get("delta_min", ""),
             hos_cell,
