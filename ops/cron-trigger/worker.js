@@ -1,5 +1,4 @@
-// Cloudflare Worker — off-GitHub backstop trigger for the XFreight morning
-// emails (executive scorecard brief + daily MTD upload + safety brief).
+// Cloudflare Worker — off-GitHub backstop trigger for XFreight automations.
 //
 // Why this exists
 // ---------------
@@ -12,19 +11,30 @@
 // This Worker runs on Cloudflare's scheduler — completely outside GitHub — so a
 // GitHub cron outage can't take it down too. It's the one layer that survives.
 //
-// What it triggers (and why it never double-sends)
-// ------------------------------------------------
-// It dispatches the *healthcheck* workflows, NOT the primary jobs:
-//   * scorecard_healthcheck.yml
-//   * daily_upload_healthcheck.yml
-//   * safety_compliance_healthcheck.yml
-// Each healthcheck checks the OneDrive "sent-{today}.txt" marker and only
-// re-fires the real scorecard / daily-upload / safety job when today's email
-// hasn't gone out yet. So triggering this every morning is idempotent:
-//   - Normal morning (GitHub cron worked, marker present)  → healthcheck no-ops.
-//   - Drop morning   (no marker)                           → healthcheck recovers.
-// workflow_dispatch also bypasses the healthchecks' CT-hour gate, so they run
-// immediately regardless of the season/hour the Worker fires.
+// What it triggers
+// ----------------
+// 1. Morning emails (once/day, 5:30am Central) — dispatches the *healthcheck*
+//    workflows, NOT the primary jobs:
+//      * scorecard_healthcheck.yml
+//      * daily_upload_healthcheck.yml
+//      * safety_compliance_healthcheck.yml
+//    Each healthcheck checks the OneDrive "sent-{today}.txt" marker and only
+//    re-fires the real job when today's email hasn't gone out yet. So firing
+//    them every morning is idempotent:
+//      - Normal morning (GitHub cron worked, marker present)  → healthcheck no-ops.
+//      - Drop morning   (no marker)                           → healthcheck recovers.
+//    workflow_dispatch bypasses the healthchecks' CT-hour gate, so they run
+//    immediately regardless of the season/hour the Worker fires.
+//
+// 2. XFreight ETA tracker (every 30 min, at :15/:45) — dispatches the live
+//    tracker workflow (xfreight_etas.yml) directly. GitHub's own cron fires it
+//    at :00/:30; this Worker fires it at :15/:45, so the two INDEPENDENT
+//    schedulers interleave to a 15-min effective cadence. If GitHub drops a
+//    slot (or has a total cron outage), Cloudflare still refreshes the tracker
+//    30 min later, and vice-versa. The ETA run is idempotent — it fully
+//    rewrites the OneDrive file and only posts a Teams card when the late-load
+//    set actually changes (state tracked in eta_state.json) — so a redundant
+//    dispatch never produces duplicate alerts.
 //
 // Setup (one time) — see README.md in this folder for the full walkthrough:
 //   1. Mint a fine-grained GitHub PAT scoped to jeffxtrux-svg/alvys-pipeline
@@ -39,11 +49,19 @@ const REPO = "alvys-pipeline";
 const REF = "main";
 
 // Marker-gated healthchecks — they self-dedupe, so firing them daily is safe.
-const WORKFLOWS = [
+const HEALTHCHECK_WORKFLOWS = [
   "scorecard_healthcheck.yml",
   "daily_upload_healthcheck.yml",
   "safety_compliance_healthcheck.yml",
 ];
+
+// The live ETA tracker. Idempotent (rewrites OneDrive, Teams posts only on
+// state change), so a redundant dispatch is always safe.
+const ETA_WORKFLOW = "xfreight_etas.yml";
+
+// The cron expression (in wrangler.toml) reserved for the ETA tracker. Fires at
+// :15 and :45 to interleave with GitHub's :00/:30 cron on xfreight_etas.yml.
+const ETA_CRON = "15,45 * * * *";
 
 async function dispatch(workflow, token) {
   const url = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${workflow}/dispatches`;
@@ -68,8 +86,8 @@ async function dispatch(workflow, token) {
 }
 
 // Current hour-of-day in America/Chicago (auto-handles CST vs CDT). Used to
-// gate the two UTC cron slots down to the single one that lands at 5:30am
-// Central in the current season.
+// gate the two morning UTC cron slots down to the single one that lands at
+// 5:30am Central in the current season.
 function centralHour() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Chicago",
@@ -79,9 +97,9 @@ function centralHour() {
   return parseInt(parts.find((p) => p.type === "hour").value, 10);
 }
 
-async function dispatchAll(token) {
+async function dispatchAll(workflows, token) {
   const results = await Promise.allSettled(
-    WORKFLOWS.map((wf) => dispatch(wf, token)),
+    workflows.map((wf) => dispatch(wf, token)),
   );
   const failures = results
     .filter((r) => r.status === "rejected")
@@ -94,28 +112,44 @@ async function dispatchAll(token) {
 }
 
 export default {
-  // Fired by the cron triggers in wrangler.toml. Two UTC slots are armed
-  // (one per DST season); the hour-gate lets only the 5:30am-Central one
-  // through and no-ops the off-season slot.
+  // Fired by the cron triggers in wrangler.toml. Cloudflare passes the matching
+  // cron string as event.cron, so we branch on it:
+  //   * ETA_CRON ("15,45 * * * *") → dispatch the ETA tracker, all day.
+  //   * the two morning slots      → dispatch the healthchecks, gated to 5am CT.
   async scheduled(event, env, ctx) {
     if (!env.GH_TOKEN) throw new Error("GH_TOKEN secret is not set");
+
+    // ETA tracker: every 30 min at :15/:45, interleaving with GitHub's :00/:30
+    // cron so a dropped slot on either scheduler is covered by the other.
+    if (event.cron === ETA_CRON) {
+      await dispatch(ETA_WORKFLOW, env.GH_TOKEN);
+      return;
+    }
+
+    // Morning email backstop: only the 5am-Central slot passes the gate.
     const h = centralHour();
     if (h !== 5) {
       console.log(`Central hour is ${h}, not the 5am slot — skipping.`);
       return;
     }
-    await dispatchAll(env.GH_TOKEN);
+    await dispatchAll(HEALTHCHECK_WORKFLOWS, env.GH_TOKEN);
   },
 
-  // Manual escape hatch: visit the Worker's URL (or curl it) to fire the
-  // healthchecks on demand without waiting for the next cron slot.
+  // Manual escape hatch: hit the Worker's URL to fire on demand without waiting
+  // for cron. Path "/eta" dispatches the ETA tracker; anything else dispatches
+  // the morning healthchecks.
   async fetch(request, env, ctx) {
     if (!env.GH_TOKEN) {
       return new Response("GH_TOKEN secret is not set\n", { status: 500 });
     }
+    const path = new URL(request.url).pathname;
     try {
-      await dispatchAll(env.GH_TOKEN);
-      return new Response(`Dispatched: ${WORKFLOWS.join(", ")}\n`);
+      if (path === "/eta") {
+        await dispatch(ETA_WORKFLOW, env.GH_TOKEN);
+        return new Response(`Dispatched: ${ETA_WORKFLOW}\n`);
+      }
+      await dispatchAll(HEALTHCHECK_WORKFLOWS, env.GH_TOKEN);
+      return new Response(`Dispatched: ${HEALTHCHECK_WORKFLOWS.join(", ")}\n`);
     } catch (e) {
       return new Response(`Error: ${e.message}\n`, { status: 502 });
     }
