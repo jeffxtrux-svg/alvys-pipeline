@@ -2456,27 +2456,79 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
     thead = f"<thead><tr>{thead_cells}</tr></thead>"
 
     def _driver_block(drv: str, rows: list[dict]) -> str:
-        days    = worked.get(drv, 0)
-        exp     = days * 4   # pre+post × tractor+trailer (matches tile formula)
-        done    = len(rows)
-        missing = max(0, exp - done)
-        pct     = round(done / exp * 100) if exp > 0 else 0
-        pct_color = BAD if pct < 80 else (WARN if pct < 95 else GOOD)
-        summary = (
-            f"Required: <b>{exp}</b>&nbsp;&nbsp;"
-            f"Completed: <b>{done}</b>&nbsp;&nbsp;"
-            f"Missing: <b>{missing}</b>&nbsp;&nbsp;"
-            f"<span style='color:{pct_color};font-weight:800;'>{pct}%</span>"
+        # Working days: prefer HOS (accurate — includes days with zero DVIRs).
+        # Fall back to unique inspection dates when the HOS name doesn't match
+        # (name mismatch causes worked.get() to return 0 even for active drivers).
+        hos_days = worked.get(drv, 0)
+        insp_dates = {r["dt"][:10] for r in rows if r["dt"] not in ("&mdash;", "")}
+        days = hos_days if hos_days > 0 else len(insp_dates)
+
+        # Tractor vs trailer split (set by unit_type in the row dict)
+        trac_done = sum(1 for r in rows if r["vehicle"] != "&mdash;")
+        trlr_done = sum(1 for r in rows if r["trailer"] != "&mdash;")
+        comb_done = len(rows)
+
+        exp_t  = days * 2
+        exp_tr = days * 2
+        exp_c  = days * 4
+
+        miss_t  = max(0, exp_t  - trac_done)
+        miss_tr = max(0, exp_tr - trlr_done)
+        miss_c  = max(0, exp_c  - comb_done)
+
+        pct_t  = min(round(trac_done / exp_t  * 100), 100) if exp_t  > 0 else 0
+        pct_tr = min(round(trlr_done / exp_tr * 100), 100) if exp_tr > 0 else 0
+        pct_c  = min(round(comb_done / exp_c  * 100), 100) if exp_c  > 0 else 0
+
+        def _pc(p: int) -> str:
+            return BAD if p < 80 else (WARN if p < 95 else GOOD)
+
+        def _sum_row(label: str, exp: int, done: int, miss: int, pct: int) -> str:
+            mc = BAD if miss > 0 else GOOD
+            return (
+                f"<tr>"
+                f"<td style='padding:2px 10px 2px 0;font-size:9.5px;color:{MUTE};"
+                f"font-weight:700;text-transform:uppercase;letter-spacing:0.5px;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};'>{label}</td>"
+                f"<td style='padding:2px 10px;font-size:10.5px;text-align:right;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};'>"
+                f"Req&nbsp;<b>{exp}</b></td>"
+                f"<td style='padding:2px 10px;font-size:10.5px;text-align:right;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};'>"
+                f"Done&nbsp;<b>{done}</b></td>"
+                f"<td style='padding:2px 10px;font-size:10.5px;text-align:right;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};"
+                f"color:{mc};'>Missing&nbsp;<b>{miss}</b></td>"
+                f"<td style='padding:2px 0 2px 10px;font-size:12px;font-weight:800;"
+                f"color:{_pc(pct)};text-align:right;white-space:nowrap;"
+                f"border-bottom:1px solid {LINE};'>{pct}%</td>"
+                f"</tr>"
+            )
+
+        summary_table = (
+            f"<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;'>"
+            + _sum_row("Tractor",  exp_t,  trac_done, miss_t,  pct_t)
+            + _sum_row("Trailer",  exp_tr, trlr_done, miss_tr, pct_tr)
+            + _sum_row("Combined", exp_c,  comb_done, miss_c,  pct_c)
+            + f"</table>"
         )
+
+        day_src = "" if hos_days > 0 else "&ensp;<span style='font-size:9px;color:{MUTE};'>(days from inspections)</span>"
         drv_header = (
-            f"<div style='display:flex;justify-content:space-between;align-items:baseline;"
-            f"padding:18px 0 6px;border-bottom:2px solid {INK};margin-bottom:0;'>"
-            f"<span style='font-size:13px;font-weight:700;color:{INK};letter-spacing:0.3px;'>"
-            f"{drv}</span>"
+            f"<div style='padding:18px 0 10px;border-bottom:2px solid {INK};'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-start;"
+            f"flex-wrap:wrap;gap:8px;'>"
+            f"<div>"
+            f"<span style='font-size:13px;font-weight:700;color:{INK};"
+            f"letter-spacing:0.3px;'>{drv}</span>"
             f"<span style='font-size:9.5px;color:{MUTE};margin-left:10px;'>"
-            f"·&nbsp;{done} inspection{'s' if done != 1 else ''}</span>"
-            f"<span style='flex:1;'></span>"
-            f"<span style='font-size:11px;color:{INK};'>{summary}</span>"
+            f"·&nbsp;{comb_done} inspection{'s' if comb_done != 1 else ''}"
+            f"&ensp;·&ensp;{days} working day{'s' if days != 1 else ''}"
+            + ("" if hos_days > 0 else "&ensp;<span style='font-size:9px;'>(est from inspections)</span>")
+            + f"</span>"
+            f"</div>"
+            f"<div>{summary_table}</div>"
+            f"</div>"
             f"</div>"
         )
         tbody_rows = ""
