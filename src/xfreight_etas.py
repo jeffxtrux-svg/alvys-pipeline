@@ -264,6 +264,14 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
     first_stop = stops[0] if stops else {}
     last_stop = stops[-1] if stops else {}
 
+    # Diagnostic: log the last stop's scheduling fields so we can verify
+    # ScheduleType + StopWindow values coming out of Alvys.
+    _stype = (last_stop.get("ScheduleType") or "").upper() or "—"
+    _win = last_stop.get("StopWindow") or {}
+    log.info("load %s last_stop sched: type=%s appt=%s window_begin=%s window_end=%s",
+             load.get("LoadNumber"), _stype,
+             last_stop.get("AppointmentDate"), _win.get("Begin"), _win.get("End"))
+
     return {
         "load_no": load.get("LoadNumber") or load.get("Number"),
         "truck_name": str(truck_name),
