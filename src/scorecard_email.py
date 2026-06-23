@@ -88,10 +88,13 @@ DRIVER_TARGET_MILES = 2750  # weekly miles target for the mileage page below-tar
 #   RPM_GOAL_OVERHEAD_COMPANIES comma-separated QuickBooks company names whose
 #                               Total Expenses make up the shared office overhead
 #                               pool that the X-Trux miles must absorb.
-#   RPM_GOAL_PAY_WINDOW_DAYS    trailing window for the driver-pay-per-mile read,
-#                               so the goal tracks the *current* weekly O/O rate.
-#                               Short (10d default) because the rate changes weekly;
-#                               the pay read is restricted to settled loads so the
+#   RPM_GOAL_PAY_WINDOW_DAYS    OPTIONAL trailing-window override (in days) for the
+#                               driver-pay-per-mile read. When unset (default), the
+#                               read uses month-to-date — resets at the 1st of each
+#                               month so the cost/mile matches how accounting reads
+#                               the books. Setting this env var forces a fixed
+#                               trailing window instead (e.g. 10 = old behavior).
+#                               The pay read is restricted to settled loads so the
 #                               recent not-yet-settled loads don't drag it down.
 #   RPM_GOAL_WORKSHEET_OVERHEAD the latest office-cost-per-mile from the manually
 #                               kept "Goals and Trends.xlsx" (Jeff's Number tab),
@@ -101,7 +104,8 @@ DRIVER_TARGET_MILES = 2750  # weekly miles target for the mileage page below-tar
 #                               default; 0.85 would push 15% onto brokerage).
 RPM_GOAL_TARGET_OR = 0.95
 RPM_GOAL_OVERHEAD_COMPANIES = ("X-Trux Inc", "X-Linx Inc")
-RPM_GOAL_PAY_WINDOW_DAYS = 10
+RPM_GOAL_PAY_WINDOW_DAYS = 10  # fallback days when MTD mode is explicitly disabled
+                               # via env override; default behavior is MTD (no override)
 RPM_GOAL_WORKSHEET_OVERHEAD = 0.88
 RPM_GOAL_OVERHEAD_ALLOC = 1.0
 # Liability insurance was tracked as a separate $0.07/mi line while the office-
@@ -1841,8 +1845,9 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         return None
 
     target_or = target_or if target_or is not None else _env_float("RPM_GOAL_TARGET_OR", RPM_GOAL_TARGET_OR)
-    pay_window_days = int(pay_window_days if pay_window_days is not None
-                          else _env_float("RPM_GOAL_PAY_WINDOW_DAYS", RPM_GOAL_PAY_WINDOW_DAYS))
+    # pay_window_days resolved AFTER `now` is computed below — see "Resolve
+    # pay window" block. Caller-supplied arg / env override still win, but the
+    # default is now month-to-date instead of a fixed 10-day trailing window.
     worksheet_overhead = (worksheet_overhead if worksheet_overhead is not None
                           else _env_float("RPM_GOAL_WORKSHEET_OVERHEAD", RPM_GOAL_WORKSHEET_OVERHEAD))
     if overhead_companies is None:
@@ -1886,6 +1891,25 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
     rev = _col_any(sub, ["Customer Revenue", "Revenue"]).fillna(0)
 
     now = pd.Timestamp.now()
+
+    # Resolve pay window.
+    # Default: month-to-date — resets at the 1st of each month so the cost/mile
+    # tracks the current month's actuals (matches how accounting reads numbers).
+    # Caller arg wins, then RPM_GOAL_PAY_WINDOW_DAYS env (force a fixed trailing
+    # window), else MTD-elapsed days.
+    if pay_window_days is None:
+        env_val = os.environ.get("RPM_GOAL_PAY_WINDOW_DAYS", "").strip()
+        if env_val:
+            pay_window_days = int(float(env_val))
+            pay_window_is_mtd = False
+        else:
+            _mtd_start = now.normalize().replace(day=1)
+            pay_window_days = max(1, (now.normalize() - _mtd_start).days + 1)
+            pay_window_is_mtd = True
+    else:
+        pay_window_days = int(pay_window_days)
+        pay_window_is_mtd = False
+
     # Recent, settled loads only. The owner-op rate changes weekly, so a short
     # trailing window tracks the current rate — but the freshest loads carry miles
     # whose driver pay hasn't settled yet ($0), and including them would drag the
@@ -2003,6 +2027,7 @@ def compute_rpm_goal(alvys_sheets: dict[str, pd.DataFrame] | None, qb_pnl: dict 
         "pay_window_days": pay_window_days,
         "pay_window_used": pay_window_used,
         "pay_window_fallback": pay_window_fallback,
+        "pay_window_is_mtd": pay_window_is_mtd,
         "pay_loads": pay_loads,
         "pay_miles": pay_miles or None,
         "insurance_surcharge": insurance_surcharge,
@@ -5665,21 +5690,31 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
             gap_kind, gap_sub, gap_val = "mute", _pill("need MTD rev/mi", "mute", nowrap=False), "n/a"
         # Cost-per-mile sub-pill spells out the time windows behind each
         # component so readers can audit the basis at a glance:
-        #   driver pay = trailing N-day window (10d default, widens to
-        #               30/60/90 on light weeks via RPM_GOAL_FALLBACK_WINDOWS)
+        #   driver pay = month-to-date by default (resets at the 1st), widens
+        #               to 30/60/90 on early-month sparsity via
+        #               RPM_GOAL_FALLBACK_WINDOWS; env override
+        #               RPM_GOAL_PAY_WINDOW_DAYS forces a fixed trailing window
         #   overhead   = fiscal-YTD (QB P&L is "This Fiscal Year")
         _pay_win = g.get("pay_window_used") or g.get("pay_window_days") or "?"
+        # In MTD mode the pay leg covers the current month — labels read "MTD"
+        # instead of "Nd"; when a sparsity fallback widened the window
+        # (pay_window_fallback=True) we revert to the "Nd" form to make the
+        # actual coverage transparent.
+        _mtd_mode = g.get("pay_window_is_mtd") and not g.get("pay_window_fallback")
+        _cost_label = ("MTD pay + YTD overhead" if _mtd_mode
+                       else f"{_pay_win}d pay + YTD overhead")
+        _actual_label = ("Costing Based on Month-to-Date" if _mtd_mode
+                         else f"Costing Based on Last {_pay_win} Days")
         # Tile sub-line pills under the rate-per-mile tiles get nowrap=False
-        # so longer descriptive text ("10d pay + YTD overhead",
-        # "Costing Based on Last 10 Days") wraps to a second line inside the
+        # so longer descriptive text ("MTD pay + YTD overhead",
+        # "Costing Based on Month-to-Date") wraps to a second line inside the
         # tile rather than overflowing and getting clipped.
         goal_tiles = (
             _tile("Cost / mile &middot; X-Trux", rpm(g.get("cost_per_mile")),
-                  _pill(f"{_pay_win}d pay + YTD overhead", "mute", nowrap=False))
+                  _pill(_cost_label, "mute", nowrap=False))
             + _tile("Goal rate / mile", rpm(g.get("goal_rpm")), goal_pill)
             + _tile("Actual / mile &middot; recent", rpm(g.get("actual_rpm")),
-                    _pill(f"Costing Based on Last {g.get('pay_window_used') or g.get('pay_window_days')} Days",
-                          "mute", nowrap=False))
+                    _pill(_actual_label, "mute", nowrap=False))
             + _tile("Gap to goal / mile", gap_val, gap_sub))
         # Plain-language breakdown so the number is auditable from the email itself.
         _pp, _oh, _cpm = g.get("pay_per_mile"), g.get("overhead_per_mile"), g.get("cost_per_mile")
