@@ -6,15 +6,22 @@ owner (Audra first, then Jackson + Dan).
 
 Each card is a read-only summary of today's action items with severity
 badges, days-open carry-forward, and occurrence escalation flags.  Each
-item has its own "📋 Record action" button linking to a Microsoft Form
-(TEAMS_FORM_URL) where the owner logs what they did; the form's Power
-Automate flow writes a row into Accountability Log.xlsx in
-OneDrive/Safety/ — no Premium license required.
+item has two buttons:
+  📋 Record action — links to the main Microsoft Form (TEAMS_FORM_URL)
+      where the owner logs coaching / corrective action taken.
+  🚫 Dismiss — links to a lightweight dismiss form (TEAMS_DISMISS_FORM_URL)
+      for false reports or non-issues. Pre-fills the same fields so the
+      Power Automate flow can write a "Dismissed" row to Accountability
+      Log.xlsx, which triggers the existing suppression pipeline and removes
+      the item from tomorrow's card. The button is hidden when
+      TEAMS_DISMISS_FORM_URL is not configured.
 
 GitHub Secrets used:
-  TEAMS_SAFETY_WEBHOOK  — incoming webhook URL
-  TEAMS_FORM_URL        — Microsoft Form fill-in URL (optional; button
-                          is hidden when not set)
+  TEAMS_SAFETY_WEBHOOK      — incoming webhook URL
+  TEAMS_FORM_URL            — Microsoft Form fill-in URL (optional; button
+                              hidden when not set)
+  TEAMS_DISMISS_FORM_URL    — Lightweight dismiss form URL (optional; button
+                              hidden when not set)
 """
 
 import datetime
@@ -100,8 +107,8 @@ def _prefill_url(
 # Card builder
 # ---------------------------------------------------------------------------
 
-def _item_block(item: dict, form_url: str = "") -> dict:
-    """One Container block per accountability item with its own action button."""
+def _item_block(item: dict, form_url: str = "", dismiss_url: str = "") -> dict:
+    """One Container block per accountability item with its own action buttons."""
     sev    = item.get("severity", "medium")
     emoji  = _SEV_EMOJI.get(sev, "🟡")
     color  = _SEV_COLOR.get(sev, "Accent")
@@ -152,18 +159,26 @@ def _item_block(item: dict, form_url: str = "") -> dict:
         },
     ]
 
+    buttons: list[dict] = []
     if form_url:
+        buttons.append({
+            "type": "Action.OpenUrl",
+            "title": "📋 Record action",
+            "url": form_url,
+            "style": "positive",
+        })
+    if dismiss_url:
+        buttons.append({
+            "type": "Action.OpenUrl",
+            "title": "🚫 Dismiss",
+            "url": dismiss_url,
+            "style": "destructive",
+        })
+    if buttons:
         block_items.append({
             "type": "ActionSet",
             "spacing": "Small",
-            "actions": [
-                {
-                    "type": "Action.OpenUrl",
-                    "title": "📋 Record action",
-                    "url": form_url,
-                    "style": "positive",
-                }
-            ],
+            "actions": buttons,
         })
 
     return {
@@ -180,6 +195,7 @@ def build_owner_card(
     today: datetime.date,
     run_url: str = "",
     form_url: str = "",
+    dismiss_url: str = "",
 ) -> dict:
     """Return the full Teams Adaptive Card payload for one owner."""
     if not items:
@@ -239,8 +255,9 @@ def build_owner_card(
     ]
 
     for item in sorted_items:
-        item_url = _prefill_url(form_url, item, today, owner_label) if form_url else ""
-        body.append(_item_block(item, item_url))
+        item_url    = _prefill_url(form_url,    item, today, owner_label) if form_url    else ""
+        dismiss_item_url = _prefill_url(dismiss_url, item, today, owner_label) if dismiss_url else ""
+        body.append(_item_block(item, item_url, dismiss_item_url))
 
     actions: list[dict] = []
     if run_url:
@@ -280,6 +297,7 @@ def post_adaptive_cards(
     webhook: str,
     run_url: str = "",
     form_url: str = "",
+    dismiss_url: str = "",
 ) -> None:
     """Read accountability JSON and POST Adaptive Cards to Teams webhook."""
     if not webhook:
@@ -301,7 +319,7 @@ def post_adaptive_cards(
         if not items:
             print(f"{label}: no action items today — skipping card.")
             return
-        payload = build_owner_card(label, items, today, run_url, form_url)
+        payload = build_owner_card(label, items, today, run_url, form_url, dismiss_url)
         if not payload:
             return
         resp = _requests.post(webhook, json=payload, timeout=30)
@@ -318,9 +336,10 @@ def post_adaptive_cards(
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    webhook  = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
-    run_url  = os.environ.get("RUN_URL", "").strip()
-    form_url = os.environ.get("TEAMS_FORM_URL", "").strip()
+    webhook      = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
+    run_url      = os.environ.get("RUN_URL", "").strip()
+    form_url     = os.environ.get("TEAMS_FORM_URL", "").strip()
+    dismiss_url  = os.environ.get("TEAMS_DISMISS_FORM_URL", "").strip()
 
     today = datetime.date.today()
     acc_path = Path(f"output/accountability-{today.isoformat()}.json")
@@ -332,7 +351,7 @@ def main() -> int:
         print(f"No accountability JSON found for {today} — skipping Teams post.")
         return 0
 
-    post_adaptive_cards(acc_path, webhook, run_url, form_url)
+    post_adaptive_cards(acc_path, webhook, run_url, form_url, dismiss_url)
     return 0
 
 
