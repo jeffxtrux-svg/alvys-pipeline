@@ -264,8 +264,6 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
     first_stop = stops[0] if stops else {}
     last_stop = stops[-1] if stops else {}
 
-    # Diagnostic: log the last stop's scheduling fields so we can verify
-    # ScheduleType + StopWindow values coming out of Alvys.
     _stype = (last_stop.get("ScheduleType") or "").upper() or "—"
     _win = last_stop.get("StopWindow") or {}
     log.info("load %s last_stop sched: type=%s appt=%s window_begin=%s window_end=%s",
@@ -283,6 +281,14 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "consignee_state": _g(last_stop, "Address", "State") or "",
         "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
         "appt_window_begin_dt": _parse_iso(_stop_window_begin_iso(last_stop)),
+        "appt_stype": _stype,          # "APPT" / "WINDOW" / "FCFS" / "—"
+        # For FCFS-with-Begin-only: the dock open time, shown as "FCFS 8:00am".
+        # Distinct from appt_window_begin_dt (which is the left side of "Begin – End").
+        "_fcfs_open_dt": (
+            _parse_iso(_win.get("Begin"))
+            if _stype == "FCFS" and not _win.get("End") and _win.get("Begin")
+            else None
+        ),
         "route_waypoints": route_waypoints,
         "broker": load.get("CustomerName") if _is_brokered(load) else "",
         "customer_name": load.get("CustomerName") or "",
@@ -411,7 +417,9 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                          "value": (
                              f"{_fmt_dt_ct(r['appt_window_begin_dt'])} – {_fmt_dt_ct(r['appt_dt'])}"
                              if r.get("appt_window_begin_dt")
-                             else _fmt_dt_ct(r["appt_dt"]) or "—"
+                             else (f"FCFS {_fmt_dt_ct(r['_fcfs_open_dt'])}"
+                                   if r.get("_fcfs_open_dt")
+                                   else _fmt_dt_ct(r.get("appt_dt")) or "—")
                          )},
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
                         {"title": "HOS Left",
@@ -631,13 +639,25 @@ INK = "#1a1a1a"
 
 
 def _fmt_appt_cell(row: dict) -> str:
-    """Format the Appt column value.  WINDOW stops show 'Begin – End'; APPT shows the fixed time."""
+    """Format the Appt column.
+    - APPT          → fixed time   e.g. "Tue Jun 23, 08:00am"
+    - WINDOW/FCFS with End → "Begin – End"  e.g. "8:00am – 5:00pm"
+    - FCFS with Begin only (no End) → "FCFS 8:00am"  (dock open time, no close deadline)
+    - No schedule info → "—"
+    """
     end_str = _fmt_dt_ct(row.get("appt_dt"))
     begin_dt = row.get("appt_window_begin_dt")
-    if begin_dt:
-        begin_str = _fmt_dt_ct(begin_dt)
-        return f"{begin_str}&nbsp;–&nbsp;{end_str}"
-    return end_str or "—"
+    if begin_dt and end_str:
+        return f"{_fmt_dt_ct(begin_dt)}&nbsp;–&nbsp;{end_str}"
+    if end_str:
+        return end_str
+    # FCFS with Begin only — show open time with label so dispatch knows the dock opens then
+    stype = row.get("appt_stype", "")
+    if stype == "FCFS":
+        win_begin = row.get("_fcfs_open_dt")
+        if win_begin:
+            return f"FCFS&nbsp;{_fmt_dt_ct(win_begin)}"
+    return "—"
 MUTE = "#6b6b6b"
 AMBER = "#d97706"
 LINE = "#e5e5e5"
