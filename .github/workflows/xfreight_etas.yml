@@ -12,9 +12,15 @@
 # enough that Mapbox usage stays well under the free tier even with ~20 active
 # trucks (≈30k calls/mo vs Mapbox's 100k/mo free Directions allotment).
 #
-# Reliability note: GitHub cron is best-effort. Dropping a slot loses one
-# 30-min snapshot, which is acceptable for a live tracker — the next slot
-# fires 30 min later and the OneDrive file refreshes. No healthcheck needed.
+# Reliability note: GitHub cron is best-effort and silently drops slots under
+# load (observed a ~1h44m gap on 2026-06-21 when several */30 slots dropped in
+# a row). For redundancy the Cloudflare Worker in ops/cron-trigger/ ALSO
+# dispatches this workflow, on Cloudflare's independent scheduler, at :15/:45 —
+# interleaving with the :00/:30 GitHub cron below for a 15-min effective
+# cadence. The two schedulers share no infrastructure, so a GitHub cron outage
+# can't stop the refresh. The run is idempotent (rewrites the OneDrive file;
+# Teams posts only on a late-load-set change via eta_state.json), so a redundant
+# dispatch never duplicates alerts.
 #
 # Required GitHub Secrets:
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET

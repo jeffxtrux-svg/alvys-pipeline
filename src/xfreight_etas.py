@@ -97,13 +97,13 @@ def _fmt_delta(minutes: int | None) -> tuple[str, str]:
     """Return (display_text, css_color) for the Delta column."""
     if minutes is None:
         return ("—", "#999")
-    if minutes <= -45:
-        return (f"{-minutes} min late", "#c41e2a")  # red
+    if minutes <= _LATE_THRESHOLD_MIN:
+        return (f"{-minutes} min late", RED)
     if minutes < 0:
-        return (f"{-minutes} min late", "#d97706")  # amber
+        return (f"{-minutes} min late", AMBER)
     if minutes <= 30:
         return (f"{minutes} min early", "#16a34a")  # green
-    return (f"{minutes} min early", "#1a1a1a")      # neutral early
+    return (f"{minutes} min early", INK)
 
 
 # ----------------------------------------------------------------------
@@ -161,14 +161,45 @@ def _next_undelivered_stop(load: dict) -> dict | None:
     return None
 
 
+def _remaining_undelivered_stops(load: dict) -> list[dict]:
+    """All stops not yet arrived at, in order."""
+    return [s for s in (load.get("Stops") or []) if not s.get("ArrivedAt")]
+
+
 def _stop_appt_iso(stop: dict) -> str | None:
-    """Best appointment ISO string from a stop, regardless of ScheduleType.
-    APPT stops carry AppointmentDate; FCFS stops carry StopWindow.Begin."""
+    """ISO string used for delta calculation (ETA vs. deadline).
+    - APPT  → AppointmentDate (fixed time; truck is late if ETA > appt)
+    - WINDOW → StopWindow.End (late only when truck misses the window close)
+    - FCFS with End → StopWindow.End (receiver closes at End; arriving later = late)
+    - FCFS with no End → None (open-ended FCFS; no hard deadline to track)
+    """
     stype = (stop.get("ScheduleType") or "").upper()
+    window = stop.get("StopWindow") or {}
     if stype == "APPT":
         return stop.get("AppointmentDate")
+    end = window.get("End")
+    begin = window.get("Begin")
+    if end:
+        # Both WINDOW and FCFS: if a window closes, arriving after close = late.
+        return end
+    if stype == "FCFS":
+        # FCFS with no End — truly open-ended (dock open, first come first served).
+        return None
+    # WINDOW or unknown type with only Begin (or AppointmentDate fallback)
+    return begin or stop.get("AppointmentDate")
+
+
+def _stop_window_begin_iso(stop: dict) -> str | None:
+    """Window open time for display purposes (shown as 'Begin – End' in Appt column).
+    Only returned when End also exists, so the display always shows a complete range."""
+    stype = (stop.get("ScheduleType") or "").upper()
+    if stype == "APPT":
+        return None
     window = stop.get("StopWindow") or {}
-    return window.get("Begin") or window.get("End") or stop.get("AppointmentDate")
+    # Show Begin only when End is also present — avoids a half-range like "8am –"
+    if window.get("End") and window.get("Begin"):
+        return window.get("Begin")
+    return None
 
 
 def _is_brokered(load: dict) -> bool:
@@ -212,20 +243,32 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
     if not truck_name:
         return None
 
-    next_stop = _next_undelivered_stop(load)
-    if not next_stop:
+    remaining_stops = _remaining_undelivered_stops(load)
+    if not remaining_stops:
         return None
 
-    # Coordinates live under the "Coordinates" key, not inside Address
-    coords = next_stop.get("Coordinates") or {}
-    dest_lat = coords.get("Latitude") if isinstance(coords, dict) else None
-    dest_lng = coords.get("Longitude") if isinstance(coords, dict) else None
-    if dest_lat is None or dest_lng is None:
+    # Build ordered waypoints for every remaining stop that has valid coordinates.
+    # Coordinates live under the "Coordinates" key, not inside Address.
+    route_waypoints: list[dict] = []
+    for stop in remaining_stops:
+        coords = stop.get("Coordinates") or {}
+        lat = coords.get("Latitude") if isinstance(coords, dict) else None
+        lng = coords.get("Longitude") if isinstance(coords, dict) else None
+        if lat is not None and lng is not None:
+            route_waypoints.append({"lat": float(lat), "lng": float(lng)})
+
+    if not route_waypoints:
         return None
 
     stops = load.get("Stops") or []
     first_stop = stops[0] if stops else {}
     last_stop = stops[-1] if stops else {}
+
+    _stype = (last_stop.get("ScheduleType") or "").upper() or "—"
+    _win = last_stop.get("StopWindow") or {}
+    log.info("load %s last_stop sched: type=%s appt=%s window_begin=%s window_end=%s",
+             load.get("LoadNumber"), _stype,
+             last_stop.get("AppointmentDate"), _win.get("Begin"), _win.get("End"))
 
     return {
         "load_no": load.get("LoadNumber") or load.get("Number"),
@@ -237,8 +280,16 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "consignee_city": _g(last_stop, "Address", "City") or "",
         "consignee_state": _g(last_stop, "Address", "State") or "",
         "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
-        "dest_lat": float(dest_lat),
-        "dest_lng": float(dest_lng),
+        "appt_window_begin_dt": _parse_iso(_stop_window_begin_iso(last_stop)),
+        "appt_stype": _stype,          # "APPT" / "WINDOW" / "FCFS" / "—"
+        # For FCFS-with-Begin-only: the dock open time, shown as "FCFS 8:00am".
+        # Distinct from appt_window_begin_dt (which is the left side of "Begin – End").
+        "_fcfs_open_dt": (
+            _parse_iso(_win.get("Begin"))
+            if _stype == "FCFS" and not _win.get("End") and _win.get("Begin")
+            else None
+        ),
+        "route_waypoints": route_waypoints,
         "broker": load.get("CustomerName") if _is_brokered(load) else "",
         "customer_name": load.get("CustomerName") or "",
         "office": _g(load, "Office", "Name") or _g(load, "Trip", "Office", "Name") or "",
@@ -270,15 +321,19 @@ def _locations_by_truck_name(samsara_locations: list[dict]) -> dict:
 # ----------------------------------------------------------------------
 def _mapbox_duration_seconds(
     token: str, from_lat: float, from_lng: float,
-    to_lat: float, to_lng: float, timeout: int = 15,
+    waypoints: list[dict],  # [{lat, lng}, ...] — all remaining stops in order
+    timeout: int = 15,
 ) -> float | None:
-    """Query Mapbox Directions and return drive-time in seconds.
+    """Query Mapbox Directions and return total drive-time in seconds for the
+    full remaining route: truck → stop1 → stop2 → … → final stop.
 
     Tries driving-traffic (requires sk. token) first; falls back to driving
     (works with pk. token) on 401 so the report works immediately with a
     public token and upgrades automatically when rotated to secret token.
     """
-    coords = f"{from_lng},{from_lat};{to_lng},{to_lat}"
+    coords = ";".join(
+        [f"{from_lng},{from_lat}"] + [f"{w['lng']},{w['lat']}" for w in waypoints]
+    )
     params = {"access_token": token, "geometries": "geojson", "overview": "false"}
     for profile in ("driving-traffic", "driving"):
         url = f"{_MAPBOX_BASE}/{profile}/{coords}"
@@ -304,6 +359,7 @@ def _mapbox_duration_seconds(
 # ----------------------------------------------------------------------
 _LATE_THRESHOLD_MIN = -45
 _TEAMS_STATE_FILE = "eta_state.json"
+_GPS_STALE_MINUTES = 45  # GPS fix older than this is treated as unreliable
 
 
 # ----------------------------------------------------------------------
@@ -357,7 +413,14 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                         {"title": "Broker" if r.get("broker") else "Customer",
                          "value": r.get("customer_name") or "—"},
                         {"title": "Destination", "value": dest},
-                        {"title": "Appt", "value": _fmt_dt_ct(r["appt_dt"]) or "—"},
+                        {"title": "Appt",
+                         "value": (
+                             f"{_fmt_dt_ct(r['appt_window_begin_dt'])} – {_fmt_dt_ct(r['appt_dt'])}"
+                             if r.get("appt_window_begin_dt")
+                             else (f"FCFS {_fmt_dt_ct(r['_fcfs_open_dt'])}"
+                                   if r.get("_fcfs_open_dt")
+                                   else _fmt_dt_ct(r.get("appt_dt")) or "—")
+                         )},
                         {"title": "ETA", "value": _fmt_dt_ct(r.get("eta_dt")) or "—"},
                         {"title": "HOS Left",
                          "value": (_fmt_hos(r.get("hos_remaining_s"))
@@ -573,7 +636,30 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
 # Report rendering
 # ----------------------------------------------------------------------
 INK = "#1a1a1a"
+
+
+def _fmt_appt_cell(row: dict) -> str:
+    """Format the Appt column.
+    - APPT          → fixed time   e.g. "Tue Jun 23, 08:00am"
+    - WINDOW/FCFS with End → "Begin – End"  e.g. "8:00am – 5:00pm"
+    - FCFS with Begin only (no End) → "FCFS 8:00am"  (dock open time, no close deadline)
+    - No schedule info → "—"
+    """
+    end_str = _fmt_dt_ct(row.get("appt_dt"))
+    begin_dt = row.get("appt_window_begin_dt")
+    if begin_dt and end_str:
+        return f"{_fmt_dt_ct(begin_dt)}&nbsp;–&nbsp;{end_str}"
+    if end_str:
+        return end_str
+    # FCFS with Begin only — show open time with label so dispatch knows the dock opens then
+    stype = row.get("appt_stype", "")
+    if stype == "FCFS":
+        win_begin = row.get("_fcfs_open_dt")
+        if win_begin:
+            return f"FCFS&nbsp;{_fmt_dt_ct(win_begin)}"
+    return "—"
 MUTE = "#6b6b6b"
+AMBER = "#d97706"
 LINE = "#e5e5e5"
 RED = "#c41e2a"
 TILEBG = "#fafafa"
@@ -610,6 +696,15 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
             consignee_loc = f"{r['consignee_city']}, {r['consignee_state']}".strip(", ")
             hos_txt = _fmt_hos(r.get("hos_remaining_s"))
             hos_color = RED if r.get("hos_delay") else MUTE
+
+            # ETA cell: prefix ~ and show GPS age if fix is stale
+            eta_str = _fmt_dt_ct(r.get("eta_dt"))
+            if r.get("gps_stale") and r.get("gps_age_min") is not None:
+                eta_str = (f"~{eta_str}&nbsp;"
+                           f"<span style='color:{AMBER};font-size:10px;font-weight:400;'>"
+                           f"&#9888; GPS {r['gps_age_min']}m old</span>")
+                delta_txt = f"~{delta_txt}"
+
             tbody_rows += (
                 f"<tr style='border-bottom:1px solid {LINE};'>"
                 f"<td style='padding:8px 10px;font-weight:700;'>{r['truck_name']}</td>"
@@ -618,8 +713,8 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
                 f"<td style='padding:8px 10px;color:{MUTE};'>{shipper_loc or '—'}</td>"
                 f"<td style='padding:8px 10px;'>{r['consignee'] or '—'}</td>"
                 f"<td style='padding:8px 10px;color:{MUTE};'>{consignee_loc or '—'}</td>"
-                f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_dt_ct(r['appt_dt'])}</td>"
-                f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_dt_ct(r.get('eta_dt'))}</td>"
+                f"<td style='padding:8px 10px;white-space:nowrap;'>{_fmt_appt_cell(r)}</td>"
+                f"<td style='padding:8px 10px;white-space:nowrap;'>{eta_str}</td>"
                 f"<td style='padding:8px 10px;color:{delta_color};font-weight:700;white-space:nowrap;'>{delta_txt}</td>"
                 f"<td style='padding:8px 10px;color:{hos_color};white-space:nowrap;font-weight:{'700' if r.get('hos_delay') else '400'};'>"
                 f"{hos_txt}{'*' if r.get('hos_delay') else ''}</td>"
@@ -650,7 +745,8 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
         f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};'>"
         f"Delta = ETA &minus; appointment. Red = &ge;45 min late &middot; "
         f"amber = late (under 45 min) &middot; green = within 30 min early. "
-        f"ETA from Samsara GPS &rarr; Mapbox driving-traffic. "
+        f"ETA from Samsara GPS &rarr; Mapbox driving-traffic (full remaining route). "
+        f"&#9888; on ETA = GPS fix &gt;{_GPS_STALE_MINUTES} min old; delta prefixed ~ is approximate. "
         f"HOS Left = driver&rsquo;s remaining legal drive time from Samsara; "
         f"* means a 10-hour mandatory rest was added to ETA.</div>"
         "</body></html>"
@@ -692,7 +788,8 @@ def _render_xlsx(rows: list[dict], generated_at: datetime) -> bytes:
             f"{r['shipper_city']}, {r['shipper_state']}".strip(", "),
             r["consignee"],
             f"{r['consignee_city']}, {r['consignee_state']}".strip(", "),
-            _fmt_dt_ct(r["appt_dt"]),
+            (f"{_fmt_dt_ct(r['appt_window_begin_dt'])} – {_fmt_dt_ct(r['appt_dt'])}"
+             if r.get("appt_window_begin_dt") else _fmt_dt_ct(r["appt_dt"])),
             _fmt_dt_ct(r.get("eta_dt")),
             r.get("delta_min", ""),
             hos_cell,
@@ -863,14 +960,31 @@ def main() -> int:
             log.info("SKIP load %s (truck %s): no Samsara GPS",
                      row["load_no"], row["truck_name"])
             continue
+
+        # Check GPS fix age — stale positions produce unreliable ETAs.
+        gps_age_min: int | None = None
+        gps_stale = False
+        if gps.get("ts"):
+            gps_age_min = int((now - gps["ts"]).total_seconds() / 60)
+            gps_stale = gps_age_min > _GPS_STALE_MINUTES
+            if gps_stale:
+                log.warning("load %s truck %s: GPS fix is %d min old — ETA unreliable",
+                            row["load_no"], row["truck_name"], gps_age_min)
+
+        # Full remaining route: truck → every remaining stop in order.
         duration_s = _mapbox_duration_seconds(
             mapbox_token, gps["lat"], gps["lng"],
-            row["dest_lat"], row["dest_lng"],
+            row["route_waypoints"],
         )
         if duration_s is None:
             log.info("SKIP load %s (truck %s): Mapbox returned no route",
                      row["load_no"], row["truck_name"])
             continue
+
+        n_stops = len(row["route_waypoints"])
+        if n_stops > 1:
+            log.info("  load %s: %d remaining stop(s), full-route duration %.1fh",
+                     row["load_no"], n_stops, duration_s / 3600)
 
         # HOS cap: if driver runs out of legal drive time before arriving,
         # add the federal 10-hour mandatory rest to the ETA.
@@ -886,8 +1000,9 @@ def main() -> int:
         delta_min = None
         if row["appt_dt"]:
             delta_min = int(round((row["appt_dt"] - eta_dt).total_seconds() / 60))
-        log.info("load %s truck %-6s  hos=%s  appt=%s  eta=%s  delta=%s min",
+        log.info("load %s truck %-6s  gps=%s  hos=%s  appt=%s  eta=%s  delta=%s min",
                  row["load_no"], row["truck_name"],
+                 f"{gps_age_min}m old" if gps_age_min is not None else "fresh",
                  _fmt_hos(hos_remaining_s),
                  _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min)
         rows_with_eta.append({
@@ -896,6 +1011,8 @@ def main() -> int:
             "delta_min": delta_min,
             "hos_remaining_s": hos_remaining_s,
             "hos_delay": hos_delay_s > 0,
+            "gps_age_min": gps_age_min,
+            "gps_stale": gps_stale,
         })
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
@@ -907,7 +1024,9 @@ def main() -> int:
 
     # --- Teams alert for loads 45+ min late -----------------------------
     late = [r for r in rows_with_eta
-            if r.get("delta_min") is not None and r["delta_min"] <= _LATE_THRESHOLD_MIN]
+            if r.get("delta_min") is not None
+            and r["delta_min"] <= _LATE_THRESHOLD_MIN
+            and not r.get("gps_stale")]  # don't alert on stale GPS — ETA may be wrong
     webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
     if webhook:
         _sync_teams_webhook(webhook, tok, user_upn, folder, late)
