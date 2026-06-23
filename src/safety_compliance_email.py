@@ -966,8 +966,8 @@ def _build_accountability_structured(
     for ev in (detail.get("events") or []):
         if ev.get("status") not in _needs_disp_statuses:
             continue
-        drv   = ev.get("driver") or "Unknown"
-        etype = ev.get("type") or ev.get("event_type") or "safety event"
+        drv   = ev.get("driver name") or ev.get("driver") or "Unknown"
+        etype = ev.get("event type") or ev.get("type") or ev.get("event_type") or "safety event"
         edate = ""
         raw_ts = ev.get("time") or ev.get("event_time") or ev.get("date") or ""
         if raw_ts:
