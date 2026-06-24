@@ -1,0 +1,78 @@
+# JB's MTD-landing forecasts — numeric monthly predictions, graded
+# automatically by the brief on the first run of the following month.
+#
+# This is the numeric half of the "predictions & grading" loop (Phase 2D).
+# The qualitative half lives in wiki/weekly-retros.yml.
+#
+# Why this exists: JB forecasts "how the month lands" each Monday from his
+# MTD upload. Those forecasts have never been graded against actual close,
+# so we can't tell systematic bias (does JB consistently under- or over-shoot
+# by 5% on revenue? what's his Brier score?). After 6 months of graded
+# forecasts we can answer those questions and weight his calls accordingly.
+#
+# Cadence: capture early in the month (e.g., 1st-3rd business day). The
+# grader evaluates on the first scorecard run of the following month, when
+# the prior-month MTD actuals are final.
+#
+# Schema per forecast:
+#   id              kebab-case slug (YYYY-MM-{metric})
+#   month           "YYYY-MM" the forecast is FOR (not the date it was made)
+#   captured        Date the forecast was written (YYYY-MM-DD)
+#   captured_by     "JB" usually; record who entered it
+#   title           Human-readable label
+#   forecast:       The actual prediction
+#     metric        Dot path into the brief's compute dicts (e.g.
+#                   alvys_entities.X-Trux.revenue_mtd_final)
+#     value         JB's predicted value
+#     unit          money | int | pct | days
+#     tolerance_pct How close = confirmed. Default 5% (i.e. ±5%).
+#                   Outside tolerance but within 2× tolerance = mixed.
+#                   Outside 2× tolerance = wrong.
+#   check_after     "YYYY-MM-DD" — earliest date the grade is valid (typically
+#                   the 1st of the following month so MTD actuals are settled).
+#   notes           Free-text context for the forecast (assumptions, what
+#                   JB is reading off the MTD upload, etc.)
+#
+# Adding a new forecast:
+#   1. JB makes a call early in the month
+#   2. Copy the template below, fill in
+#   3. Commit. Grader auto-evaluates on month-end + 1.
+
+forecasts:
+  # ----------------------------------------------------------------------
+  # SEED ENTRY (2026-06-19) — replace with JB's actual July forecast once
+  # he submits it. This entry is a placeholder showing the schema; the
+  # grader will mark it pending until July ends.
+  # ----------------------------------------------------------------------
+  - id: 2026-07-xtrux-revenue
+    month: "2026-07"
+    captured: "2026-06-19"
+    captured_by: "PLACEHOLDER — replace with JB's actual call"
+    title: "July 2026 X-Trux revenue landing"
+    forecast:
+      metric: alvys_entities.X-Trux.revenue_mtd
+      value: 440000   # placeholder; replace with JB's number
+      unit: money
+      tolerance_pct: 5
+    check_after: "2026-08-01"
+    notes: |
+      Placeholder seed entry. Replace `value` with JB's actual July forecast
+      when he makes the call (typically early in the month from the MTD
+      upload). Track record only starts accumulating from his first real
+      forecast, not from this template.
+
+# --- TEMPLATE — copy and fill in monthly ---
+#
+#  - id: YYYY-MM-{metric-slug}
+#    month: "YYYY-MM"
+#    captured: "YYYY-MM-DD"
+#    captured_by: "JB"
+#    title: "MONTH YEAR X-Trux revenue landing"
+#    forecast:
+#      metric: alvys_entities.X-Trux.revenue_mtd
+#      value: 0
+#      unit: money
+#      tolerance_pct: 5
+#    check_after: "YYYY-MM-01"     # 1st of the FOLLOWING month
+#    notes: |
+#      What JB is reading off the MTD upload, any assumptions worth recording.

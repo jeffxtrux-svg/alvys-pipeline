@@ -1,0 +1,92 @@
+# Weekly retros — Friday capture of what surprised us, what worked, what didn't.
+#
+# This is the qualitative half of the "predictions & grading" loop (Phase 2D).
+# The numeric half lives in wiki/jb-mtd-forecasts.yml.
+#
+# Why this exists: most weeks have 1–3 surprises that, if captured, become
+# pattern material the AI can spot months later when something similar recurs.
+# Without this file, every bug / outage / customer escalation feels novel even
+# when it's actually the third time we've hit the same root cause.
+#
+# Cadence: Friday afternoon, 10 minutes. Append a new block — never edit a
+# prior week's entry (the point is the historical record).
+#
+# Brief surface: page 1 of the executive brief surfaces last week's retro
+# under "This Week's Lessons" so the team has a 10-second window into the
+# prior observations before reading today's numbers.
+#
+# Schema per retro:
+#   week_of         Monday of the week being retro'd (YYYY-MM-DD)
+#   captured        Date the retro was written (YYYY-MM-DD)
+#   captured_by     Name of whoever wrote it
+#   surprised_by    Free text — what we didn't expect (1–3 items)
+#   worked          Free text — what worked well, worth repeating
+#   didnt_work      Free text — what failed or under-delivered
+#   lessons         List of one-line "if X then Y" pattern statements
+#                   (these are the real long-term gold — they accumulate into
+#                   the institutional playbook)
+#   tested_predictions   OPTIONAL — short text predictions that should be
+#                        graded next week (e.g., "Worker redeploy will happen
+#                        by Wed"). Graded by hand on next retro.
+#
+# Adding a new retro:
+#   1. Copy the template at the bottom of this file
+#   2. Fill in the fields — keep it tight, this isn't a novel
+#   3. Commit. Next brief surfaces it automatically.
+
+retros:
+  - week_of: "2026-06-16"
+    captured: "2026-06-19"
+    captured_by: "Jeff"
+    surprised_by: |
+      Three latent bugs in the brand-new safety accountability loop all
+      surfaced together: (1) suppression off-by-one (items the user actioned
+      yesterday re-appeared today because `until = yesterday + 1 day = today`
+      and the boundary check is strict <); (2) suppression registry didn't
+      cover 4 of the 11 categories the brief uses (Safety Event Coaching,
+      DVIR Defect, Prior Day Logs, Safety Event Disposition), so actioned
+      items in those categories silently re-fired; (3) NameError on `webhook`
+      in `_post_csa_threshold_alert` crashed every brief run for a full
+      morning before anyone noticed (the workflow logged "success" but no
+      email landed). The shared root cause across all three: the new
+      Phase 2B/2C scaffolding shipped without end-to-end tests against the
+      next-morning re-render.
+    worked: |
+      Rapid PR-and-merge cycle held up under pressure — 5 PRs merged in
+      ~90 minutes to fix the accountability loop. Decision-outcomes.yml
+      scaffolding paid off the same day it was extended: 3 new gradable
+      entries hooked into the existing grader without touching its code.
+      Cloudflare Worker backstop fired and dispatched scorecard +
+      daily-upload healthchecks even though GitHub cron dropped most
+      morning slots.
+    didnt_work: |
+      Cloudflare Worker is still the old 2-workflow version — the safety
+      healthcheck isn't in the deployed `WORKFLOWS` array, so on cron-drop
+      mornings the safety brief has zero off-GitHub backstop. Owner ack'd
+      the `wrangler deploy` step is needed; not yet done. Without it,
+      another all-slot-drop morning would silently miss the safety brief.
+    lessons:
+      - "If a registry has a per-category fallback dict, default the unknown-category window to 1 day rather than no-op — silent no-op = bug magnet."
+      - "If a workflow's status step logs `success` but the email step is conditional on a gate, surface that in the workflow summary so 'success' isn't ambiguous with 'sent'."
+      - "When adding a new Cloudflare Worker workflow target, treat `wrangler deploy` as part of the PR's done-criteria — code-on-main without a deploy is half-done."
+      - "When designing date-window logic, write the boundary check as `<=` not `<` unless you've explicitly thought about which way the off-by-one cuts."
+    tested_predictions:
+      - text: "Owner will have run `wrangler deploy` for the Worker by Fri 6/26."
+        verdict_on: "2026-06-26"
+      - text: "Next safety brief drop morning (if it happens) will be recovered automatically by the Worker→healthcheck path, requiring no manual intervention."
+        verdict_on: "first cron-drop after Worker redeploy"
+
+# --- TEMPLATE — copy and fill in each Friday ---
+#
+#  - week_of: "YYYY-MM-DD"
+#    captured: "YYYY-MM-DD"
+#    captured_by: "Name"
+#    surprised_by: |
+#      ...
+#    worked: |
+#      ...
+#    didnt_work: |
+#      ...
+#    lessons:
+#      - "If X then Y."
+#    tested_predictions: []

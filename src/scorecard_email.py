@@ -5463,6 +5463,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 samba=None, alvys_drivers=None, dso_hist=None,
                 ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
                 risk_watch_html: str = "", decision_grades_html: str = "",
+                forecast_grades_html: str = "", retro_html: str = "",
                 part: str = "all") -> str:
     """Executive overview page. `part` controls split rendering so build_page8
     (bill-by-bill matching) can land on physical PDF page 5 between the AR
@@ -6309,10 +6310,23 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<tr><td colspan='4' style='padding:0 24px;'>{decision_grades_html}</td></tr>"
         if decision_grades_html else ""
     )
+    # Phase 2D — Predictions & Lessons: JB MTD-forecast accuracy chip and the
+    # latest weekly retro. Same silent-empty pattern as the strips above —
+    # hidden when nothing is tracked yet.
+    _forecast_grades_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{forecast_grades_html}</td></tr>"
+        if forecast_grades_html else ""
+    )
+    _retro_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{retro_html}</td></tr>"
+        if retro_html else ""
+    )
     _overview_rows = (
         f"{warn_row}"
         f"{_risk_watch_row}"
         f"{_decision_grades_row}"
+        f"{_forecast_grades_row}"
+        f"{_retro_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
         f"{_section(_entity_section)}"
@@ -8057,6 +8071,28 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         _decision_grader.write_grades_snapshot(_grades)
     except Exception as exc:
         log.warning("decision_grader render skipped (%s: %s)", type(exc).__name__, exc)
+    # Phase 2D — Forecast & Retro: JB MTD-landing forecasts get auto-graded
+    # against actuals (same fail-soft pattern as decision_grader). Weekly
+    # retros are surfaced verbatim for human-eye lesson visibility.
+    forecast_grades_html = ""
+    retro_html = ""
+    try:
+        from src import forecast_grader as _forecast_grader
+        _fgrades = _forecast_grader.evaluate(_watch_data)
+        if _fgrades:
+            log.info("forecast_grader: graded %d forecasts (%s)",
+                     len(_fgrades),
+                     ", ".join(f"{k}={v}" for k, v in
+                                _forecast_grader.summary_counts(_fgrades).items() if v))
+        forecast_grades_html = _forecast_grader.render_summary_html(
+            _fgrades, red=BAD, green=GOOD, mute=MUTE, line=LINE,
+        )
+        _recent_retro = _forecast_grader.load_recent_retro()
+        retro_html = _forecast_grader.render_retro_html(
+            _recent_retro, ink=INK, mute=MUTE, line=LINE,
+        )
+    except Exception as exc:
+        log.warning("forecast_grader render skipped (%s: %s)", type(exc).__name__, exc)
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
@@ -8167,7 +8203,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, forecast_grades_html=forecast_grades_html, retro_html=retro_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
             f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
