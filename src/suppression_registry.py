@@ -59,11 +59,31 @@ def extract_date_from_text(text: str) -> datetime.date | None:
 # ---------------------------------------------------------------------------
 
 def load_registry(tok: str, upn: str) -> dict:
-    """Download registry from OneDrive. Returns {} on 404 or any error."""
+    """Download registry from OneDrive. Returns {} on 404 or any error.
+
+    Validates that every value is a dict with an 'until' key. If the file
+    exists but contains an old/incompatible format (e.g. list values from a
+    prior implementation), discards it and starts fresh — old entries would
+    have expired anyway.
+    """
     try:
         from src.onedrive_upload import download_file
         raw = download_file(tok, upn, f"{_FOLDER}/{_FNAME}")
-        return json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            log.warning("Suppression registry has unexpected type %s — resetting.", type(data).__name__)
+            return {}
+        # Discard entries that don't have the expected {"until": ..., "added": ...} shape.
+        valid = {
+            k: v for k, v in data.items()
+            if isinstance(v, dict) and "until" in v
+        }
+        if len(valid) != len(data):
+            log.warning(
+                "Suppression registry: %d/%d entries had old format — discarded.",
+                len(data) - len(valid), len(data),
+            )
+        return valid
     except Exception as exc:
         log.debug("Suppression registry not loaded (%s) — starting empty.", exc)
         return {}
