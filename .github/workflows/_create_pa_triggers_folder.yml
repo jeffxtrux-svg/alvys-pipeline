@@ -1,0 +1,33 @@
+name: _Create pa-triggers folder (one-off)
+on:
+  workflow_dispatch:
+jobs:
+  create_folder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - name: Create Safety/pa-triggers folder on OneDrive
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+        run: |
+          python - <<'PY'
+          import os
+          from src.onedrive_upload import get_token, ensure_folder
+          tok = get_token(
+              os.environ["AZURE_TENANT_ID"],
+              os.environ["AZURE_CLIENT_ID"],
+              os.environ["AZURE_CLIENT_SECRET"],
+          )
+          upn = os.environ["ONEDRIVE_USER_UPN"]
+          ensure_folder(tok, upn, "Safety/pa-triggers")
+          print("Done — Safety/pa-triggers folder exists on OneDrive.")
+          PY
