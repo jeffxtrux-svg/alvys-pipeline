@@ -1773,6 +1773,17 @@ def _extra_trends(samsara: dict | None,
             result[key] = result.get(key, 0) + 1
         return result
 
+    # Last-7d DVIR compliance KPI — computed unconditionally from DVIRs + HOS_DailyLogs
+    # via compute_inspection_compliance. Not gated behind DVIR_Inspections so the tile
+    # shows a value (even 0%) whenever HOS working-day data exists.
+    _comp_rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
+    if _comp_rows_7d:
+        _td = sum(r.get("done_total", 0) for r in _comp_rows_7d)
+        _te = sum(r.get("expected_total", 0) for r in _comp_rows_7d)
+        out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
+    else:
+        out["dvir_comp_7d"] = None
+
     if insp_df is not None and not insp_df.empty:
         idc = _find_col(insp_df, ["reported", "createdat"])
         drv_col_i = _find_col(insp_df, ["driver"])
@@ -1799,21 +1810,10 @@ def _extra_trends(samsara: dict | None,
                 else:
                     pcts.append(0)
             out["dvir_pct"] = (labels, pcts)
-            # Last-7d KPI — use the same source as the compliance table
-            # (compute_inspection_compliance) so the KPI matches the table exactly.
-            _comp_rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
-            if _comp_rows_7d:
-                _td = sum(r.get("done_total", 0) for r in _comp_rows_7d)
-                _te = sum(r.get("expected_total", 0) for r in _comp_rows_7d)
-                out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
-            else:
-                out["dvir_comp_7d"] = None
         else:
             out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
-            out["dvir_comp_7d"] = None
     else:
         out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
-        out["dvir_comp_7d"] = None
 
     # Speed over limit — fleet avg % drive time per calendar month.
     # samsara_main now makes per-month API calls and stores them in speeds_monthly.
