@@ -920,7 +920,6 @@ def _build_accountability_structured(
             "detail":   f"{n} violation{'s' if n != 1 else ''} in last 24h",
             "prompt":   "Has driver been counseled? What corrective action was taken?",
         }
-        ops_items.append(item)
         audra_items.append(item)
 
     # Open DVIR defects
@@ -984,7 +983,6 @@ def _build_accountability_structured(
             "prompt":   "Has this event been dispositioned in Samsara? What coaching action was taken?",
         }
         audra_items.append(item)
-        ops_items.append(item)
 
     # CDL disqualified → audra (critical)
     if samba and samba.get("invalid_licenses"):
