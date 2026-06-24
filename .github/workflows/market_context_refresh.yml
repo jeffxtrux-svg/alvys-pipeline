@@ -67,13 +67,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          if git diff --quiet Karpathy-Wiki/wiki/market-context.json; then
-            echo "No change in market-context.json — skipping commit."
-            exit 0
-          fi
+          # Stage first so new untracked files show up — `git diff --quiet`
+          # alone misses brand-new files (caught this on the seed run).
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Karpathy-Wiki/wiki/market-context.json
+          if git diff --cached --quiet; then
+            echo "No change in market-context.json — skipping commit."
+            exit 0
+          fi
           git commit -m "market-context: weekly FRED diesel refresh"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin HEAD:main
