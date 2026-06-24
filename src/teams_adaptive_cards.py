@@ -514,13 +514,14 @@ def post_adaptive_cards(
             return
         card = payload["attachments"][0]["content"]
 
-        # 1. OneDrive trigger — PA flow handles delete + post (free standard connectors)
+        # 1. OneDrive trigger — write file for PA flow (future card management).
+        # Does NOT early-return: webhook below always fires so cards reliably appear.
         if use_pa_od and od_tok and upn:
             ok = _trigger_pa_via_onedrive(od_tok, upn, card, label)
             if ok:
-                print(f"{label} card queued via OneDrive → PA flow ({len(items)} items)")
-                return
-            print(f"{label}: OneDrive PA trigger failed — falling back.")
+                print(f"{label}: PA trigger file written (webhook will also post)")
+            else:
+                print(f"{label}: OneDrive PA trigger write failed — continuing to webhook.")
 
         # 2. Power Automate HTTP trigger (requires premium PA license)
         if pa_url:
