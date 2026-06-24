@@ -130,14 +130,22 @@ def is_suppressed(
     drv_norm: str,
     today: datetime.date,
 ) -> bool:
-    """Return True if the category+driver combo is suppressed on *today*."""
-    entry = registry.get(_key(cat_norm, drv_norm))
-    if not entry:
-        return False
-    try:
-        return today < datetime.date.fromisoformat(entry["until"])
-    except Exception:
-        return False
+    """Return True if the category+driver combo is suppressed on *today*.
+
+    Checks the specific cat::drv key first; falls back to the category-only
+    wildcard key (cat::) so a category-level resolution suppresses all drivers
+    in that category even when the log's driver field didn't match exactly.
+    """
+    for k in (_key(cat_norm, drv_norm), _key(cat_norm, "")):
+        entry = registry.get(k)
+        if not entry:
+            continue
+        try:
+            if today < datetime.date.fromisoformat(entry["until"]):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def add_suppression(
@@ -210,7 +218,14 @@ def rebuild_from_accountability_log(
             until = row_date + datetime.timedelta(days=suppress_days)
             if until <= today:
                 continue
-            add_suppression(registry, cat_norm, drv_norm, until, today=row_date)
+            # Always write category-only wildcard so is_suppressed can match even
+            # when the log's driver field (ID, blank, etc.) differs from the
+            # item's actual driver name.
+            if cat_norm not in ("", "nan"):
+                add_suppression(registry, cat_norm, "", until, today=row_date)
+            # Also write specific cat::drv entry when driver is available.
+            if drv_norm not in ("", "nan"):
+                add_suppression(registry, cat_norm, drv_norm, until, today=row_date)
             added += 1
         log.info("Rebuilt %d suppression(s) from accountability log history.", added)
         return added
@@ -232,14 +247,14 @@ def apply_resolved_to_registry(
     available; all others are suppressed for _DEFAULT_DAYS.
     """
     cdl_dates = cdl_dates or {}
+    # Track which categories we've already written a wildcard for this run.
+    _cat_wildcard_written: set = set()
     for item in all_items:
         cat_norm = (item.get("category") or "").lower().strip()
         drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
-        actioned = (
-            cat_norm in resolved_cats
-            or (drv_norm and f"driver:{drv_norm}" in resolved_cats)
-        )
-        if not actioned:
+        cat_actioned = cat_norm in resolved_cats
+        drv_actioned = drv_norm and f"driver:{drv_norm}" in resolved_cats
+        if not (cat_actioned or drv_actioned):
             continue
         is_cdl = "cdl" in cat_norm or "disqualif" in cat_norm
         if is_cdl and drv_norm and drv_norm in cdl_dates:
@@ -247,3 +262,10 @@ def apply_resolved_to_registry(
         else:
             until = today + datetime.timedelta(days=_DEFAULT_DAYS)
         add_suppression(registry, cat_norm, drv_norm, until, today=today)
+        # When the log resolved this category explicitly, also write a wildcard
+        # (cat::"") so tomorrow's is_suppressed catches any driver in the same
+        # category even if the log driver field didn't match exactly.
+        # CDL is excluded — each driver has its own reinstatement date.
+        if cat_actioned and not is_cdl and cat_norm not in _cat_wildcard_written:
+            add_suppression(registry, cat_norm, "", until, today=today)
+            _cat_wildcard_written.add(cat_norm)

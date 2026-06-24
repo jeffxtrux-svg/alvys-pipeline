@@ -1460,10 +1460,16 @@ def _write_accountability_json(
 
     registry = load_registry(tok, upn)
     prune(registry, today)
-    # On a fresh/reset registry, rebuild suppressions from the full accountability
-    # log history so items actioned in prior weeks don't flood back.
-    if not registry:
-        log.info("Suppression registry empty — rebuilding from Accountability Log history.")
+    # Rebuild if the registry is empty OR if it has no category-only wildcard
+    # entries (keys ending with "::") — which means it was built before wildcard
+    # support was added and won't suppress items whose driver names differ from
+    # the log's driver field.
+    needs_rebuild = not registry or not any(k.endswith("::") for k in registry)
+    if needs_rebuild:
+        log.info(
+            "Suppression registry %s — rebuilding from Accountability Log history.",
+            "empty" if not registry else "has no wildcards",
+        )
         rebuild_from_accountability_log(registry, tok, upn, today)
     all_items_combined = list(audra_items) + list(ops_items)
     apply_resolved_to_registry(registry, resolved_cats, all_items_combined, today,
