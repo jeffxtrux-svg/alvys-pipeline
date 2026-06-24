@@ -8021,6 +8021,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "samba": samba or {},
         "alvys_ar": alvys_ar or {},
         "uninvoiced": uninvoiced or {},
+        # Exposed for decision_grader — lets outcomes reference fields like
+        # goal.overhead_per_mile (Acrisure-renewal-absorbed check).
+        "goal": rpm_goal or {},
     }
     try:
         from src import risk_watch as _risk_watch
