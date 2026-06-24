@@ -18,7 +18,7 @@ log = logging.getLogger("suppression_registry")
 
 _FOLDER       = "Safety"
 _FNAME        = "suppression-registry.json"
-_DEFAULT_DAYS = 1  # hide for today, re-fires tomorrow unless re-actioned
+_DEFAULT_DAYS = 30  # once actioned, suppress for 30 days (matches history window)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +161,62 @@ def add_suppression(
         "added": (today or datetime.date.today()).isoformat(),
     }
     log.info("Suppression added: [%s / %s] until %s", cat_norm, drv_norm, until.isoformat())
+
+
+def rebuild_from_accountability_log(
+    registry: dict,
+    tok: str,
+    upn: str,
+    today: datetime.date,
+    acc_folder: str = "Safety",
+    acc_filename: str = "Accountability Log.xlsx",
+    suppress_days: int = _DEFAULT_DAYS,
+) -> int:
+    """Backfill suppressions from the full Accountability Log history.
+
+    Called when the registry is empty (first run or after a reset) so that
+    items actioned in previous weeks don't flood back. Reads every row in
+    Accountability Log.xlsx and adds a suppression for any action within the
+    last suppress_days days, setting until = action_date + suppress_days.
+    Returns the number of suppressions added.
+    """
+    try:
+        import io
+        import pandas as pd
+        from src.onedrive_upload import download_file
+        raw = download_file(tok, upn, f"{acc_folder}/{acc_filename}")
+        xl  = pd.ExcelFile(io.BytesIO(raw))
+        df  = xl.parse(xl.sheet_names[0])
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        date_col = next((c for c in df.columns if "date" in c), None)
+        cat_col  = next((c for c in df.columns if "category" in c), None)
+        drv_col  = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        if date_col is None:
+            log.warning("rebuild_from_accountability_log: date column not found — skipping.")
+            return 0
+        cutoff = today - datetime.timedelta(days=suppress_days)
+        added = 0
+        for _, row in df.iterrows():
+            try:
+                row_date = pd.Timestamp(row[date_col]).date()
+            except Exception:
+                continue
+            if row_date < cutoff or row_date > today:
+                continue
+            cat_norm = (str(row[cat_col]).strip().lower() if cat_col else "")
+            drv_norm = (str(row[drv_col]).strip().lower() if drv_col else "")
+            if cat_norm in ("", "nan") and drv_norm in ("", "nan"):
+                continue
+            until = row_date + datetime.timedelta(days=suppress_days)
+            if until <= today:
+                continue
+            add_suppression(registry, cat_norm, drv_norm, until, today=row_date)
+            added += 1
+        log.info("Rebuilt %d suppression(s) from accountability log history.", added)
+        return added
+    except Exception as exc:
+        log.warning("Could not rebuild suppressions from log: %s", exc)
+        return 0
 
 
 def apply_resolved_to_registry(

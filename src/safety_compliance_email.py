@@ -1452,19 +1452,19 @@ def _write_accountability_json(
     from src.suppression_registry import (
         load_registry, save_registry, prune,
         is_suppressed, add_suppression, apply_resolved_to_registry,
+        rebuild_from_accountability_log,
     )
 
     yesterday = today - datetime.timedelta(days=1)
     resolved_cats = resolved_cats or set()
 
-    # Load suppression registry; record new suppressions for items actioned yesterday.
-    # Pass `today` (not `yesterday`) — add_suppression computes until = today + N_days,
-    # then is_suppressed checks `today < until`. If we pass yesterday for a 1-day
-    # window, until = yesterday+1 = today, and `today < today` is False, so the
-    # actioned item re-fires on today's brief. Passing today gives until = tomorrow,
-    # `today < tomorrow` = True, item correctly hidden today and re-fires tomorrow.
     registry = load_registry(tok, upn)
     prune(registry, today)
+    # On a fresh/reset registry, rebuild suppressions from the full accountability
+    # log history so items actioned in prior weeks don't flood back.
+    if not registry:
+        log.info("Suppression registry empty — rebuilding from Accountability Log history.")
+        rebuild_from_accountability_log(registry, tok, upn, today)
     all_items_combined = list(audra_items) + list(ops_items)
     apply_resolved_to_registry(registry, resolved_cats, all_items_combined, today,
                                cdl_dates=cdl_reinstate_dates)
