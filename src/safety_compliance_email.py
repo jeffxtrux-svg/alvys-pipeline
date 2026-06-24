@@ -909,18 +909,37 @@ def _build_accountability_structured(
     audra_items: list[dict] = []
     ops_items:   list[dict] = []
 
-    # HOS violations in last 24h
+    # HOS violations in last 24h — one item per driver when detail rows available
     if m.get("hos_24h", 0) > 0:
-        n = m["hos_24h"]
-        item = {
-            "category": "HOS Violation",
-            "severity": "high",
-            "driver":   None,
-            "unit":     None,
-            "detail":   f"{n} violation{'s' if n != 1 else ''} in last 24h",
-            "prompt":   "Has driver been counseled? What corrective action was taken?",
-        }
-        audra_items.append(item)
+        hos_rows = detail.get("hos", []) or []
+        yest_str = (pd.Timestamp.now(tz="America/Chicago") - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        recent = [r for r in hos_rows if (r.get("date") or "") >= yest_str]
+        if recent:
+            for r in recent:
+                drv = r.get("driver name") or None
+                if not drv or drv == "&mdash;":
+                    drv = None
+                vtype = r.get("violation type") or "HOS violation"
+                if vtype == "&mdash;":
+                    vtype = "HOS violation"
+                audra_items.append({
+                    "category": "HOS Violation",
+                    "severity": "high",
+                    "driver":   drv,
+                    "unit":     None,
+                    "detail":   vtype,
+                    "prompt":   "Has driver been counseled? What corrective action was taken?",
+                })
+        else:
+            n = m["hos_24h"]
+            audra_items.append({
+                "category": "HOS Violation",
+                "severity": "high",
+                "driver":   None,
+                "unit":     None,
+                "detail":   f"{n} violation{'s' if n != 1 else ''} in last 24h",
+                "prompt":   "Has driver been counseled? What corrective action was taken?",
+            })
 
     # Open DVIR defects
     unique_dvirs = _dedup_dvirs(detail.get("dvir", []) or [])
@@ -963,7 +982,9 @@ def _build_accountability_structured(
     for ev in (detail.get("events") or []):
         if ev.get("status") not in _needs_disp_statuses:
             continue
-        drv   = ev.get("driver name") or ev.get("driver") or "Unknown"
+        drv   = ev.get("driver name") or ev.get("driver") or None
+        if not drv or drv == "&mdash;":
+            drv = None
         etype = ev.get("event type") or ev.get("type") or ev.get("event_type") or "safety event"
         edate = ""
         raw_ts = ev.get("time") or ev.get("event_time") or ev.get("date") or ""
