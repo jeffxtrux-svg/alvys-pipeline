@@ -114,12 +114,32 @@ def _delete_cards(gtok: str, team_id: str, channel_id: str, ids: dict) -> None:
             print(f"Error deleting {label} card {msg_id}: {exc}")
 
 
-def _post_card_pa(pa_url: str, card: dict) -> bool:
-    """POST Adaptive Card JSON to a Power Automate HTTP-triggered flow.
+def _trigger_pa_via_onedrive(od_tok: str, upn: str, card: dict, label: str) -> bool:
+    """Write card JSON to OneDrive to trigger the Power Automate flow.
 
-    The PA flow handles deletion of the previous card and posting the new one,
-    returning 200 on success. Returns True if the flow accepted the request.
+    PA watches Safety/pa-triggers/ for file changes (free standard connector).
+    The flow handles deletion of the previous card and posting the new one.
+    Returns True if the trigger file was written successfully.
     """
+    filename = "teams-card-audra.json" if "AUDRA" in label.upper() else "teams-card-ops.json"
+    try:
+        from src.onedrive_upload import ensure_folder, upload_file
+        ensure_folder(od_tok, upn, "Safety/pa-triggers")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            json.dump({"card": card}, tf)
+            tmp = Path(tf.name)
+        upload_file(od_tok, upn, folder_path="Safety/pa-triggers",
+                    filename=filename, file_path=tmp)
+        tmp.unlink(missing_ok=True)
+        print(f"{label}: PA trigger file written → Safety/pa-triggers/{filename}")
+        return True
+    except Exception as exc:
+        print(f"{label}: could not write PA trigger file: {exc}")
+        return False
+
+
+def _post_card_pa(pa_url: str, card: dict) -> bool:
+    """POST an Adaptive Card to a Power Automate HTTP trigger. Returns True on success."""
     try:
         r = _requests.post(pa_url, json={"card": card}, timeout=45)
         if r.status_code in range(200, 300):
@@ -426,10 +446,16 @@ def post_adaptive_cards(
 ) -> None:
     """Read accountability JSON and POST Adaptive Cards to Teams.
 
-    When TEAMS_SAFETY_TEAM_ID + TEAMS_SAFETY_CHANNEL_ID are set, uses the
-    Microsoft Graph API: deletes the previous run's cards first (so the channel
-    stays clean), then posts new cards via Graph and saves their message IDs.
-    Falls back silently to the incoming webhook when Graph config is absent.
+    Posting priority (first success wins):
+      1. OneDrive trigger (TEAMS_PA_ONEDRIVE=1) — writes a JSON file that a
+         Power Automate flow watches; PA handles delete-old + post-new using
+         free standard connectors.
+      2. Power Automate HTTP trigger (TEAMS_PA_URL_AUDRA / _OPS) — PA handles
+         delete + post; requires premium PA license.
+      3. Microsoft Graph API — posts directly and tracks message IDs; deletion
+         requires ChannelMessage.ReadWrite.All (may not be available).
+      4. Incoming webhook — no ID tracking, no cleanup.
+    Silent no-op when no method is configured.
     """
     if _requests is None:
         print("requests library not available — skipping Teams posts.")
@@ -438,23 +464,18 @@ def post_adaptive_cards(
         print(f"Accountability JSON not found at {acc_path} — skipping.")
         return
 
-    # Power Automate flows handle delete-old + post-new + save ID.
-    # Graph API is a secondary path (requires ChannelMessage.ReadWrite.All).
-    # Webhook is the last-resort fallback (no message-ID tracking).
     pa_url_audra = os.environ.get("TEAMS_PA_URL_AUDRA", "").strip()
     pa_url_ops   = os.environ.get("TEAMS_PA_URL_OPS",   "").strip()
+    use_pa_od    = os.environ.get("TEAMS_PA_ONEDRIVE", "").strip().lower() in ("1", "true", "yes")
 
     team_id    = os.environ.get("TEAMS_SAFETY_TEAM_ID", "").strip()
     channel_id = os.environ.get("TEAMS_SAFETY_CHANNEL_ID", "").strip()
     upn        = os.environ.get("ONEDRIVE_USER_UPN", "").strip()
     use_graph  = bool(team_id and channel_id and upn)
 
-    gtok     = _graph_token() if (use_graph and not pa_url_audra) else None
-    od_tok   = None
-    new_ids: dict = {}
-
-    # Graph cleanup only runs when PA is not configured
-    if use_graph and gtok and not pa_url_audra:
+    # Acquire OneDrive token upfront — needed for OneDrive PA trigger and/or Graph cleanup.
+    od_tok: "str | None" = None
+    if (use_pa_od or use_graph) and upn:
         try:
             from src.onedrive_upload import get_token as _get_od_tok
             od_tok = _get_od_tok(
@@ -462,6 +483,16 @@ def post_adaptive_cards(
                 os.environ.get("AZURE_CLIENT_ID", ""),
                 os.environ.get("AZURE_CLIENT_SECRET", ""),
             )
+        except Exception as exc:
+            print(f"teams_adaptive_cards: could not get OneDrive token: {exc}")
+
+    # Graph token is only needed when Graph API posting is in scope.
+    gtok    = _graph_token() if (use_graph and not use_pa_od and not pa_url_audra) else None
+    new_ids: dict = {}
+
+    # Graph cleanup runs only when no PA method is active.
+    if use_graph and gtok and od_tok and not use_pa_od and not pa_url_audra:
+        try:
             old_ids = _load_card_ids(od_tok, upn)
             if old_ids:
                 print(f"Cleaning up {len(old_ids)} previous card(s) via Graph...")
@@ -483,15 +514,23 @@ def post_adaptive_cards(
             return
         card = payload["attachments"][0]["content"]
 
-        # 1. Power Automate (delete old + post new, full tracking)
+        # 1. OneDrive trigger — PA flow handles delete + post (free standard connectors)
+        if use_pa_od and od_tok and upn:
+            ok = _trigger_pa_via_onedrive(od_tok, upn, card, label)
+            if ok:
+                print(f"{label} card queued via OneDrive → PA flow ({len(items)} items)")
+                return
+            print(f"{label}: OneDrive PA trigger failed — falling back.")
+
+        # 2. Power Automate HTTP trigger (requires premium PA license)
         if pa_url:
             ok = _post_card_pa(pa_url, card)
             if ok:
-                print(f"{label} card posted via Power Automate ({len(items)} items)")
+                print(f"{label} card posted via Power Automate HTTP ({len(items)} items)")
                 return
-            print(f"{label}: PA flow failed — falling back.")
+            print(f"{label}: PA HTTP flow failed — falling back.")
 
-        # 2. Graph API (post + track IDs; deletion requires ChannelMessage.ReadWrite.All)
+        # 3. Graph API (post + track IDs; deletion requires ChannelMessage.ReadWrite.All)
         if use_graph and gtok:
             msg_id = _post_card_graph(gtok, team_id, channel_id, card)
             if msg_id:
@@ -500,7 +539,7 @@ def post_adaptive_cards(
                 return
             print(f"{label}: Graph post failed — falling back to webhook.")
 
-        # 3. Webhook (no ID tracking, no cleanup)
+        # 4. Webhook (no ID tracking, no cleanup)
         if not webhook:
             print(f"{label}: no posting method available — skipping.")
             return
