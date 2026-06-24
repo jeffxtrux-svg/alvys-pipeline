@@ -728,7 +728,7 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
 
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta http-equiv='refresh' content='180'>"
+        "<meta http-equiv='refresh' content='1800'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<style>body{{margin:0;background:#fff;{FONT}}}</style>"
         "</head><body>"
