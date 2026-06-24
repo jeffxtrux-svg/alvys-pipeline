@@ -667,7 +667,23 @@ FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
         "font-size:13px;color:#1a1a1a;")
 
 
-def _render_html(rows: list[dict], generated_at: datetime) -> str:
+def _render_html(rows: list[dict], generated_at: datetime,
+                 untracked: list[dict] | None = None) -> str:
+    untracked = untracked or []
+    late_count = sum(1 for r in rows if (r.get("delta_min") or 0) <= _LATE_THRESHOLD_MIN)
+
+    if late_count:
+        strip_bg = RED
+        strip_msg = f"⚠ {late_count} load{'s' if late_count != 1 else ''} 45+ min late"
+    elif rows:
+        strip_bg = "#16a34a"
+        strip_msg = "All loads on schedule"
+    else:
+        strip_bg = MUTE
+        strip_msg = "No active X-Trux loads"
+
+    untracked_badge = (f" &middot; {len(untracked)} untracked" if untracked else "")
+
     if not rows:
         body = (f"<div style='padding:40px;text-align:center;color:{MUTE};font-size:14px;'>"
                 f"No active X-Trux loads to display.</div>")
@@ -726,30 +742,86 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
             f"{thead}<tbody>{tbody_rows}</tbody></table>"
         )
 
+    # Untracked loads section (active loads with no GPS / no truck assigned)
+    if untracked:
+        ut_thead = (
+            f"<thead><tr style='background:{TILEBG};border-bottom:1px solid {INK};'>"
+            + "".join(
+                f"<th style='padding:6px 10px;text-align:left;font-size:10px;"
+                f"text-transform:uppercase;letter-spacing:0.8px;color:{MUTE};'>{h}</th>"
+                for h in ("Load #", "Truck", "Driver", "Consignee", "City", "Appt", "Reason"))
+            + "</tr></thead>"
+        )
+        ut_rows = ""
+        for r in untracked:
+            ut_city = (f"{r.get('consignee_city', '')}, {r.get('consignee_state', '')}"
+                       .strip(", ") or "—")
+            ut_rows += (
+                f"<tr style='border-bottom:1px solid {LINE};'>"
+                f"<td style='padding:6px 10px;font-weight:700;'>{r['load_no'] or '—'}</td>"
+                f"<td style='padding:6px 10px;'>{r.get('truck') or '—'}</td>"
+                f"<td style='padding:6px 10px;color:{MUTE};'>{r.get('driver') or '—'}</td>"
+                f"<td style='padding:6px 10px;'>{r.get('consignee') or '—'}</td>"
+                f"<td style='padding:6px 10px;color:{MUTE};'>{ut_city}</td>"
+                f"<td style='padding:6px 10px;white-space:nowrap;'>"
+                f"{_fmt_dt_ct(r.get('appt_dt')) or '—'}</td>"
+                f"<td style='padding:6px 10px;color:{AMBER};font-size:12px;'>"
+                f"{r.get('reason', '—')}</td>"
+                f"</tr>"
+            )
+        untracked_section = (
+            f"<div style='padding:16px 24px 4px;border-top:2px solid {LINE};'>"
+            f"<div style='font-weight:700;text-transform:uppercase;font-size:11px;"
+            f"letter-spacing:0.8px;color:{MUTE};'>Untracked Loads ({len(untracked)})</div>"
+            f"<div style='color:{MUTE};font-size:11px;margin-top:2px;'>"
+            f"Active X-Trux loads with no ETA — GPS not reporting or truck not yet assigned"
+            f"</div></div>"
+            f"<div style='padding:0 24px 20px;'>"
+            f"<table cellpadding='0' cellspacing='0' style='width:100%;border-collapse:collapse;'>"
+            f"{ut_thead}<tbody>{ut_rows}</tbody></table></div>"
+        )
+    else:
+        untracked_section = ""
+
+    gen_iso = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    staleness_js = (
+        f"<script>(function(){{"
+        f"var t=new Date('{gen_iso}');"
+        f"function upd(){{var m=Math.round((Date.now()-t)/60000);"
+        f"document.getElementById('age').textContent=m<1?'just now':m+' min ago';}};"
+        f"upd();setInterval(upd,30000);}})();</script>"
+    )
+
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta http-equiv='refresh' content='1800'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<style>body{{margin:0;background:#fff;{FONT}}}</style>"
         "</head><body>"
+        f"<div style='background:{strip_bg};color:#fff;padding:8px 24px;"
+        f"font-size:12px;font-weight:700;letter-spacing:0.3px;'>"
+        f"{strip_msg} &middot; {len(rows)} tracked{untracked_badge}</div>"
         f"<div style='padding:20px 24px;border-bottom:3px solid {RED};'>"
         f"<div style='font-weight:700;letter-spacing:1.5px;font-size:11px;"
         f"color:{RED};text-transform:uppercase;'>XFreight &middot; ETAs</div>"
         f"<div style='font-size:22px;font-weight:700;margin-top:4px;'>"
         f"Active X-Trux Loads &mdash; Live ETA</div>"
         f"<div style='color:{MUTE};font-size:12px;margin-top:6px;'>"
-        f"Generated {generated_at.astimezone(CT):%a %b %d, %I:%M %p} CT &middot; "
-        f"refreshes every 30 min &middot; {len(rows)} active load(s)"
-        f"</div></div>"
+        f"Generated {generated_at.astimezone(CT):%a %b %d, %I:%M %p} CT"
+        f" &middot; <span id='age'></span>"
+        f" &middot; refreshes every 30 min</div>"
+        f"</div>"
         f"<div style='padding:20px 24px;'>{body}</div>"
-        f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};'>"
+        + untracked_section
+        + f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};'>"
         f"Delta = ETA &minus; appointment. Red = &ge;45 min late &middot; "
         f"amber = late (under 45 min) &middot; green = within 30 min early. "
         f"ETA from Samsara GPS &rarr; Mapbox driving-traffic (full remaining route). "
         f"&#9888; on ETA = GPS fix &gt;{_GPS_STALE_MINUTES} min old; delta prefixed ~ is approximate. "
         f"HOS Left = driver&rsquo;s remaining legal drive time from Samsara; "
         f"* means a 10-hour mandatory rest was added to ETA.</div>"
-        "</body></html>"
+        + staleness_js
+        + "</body></html>"
     )
 
 
@@ -1017,6 +1089,44 @@ def main() -> int:
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
 
+    # --- Build untracked list for the HTML "Untracked Loads" section ----
+    tracked_load_nos = {str(r["load_no"]) for r in rows_with_eta}
+    load_rows_by_ln = {str(r["load_no"]): r for r in load_rows}
+    untracked: list[dict] = []
+    for L in active:
+        ln = str(L.get("LoadNumber") or "")
+        if ln in tracked_load_nos:
+            continue
+        stops = L.get("Stops") or []
+        last_stop = stops[-1] if stops else {}
+        trip = trips_by_load.get(ln)
+        truck_obj = (trip.get("Truck") or {}) if trip else {}
+        truck = (truck_obj.get("TruckNum") or truck_obj.get("TruckNumber")
+                 or truck_obj.get("Number") or truck_obj.get("Name") or "")
+        driver_obj = (trip.get("Driver1") or {}) if trip else {}
+        driver = (driver_obj.get("FullName") or driver_obj.get("Name") or "")
+        if ln in load_rows_by_ln:
+            row_r = load_rows_by_ln[ln]
+            reason = ("No GPS fix" if not locs_by_truck.get(row_r["truck_name"])
+                      else "No Mapbox route")
+        elif not trip:
+            reason = "No trip found"
+        elif not truck:
+            reason = "No truck assigned"
+        else:
+            reason = "No stop coordinates"
+        untracked.append({
+            "load_no": ln,
+            "truck": truck,
+            "driver": driver,
+            "consignee": _g(last_stop, "CompanyName") or "",
+            "consignee_city": _g(last_stop, "Address", "City") or "",
+            "consignee_state": _g(last_stop, "Address", "State") or "",
+            "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
+            "reason": reason,
+        })
+    log.info("Untracked active loads (no ETA computed): %d", len(untracked))
+
     # --- OneDrive token + folder (needed for Teams state AND file upload) ---
     folder = os.environ.get("ETA_ONEDRIVE_FOLDER", "ETA").strip("/")
     tok = get_token(tenant_id, client_id, client_secret)
@@ -1035,7 +1145,7 @@ def main() -> int:
 
     # --- Render + upload ------------------------------------------------
     generated_at = datetime.now(timezone.utc)
-    html = _render_html(rows_with_eta, generated_at)
+    html = _render_html(rows_with_eta, generated_at, untracked)
     xlsx_bytes = _render_xlsx(rows_with_eta, generated_at)
 
     out_dir = Path("output/eta")
