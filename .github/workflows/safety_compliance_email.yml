@@ -129,10 +129,11 @@ jobs:
           TEAMS_FORM_URL:          ${{ secrets.TEAMS_FORM_URL }}
           TEAMS_DISMISS_FORM_URL:  ${{ secrets.TEAMS_DISMISS_FORM_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          # Graph API cleanup — delete previous cards before posting fresh ones.
-          # Requires ChannelMessage.ReadWrite.All on the Azure app.
-          # Set TEAMS_SAFETY_TEAM_ID + TEAMS_SAFETY_CHANNEL_ID to enable;
-          # falls back silently to webhook-only if either is unset.
+          # Power Automate flows — delete previous card + post fresh one.
+          # Set these to activate PA mode; falls back to webhook if unset.
+          TEAMS_PA_URL_AUDRA:      ${{ secrets.TEAMS_PA_URL_AUDRA }}
+          TEAMS_PA_URL_OPS:        ${{ secrets.TEAMS_PA_URL_OPS }}
+          # Graph API cleanup (fallback if PA not configured).
           AZURE_TENANT_ID:          ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID:          ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET:      ${{ secrets.AZURE_CLIENT_SECRET }}

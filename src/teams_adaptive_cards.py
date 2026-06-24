@@ -114,6 +114,22 @@ def _delete_cards(gtok: str, team_id: str, channel_id: str, ids: dict) -> None:
             print(f"Error deleting {label} card {msg_id}: {exc}")
 
 
+def _post_card_pa(pa_url: str, card: dict) -> bool:
+    """POST Adaptive Card JSON to a Power Automate HTTP-triggered flow.
+
+    The PA flow handles deletion of the previous card and posting the new one,
+    returning 200 on success. Returns True if the flow accepted the request.
+    """
+    try:
+        r = _requests.post(pa_url, json={"card": card}, timeout=45)
+        if r.status_code in range(200, 300):
+            return True
+        print(f"PA flow returned HTTP {r.status_code}: {r.text[:300]}")
+    except Exception as exc:
+        print(f"PA flow post failed: {exc}")
+    return False
+
+
 def _post_card_graph(gtok: str, team_id: str, channel_id: str, card: dict) -> "str | None":
     """Post an Adaptive Card via Graph API. Returns the new message ID or None."""
     att_id  = uuid.uuid4().hex
@@ -422,19 +438,23 @@ def post_adaptive_cards(
         print(f"Accountability JSON not found at {acc_path} — skipping.")
         return
 
+    # Power Automate flows handle delete-old + post-new + save ID.
+    # Graph API is a secondary path (requires ChannelMessage.ReadWrite.All).
+    # Webhook is the last-resort fallback (no message-ID tracking).
+    pa_url_audra = os.environ.get("TEAMS_PA_URL_AUDRA", "").strip()
+    pa_url_ops   = os.environ.get("TEAMS_PA_URL_OPS",   "").strip()
+
     team_id    = os.environ.get("TEAMS_SAFETY_TEAM_ID", "").strip()
     channel_id = os.environ.get("TEAMS_SAFETY_CHANNEL_ID", "").strip()
     upn        = os.environ.get("ONEDRIVE_USER_UPN", "").strip()
     use_graph  = bool(team_id and channel_id and upn)
 
-    gtok     = _graph_token() if use_graph else None
+    gtok     = _graph_token() if (use_graph and not pa_url_audra) else None
     od_tok   = None
     new_ids: dict = {}
 
-    # ------------------------------------------------------------------
-    # Step 1: Delete previous cards via Graph API
-    # ------------------------------------------------------------------
-    if use_graph and gtok:
+    # Graph cleanup only runs when PA is not configured
+    if use_graph and gtok and not pa_url_audra:
         try:
             from src.onedrive_upload import get_token as _get_od_tok
             od_tok = _get_od_tok(
@@ -444,30 +464,35 @@ def post_adaptive_cards(
             )
             old_ids = _load_card_ids(od_tok, upn)
             if old_ids:
-                print(f"Cleaning up {len(old_ids)} previous card(s)...")
+                print(f"Cleaning up {len(old_ids)} previous card(s) via Graph...")
                 _delete_cards(gtok, team_id, channel_id, old_ids)
         except Exception as exc:
-            print(f"Card cleanup skipped: {exc}")
+            print(f"Graph card cleanup skipped: {exc}")
 
-    # ------------------------------------------------------------------
-    # Step 2: Post new cards
-    # ------------------------------------------------------------------
     data  = json.loads(acc_path.read_text())
     today = datetime.date.fromisoformat(
         data.get("date", datetime.date.today().isoformat())
     )
 
-    def _post(label: str, items: list[dict]) -> None:
+    def _post(label: str, items: list[dict], pa_url: str = "") -> None:
         if not items:
             print(f"{label}: no action items today — skipping card.")
             return
         payload = build_owner_card(label, items, today, run_url, form_url, dismiss_url)
         if not payload:
             return
+        card = payload["attachments"][0]["content"]
 
-        # Try Graph API first (gives us a message ID for next-run cleanup)
+        # 1. Power Automate (delete old + post new, full tracking)
+        if pa_url:
+            ok = _post_card_pa(pa_url, card)
+            if ok:
+                print(f"{label} card posted via Power Automate ({len(items)} items)")
+                return
+            print(f"{label}: PA flow failed — falling back.")
+
+        # 2. Graph API (post + track IDs; deletion requires ChannelMessage.ReadWrite.All)
         if use_graph and gtok:
-            card   = payload["attachments"][0]["content"]
             msg_id = _post_card_graph(gtok, team_id, channel_id, card)
             if msg_id:
                 new_ids[label] = msg_id
@@ -475,21 +500,18 @@ def post_adaptive_cards(
                 return
             print(f"{label}: Graph post failed — falling back to webhook.")
 
-        # Webhook fallback
+        # 3. Webhook (no ID tracking, no cleanup)
         if not webhook:
-            print(f"{label}: no webhook configured and Graph unavailable — skipping.")
+            print(f"{label}: no posting method available — skipping.")
             return
         resp = _requests.post(webhook, json=payload, timeout=30)
         print(f"{label} card (webhook): HTTP {resp.status_code} ({len(items)} items)")
         if resp.status_code not in range(200, 300):
             print(f"  Response body: {resp.text[:400]}")
 
-    _post("AUDRA",         data.get("audra", []))
-    _post("JACKSON + DAN", data.get("ops",   []))
+    _post("AUDRA",         data.get("audra", []), pa_url_audra)
+    _post("JACKSON + DAN", data.get("ops",   []), pa_url_ops)
 
-    # ------------------------------------------------------------------
-    # Step 3: Persist new message IDs for next run's cleanup
-    # ------------------------------------------------------------------
     if new_ids and od_tok and upn:
         _save_card_ids(od_tok, upn, new_ids)
         print(f"Saved {len(new_ids)} card ID(s) → {_CARD_IDS_FILE}")
@@ -500,10 +522,11 @@ def post_adaptive_cards(
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    webhook      = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
-    run_url      = os.environ.get("RUN_URL", "").strip()
-    form_url     = os.environ.get("TEAMS_FORM_URL", "").strip()
-    dismiss_url  = os.environ.get("TEAMS_DISMISS_FORM_URL", "").strip()
+    webhook     = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
+    run_url     = os.environ.get("RUN_URL", "").strip()
+    form_url    = os.environ.get("TEAMS_FORM_URL", "").strip()
+    dismiss_url = os.environ.get("TEAMS_DISMISS_FORM_URL", "").strip()
+    # PA URLs are read inside post_adaptive_cards via os.environ directly.
 
     today = datetime.date.today()
     acc_path = Path(f"output/accountability-{today.isoformat()}.json")
