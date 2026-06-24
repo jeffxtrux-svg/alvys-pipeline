@@ -125,10 +125,20 @@ jobs:
         # Silent no-op if TEAMS_SAFETY_WEBHOOK is not set.
         if: steps.ct_gate.outputs.skip != '1'
         env:
-          TEAMS_SAFETY_WEBHOOK:   ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
-          TEAMS_FORM_URL:         ${{ secrets.TEAMS_FORM_URL }}
-          TEAMS_DISMISS_FORM_URL: ${{ secrets.TEAMS_DISMISS_FORM_URL }}
+          TEAMS_SAFETY_WEBHOOK:    ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_FORM_URL:          ${{ secrets.TEAMS_FORM_URL }}
+          TEAMS_DISMISS_FORM_URL:  ${{ secrets.TEAMS_DISMISS_FORM_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Graph API cleanup — delete previous cards before posting fresh ones.
+          # Requires ChannelMessage.ReadWrite.All on the Azure app.
+          # Set TEAMS_SAFETY_TEAM_ID + TEAMS_SAFETY_CHANNEL_ID to enable;
+          # falls back silently to webhook-only if either is unset.
+          AZURE_TENANT_ID:          ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:          ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:      ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:        ${{ secrets.ONEDRIVE_USER_UPN }}
+          TEAMS_SAFETY_TEAM_ID:     ${{ secrets.TEAMS_SAFETY_TEAM_ID }}
+          TEAMS_SAFETY_CHANNEL_ID:  ${{ secrets.TEAMS_SAFETY_CHANNEL_ID }}
         run: python -m src.teams_adaptive_cards
 
       - name: Notify on failure

@@ -28,6 +28,8 @@ import datetime
 import json
 import os
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 
@@ -35,6 +37,113 @@ try:
     import requests as _requests
 except ImportError:
     _requests = None  # type: ignore
+
+# ---------------------------------------------------------------------------
+# Graph API — channel message management
+# ---------------------------------------------------------------------------
+
+_GRAPH = "https://graph.microsoft.com/v1.0"
+_CARD_IDS_FOLDER = "Safety"
+_CARD_IDS_FILE   = "teams-card-ids.json"
+
+
+def _graph_token() -> "str | None":
+    """Get a Graph API token using the existing Azure app credentials."""
+    tid = os.environ.get("AZURE_TENANT_ID", "").strip()
+    cid = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    sec = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+    if not (tid and cid and sec) or _requests is None:
+        return None
+    try:
+        r = _requests.post(
+            f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": sec,
+                "scope": "https://graph.microsoft.com/.default",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()["access_token"]
+    except Exception as exc:
+        print(f"teams_adaptive_cards: could not get Graph token: {exc}")
+        return None
+
+
+def _load_card_ids(od_tok: str, upn: str) -> dict:
+    """Load stored Teams message IDs from OneDrive. Returns {} on any error."""
+    try:
+        from src.onedrive_upload import download_file
+        raw = download_file(od_tok, upn, f"{_CARD_IDS_FOLDER}/{_CARD_IDS_FILE}")
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_card_ids(od_tok: str, upn: str, ids: dict) -> None:
+    """Persist message IDs to OneDrive so the next run can delete them."""
+    try:
+        from src.onedrive_upload import ensure_folder, upload_file
+        ensure_folder(od_tok, upn, _CARD_IDS_FOLDER)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            json.dump(ids, tf)
+            tmp = Path(tf.name)
+        upload_file(od_tok, upn, folder_path=_CARD_IDS_FOLDER,
+                    filename=_CARD_IDS_FILE, file_path=tmp)
+        tmp.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"teams_adaptive_cards: could not save card IDs: {exc}")
+
+
+def _delete_cards(gtok: str, team_id: str, channel_id: str, ids: dict) -> None:
+    """Soft-delete previous cards by stored message ID (shows 'message deleted')."""
+    for label, msg_id in ids.items():
+        try:
+            r = _requests.delete(
+                f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {gtok}"},
+                timeout=15,
+            )
+            if r.status_code in (200, 204):
+                print(f"Deleted old {label} card (msg {msg_id})")
+            else:
+                print(f"Could not delete {label} card {msg_id}: HTTP {r.status_code}")
+        except Exception as exc:
+            print(f"Error deleting {label} card {msg_id}: {exc}")
+
+
+def _post_card_graph(gtok: str, team_id: str, channel_id: str, card: dict) -> "str | None":
+    """Post an Adaptive Card via Graph API. Returns the new message ID or None."""
+    att_id  = uuid.uuid4().hex
+    payload = {
+        "body": {
+            "contentType": "html",
+            "content": f'<attachment id="{att_id}"></attachment>',
+        },
+        "attachments": [{
+            "id": att_id,
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": json.dumps(card),
+        }],
+    }
+    try:
+        r = _requests.post(
+            f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages",
+            headers={
+                "Authorization": f"Bearer {gtok}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        if r.status_code in (200, 201):
+            return r.json().get("id")
+        print(f"Graph post failed: HTTP {r.status_code} — {r.text[:400]}")
+    except Exception as exc:
+        print(f"Error posting card via Graph: {exc}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +408,13 @@ def post_adaptive_cards(
     form_url: str = "",
     dismiss_url: str = "",
 ) -> None:
-    """Read accountability JSON and POST Adaptive Cards to Teams webhook."""
-    if not webhook:
-        print("TEAMS_SAFETY_WEBHOOK not set — skipping Teams posts.")
-        return
+    """Read accountability JSON and POST Adaptive Cards to Teams.
+
+    When TEAMS_SAFETY_TEAM_ID + TEAMS_SAFETY_CHANNEL_ID are set, uses the
+    Microsoft Graph API: deletes the previous run's cards first (so the channel
+    stays clean), then posts new cards via Graph and saves their message IDs.
+    Falls back silently to the incoming webhook when Graph config is absent.
+    """
     if _requests is None:
         print("requests library not available — skipping Teams posts.")
         return
@@ -310,6 +422,36 @@ def post_adaptive_cards(
         print(f"Accountability JSON not found at {acc_path} — skipping.")
         return
 
+    team_id    = os.environ.get("TEAMS_SAFETY_TEAM_ID", "").strip()
+    channel_id = os.environ.get("TEAMS_SAFETY_CHANNEL_ID", "").strip()
+    upn        = os.environ.get("ONEDRIVE_USER_UPN", "").strip()
+    use_graph  = bool(team_id and channel_id and upn)
+
+    gtok     = _graph_token() if use_graph else None
+    od_tok   = None
+    new_ids: dict = {}
+
+    # ------------------------------------------------------------------
+    # Step 1: Delete previous cards via Graph API
+    # ------------------------------------------------------------------
+    if use_graph and gtok:
+        try:
+            from src.onedrive_upload import get_token as _get_od_tok
+            od_tok = _get_od_tok(
+                os.environ.get("AZURE_TENANT_ID", ""),
+                os.environ.get("AZURE_CLIENT_ID", ""),
+                os.environ.get("AZURE_CLIENT_SECRET", ""),
+            )
+            old_ids = _load_card_ids(od_tok, upn)
+            if old_ids:
+                print(f"Cleaning up {len(old_ids)} previous card(s)...")
+                _delete_cards(gtok, team_id, channel_id, old_ids)
+        except Exception as exc:
+            print(f"Card cleanup skipped: {exc}")
+
+    # ------------------------------------------------------------------
+    # Step 2: Post new cards
+    # ------------------------------------------------------------------
     data  = json.loads(acc_path.read_text())
     today = datetime.date.fromisoformat(
         data.get("date", datetime.date.today().isoformat())
@@ -322,13 +464,35 @@ def post_adaptive_cards(
         payload = build_owner_card(label, items, today, run_url, form_url, dismiss_url)
         if not payload:
             return
+
+        # Try Graph API first (gives us a message ID for next-run cleanup)
+        if use_graph and gtok:
+            card   = payload["attachments"][0]["content"]
+            msg_id = _post_card_graph(gtok, team_id, channel_id, card)
+            if msg_id:
+                new_ids[label] = msg_id
+                print(f"{label} card posted via Graph ({len(items)} items, msg {msg_id})")
+                return
+            print(f"{label}: Graph post failed — falling back to webhook.")
+
+        # Webhook fallback
+        if not webhook:
+            print(f"{label}: no webhook configured and Graph unavailable — skipping.")
+            return
         resp = _requests.post(webhook, json=payload, timeout=30)
-        print(f"{label} card: HTTP {resp.status_code} ({len(items)} items)")
+        print(f"{label} card (webhook): HTTP {resp.status_code} ({len(items)} items)")
         if resp.status_code not in range(200, 300):
             print(f"  Response body: {resp.text[:400]}")
 
-    _post("AUDRA", data.get("audra", []))
-    _post("JACKSON + DAN", data.get("ops", []))
+    _post("AUDRA",         data.get("audra", []))
+    _post("JACKSON + DAN", data.get("ops",   []))
+
+    # ------------------------------------------------------------------
+    # Step 3: Persist new message IDs for next run's cleanup
+    # ------------------------------------------------------------------
+    if new_ids and od_tok and upn:
+        _save_card_ids(od_tok, upn, new_ids)
+        print(f"Saved {len(new_ids)} card ID(s) → {_CARD_IDS_FILE}")
 
 
 # ---------------------------------------------------------------------------
