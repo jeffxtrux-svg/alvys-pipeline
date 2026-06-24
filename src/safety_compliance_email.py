@@ -936,9 +936,8 @@ def _build_accountability_structured(
             "prompt":   "Has defect been repaired and cleared in Samsara?",
         }
         audra_items.append(item)
-        ops_items.append(item)
 
-    # Safety events needing coaching (coaching_list, not yet acked) → audra + ops
+    # Safety events needing coaching (coaching_list, not yet acked) → audra only
     coaching_list = (samsara or {}).get("coaching_list") or []
     for c in coaching_list:
         if c.get("acked"):
@@ -955,9 +954,8 @@ def _build_accountability_structured(
             "prompt":   "When will coaching be completed? What corrective action was taken?",
         }
         audra_items.append(item)
-        ops_items.append(item)
 
-    # Safety events needing disposition → audra + ops
+    # Safety events needing disposition → audra only
     _needs_disp_statuses = {
         "needsCoaching", "needs_coaching", "NEEDS_COACHING",
         "needsDisposition", "needs_disposition", "NEEDS_DISPOSITION",
