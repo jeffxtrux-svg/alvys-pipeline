@@ -126,7 +126,7 @@ def _trigger_pa_via_onedrive(od_tok: str, upn: str, card: dict, label: str) -> b
         from src.onedrive_upload import ensure_folder, upload_file
         ensure_folder(od_tok, upn, "Safety/pa-triggers")
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-            json.dump({"card": card}, tf)
+            json.dump({"card": card, "_ts": datetime.datetime.utcnow().isoformat()}, tf)
             tmp = Path(tf.name)
         upload_file(od_tok, upn, folder_path="Safety/pa-triggers",
                     filename=filename, file_path=tmp)
