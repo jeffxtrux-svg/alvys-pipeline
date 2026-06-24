@@ -86,7 +86,7 @@ both to `sources`.
 
 ## Living pages — registers and journals
 
-Two `/wiki` pages are **living registers**, not one-shot concept pages. Maintain
+Four kinds of `/wiki` pages are **living registers**, not one-shot concept pages. Maintain
 them on every pass, not just when their own raw seed changes:
 
 - **`wiki/risk-register.md`** (seed: `raw/xfreight-risk-register.md`, template:
@@ -137,6 +137,28 @@ them on every pass, not just when their own raw seed changes:
   protocol, add the lesson to the run-log entry AND a decision-journal
   entry rather than silently editing the protocol — protocol changes are
   themselves consequential decisions.
+- **Per-entity pattern pages** (`wiki/drivers/*.md`, `wiki/customers/*.md`,
+  templates: `templates/driver.md`, `templates/customer.md`). One page per
+  driver or customer that has accumulated enough history / pattern material
+  to be worth its own surface. **These are wiki-only living files — they
+  do NOT have raw seeds**, and that's intentional: an entity page is a
+  rolling picture of one person/account, fed continuously by coaching
+  events, dispatch notes, conversations, and lessons captured elsewhere in
+  the wiki (`weekly-retros.yml`, `decision-journal.md`, playbook run-logs).
+  The **Patterns / What's worked / What hasn't / Open** sections are
+  updated as new information lands; the **History** section is append-only
+  — every consequential event (coaching session, RFP decision, AR
+  escalation, lane change) gets a one-line dated entry that preserves the
+  record. Never reorder or overwrite past history entries. When a per-entity
+  page is referenced from a weekly retro, decision-journal entry, playbook
+  run, or risk-register entry, cross-link both ways. Pages are created
+  when an entity hits the criteria in the directory READMEs
+  (`wiki/drivers/_README.md`, `wiki/customers/_README.md`) — don't
+  proactively generate stubs for every driver or customer; that's noise.
+  The brief's entity-context lookup (`src/entity_context.py`) matches both
+  the structured directory (`wiki/drivers/<slug>.md` /
+  `wiki/customers/<slug>.md`) AND the legacy flat-root customer pages
+  (`wiki/<slug>.md`) — so pre-existing customer pages stay where they are.
 
 Keep all living-page summary tables in sync with their entries, and cross-link
 risks ↔ decisions ↔ playbooks when one references another. These are the only
