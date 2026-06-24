@@ -359,6 +359,8 @@ def _mapbox_duration_seconds(
 # ----------------------------------------------------------------------
 _LATE_THRESHOLD_MIN = -45
 _TEAMS_STATE_FILE = "eta_state.json"
+_ETA_LOG_FILE = "eta_log.csv"
+_ETA_LOG_KEEP_DAYS = 90   # rows older than this are pruned on each run
 _GPS_STALE_MINUTES = 45  # GPS fix older than this is treated as unreliable
 
 
@@ -630,6 +632,120 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
     log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
              else len(curr_load_nos))
     _save_teams_state(token, user_upn, folder, new_state)
+
+
+# ----------------------------------------------------------------------
+# Historical ETA log
+# ----------------------------------------------------------------------
+def _append_eta_log(token: str, user_upn: str, folder: str,
+                    run_ts: datetime,
+                    rows_with_eta: list[dict],
+                    untracked: list[dict]) -> None:
+    """Append this run's load snapshots to a rolling CSV on OneDrive.
+
+    One row per load per run — both tracked (ETA computed) and untracked
+    (ETA blank, reason filled). Rows older than _ETA_LOG_KEEP_DAYS are
+    pruned on each write so the file stays bounded.
+
+    Columns: run_ts, load_no, truck, driver, consignee, consignee_city,
+             consignee_state, appt_iso, eta_iso, delta_min, late_45plus,
+             gps_stale, untracked, reason
+    """
+    import csv as _csv
+    import io as _io
+
+    _FIELDS = [
+        "run_ts", "load_no", "truck", "driver", "consignee",
+        "consignee_city", "consignee_state", "appt_iso", "eta_iso",
+        "delta_min", "late_45plus", "gps_stale", "untracked", "reason",
+    ]
+
+    path = f"{folder}/{_ETA_LOG_FILE}"
+    url = f"{_GRAPH_BASE}/users/{user_upn}/drive/root:/{path}:/content"
+    cutoff = run_ts - timedelta(days=_ETA_LOG_KEEP_DAYS)
+
+    # Download and prune existing log
+    existing: list[dict] = []
+    try:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
+        if resp.status_code == 200:
+            reader = _csv.DictReader(_io.StringIO(resp.text))
+            for row in reader:
+                try:
+                    if datetime.fromisoformat(row["run_ts"]) >= cutoff:
+                        existing.append(row)
+                except (KeyError, ValueError):
+                    pass
+            log.info("ETA log: loaded %d existing rows (after 90d prune)", len(existing))
+        elif resp.status_code != 404:
+            log.warning("ETA log download HTTP %d — starting fresh", resp.status_code)
+    except Exception as exc:
+        log.warning("ETA log download failed: %s — starting fresh", exc)
+
+    # Build new rows for this run
+    run_ts_iso = run_ts.isoformat()
+    new_rows: list[dict] = []
+
+    for r in rows_with_eta:
+        delta = r.get("delta_min")
+        new_rows.append({
+            "run_ts": run_ts_iso,
+            "load_no": str(r.get("load_no") or ""),
+            "truck": str(r.get("truck_name") or ""),
+            "driver": str(r.get("driver_name") or ""),
+            "consignee": str(r.get("consignee") or ""),
+            "consignee_city": str(r.get("consignee_city") or ""),
+            "consignee_state": str(r.get("consignee_state") or ""),
+            "appt_iso": r["appt_dt"].isoformat() if r.get("appt_dt") else "",
+            "eta_iso": r["eta_dt"].isoformat() if r.get("eta_dt") else "",
+            "delta_min": str(delta) if delta is not None else "",
+            "late_45plus": "1" if (delta is not None and delta <= _LATE_THRESHOLD_MIN) else "0",
+            "gps_stale": "1" if r.get("gps_stale") else "0",
+            "untracked": "0",
+            "reason": "",
+        })
+
+    for r in untracked:
+        new_rows.append({
+            "run_ts": run_ts_iso,
+            "load_no": str(r.get("load_no") or ""),
+            "truck": str(r.get("truck") or ""),
+            "driver": str(r.get("driver") or ""),
+            "consignee": str(r.get("consignee") or ""),
+            "consignee_city": str(r.get("consignee_city") or ""),
+            "consignee_state": str(r.get("consignee_state") or ""),
+            "appt_iso": r["appt_dt"].isoformat() if r.get("appt_dt") else "",
+            "eta_iso": "",
+            "delta_min": "",
+            "late_45plus": "",
+            "gps_stale": "",
+            "untracked": "1",
+            "reason": str(r.get("reason") or ""),
+        })
+
+    all_rows = existing + new_rows
+
+    # Serialize and upload
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=_FIELDS, lineterminator="\r\n",
+                             extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(all_rows)
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    try:
+        resp = requests.put(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "text/csv"},
+            data=csv_bytes,
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            log.info("ETA log: %d total rows (%d new) → %s", len(all_rows), len(new_rows), path)
+        else:
+            log.warning("ETA log upload HTTP %d: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        log.warning("ETA log upload failed: %s", exc)
 
 
 # ----------------------------------------------------------------------
@@ -1158,6 +1274,9 @@ def main() -> int:
     upload_file(tok, user_upn, folder, html_path.name, html_path)
     upload_file(tok, user_upn, folder, xlsx_path.name, xlsx_path)
     log.info("Published %s/XFreight_ETAs.{html,xlsx} to OneDrive", folder)
+
+    # --- Append to rolling 90-day ETA log on OneDrive -------------------
+    _append_eta_log(tok, user_upn, folder, generated_at, rows_with_eta, untracked)
 
     return 0
 
