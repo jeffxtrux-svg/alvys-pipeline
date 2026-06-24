@@ -114,11 +114,22 @@ def _delete_cards(gtok: str, team_id: str, channel_id: str, ids: dict) -> None:
             print(f"Error deleting {label} card {msg_id}: {exc}")
 
 
-def _trigger_pa_via_onedrive(od_tok: str, upn: str, card: dict, label: str) -> bool:
+def _trigger_pa_via_onedrive(
+    od_tok: str, upn: str, card: dict, label: str,
+    webhook_payload: dict | None = None,
+) -> bool:
     """Write card JSON to OneDrive to trigger the Power Automate flow.
 
     PA watches Safety/pa-triggers/ for file changes (free standard connector).
-    The flow handles deletion of the previous card and posting the new one.
+    The trigger file contains:
+      payload — full Teams incoming-webhook message ({type, attachments}) so the
+                PA flow can POST it directly to the Teams webhook without any
+                JSON reshaping.  Configure the PA HTTP action body as the
+                expression: triggerBody()?['payload']
+      card    — adaptive-card content only (backward-compat; some flow designs
+                extract this and wrap it themselves)
+      _ts     — ISO timestamp so OneDrive detects a content change every run
+
     Returns True if the trigger file was written successfully.
     """
     filename = "teams-card-audra.json" if "AUDRA" in label.upper() else "teams-card-ops.json"
@@ -126,7 +137,18 @@ def _trigger_pa_via_onedrive(od_tok: str, upn: str, card: dict, label: str) -> b
         from src.onedrive_upload import ensure_folder, upload_file
         ensure_folder(od_tok, upn, "Safety/pa-triggers")
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-            json.dump({"card": card, "_ts": datetime.datetime.utcnow().isoformat()}, tf)
+            json.dump({
+                "payload": webhook_payload or {
+                    "type": "message",
+                    "attachments": [{
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "contentUrl": None,
+                        "content": card,
+                    }],
+                },
+                "card": card,
+                "_ts": datetime.datetime.utcnow().isoformat(),
+            }, tf)
             tmp = Path(tf.name)
         upload_file(od_tok, upn, folder_path="Safety/pa-triggers",
                     filename=filename, file_path=tmp)
@@ -517,7 +539,8 @@ def post_adaptive_cards(
         # 1. OneDrive trigger — write file for PA flow (future card management).
         # Does NOT early-return: webhook below always fires so cards reliably appear.
         if use_pa_od and od_tok and upn:
-            ok = _trigger_pa_via_onedrive(od_tok, upn, card, label)
+            ok = _trigger_pa_via_onedrive(od_tok, upn, card, label,
+                                          webhook_payload=payload)
             if ok:
                 print(f"{label}: PA trigger file written (webhook will also post)")
             else:
