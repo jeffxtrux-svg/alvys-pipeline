@@ -1795,36 +1795,35 @@ def _extra_trends(samsara: dict | None,
     else:
         out["dvir_comp_7d"] = None
 
-    if insp_df is not None and not insp_df.empty:
-        idc = _find_col(insp_df, ["reported", "createdat"])
-        drv_col_i = _find_col(insp_df, ["driver"])
-        if idc:
-            cols_i = [idc] + ([drv_col_i] if drv_col_i else [])
-            di = insp_df[cols_i].copy()
-            di["_dt"] = _to_naive_dt(di[idc])
-            if drv_col_i:
-                di["_drv"] = di[drv_col_i].astype(str).str.strip()
-            wd_by_month = _working_days_by_month(hos_df)
-            months6 = _last_6_months()
-            labels, pcts = [], []
-            for i, (yr, mo) in enumerate(months6):
-                mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
-                done  = int(mask.sum())
-                wd    = wd_by_month.get((yr, mo), 0)
-                exp   = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
-                lab = pd.Timestamp(year=yr, month=mo, day=1).strftime("%b")
-                if i == len(months6) - 1:
-                    lab += "*"
-                labels.append(lab)
-                if exp > 0:
-                    pcts.append(min(round(done / exp * 100), 100))
-                else:
-                    pcts.append(0)
-            out["dvir_pct"] = (labels, pcts)
-        else:
-            out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
-    else:
-        out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
+    # Monthly DVIR compliance bar chart — uses DVIRs + HOS_DailyLogs (same source
+    # as the 7d tile) so the chart isn't gated on DVIR_Inspections being populated.
+    dvirs_df = (samsara_sheets or {}).get("DVIRs")
+    dvirs_by_month: dict = {}
+    if dvirs_df is not None and not dvirs_df.empty:
+        dvir_time_col = _find_col(dvirs_df, ["starttime", "start time",
+                                              "createdattime", "submittedattime"])
+        if dvir_time_col:
+            dv = dvirs_df[[dvir_time_col]].copy()
+            dv["_dt"] = _to_naive_dt(dv[dvir_time_col])
+            for _, row in dv.iterrows():
+                if pd.isna(row["_dt"]):
+                    continue
+                key = (row["_dt"].year, row["_dt"].month)
+                dvirs_by_month[key] = dvirs_by_month.get(key, 0) + 1
+
+    wd_by_month = _working_days_by_month(hos_df)
+    months6 = _last_6_months()
+    labels, pcts = [], []
+    for i, (yr, mo) in enumerate(months6):
+        done = dvirs_by_month.get((yr, mo), 0)
+        wd   = wd_by_month.get((yr, mo), 0)
+        exp  = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
+        lab  = pd.Timestamp(year=yr, month=mo, day=1).strftime("%b")
+        if i == len(months6) - 1:
+            lab += "*"
+        labels.append(lab)
+        pcts.append(min(round(done / exp * 100), 100) if exp > 0 else 0)
+    out["dvir_pct"] = (labels, pcts) if any(pcts) else (_fallback_labels, _fallback_zeros)
 
     # Speed over limit — fleet avg % drive time per calendar month.
     # samsara_main now makes per-month API calls and stores them in speeds_monthly.
