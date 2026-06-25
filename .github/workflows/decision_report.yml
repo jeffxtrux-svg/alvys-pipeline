@@ -70,10 +70,11 @@ jobs:
       - name: Build and send Risk & Decisions report
         if: steps.ct_gate.outputs.skip != '1'
         env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          ONEDRIVE_USER_UPN:   ${{ secrets.ONEDRIVE_USER_UPN }}
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
           # Jeff only for now; the dispatch input overrides when set.
           DECISION_REPORT_TO_EMAILS: ${{ inputs.recipients != '' && inputs.recipients || secrets.ONEDRIVE_USER_UPN }}
         run: python -m src.decision_report

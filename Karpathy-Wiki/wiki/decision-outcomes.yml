@@ -72,3 +72,84 @@ decisions:
       on_pass: confirmed
       on_fail: wrong
       format: int
+
+  - id: triumph-factoring-ar-reduction
+    title: "Triumph factoring: AR 60+ drops to near zero"
+    journal_date: "2026-06-23"
+    check_after: "2026-08-23"
+    check:
+      kind: comparison
+      metric: AR_60Plus
+      direction: "<="
+      threshold: 50000
+      on_pass: confirmed
+      on_fail: mixed
+      format: money
+
+  - id: triumph-factoring-rpm-goal
+    title: "Triumph factoring: RPM holds at $2.92+ after fee"
+    journal_date: "2026-06-23"
+    check_after: "2026-09-23"
+    check:
+      kind: comparison
+      metric: RPM_OwnFleet
+      direction: ">="
+      threshold: 2.92
+      on_pass: confirmed
+      on_fail: mixed
+      format: money
+
+  # --------------------------------------------------------------------------
+  # Added 2026-06-19 (Jeff): close the loop on three more pending journal
+  # entries so the brief grades them automatically.
+  # --------------------------------------------------------------------------
+
+  - id: sambasafety-csv-drop-keeps-flowing
+    title: "SambaSafety API → CSV-drop: driver compliance data keeps flowing"
+    journal_date: "2026-06-12"
+    # 30-day window after the API was retired — long enough to catch a stalled
+    # Power Automate flow before it becomes a CSA blind spot.
+    check_after: "2026-07-12"
+    check:
+      kind: comparison
+      metric: samba.monitored
+      direction: ">="
+      threshold: 1
+      on_pass: confirmed
+      on_fail: wrong
+      format: int
+
+  - id: acrisure-insurance-renewal-absorbed
+    title: "Acrisure renewal +$0.08–0.10/mi absorbed into cost-out"
+    journal_date: "2026-05-01"
+    # Check after the first scorecard run that picks up the renewal-period
+    # QB P&L. The overhead pin (currently $0.98/mi) should reflect the
+    # higher insurance line — if overhead drops below $0.85 the absorption
+    # is incomplete (pin was un-set or the QB pull lost the line).
+    check_after: "2026-06-01"
+    check:
+      kind: comparison
+      metric: goal.overhead_per_mile
+      direction: ">="
+      threshold: 0.85
+      on_pass: confirmed
+      on_fail: wrong
+      format: money
+
+  - id: role-focused-briefs-ar-holds
+    title: "Role-focused brief delivery: AR 91+ stays controlled (≤ $100K)"
+    journal_date: "2026-06-14"
+    # 30 days after the role-focused split is in place across all briefs —
+    # if the new accountability flow works, the 91+ collections bucket
+    # should stay flat or trend down (Audra owns invoice closeout under the
+    # new responsibility map). A jump > $100K signals the split isn't
+    # driving faster action on stale AR.
+    check_after: "2026-07-14"
+    check:
+      kind: comparison
+      metric: qb_ar.d91plus
+      direction: "<="
+      threshold: 100000
+      on_pass: confirmed
+      on_fail: mixed
+      format: money

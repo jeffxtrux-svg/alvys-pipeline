@@ -1,0 +1,116 @@
+# Friday weekly-retro draft
+#
+# Every Friday at 4pm CT, generate a draft retro YAML block prepopulated with
+# this week's commits, push to a draft-retro branch, and open a PR. The PR
+# becomes the human's "10 minute Friday retro" — fill in the prose fields and
+# merge. The brief surfaces last week's retro on Monday morning.
+#
+# Lower friction is the whole point: turning "open file → remember schema →
+# write" into "open PR → fill blanks → merge" is the difference between a
+# habit that sticks and one that doesn't.
+#
+# Required GitHub Secrets:
+#   GH_PAT — fine-grained PAT scoped to this repo with Contents:RW and
+#            Pull-Requests:RW so the workflow can push the branch + open the PR
+
+name: Weekly retro draft (Friday 4pm CT)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Friday 4pm CT — both DST seasons. CDT=UTC-5 → 21:00 UTC; CST=UTC-6 → 22:00 UTC.
+    # The CT-hour-gate below allows only the slot that matches the current season.
+    - cron: '0 21 * * 5'
+    - cron: '0 22 * * 5'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Gate to 4pm CT Friday
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          CT_DOW=$(TZ=America/Chicago date +%u)  # 1=Mon..5=Fri
+          echo "Central-time hour: $CT_HOUR, day-of-week: $CT_DOW"
+          if [ "$CT_DOW" != "5" ] || [ "$CT_HOUR" != "16" ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history for `git log --since`
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate draft retro block
+        id: gen
+        if: steps.ct_gate.outputs.skip != '1'
+        run: |
+          python -m src.weekly_retro_draft
+          # Did the script actually insert a new block? It no-ops if this week
+          # already has one (re-run safety).
+          if git diff --quiet Karpathy-Wiki/wiki/weekly-retros.yml; then
+            echo "no_changes=1" >> "$GITHUB_OUTPUT"
+            echo "No changes to commit — this week already has a draft."
+          else
+            echo "no_changes=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit + push to draft branch + open PR
+        if: steps.ct_gate.outputs.skip != '1' && steps.gen.outputs.no_changes != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          set -e
+          MONDAY=$(TZ=America/Chicago date -d "last Monday" +%Y-%m-%d 2>/dev/null || \
+                   python3 -c "import datetime; t=datetime.date.today(); print((t - datetime.timedelta(days=t.weekday())).isoformat())")
+          BRANCH="retro/draft-${MONDAY}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Karpathy-Wiki/wiki/weekly-retros.yml
+          git commit -m "Weekly retro draft for week of ${MONDAY}"
+
+          # Push using GH_PAT so the PR is openable. GITHUB_TOKEN can push but
+          # won't trigger workflows on the new PR; GH_PAT does.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Weekly retro draft — week of ${MONDAY}" \
+            --body "$(cat <<EOF
+          Auto-generated draft retro for the week of ${MONDAY}.
+
+          **Fill in three fields and merge:**
+          1. Replace \`captured_by: \"DRAFT — replace before merge\"\` with your name.
+          2. Fill in \`surprised_by\` (what we didn't expect this week).
+          3. Fill in \`worked\` (what worked well, worth repeating).
+          4. Fill in \`didnt_work\` (what failed or under-delivered).
+          5. OPTIONAL: add 1-3 \`lessons\` ("If X then Y" pattern statements).
+
+          The block has been inserted at the top of \`Karpathy-Wiki/wiki/weekly-retros.yml\`. This week's commits are listed as a comment above the block to jog your memory — delete those comment lines after merge if you want.
+
+          The brief surfaces the most recent retro on page 1 starting Monday morning. **Skip if there's nothing meaningful to log** — empty retros are worse than no retro.
+          EOF
+          )" \
+            --head "$BRANCH" \
+            --base main

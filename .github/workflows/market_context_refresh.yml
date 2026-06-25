@@ -1,0 +1,81 @@
+# Weekly market-context refresh — Phase 2E external benchmark.
+#
+# Pulls FRED's weekly U.S. retail diesel price (free, no API key) and writes
+# Karpathy-Wiki/wiki/market-context.json. The executive brief reads that
+# file each morning and renders a "Market Context · US Diesel" chip on page 1.
+#
+# EIA publishes new weekly retail diesel data on Mondays; FRED republishes
+# shortly after. Refresh Monday evening so Tuesday's brief has the new number.
+#
+# Required GitHub Secrets:
+#   GH_PAT — for the auto-commit step (Contents:RW scope)
+
+name: Market context refresh (Mon 6pm CT)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 6pm CT, dual-cron for DST. CDT=UTC-5 → 23:00 UTC; CST=UTC-6 → 00:00 UTC Tue.
+    - cron: '0 23 * * 1'
+    - cron: '0 0 * * 2'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Gate to Mon 6pm CT
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          CT_DOW=$(TZ=America/Chicago date +%u)  # 1=Mon..7=Sun
+          echo "Central-time hour: $CT_HOUR, day-of-week: $CT_DOW"
+          if [ "$CT_DOW" != "1" ] || [ "$CT_HOUR" != "18" ]; then
+            echo "Off-target — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install requests
+
+      - name: Fetch FRED diesel price + write JSON
+        if: steps.ct_gate.outputs.skip != '1'
+        run: python -m src.market_context
+
+      - name: Commit + push if JSON changed
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Stage first so new untracked files show up — `git diff --quiet`
+          # alone misses brand-new files (caught this on the seed run).
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Karpathy-Wiki/wiki/market-context.json
+          if git diff --cached --quiet; then
+            echo "No change in market-context.json — skipping commit."
+            exit 0
+          fi
+          git commit -m "market-context: weekly FRED diesel refresh"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git push origin HEAD:main

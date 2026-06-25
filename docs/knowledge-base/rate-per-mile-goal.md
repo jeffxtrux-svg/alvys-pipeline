@@ -38,16 +38,20 @@ profit / mile =                goal / mile   −   cost / mile
 
 `SUM(Driver Rate) ÷ SUM(Total Dispatch Mileage)` for the **X-Trux asset fleet**
 (Office slicer → X-Trux/XFreight; X-Linx and cancelled loads dropped), over a
-short **trailing window** (default **10 days**, `RPM_GOAL_PAY_WINDOW_DAYS`),
-**settled loads only** (Driver Rate > 0).
+**month-to-date window by default** — resets on the 1st of each month —
+**settled loads only** (Driver Rate > 0). Set `RPM_GOAL_PAY_WINDOW_DAYS` to
+force a fixed trailing-N-day window instead (e.g. `=10` restores the old
+10-day behavior).
 
-A short recent window — not year-to-date — is deliberate: the owner-op rate
-changes **weekly**, and `Driver Rate` holds each load's full settled pay (base +
-accessorials), so a tight trailing read blends the **current** rate, accessorials,
-and deadhead into one honest $/mi and tracks rate changes within days instead of
-dragging a stale average. The **settled-only** filter matters at this window
-length: the freshest loads have miles but $0 driver pay until they settle, and
-including them would deflate the rate — so they're excluded until pay lands.
+MTD is the default because it's how accounting reads the books — the cost/mile
+on the brief lines up with monthly P&L conversations. On early-month days
+when MTD is too sparse (<5 settled X-Trux loads or <5,000 miles), the read
+widens through `RPM_GOAL_FALLBACK_WINDOWS` (30 / 60 / 90 days) and the brief
+flags `pay_window_fallback=True`.
+
+The **settled-only** filter matters whichever window is used: the freshest
+loads have miles but $0 driver pay until they settle, and including them
+would deflate the rate — so they're excluded until pay lands.
 
 ### Leg 2 — office overhead per mile  *(from QuickBooks, monthly)*
 

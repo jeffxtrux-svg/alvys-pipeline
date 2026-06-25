@@ -1,0 +1,81 @@
+# Re-post Teams accountability cards with current ✅ Actioned status.
+#
+# Runs every 30 minutes, 7am–5:30pm CT, without re-sending the email or
+# regenerating any KPI tiles.  Reads today's accountability JSON (written by
+# the 5am safety brief run) from OneDrive, checks what has been logged in
+# Accountability Log.xlsx today, and re-posts the per-owner Adaptive Cards
+# with ✅ on actioned items.
+#
+# DST-proof pattern: arms at both CDT (UTC-5) and CST (UTC-6) slots and
+# gates inside the job to CT hour 7–17 (catches the 5:30pm half-hour slot
+# because CT_HOUR == 17 at both 5:00 and 5:30pm).
+#
+# GitHub Secrets required:
+#   TEAMS_SAFETY_WEBHOOK
+#   TEAMS_FORM_URL        (optional)
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+#   ONEDRIVE_USER_UPN
+
+name: Teams Accountability Card Refresh
+
+on:
+  # Every 30 min from 7am–5:30pm CT.
+  # CDT (UTC-5): 12:00–22:30 UTC  →  crons at :00 and :30, hours 12–22
+  # CST (UTC-6): 13:00–23:30 UTC  →  crons at :00 and :30, hours 13–23
+  schedule:
+    - cron: '0,30 12,13,14,15,16,17,18,19,20,21,22,23 * * *'
+
+  # Allow manual re-posts at any time.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Gate to 7am–5:30pm CT only
+        id: ct_gate
+        if: github.event_name == 'schedule'
+        run: |
+          CT_HOUR=$(TZ=America/Chicago date +%-H)
+          echo "Central-time hour: $CT_HOUR"
+          if [ "$CT_HOUR" -lt 7 ] || [ "$CT_HOUR" -gt 17 ]; then
+            echo "Outside 7am–5:30pm CT — skipping."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "Within business hours CT — proceeding."
+          fi
+
+      - name: Checkout repo
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.ct_gate.outputs.skip != '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.ct_gate.outputs.skip != '1'
+        run: pip install -r requirements.txt
+
+      - name: Re-post Teams cards with current ✅ status
+        if: steps.ct_gate.outputs.skip != '1'
+        env:
+          TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_FORM_URL:       ${{ secrets.TEAMS_FORM_URL }}
+          AZURE_TENANT_ID:      ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:      ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:  ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:    ${{ secrets.ONEDRIVE_USER_UPN }}
+          RUN_URL: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        run: python -m src.teams_refresh

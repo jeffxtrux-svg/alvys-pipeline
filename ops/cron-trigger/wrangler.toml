@@ -8,18 +8,24 @@ name = "alvys-scorecard-cron"
 main = "worker.js"
 compatibility_date = "2025-01-01"
 
-# Target: 5:30am Central, year-round. Cloudflare cron is fixed UTC with no DST
-# handling, so we arm BOTH seasonal 5:30am slots and let the Worker's own
-# America/Chicago hour-gate (see worker.js) fire only the one that actually
-# lands on 5:30am Central — exactly the dual-cron + CT-gate pattern the GitHub
-# workflows use:
+# Two jobs, two kinds of cron (the Worker branches on event.cron):
 #
-#   30 10 UTC  ->  5:30am CDT (summer)  /  4:30am CST  (gated off in worker)
-#   30 11 UTC  ->  6:30am CDT (gated)   /  5:30am CST  (winter)
+# 1. Morning emails — target 5:30am Central, year-round. Cloudflare cron is
+#    fixed UTC with no DST handling, so we arm BOTH seasonal 5:30am slots and
+#    let the Worker's own America/Chicago hour-gate (see worker.js) fire only
+#    the one that actually lands on 5:30am Central — exactly the dual-cron +
+#    CT-gate pattern the GitHub workflows use:
+#      30 10 UTC  ->  5:30am CDT (summer)  /  4:30am CST  (gated off in worker)
+#      30 11 UTC  ->  6:30am CDT (gated)   /  5:30am CST  (winter)
+#    So in every season exactly one fire passes the gate, at 5:30am Central.
 #
-# So in every season exactly one fire passes the gate, at 5:30am Central.
+# 2. XFreight ETA tracker — fires every 30 min at :15/:45 to interleave with
+#    GitHub's own :00/:30 cron on xfreight_etas.yml. Two independent schedulers
+#    covering each other gives a 15-min effective cadence and survives a GitHub
+#    cron outage. No DST gate needed — it runs around the clock. (Effective
+#    15-min cadence ≈ 60k Mapbox calls/mo, well under the 100k/mo free tier.)
 [triggers]
-crons = ["30 10 * * *", "30 11 * * *"]
+crons = ["30 10 * * *", "30 11 * * *", "15,45 * * * *"]
 
 # Cheap observability so a broken backstop doesn't itself go silent.
 [observability]

@@ -120,7 +120,7 @@ Every workflow uses the same **DST-proof pattern**: cron times are armed for bot
 | `samsara_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `qb_refresh.yml` | 4am / 11am / 5pm | `0 9,10,16,17,22,23 * * *` | `{4, 11, 17}` |
 | `sambasafety_refresh.yml` (CSV-drop) | 1am + 3am (pre-brief) + every 2h 4am–6pm | `0 0,6-23 * * *` (hourly arms) | `{1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18}` |
-| `sheets_refresh.yml` | 4:30am / 1:00pm / 5:30pm | `30 9,10`, `0 18,19`, `30 22,23 * * *` | `{4, 13, 17}` |
+| `sheets_refresh.yml` | 5am / 9am / 12pm / 3pm / 6pm (2 cron arms per slot) | `0,30 0,10,11,14,15,17,18,20,21,23 * * *` | `{5, 9, 12, 15, 18}` |
 | `scorecard_email.yml` (13-page brief) | 5:00am (primary) + defense-in-depth backups at 5:15 / 5:30 / 6:30 / 7am | `0,15,30 10` + `0,30 11` + `0 12 * * *` | `≥ 5`, skip `6` |
 | `scorecard_healthcheck.yml` (recover dropped runs) | 6:00am — checks OneDrive marker; dispatches scorecard if missing | `0 11,12 * * *` | `{6}` |
 | `safety_compliance_email.yml` (Audra's safety brief) | 5:00am (primary) + backups at 5:30 / 6:30 | `0 10`, `30 10`, `0 11`, `30 11 * * *` | `≥ 5`, skip `6` |
@@ -135,12 +135,18 @@ cron, which is best-effort and silently drops runs under load. On 2026-06-08 it
 dropped the entire morning batch (every scorecard/daily-upload slot **and** both
 healthchecks), so nothing emailed. A small Cloudflare Worker
 (`ops/cron-trigger/worker.js`, runs on Cloudflare's scheduler) is the one layer
-outside GitHub: each morning (5:30am CT — dual UTC crons + an in-Worker
-America/Chicago hour-gate for DST) it dispatches the two **healthcheck**
-workflows via the GitHub API. Because the healthchecks
-are marker-gated, this is idempotent — it no-ops on normal mornings and recovers
-the send on drop mornings. Setup (a fine-grained PAT scoped to Actions:RW on
-this repo, stored as a Cloudflare secret) is in `ops/cron-trigger/README.md`.
+outside GitHub, and it backstops two things (branching on `event.cron`):
+(1) **morning emails** — each morning (5:30am CT — dual UTC crons + an in-Worker
+America/Chicago hour-gate for DST) it dispatches the three **healthcheck**
+workflows via the GitHub API; because they're marker-gated this is idempotent —
+it no-ops on normal mornings and recovers the send on drop mornings. (2) **the
+XFreight ETA tracker** — every 30 min at **:15/:45** it dispatches
+`xfreight_etas.yml` directly, interleaving with that workflow's own **:00/:30**
+GitHub cron so two independent schedulers give a 15-min effective cadence and a
+GitHub cron outage can't stop the refresh (the ETA run is idempotent — rewrites
+the OneDrive file, Teams posts only on a late-load-set change). Setup (a
+fine-grained PAT scoped to Actions:RW on this repo, stored as a Cloudflare
+secret) is in `ops/cron-trigger/README.md`.
 
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 
@@ -226,6 +232,16 @@ paired trailer text via `safety_relevant_signals`).
     needs scheduling; it is **still federally legal to run**. To actually be
     past the federal 365d a unit would have to be **245+ days past the company
     120d policy** (365 − 120 = 245).
+  - **Teams card alert thresholds (separate from the 120d policy):**
+    - Tractors: Teams accountability card fires at **150 days** since last
+      inspection (30d past 120d policy). Units between 120–149d appear on the
+      equipment brief page but do not generate a Teams card.
+    - Trailers: Teams accountability card fires at **180 days** since last
+      inspection (60d past 120d policy). Units between 120–179d appear on the
+      brief page only.
+    - This separation reduces Teams card noise for units just past the policy
+      line while ensuring hardware with real urgency (150d/180d+) gets an
+      actionable card immediately.
   - When writing prose / playbooks / risk entries about equipment compliance,
     a unit past only the 120d company policy is **flagged as needing
     inspection** — it remains in service. Do not call it "out of service" at

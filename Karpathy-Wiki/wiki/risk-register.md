@@ -22,7 +22,7 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 | Rate-per-mile goal may be light | Medium | Watch | Jeff | Live cost/mi creeping above the $0.98 goal pin |
 | Customer concentration | Medium | Watch | Jeff (BD) | One customer > ~25% of revenue |
 | Insurance — Acrisure (renewal done) | Medium | Monitor | JB / Jeff | Cost trend; shop alternatives by next renewal |
-| Factoring onboarding (Triumph) | Medium | Improving | JB / Jeff | Onboarding ~6/16–17, then cash-flow relief |
+| Factoring onboarding (Triumph) | Low | Live 6/23 | JB / Jeff | Watch AR_60Plus KPI fall over 60-90 days |
 | SambaSafety CSV fragility | Medium | Mitigated | Pipeline | CSV age > 60h |
 | Manual Alvys upload dependency | Medium | Open | Ops | File age > 30h |
 | Pipeline cron fragility | Medium | Mitigated | Pipeline | A morning with no brief by ~7am CT |
@@ -60,8 +60,8 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 ### Pipeline cron fragility
 **What it is.** GitHub's scheduled cron is best-effort and has dropped whole morning batches (e.g., 2026-06-08). **Exposure:** no brief / stale dashboards on drop mornings. **Mitigation:** dual-cron DST hardening, staggered backups, 6am healthchecks, and an off-GitHub Cloudflare Worker backstop. **Watch:** a morning with no brief by ~7am CT. **Owner:** pipeline. See [[Data Pipeline Architecture]], [[Daily Scorecard Email]].
 
-### Factoring onboarding (Triumph)
-**What it is.** **Triumph** selected for invoice factoring; onboarding expected **~June 16–17, 2026** to relieve cash flow. Onboarding required clearing the existing operating loan — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the gap. **Exposure (residual):** onboarding execution this week; factoring fees (~1%); new trailer-refi debt service. **Watch:** onboarding completes on schedule, then AR aging should shorten. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]].
+### Factoring — Triumph live 2026-06-23
+**What it is.** **Triumph** selected and going live **Monday June 23, 2026** at **1.25% flat** (carrier + brokerage). Buyout approved — Triumph takes first position on AR, buying out the First Dakota operating loan. Funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance**. **Residual exposures:** (1) 1.25% fee = ~$5,475/month at current run rate — must be absorbed into RPM goal ($2.96 gross to net $2.92 target); (2) new trailer-refi debt service; (3) Alvys setup and Audra same-day submission discipline from day one; (4) Triumph API connector discussion Monday to automate reconciliation. **Watch:** `AR_60Plus` KPI should fall materially over 60–90 days as factoring flows. Volume threshold to reach 1% rate: ~$880K/month (current pace ~$438K). **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]], [[Rate-Per-Mile Goal]].
 
 ### AR aging / collections
 **What it is.** Overdue AR (31+/90+) and the QB-vs-Alvys variance from un-invoiced loads are tracked on the accounting pages. **Exposure:** cash flow and factoring penalties. **Watch:** 90+ AR rising. **Owner:** Audra (AP/AR). See [[Daily Scorecard Email]], [[Factoring]].
