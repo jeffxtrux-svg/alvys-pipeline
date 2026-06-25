@@ -465,6 +465,7 @@ def post_adaptive_cards(
     run_url: str = "",
     form_url: str = "",
     dismiss_url: str = "",
+    resolved_today: "set | None" = None,
 ) -> None:
     """Read accountability JSON and POST Adaptive Cards to Teams.
 
@@ -527,7 +528,21 @@ def post_adaptive_cards(
         data.get("date", datetime.date.today().isoformat())
     )
 
+    def _stamp_actioned(items: list[dict]) -> list[dict]:
+        """Return a copy of items with actioned_today=True stamped on resolved ones."""
+        if not resolved_today:
+            return items
+        out = []
+        for item in items:
+            cat = (item.get("category") or "").lower().strip()
+            drv = (item.get("driver") or item.get("unit") or "").lower().strip()
+            if cat in resolved_today or (drv and f"driver:{drv}" in resolved_today):
+                item = dict(item, actioned_yesterday=True)
+            out.append(item)
+        return out
+
     def _post(label: str, items: list[dict], pa_url: str = "") -> None:
+        items = _stamp_actioned(items)
         if not items:
             print(f"{label}: no action items today — skipping card.")
             return
