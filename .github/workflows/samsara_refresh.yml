@@ -121,6 +121,27 @@ jobs:
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
         run: python -m src.samsara_alerts
 
+      - name: Nudge drivers with missing DVIRs
+        if: steps.ct_gate.outputs.skip != '1'
+        # After each Samsara refresh, checks the last 2 days for drivers who
+        # had HOS log entries but fewer DVIRs than required (FMCSA 396.11:
+        # pre + post trip per vehicle type = 4 per working day).  Sends a
+        # Samsara Driver App message immediately on detection.  One message
+        # per driver per calendar date — idempotency via OneDrive JSON marker
+        # so the 8x/day refresh never double-messages the same driver.
+        #
+        # Token requires Write Messages scope (Driver Workflow).  If absent,
+        # the POST returns 403 and the run carries on — set DVIR_NUDGE_DRY_RUN=1
+        # to test without sending.
+        env:
+          SAMSARA_API_TOKEN: ${{ secrets.SAMSARA_API_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          SAMSARA_OUTPUT_DIR: output/samsara
+        run: python -m src.samsara_dvir_nudge
+
       - name: Nudge drivers with uncertified logs
         if: steps.ct_gate.outputs.skip != '1'
         # Posts a Samsara Driver App message to each driver who has

@@ -35,10 +35,35 @@ from src.teams_adaptive_cards import post_adaptive_cards
 _ACC_FOLDER = "Safety"
 
 
+def _post_log_format_alert(webhook: str, cols: str) -> None:
+    """Post a Teams MessageCard when Accountability Log column format has changed."""
+    if not webhook:
+        return
+    try:
+        import requests as _req
+        _req.post(webhook, json={
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "B01C2E",
+            "summary": "⚠️ Accountability Log format changed — suppression disabled",
+            "sections": [{
+                "activityTitle": "⚠️ Accountability Log format changed — suppression disabled",
+                "text": (
+                    "The date column could not be found in **Accountability Log.xlsx**. "
+                    "Suppression, resolution matching, and EOD summary will not work until "
+                    f"the column header is restored. Columns found: `{cols}`"
+                ),
+            }],
+        }, timeout=10)
+    except Exception as exc:
+        print(f"Could not post log format alert to Teams: {exc}")
+
+
 def _load_resolved_today(
     tok: str,
     upn: str,
     today: datetime.date,
+    webhook: str = "",
 ) -> "tuple[set[str], dict[str, datetime.date]]":
     """Return resolved tokens and CDL reinstatement dates from the log for today.
 
@@ -61,7 +86,9 @@ def _load_resolved_today(
         action_col = next((c for c in df.columns if "action" in c), None)
         notes_col  = next((c for c in df.columns if "note" in c), None)
         if date_col is None:
-            print("Accountability Log.xlsx: date column not found.")
+            cols = ", ".join(df.columns.tolist()) or "(empty)"
+            print(f"Accountability Log.xlsx: date column not found. Columns: {cols}")
+            _post_log_format_alert(webhook, cols)
             return resolved, cdl_dates
         for _, row in df.iterrows():
             raw_date = row[date_col]
@@ -132,7 +159,7 @@ def main() -> int:
             print(f"No accountability JSON found for {today}: {exc}")
             return 0
 
-    resolved_today, cdl_dates = _load_resolved_today(tok, upn, today)
+    resolved_today, cdl_dates = _load_resolved_today(tok, upn, today, webhook=webhook)
     print(f"Actioned today: {sorted(resolved_today) or 'none'}")
     if cdl_dates:
         print(f"CDL reinstatement dates: {cdl_dates}")
