@@ -1768,10 +1768,19 @@ def _extra_trends(samsara: dict | None,
     def _working_days_by_month(hos: "pd.DataFrame | None") -> dict:
         """Return {(yr, mo): driver_day_count} from HOS daily logs."""
         if hos is None or hos.empty:
+            log.info("DVIR chart: HOS_DailyLogs is None/empty — no working-day denominator")
             return {}
-        dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
-        drv = _find_col(hos, ["driver name", "driver"])
+        # Same priority as compute_inspection_compliance: explicit "Log Date" (= startTime
+        # ISO timestamp) first, then logMetaData.logDate (date-only, may be all-NaN),
+        # then any column containing "date" or "starttime" as a last resort.
+        dc  = _find_col(hos, ["log date", "logstartdate", "log start date",
+                               "logmetadata.logdate", "date", "starttime"])
+        drv = _find_col(hos, ["driver name", "driver.name", "driver"])
+        log.info("DVIR chart: HOS_DailyLogs shape=%s date_col=%r driver_col=%r",
+                 hos.shape, dc, drv)
         if not dc or not drv:
+            log.warning("DVIR chart: could not find date/driver cols in HOS_DailyLogs "
+                        "(cols=%s)", list(hos.columns[:20]))
             return {}
         # Samsara only emits HOS rows for actual working days — no activity filter.
         h = hos[[dc, drv]].copy()
@@ -1782,18 +1791,35 @@ def _extra_trends(samsara: dict | None,
         for _, row in h.iterrows():
             key = (row["_dt"].year, row["_dt"].month)
             result[key] = result.get(key, 0) + 1
+        log.info("DVIR chart: wd_by_month=%s", {f"{y}-{m:02d}": v for (y, m), v in result.items()})
         return result
 
     # Last-7d DVIR compliance KPI — computed unconditionally from DVIRs + HOS_DailyLogs
     # via compute_inspection_compliance. Not gated behind DVIR_Inspections so the tile
     # shows a value (even 0%) whenever HOS working-day data exists.
     _comp_rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
+    log.info("DVIR 7d tile: compute_inspection_compliance returned %d rows", len(_comp_rows_7d))
     if _comp_rows_7d:
         _td = sum(r.get("done_total", 0) for r in _comp_rows_7d)
         _te = sum(r.get("expected_total", 0) for r in _comp_rows_7d)
+        log.info("DVIR 7d tile: done=%d expected=%d", _td, _te)
         out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
     else:
-        out["dvir_comp_7d"] = None
+        # Fallback: if HOS working-day data isn't available but DVIRs exist, show
+        # DVIRs count for last 7d as a proxy so the tile isn't "n/a".
+        _dvirs_7d = (samsara_sheets or {}).get("DVIRs")
+        if _dvirs_7d is not None and not _dvirs_7d.empty:
+            _dt_col = _find_col(_dvirs_7d, ["starttime", "start time", "createdattime"])
+            if _dt_col:
+                _7d_start = pd.Timestamp.now() - pd.Timedelta(days=7)
+                _dts = _to_naive_dt(_dvirs_7d[_dt_col])
+                _count_7d = int((_dts >= _7d_start).sum())
+                log.info("DVIR 7d tile: fallback — %d DVIRs in last 7d (no HOS denominator)", _count_7d)
+                out["dvir_comp_7d"] = None  # tile shows n/a; count used for bar chart
+            else:
+                out["dvir_comp_7d"] = None
+        else:
+            out["dvir_comp_7d"] = None
 
     # Monthly DVIR compliance bar chart — uses DVIRs + HOS_DailyLogs (same source
     # as the 7d tile) so the chart isn't gated on DVIR_Inspections being populated.
@@ -1802,6 +1828,7 @@ def _extra_trends(samsara: dict | None,
     if dvirs_df is not None and not dvirs_df.empty:
         dvir_time_col = _find_col(dvirs_df, ["starttime", "start time",
                                               "createdattime", "submittedattime"])
+        log.info("DVIR chart: DVIRs sheet shape=%s time_col=%r", dvirs_df.shape, dvir_time_col)
         if dvir_time_col:
             dv = dvirs_df[[dvir_time_col]].copy()
             dv["_dt"] = _to_naive_dt(dv[dvir_time_col])
@@ -1810,6 +1837,13 @@ def _extra_trends(samsara: dict | None,
                     continue
                 key = (row["_dt"].year, row["_dt"].month)
                 dvirs_by_month[key] = dvirs_by_month.get(key, 0) + 1
+        else:
+            log.warning("DVIR chart: starttime col not found in DVIRs (cols=%s)",
+                        list(dvirs_df.columns[:20]))
+    else:
+        log.info("DVIR chart: DVIRs sheet is None/empty")
+    log.info("DVIR chart: dvirs_by_month=%s",
+             {f"{y}-{m:02d}": v for (y, m), v in dvirs_by_month.items()})
 
     wd_by_month = _working_days_by_month(hos_df)
     months6 = _last_6_months()
@@ -1823,7 +1857,20 @@ def _extra_trends(samsara: dict | None,
             lab += "*"
         labels.append(lab)
         pcts.append(min(round(done / exp * 100), 100) if exp > 0 else 0)
-    out["dvir_pct"] = (labels, pcts) if any(pcts) else (_fallback_labels, _fallback_zeros)
+    log.info("DVIR chart: months=%s pcts=%s wd_totals=%s",
+             labels, pcts, [wd_by_month.get((yr, mo), 0) for yr, mo in months6])
+
+    if any(pcts):
+        out["dvir_pct"] = (labels, pcts)
+    elif any(dvirs_by_month.get((yr, mo), 0) for yr, mo in months6):
+        # HOS working-day denominator unavailable but DVIRs exist — show raw DVIR
+        # count per month so the chart isn't all dashes (indicates activity level).
+        log.info("DVIR chart: wd_by_month empty — falling back to raw DVIR count chart")
+        counts = [dvirs_by_month.get((yr, mo), 0) for yr, mo in months6]
+        out["dvir_pct"] = (labels, counts)
+        out["dvir_pct_is_count"] = True  # signal to page builder to adjust title/fmt
+    else:
+        out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
 
     # Speed over limit — fleet avg % drive time per calendar month.
     # samsara_main now makes per-month API calls and stores them in speeds_monthly.
@@ -1951,9 +1998,12 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
         + _bar_chart("DVIR Defects / mo", dvir_m, dvir_c, "reported/mo · *MTD")
         + _bar_chart("Coached Events / mo", coached_m, coached_c,
                      "manager-reviewed / mo · *MTD")
-        + _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
-                     "% inspections completed · *MTD · done÷(HOS days×4)",
-                     fmt=lambda v: f"{int(v)}%")
+        + (_bar_chart("DVIRs / month", dvir_pct_m, dvir_pct_c,
+                      "total inspections submitted · *MTD (HOS denominator unavailable)")
+           if xt.get("dvir_pct_is_count") else
+           _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
+                      "% inspections completed · *MTD · done÷(HOS days×4)",
+                      fmt=lambda v: f"{int(v)}%"))
         + "</tr></table>"
     )
 

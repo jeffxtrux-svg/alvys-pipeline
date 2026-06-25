@@ -4015,9 +4015,16 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
 
     hos_name_col = _find_col(hos, ["driver name", "driver.name"])
-    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
-                                     "logmetadata.logdate"])
+    # Prioritise the explicit "Log Date" column (= startTime ISO timestamp) that
+    # samsara_main.py adds after json_normalize. Falls back to logMetaData.logDate
+    # (date-only, but may be all-NaN if Samsara omits it) or any column with "date".
+    hos_date_col = _find_col(hos, ["log date", "logstartdate", "log start date",
+                                    "logmetadata.logdate", "date", "starttime"])
+    log.debug("compute_inspection_compliance: HOS shape=%s name_col=%r date_col=%r",
+              hos.shape, hos_name_col, hos_date_col)
     if not (hos_name_col and hos_date_col):
+        log.warning("compute_inspection_compliance: could not find name/date cols in "
+                    "HOS_DailyLogs (cols=%s)", list(hos.columns[:20]))
         return []
 
     # Samsara only emits HOS daily log rows for actual working days —
