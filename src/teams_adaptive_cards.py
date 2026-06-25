@@ -529,15 +529,24 @@ def post_adaptive_cards(
     )
 
     def _stamp_actioned(items: list[dict]) -> list[dict]:
-        """Return a copy of items with actioned_today=True stamped on resolved ones."""
-        if not resolved_today:
-            return items
+        """Remove items that have been actioned (today or yesterday).
+
+        The Teams card is an action queue — once an item is resolved it should
+        disappear from the card immediately, not pile up with ✅ marks.
+        items with actioned_yesterday=True were already actioned and suppressed;
+        items matching resolved_today were just actioned this session.
+        """
         out = []
         for item in items:
-            cat = (item.get("category") or "").lower().strip()
-            drv = (item.get("driver") or item.get("unit") or "").lower().strip()
-            if cat in resolved_today or (drv and f"driver:{drv}" in resolved_today):
-                item = dict(item, actioned_yesterday=True)
+            # Already actioned yesterday (suppression should have removed it, but filter here as backstop)
+            if item.get("actioned_yesterday"):
+                continue
+            # Actioned today — remove from card so the queue stays clean
+            if resolved_today:
+                cat = (item.get("category") or "").lower().strip()
+                drv = (item.get("driver") or item.get("unit") or "").lower().strip()
+                if cat in resolved_today or (drv and f"driver:{drv}" in resolved_today):
+                    continue
             out.append(item)
         return out
 
