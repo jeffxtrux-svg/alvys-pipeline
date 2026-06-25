@@ -240,13 +240,17 @@ def apply_resolved_to_registry(
     all_items: list,
     today: datetime.date,
     cdl_dates: "dict | None" = None,
+    dot_dates: "dict | None" = None,
 ) -> None:
     """Suppress every item whose category or driver appears in *resolved_cats*.
 
     CDL Disqualified items use the reinstatement date from *cdl_dates* when
-    available; all others are suppressed for _DEFAULT_DAYS.
+    available.  DOT Inspection items are suppressed for 7 days past the
+    scheduled inspection date in *dot_dates* (or 7 days from today if no date
+    was recorded).  All others are suppressed for _DEFAULT_DAYS.
     """
     cdl_dates = cdl_dates or {}
+    dot_dates = dot_dates or {}
     # Track which categories we've already written a wildcard for this run.
     _cat_wildcard_written: set = set()
     for item in all_items:
@@ -257,15 +261,22 @@ def apply_resolved_to_registry(
         if not (cat_actioned or drv_actioned):
             continue
         is_cdl = "cdl" in cat_norm or "disqualif" in cat_norm
+        is_dot = "dot inspection" in cat_norm
         if is_cdl and drv_norm and drv_norm in cdl_dates:
             until = cdl_dates[drv_norm]
+        elif is_dot:
+            # Use the scheduled inspection date + 7 days when the log captured one;
+            # otherwise suppress for 7 days from today as a safe fallback.
+            sched = dot_dates.get(drv_norm)
+            until = (sched + datetime.timedelta(days=7)) if sched else (today + datetime.timedelta(days=7))
         else:
             until = today + datetime.timedelta(days=_DEFAULT_DAYS)
         add_suppression(registry, cat_norm, drv_norm, until, today=today)
         # When the log resolved this category explicitly, also write a wildcard
         # (cat::"") so tomorrow's is_suppressed catches any driver in the same
         # category even if the log driver field didn't match exactly.
-        # CDL is excluded — each driver has its own reinstatement date.
-        if cat_actioned and not is_cdl and cat_norm not in _cat_wildcard_written:
+        # CDL and DOT Inspection are excluded — each unit/driver has its own
+        # schedule and actioning one must not suppress others in the category.
+        if cat_actioned and not is_cdl and not is_dot and cat_norm not in _cat_wildcard_written:
             add_suppression(registry, cat_norm, "", until, today=today)
             _cat_wildcard_written.add(cat_norm)

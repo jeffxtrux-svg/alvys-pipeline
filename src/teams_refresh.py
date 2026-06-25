@@ -64,17 +64,20 @@ def _load_resolved_today(
     upn: str,
     today: datetime.date,
     webhook: str = "",
-) -> "tuple[set[str], dict[str, datetime.date]]":
-    """Return resolved tokens and CDL reinstatement dates from the log for today.
+) -> "tuple[set[str], dict[str, datetime.date], dict[str, datetime.date]]":
+    """Return resolved tokens, CDL reinstatement dates, and DOT scheduled dates for today.
 
-    Returns (resolved, cdl_dates) where:
+    Returns (resolved, cdl_dates, dot_dates) where:
       resolved  — flat set of lowercased category names and "driver:<name>" tokens.
       cdl_dates — drv_norm → reinstatement date parsed from Action Taken / Notes
                   for CDL Disqualified rows.
+      dot_dates — unit_norm → scheduled inspection date parsed from Action Taken /
+                  Notes for DOT Inspection rows.
     """
     from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
     cdl_dates: dict[str, datetime.date] = {}
+    dot_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
@@ -114,18 +117,23 @@ def _load_resolved_today(
                 if drv and drv != "nan":
                     resolved.add(f"driver:{drv}")
             is_cdl = "cdl" in cat or "disqualif" in cat
-            if is_cdl and drv:
+            is_dot = "dot inspection" in cat
+            if (is_cdl or is_dot) and drv:
                 text = " ".join(filter(None, [
                     str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
                     str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
                 ]))
                 parsed = extract_date_from_text(text)
                 if parsed and parsed > today:
-                    cdl_dates[drv] = parsed
-                    print(f"CDL reinstatement date for {drv}: {parsed.isoformat()}")
+                    if is_cdl:
+                        cdl_dates[drv] = parsed
+                        print(f"CDL reinstatement date for {drv}: {parsed.isoformat()}")
+                    else:
+                        dot_dates[drv] = parsed
+                        print(f"DOT inspection scheduled date for {drv}: {parsed.isoformat()}")
     except Exception as exc:
         print(f"Could not read Accountability Log.xlsx: {exc}")
-    return resolved, cdl_dates
+    return resolved, cdl_dates, dot_dates
 
 
 def main() -> int:
@@ -159,10 +167,12 @@ def main() -> int:
             print(f"No accountability JSON found for {today}: {exc}")
             return 0
 
-    resolved_today, cdl_dates = _load_resolved_today(tok, upn, today, webhook=webhook)
+    resolved_today, cdl_dates, dot_dates = _load_resolved_today(tok, upn, today, webhook=webhook)
     print(f"Actioned today: {sorted(resolved_today) or 'none'}")
     if cdl_dates:
         print(f"CDL reinstatement dates: {cdl_dates}")
+    if dot_dates:
+        print(f"DOT inspection scheduled dates: {dot_dates}")
 
     # Update suppression registry so tomorrow's brief skips newly actioned items.
     if resolved_today:
@@ -172,7 +182,7 @@ def main() -> int:
             registry   = load_registry(tok, upn)
             prune(registry, today)
             apply_resolved_to_registry(registry, resolved_today, all_items, today,
-                                       cdl_dates=cdl_dates)
+                                       cdl_dates=cdl_dates, dot_dates=dot_dates)
             save_registry(tok, upn, registry)
         except Exception as exc:
             print(f"Warning: could not update suppression registry: {exc}")
