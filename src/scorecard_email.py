@@ -6439,10 +6439,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _overview_rows = (
         f"{warn_row}"
         f"{_risk_watch_row}"
-        f"{_decision_grades_row}"
-        f"{_forecast_grades_row}"
-        f"{_retro_row}"
-        f"{_retro_patterns_row}"
         f"{_market_context_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
@@ -8128,6 +8124,25 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
     return head + _section("Data refresh status &middot; as of " + date_str) + table + note
 
 
+def _decisions_retro_inner(
+    decision_grades_html: str,
+    forecast_grades_html: str,
+    retro_html: str,
+    retro_patterns_html: str,
+    date_str: str,
+) -> str:
+    """Inner HTML for the decisions/lessons final page. Returns '' when all blocks are empty."""
+    blocks = [decision_grades_html, forecast_grades_html, retro_html, retro_patterns_html]
+    if not any(blocks):
+        return ""
+    head = _header("Decisions &amp; lessons", 16, date_str, section="DECISIONS")
+    rows = "".join(
+        f"<tr><td colspan='4' style='padding:0 24px;'>{b}</td></tr>"
+        for b in blocks if b
+    )
+    return head + f"<table style='width:100%;border-collapse:collapse;'>{rows}</table>"
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
@@ -8336,6 +8351,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "}"
         "</style>"
     )
+    _decisions_retro_html = _decisions_retro_inner(
+        decision_grades_html, forecast_grades_html,
+        retro_html, retro_patterns_html, date_str,
+    )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}{print_css}</head>"
@@ -8403,10 +8422,11 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # first. Coach name column is a placeholder until Samsara
             # exposes user attribution — see build_page_coached docstring.
             f"{wrap(build_page_coached(samsara, date_str))}{pb}"
-            # FINAL PAGE — data refresh status: when each source last updated and
-            # whether its refresh workflow ran clean.
-            f"{wrap(build_refresh_status_page(refresh_status, date_str))}"
-            f"</body></html>")
+            f"{wrap(build_refresh_status_page(refresh_status, date_str))}{pb}"
+            # FINAL PAGE — decisions graded + weekly retro/lessons. Only
+            # rendered when at least one of the four blocks has content.
+            + (wrap(_decisions_retro_html) if _decisions_retro_html else "")
+            + f"</body></html>")
 
 
 # ----------------------------------------------------------------------
