@@ -1860,7 +1860,7 @@ def _extra_trends(samsara: dict | None,
     log.info("DVIR chart: months=%s pcts=%s wd_totals=%s",
              labels, pcts, [wd_by_month.get((yr, mo), 0) for yr, mo in months6])
 
-    if any(pcts):
+    if any(pcts) and len(wd_by_month) >= 3:
         out["dvir_pct"] = (labels, pcts)
     elif any(dvirs_by_month.get((yr, mo), 0) for yr, mo in months6):
         # HOS working-day denominator unavailable but DVIRs exist — show raw DVIR
