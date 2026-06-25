@@ -1305,19 +1305,22 @@ def _load_accountability_log(
     upn: str,
     check_date: datetime.date,
     webhook: str = "",
-) -> "tuple[set[str], dict[str, datetime.date]]":
-    """Return tokens and CDL reinstatement dates from the log for check_date.
+) -> "tuple[set[str], dict[str, datetime.date], dict[str, datetime.date]]":
+    """Return tokens, CDL reinstatement dates, and DOT scheduled dates for check_date.
 
-    Returns (resolved, cdl_dates) where:
+    Returns (resolved, cdl_dates, dot_dates) where:
       resolved   — flat set of lowercased category names and "driver:<name>"
                    tokens (used for actioned-yesterday matching).
       cdl_dates  — dict mapping drv_norm → reinstatement date parsed from the
                    Action Taken / Notes column for CDL Disqualified rows.
+      dot_dates  — dict mapping unit_norm → scheduled inspection date parsed
+                   from Action Taken / Notes for DOT Inspection rows.
     """
     import io
     from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
     cdl_dates: dict[str, datetime.date] = {}
+    dot_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
@@ -1364,18 +1367,23 @@ def _load_accountability_log(
             # For CDL Disqualified rows, try to extract a reinstatement date
             # from the free-text Action Taken / Notes fields.
             is_cdl = "cdl" in cat or "disqualif" in cat
-            if is_cdl and drv:
+            is_dot = "dot inspection" in cat
+            if (is_cdl or is_dot) and drv:
                 text = " ".join(filter(None, [
                     str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
                     str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
                 ]))
                 parsed = extract_date_from_text(text)
                 if parsed and parsed > check_date:
-                    cdl_dates[drv] = parsed
-                    log.info("CDL reinstatement date for %s: %s", drv, parsed.isoformat())
+                    if is_cdl:
+                        cdl_dates[drv] = parsed
+                        log.info("CDL reinstatement date for %s: %s", drv, parsed.isoformat())
+                    else:
+                        dot_dates[drv] = parsed
+                        log.info("DOT inspection scheduled date for %s: %s", drv, parsed.isoformat())
     except Exception as exc:
         log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
-    return resolved, cdl_dates
+    return resolved, cdl_dates, dot_dates
 
 
 # ---------------------------------------------------------------------------
@@ -1464,6 +1472,7 @@ def _write_accountability_json(
     upn: str,
     resolved_cats: set[str] | None = None,
     cdl_reinstate_dates: "dict[str, datetime.date] | None" = None,
+    dot_sched_dates: "dict[str, datetime.date] | None" = None,
 ) -> None:
     """Enrich items with carry-forward (days_open) and occurrence counts,
     then write to output/ and upload to OneDrive/Safety/."""
@@ -1491,7 +1500,8 @@ def _write_accountability_json(
         rebuild_from_accountability_log(registry, tok, upn, today)
     all_items_combined = list(audra_items) + list(ops_items)
     apply_resolved_to_registry(registry, resolved_cats, all_items_combined, today,
-                               cdl_dates=cdl_reinstate_dates)
+                               cdl_dates=cdl_reinstate_dates,
+                               dot_dates=dot_sched_dates or {})
     save_registry(tok, upn, registry)
 
     # Build yesterday's key→days_open map for carry-forward
@@ -2894,7 +2904,7 @@ def main() -> int:
 
     # Check yesterday's Accountability Log to break escalation chain for actioned items
     yesterday = today - datetime.timedelta(days=1)
-    resolved_cats, cdl_reinstate_dates = _load_accountability_log(
+    resolved_cats, cdl_reinstate_dates, dot_sched_dates = _load_accountability_log(
         tok, upn, yesterday,
         webhook=os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip(),
     )
@@ -2902,11 +2912,14 @@ def main() -> int:
         log.info("Resolved categories (actioned yesterday): %s", resolved_cats)
     if cdl_reinstate_dates:
         log.info("CDL reinstatement dates: %s", cdl_reinstate_dates)
+    if dot_sched_dates:
+        log.info("DOT inspection scheduled dates: %s", dot_sched_dates)
 
     # Write accountability JSON (local output/ + OneDrive/Safety/)
     _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn,
                                resolved_cats=resolved_cats,
-                               cdl_reinstate_dates=cdl_reinstate_dates)
+                               cdl_reinstate_dates=cdl_reinstate_dates,
+                               dot_sched_dates=dot_sched_dates)
 
     # Recurrence registry — flag items with 3+ appearances in 90 days and
     # track first-seen date for coaching escalation timer.
