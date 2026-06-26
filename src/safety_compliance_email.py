@@ -1805,17 +1805,32 @@ def _extra_trends(samsara: dict | None,
         log.info("DVIR 7d tile: done=%d expected=%d", _td, _te)
         out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
     else:
-        # Fallback: if HOS working-day data isn't available but DVIRs exist, show
-        # DVIRs count for last 7d as a proxy so the tile isn't "n/a".
+        # HOS data unavailable — use pre-trip DVIR count as denominator:
+        # required = pre_trips × 2 (each pre expects a matching post-trip).
         _dvirs_7d = (samsara_sheets or {}).get("DVIRs")
         if _dvirs_7d is not None and not _dvirs_7d.empty:
-            _dt_col = _find_col(_dvirs_7d, ["starttime", "start time", "createdattime"])
+            _dt_col  = _find_col(_dvirs_7d, ["starttime", "start time", "createdattime"])
+            _typ_col = _find_col(_dvirs_7d, ["inspectiontype", "dvirtype", "type"])
             if _dt_col:
                 _7d_start = pd.Timestamp.now() - pd.Timedelta(days=7)
-                _dts = _to_naive_dt(_dvirs_7d[_dt_col])
-                _count_7d = int((_dts >= _7d_start).sum())
-                log.info("DVIR 7d tile: fallback — %d DVIRs in last 7d (no HOS denominator)", _count_7d)
-                out["dvir_comp_7d"] = None  # tile shows n/a; count used for bar chart
+                _dts  = _to_naive_dt(_dvirs_7d[_dt_col])
+                _mask = _dts >= _7d_start
+                _win  = _dvirs_7d[_mask]
+                _done_7d = int(_mask.sum())
+                _pre_7d  = 0
+                if _typ_col and not _win.empty:
+                    _pre_7d = int(
+                        _win[_typ_col].astype(str).str.lower().str.contains("pre", na=False).sum()
+                    )
+                if _pre_7d > 0:
+                    _exp_7d = _pre_7d * 2
+                    _pct_7d = min(round(_done_7d / _exp_7d * 100), 100)
+                    log.info("DVIR 7d tile: pre-trip fallback — done=%d pre=%d expected=%d pct=%d%%",
+                             _done_7d, _pre_7d, _exp_7d, _pct_7d)
+                    out["dvir_comp_7d"] = _pct_7d
+                else:
+                    log.info("DVIR 7d tile: no pre-trip DVIRs in 7d window — tile n/a")
+                    out["dvir_comp_7d"] = None
             else:
                 out["dvir_comp_7d"] = None
         else:
@@ -1847,28 +1862,63 @@ def _extra_trends(samsara: dict | None,
 
     wd_by_month = _working_days_by_month(hos_df)
     months6 = _last_6_months()
+
+    # Build pre-trip count per month from DVIRs.inspectionType as a denominator
+    # fallback when HOS working-day data is unavailable or stale.
+    pre_trips_by_month: dict = {}
+    if dvirs_df is not None and not dvirs_df.empty:
+        _type_col = _find_col(dvirs_df, ["inspectiontype", "dvirtype", "type"])
+        _time_col_dvir = dvir_time_col if dvir_time_col else _find_col(
+            dvirs_df, ["starttime", "start time", "createdattime", "submittedattime"]
+        )
+        if _type_col and _time_col_dvir:
+            _dv2 = dvirs_df[[_time_col_dvir, _type_col]].copy()
+            _dv2["_dt"] = _to_naive_dt(_dv2[_time_col_dvir])
+            _dv2["_is_pre"] = _dv2[_type_col].astype(str).str.lower().str.contains("pre", na=False)
+            for _, row in _dv2.iterrows():
+                if pd.isna(row["_dt"]) or not row["_is_pre"]:
+                    continue
+                key = (row["_dt"].year, row["_dt"].month)
+                pre_trips_by_month[key] = pre_trips_by_month.get(key, 0) + 1
+        log.info("DVIR chart: pre_trips_by_month=%s type_col=%r",
+                 {f"{y}-{m:02d}": v for (y, m), v in pre_trips_by_month.items()}, _type_col)
+
     labels, pcts = [], []
     for i, (yr, mo) in enumerate(months6):
         done = dvirs_by_month.get((yr, mo), 0)
         wd   = wd_by_month.get((yr, mo), 0)
-        exp  = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
+        pre  = pre_trips_by_month.get((yr, mo), 0)
+        # Prefer HOS-based denominator; fall back to pre-trip × 2 when HOS is stale
+        if wd > 0:
+            exp = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
+        elif pre > 0:
+            exp = pre * 2  # each pre-trip expects a matching post-trip
+        else:
+            exp = 0
         lab  = pd.Timestamp(year=yr, month=mo, day=1).strftime("%b")
         if i == len(months6) - 1:
             lab += "*"
         labels.append(lab)
         pcts.append(min(round(done / exp * 100), 100) if exp > 0 else 0)
-    log.info("DVIR chart: months=%s pcts=%s wd_totals=%s",
-             labels, pcts, [wd_by_month.get((yr, mo), 0) for yr, mo in months6])
+    log.info("DVIR chart: months=%s pcts=%s wd_totals=%s pre_totals=%s",
+             labels, pcts,
+             [wd_by_month.get((yr, mo), 0) for yr, mo in months6],
+             [pre_trips_by_month.get((yr, mo), 0) for yr, mo in months6])
 
-    if any(pcts) and len(wd_by_month) >= 3:
+    # Use compliance % chart whenever any month has a real denominator
+    _has_denominator = any(
+        wd_by_month.get((yr, mo), 0) > 0 or pre_trips_by_month.get((yr, mo), 0) > 0
+        for yr, mo in months6
+    )
+    if any(pcts) and _has_denominator:
         out["dvir_pct"] = (labels, pcts)
+        # dvir_pct_is_count stays absent → tile & chart render as %
     elif any(dvirs_by_month.get((yr, mo), 0) for yr, mo in months6):
-        # HOS working-day denominator unavailable but DVIRs exist — show raw DVIR
-        # count per month so the chart isn't all dashes (indicates activity level).
-        log.info("DVIR chart: wd_by_month empty — falling back to raw DVIR count chart")
+        # No denominator at all — last resort: raw count (should rarely happen)
+        log.info("DVIR chart: no denominator — falling back to raw DVIR count chart")
         counts = [dvirs_by_month.get((yr, mo), 0) for yr, mo in months6]
         out["dvir_pct"] = (labels, counts)
-        out["dvir_pct_is_count"] = True  # signal to page builder to adjust title/fmt
+        out["dvir_pct_is_count"] = True
     else:
         out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
 
@@ -1969,7 +2019,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     if dvir_comp_7d is not None:
         dvir_comp_pct = dvir_comp_7d
         dvir_comp_txt = f"{dvir_comp_pct}%"
-    elif dvir_pct_c and dvir_pct_c[-1]:
+    elif dvir_pct_c and dvir_pct_c[-1] and not xt.get("dvir_pct_is_count"):
         dvir_comp_pct = dvir_pct_c[-1]
         dvir_comp_txt = f"{dvir_comp_pct}%"
     else:

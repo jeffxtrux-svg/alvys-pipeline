@@ -4032,7 +4032,65 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     hos_dt = _to_naive_dt(hos[hos_date_col])
     hos_window = hos[hos_dt >= window_start].copy()
     if hos_window.empty:
-        return []
+        # HOS data not in window (stale file) — derive working-day proxy from
+        # pre-trip DVIRs: each pre-trip implies a working day for that driver.
+        log.info("compute_inspection_compliance: HOS empty for window — falling back "
+                 "to pre-trip DVIR count as working-day denominator")
+        dvirs_fb = samsara_sheets.get("DVIRs")
+        if dvirs_fb is None or dvirs_fb.empty:
+            return []
+        fb_driver_col = _find_col(dvirs_fb, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        fb_time_col = _find_col(dvirs_fb, ["starttime", "start time",
+                                            "createdattime", "submittedattime"])
+        fb_type_col = _find_col(dvirs_fb, ["inspectiontype", "dvirtype", "type"])
+        fb_vehicle_col = _find_col(dvirs_fb, ["vehicle.name", "vehicle name"])
+        fb_trailer_col = _find_col(dvirs_fb, ["trailer.name", "trailer name", "asset.name"])
+        if not (fb_driver_col and fb_time_col):
+            return []
+        fb_dt = _to_naive_dt(dvirs_fb[fb_time_col])
+        dvirs_window_fb = dvirs_fb[fb_dt >= window_start].copy()
+        if dvirs_window_fb.empty:
+            return []
+        rows_fb: list[dict] = []
+        for nm, grp in dvirs_window_fb.groupby(
+            dvirs_window_fb[fb_driver_col].astype(str).str.strip()
+        ):
+            if not nm or nm.lower() == "nan":
+                continue
+            done = len(grp)
+            pre_trips = 0
+            if fb_type_col:
+                types = grp[fb_type_col].astype(str).str.lower()
+                pre_trips = int((types.str.contains("pre", na=False)).sum())
+            else:
+                # No inspectionType col — use total DVIRs ÷ 2 as proxy
+                pre_trips = done // 2 if done >= 2 else done
+            expected = pre_trips * 2
+            if expected == 0:
+                continue
+            # Split tractor vs trailer if columns available
+            d_t = int(grp[fb_vehicle_col].notna().sum() if fb_vehicle_col else done)
+            d_tr = int(grp[fb_trailer_col].notna().sum() if fb_trailer_col else 0)
+            pre_t = pre_trips  # pre-trip proxy; can't split further without type+vehicle
+            rows_fb.append({
+                "driver": nm,
+                "working_days": pre_trips,
+                "expected_tractor": pre_t * 2 if fb_vehicle_col else expected,
+                "done_tractor": d_t,
+                "defects_tractor": 0,
+                "expected_trailer": pre_t * 2 if fb_trailer_col else 0,
+                "done_trailer": d_tr,
+                "defects_trailer": 0,
+                "expected_total": expected,
+                "done_total": done,
+                "defects_total": 0,
+            })
+        rows_fb.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))
+        return rows_fb
     working_days_by_driver = (
         hos_window.groupby(hos_window[hos_name_col].astype(str).str.strip())
         .size()
@@ -6439,10 +6497,6 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _overview_rows = (
         f"{warn_row}"
         f"{_risk_watch_row}"
-        f"{_decision_grades_row}"
-        f"{_forecast_grades_row}"
-        f"{_retro_row}"
-        f"{_retro_patterns_row}"
         f"{_market_context_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
@@ -8128,6 +8182,25 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
     return head + _section("Data refresh status &middot; as of " + date_str) + table + note
 
 
+def _decisions_retro_inner(
+    decision_grades_html: str,
+    forecast_grades_html: str,
+    retro_html: str,
+    retro_patterns_html: str,
+    date_str: str,
+) -> str:
+    """Inner HTML for the decisions/lessons final page. Returns '' when all blocks are empty."""
+    blocks = [decision_grades_html, forecast_grades_html, retro_html, retro_patterns_html]
+    if not any(blocks):
+        return ""
+    head = _header("Decisions &amp; lessons", 16, date_str, section="DECISIONS")
+    rows = "".join(
+        f"<tr><td colspan='4' style='padding:0 24px;'>{b}</td></tr>"
+        for b in blocks if b
+    )
+    return head + f"<table style='width:100%;border-collapse:collapse;'>{rows}</table>"
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
@@ -8336,6 +8409,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "}"
         "</style>"
     )
+    _decisions_retro_html = _decisions_retro_inner(
+        decision_grades_html, forecast_grades_html,
+        retro_html, retro_patterns_html, date_str,
+    )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}{print_css}</head>"
@@ -8403,10 +8480,11 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # first. Coach name column is a placeholder until Samsara
             # exposes user attribution — see build_page_coached docstring.
             f"{wrap(build_page_coached(samsara, date_str))}{pb}"
-            # FINAL PAGE — data refresh status: when each source last updated and
-            # whether its refresh workflow ran clean.
-            f"{wrap(build_refresh_status_page(refresh_status, date_str))}"
-            f"</body></html>")
+            f"{wrap(build_refresh_status_page(refresh_status, date_str))}{pb}"
+            # FINAL PAGE — decisions graded + weekly retro/lessons. Only
+            # rendered when at least one of the four blocks has content.
+            + (wrap(_decisions_retro_html) if _decisions_retro_html else "")
+            + f"</body></html>")
 
 
 # ----------------------------------------------------------------------
