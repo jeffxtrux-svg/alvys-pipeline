@@ -1969,7 +1969,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     if dvir_comp_7d is not None:
         dvir_comp_pct = dvir_comp_7d
         dvir_comp_txt = f"{dvir_comp_pct}%"
-    elif dvir_pct_c and dvir_pct_c[-1]:
+    elif dvir_pct_c and dvir_pct_c[-1] and not xt.get("dvir_pct_is_count"):
         dvir_comp_pct = dvir_pct_c[-1]
         dvir_comp_txt = f"{dvir_comp_pct}%"
     else:
