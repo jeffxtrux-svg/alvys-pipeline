@@ -4032,7 +4032,65 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     hos_dt = _to_naive_dt(hos[hos_date_col])
     hos_window = hos[hos_dt >= window_start].copy()
     if hos_window.empty:
-        return []
+        # HOS data not in window (stale file) — derive working-day proxy from
+        # pre-trip DVIRs: each pre-trip implies a working day for that driver.
+        log.info("compute_inspection_compliance: HOS empty for window — falling back "
+                 "to pre-trip DVIR count as working-day denominator")
+        dvirs_fb = samsara_sheets.get("DVIRs")
+        if dvirs_fb is None or dvirs_fb.empty:
+            return []
+        fb_driver_col = _find_col(dvirs_fb, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        fb_time_col = _find_col(dvirs_fb, ["starttime", "start time",
+                                            "createdattime", "submittedattime"])
+        fb_type_col = _find_col(dvirs_fb, ["inspectiontype", "dvirtype", "type"])
+        fb_vehicle_col = _find_col(dvirs_fb, ["vehicle.name", "vehicle name"])
+        fb_trailer_col = _find_col(dvirs_fb, ["trailer.name", "trailer name", "asset.name"])
+        if not (fb_driver_col and fb_time_col):
+            return []
+        fb_dt = _to_naive_dt(dvirs_fb[fb_time_col])
+        dvirs_window_fb = dvirs_fb[fb_dt >= window_start].copy()
+        if dvirs_window_fb.empty:
+            return []
+        rows_fb: list[dict] = []
+        for nm, grp in dvirs_window_fb.groupby(
+            dvirs_window_fb[fb_driver_col].astype(str).str.strip()
+        ):
+            if not nm or nm.lower() == "nan":
+                continue
+            done = len(grp)
+            pre_trips = 0
+            if fb_type_col:
+                types = grp[fb_type_col].astype(str).str.lower()
+                pre_trips = int((types.str.contains("pre", na=False)).sum())
+            else:
+                # No inspectionType col — use total DVIRs ÷ 2 as proxy
+                pre_trips = done // 2 if done >= 2 else done
+            expected = pre_trips * 2
+            if expected == 0:
+                continue
+            # Split tractor vs trailer if columns available
+            d_t = int(grp[fb_vehicle_col].notna().sum() if fb_vehicle_col else done)
+            d_tr = int(grp[fb_trailer_col].notna().sum() if fb_trailer_col else 0)
+            pre_t = pre_trips  # pre-trip proxy; can't split further without type+vehicle
+            rows_fb.append({
+                "driver": nm,
+                "working_days": pre_trips,
+                "expected_tractor": pre_t * 2 if fb_vehicle_col else expected,
+                "done_tractor": d_t,
+                "defects_tractor": 0,
+                "expected_trailer": pre_t * 2 if fb_trailer_col else 0,
+                "done_trailer": d_tr,
+                "defects_trailer": 0,
+                "expected_total": expected,
+                "done_total": done,
+                "defects_total": 0,
+            })
+        rows_fb.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))
+        return rows_fb
     working_days_by_driver = (
         hos_window.groupby(hos_window[hos_name_col].astype(str).str.strip())
         .size()
