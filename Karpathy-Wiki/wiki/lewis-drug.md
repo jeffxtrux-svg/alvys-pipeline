@@ -2,7 +2,7 @@
 title: Lewis Drug
 type: concept
 tags: [customers, active, regional-sd, pharmacy]
-sources: ["raw/xfreight-customers-additional.md", "raw/xfreight-customer-portfolio.md"]
+sources: ["raw/xfreight-customers-additional.md", "raw/xfreight-customer-portfolio.md", "raw/fuel-surcharge-matrix-ccfs.pdf"]
 related: ["[[Customer Portfolio]]", "[[Financial Performance]]"]
 ---
 
@@ -35,9 +35,20 @@ Active regional SD account with three confirmed routes: Madison, Brookings, and 
 | File on record | `08 - Sales/Customers/Lewis Drug/Lewis Drug.xlsx` |
 | Entity | X-TRUX INC (confirmed from Alvys load data) |
 
+## Fuel Surcharge
+
+Lewis Drug uses the **CCFS FSC matrix** (same matrix as Johnson Brothers SD):
+
+- **Index**: USTUCUR — EIA U.S. No. 2 Diesel Retail Price (weekly, national)
+- **Effective date**: 10/23/2023
+- **Formula**: Look up current USTUCUR diesel price → apply matrix % to base linehaul rate
+- **Current range**: ~29–34% FSC at mid-2020s diesel prices ($3.50–$4.00/gal)
+
+The route rates observed in Alvys AR ($399–$698/load) likely reflect all-in invoiced amounts including FSC already applied. Full matrix in `raw/fuel-surcharge-matrix-ccfs.pdf`.
+
 ## Open Questions / Watch
 
-- What's in `Lewis Drug.xlsx` — rate agreement or rate sheet? Confirm current rates vs. load-data actuals.
+- What's in `Lewis Drug.xlsx` — rate agreement or rate sheet? Confirm whether quoted rates are base-only or all-in (base + FSC).
 - Does volume have seasonality? (Pharmacy replenishment is generally stable, but holiday/Q4 could spike.)
 - Is there a master shipper or broker agreement on file?
 
@@ -57,4 +68,5 @@ Active regional SD account with three confirmed routes: Madison, Brookings, and 
 
 - `raw/xfreight-customers-additional.md` — Lewis Drug mention.
 - `raw/xfreight-customer-portfolio.md` — portfolio context.
+- `raw/fuel-surcharge-matrix-ccfs.pdf` — CCFS FSC matrix (USTUCUR index, effective 10/23/2023).
 - Alvys AR aging report (June 3, 2026) — route codes and rate actuals.

@@ -2,7 +2,7 @@
 title: Johnson Brothers of South Dakota
 type: concept
 tags: [customers, active, new-lane, dedicated-lane, per-pallet, daily-business]
-sources: ["raw/xfreight-customer-portfolio.md"]
+sources: ["raw/xfreight-customer-portfolio.md", "raw/fuel-surcharge-matrix-ccfs.pdf"]
 related: ["[[Customer Portfolio]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]", "[[XFreight Entities]]"]
 ---
 
@@ -28,24 +28,41 @@ Newly awarded dedicated daily lane: Sioux Falls SD → Rapid City SD (~350 miles
 | Element | Value |
 |---|---|
 | Base rate | $60.00 per pallet |
-| FSC component | % of base (FSC formula TBD — confirm with Johnson Brothers) |
+| FSC index | **USTUCUR** — EIA U.S. No. 2 Diesel Retail Price (weekly, national) |
+| FSC matrix | CCFS Fuel Surcharge Matrix (effective 10/23/2023) |
+| FSC formula | Look up current week's USTUCUR price → apply matrix percentage to base rate |
+| FSC range (typical mid-2020s diesel) | ~29–34% at $3.50–$4.00/gallon diesel |
 | Typical load size | ~17–19 pallets (inferred from ~$1,014–1,156/load observed in June) |
-| Est. per-load revenue (17 pallets) | $1,020 base + FSC |
-| Est. per-load revenue (20 pallets) | $1,200 base + FSC |
+| Est. per-load revenue (17 pallets, ~31% FSC) | $1,020 base + $316 FSC = **~$1,336** |
+| Est. per-load revenue (20 pallets, ~31% FSC) | $1,200 base + $372 FSC = **~$1,572** |
 | Lane | Sioux Falls SD → Rapid City SD |
 | Lane miles | ~350 miles one way |
 
+### FSC Matrix Reference (CCFS / USTUCUR)
+
+Selected breakpoints from the matrix. FSC is a percentage applied to the base pallet rate.
+
+| Diesel Price ($/gal) | FSC % | Example: 18 pallets base ($1,080) | All-in |
+|---|---|---|---|
+| $3.20–3.29 | 27.5% | + $297 | $1,377 |
+| $3.50–3.549 | 29.0% | + $313 | $1,393 |
+| $3.70–3.749 | 31.0% | + $335 | $1,415 |
+| $4.00–4.049 | 34.0% | + $367 | $1,447 |
+| $4.50–4.549 | 39.0% | + $421 | $1,501 |
+
+Full matrix in `raw/fuel-surcharge-matrix-ccfs.pdf`. Same matrix used by Lewis Drug.
+
 ## Revenue Model (Daily Dedicated)
 
-When running 5 days/week at ~17–20 pallets/load:
+When running 5 days/week at ~15–22 pallets/load, at ~30–31% FSC (diesel ~$3.60–$3.75/gal):
 
-| Scenario | Pallets | Base/load | +12% FSC | Monthly (22 days) |
-|---|---|---|---|---|
-| Light | 15 | $900 | $1,008 | ~$22,176 |
-| Mid | 18 | $1,080 | $1,210 | ~$26,620 |
-| Full | 22 | $1,320 | $1,478 | ~$32,520 |
+| Scenario | Pallets | Base/load | +30% FSC | +31% FSC | Monthly (22 days) |
+|---|---|---|---|---|---|
+| Light | 15 | $900 | $1,170 | $1,179 | ~$25,700–26,000 |
+| Mid | 18 | $1,080 | $1,404 | $1,415 | ~$30,900–31,100 |
+| Full | 22 | $1,320 | $1,716 | $1,729 | ~$37,750–38,000 |
 
-Confirm pallet count from Johnson Brothers delivery manifests or rate agreement.
+Confirm pallet count from Johnson Brothers delivery manifests or rate agreement. Look up current USTUCUR price at EIA.gov to get the precise FSC % for the week.
 
 ## Current Status (June 2026)
 
@@ -65,7 +82,7 @@ The prior-period invoice at $2,250 may reflect a different rate or multi-stop st
 
 ## Open Questions / Watch
 
-- What is the full FSC formula? (Percentage basis, index used, update frequency?)
+- ~~What is the full FSC formula?~~ **Resolved** — CCFS matrix, USTUCUR index, effective 10/23/2023. See `raw/fuel-surcharge-matrix-ccfs.pdf`.
 - What is the average pallet count per delivery? (Drives revenue per load.)
 - What is the delivery schedule — 5 days/week? 6? Are there Monday peaks after weekend sales?
 - Who is the Johnson Brothers SD operations or logistics contact?
@@ -92,5 +109,6 @@ The prior-period invoice at $2,250 may reflect a different rate or multi-stop st
 ## Sources
 
 - `raw/xfreight-customer-portfolio.md` — portfolio context.
+- `raw/fuel-surcharge-matrix-ccfs.pdf` — CCFS FSC matrix (USTUCUR index, effective 10/23/2023). Same matrix shared with Lewis Drug.
 - Alvys Triumph Go Live snapshot (June 22, 2026) — invoice detail, X-LINX routing, Button Enterprises as carrier.
 - Daily Upload files (June 27–28, 2026) — X-LINX customer summary, load count and revenue.
