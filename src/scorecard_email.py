@@ -1744,7 +1744,17 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         # of the month).
         applied_pct = mtd_pct if mtd_pct is not None else trail_pct
         daily_run_rate = (t_rev / days) if days else 0.0
-        proj_rev = (daily_run_rate * wdim) if daily_run_rate else None
+        # When 5+ working days have elapsed, use this month's actual revenue
+        # pace (MTD ÷ wd_elapsed) instead of the 80-day trailing window.
+        # The trailing window spans prior months; when June tracks below the
+        # trailing average the old formula projects revenue too high and the
+        # estimate runs $50-60K above actual. MTD rate anchors the projection
+        # to what this specific month is actually delivering.
+        if wd_elapsed >= 5 and s_rev > 0:
+            _proj_daily = s_rev / wd_elapsed
+        else:
+            _proj_daily = daily_run_rate
+        proj_rev = (_proj_daily * wdim) if _proj_daily else None
         proj_margin_t = (proj_rev * applied_pct) if (proj_rev and applied_pct is not None) else None
         proj_margin = (settled_margin
                        if (proj_margin_t is not None and settled_margin > proj_margin_t)
@@ -1777,7 +1787,11 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
     c_applied = c_mtd_pct if c_mtd_pct is not None else c_trail_pct
     c_daily = (combined_t_rev / days) if days else 0.0
-    c_proj_rev = (c_daily * wdim) if c_daily else None
+    if wd_elapsed >= 5 and combined_s_rev > 0:
+        _c_proj_daily = combined_s_rev / wd_elapsed
+    else:
+        _c_proj_daily = c_daily
+    c_proj_rev = (_c_proj_daily * wdim) if _c_proj_daily else None
     _c_t = (c_proj_rev * c_applied) if (c_proj_rev and c_applied is not None) else None
     c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
                      else (combined_settled_margin or _c_t))
@@ -1789,11 +1803,15 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
-    log.info("compute_margin_projection: applying MTD margin %% to projection "
-             "(was 80wd blend); wd %d/%d. "
-             "X-Trux: MTD %s, trail %s. X-Linx: MTD %s, trail %s. "
-             "Combined: MTD %s, trail %s.",
-             wd_elapsed, wdim,
+    _rate_src = "MTD" if wd_elapsed >= 5 else "trailing"
+    log.info("compute_margin_projection: rate=%s wd %d/%d "
+             "combined_s_rev=$%s combined_t_rev_daily=$%s "
+             "proj_rev=$%s proj_margin=$%s. "
+             "X-Trux: MTD %s trail %s. X-Linx: MTD %s trail %s. Combined: MTD %s trail %s.",
+             _rate_src, wd_elapsed, wdim,
+             f"{combined_s_rev:,.0f}", f"{c_daily:,.0f}",
+             f"{c_proj_rev:,.0f}" if c_proj_rev else "n/a",
+             f"{out['combined'].get('projected_margin') or 0:,.0f}",
              f"{out['X-Trux'].get('mtd_margin_pct') or 0:.1%}",
              f"{out['X-Trux'].get('trailing_margin_pct') or 0:.1%}",
              f"{out['X-Linx'].get('mtd_margin_pct') or 0:.1%}",
