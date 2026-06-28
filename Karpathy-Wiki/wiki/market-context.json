@@ -1,24 +1,27 @@
 {
-  "generated_at": "2026-06-24T03:53:39Z",
-  "sources": {
-    "diesel_us": {
-      "label": "US #2 retail diesel ($/gal, weekly avg)",
-      "fred_series": "GASDESW",
-      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=GASDESW",
-      "current": {
-        "date": "2026-06-22",
-        "value": 4.832
-      },
-      "wow_4w": {
-        "date": "2026-05-25",
-        "value": 5.523,
-        "pct_change": -12.51
-      },
-      "yoy_52w": {
-        "date": "2025-06-23",
-        "value": 3.775,
-        "pct_change": 28.0
-      }
-    }
+  "generated_at": "2026-06-28T22:32:50Z",
+  "sources": {},
+  "industry_benchmarks": {
+    "driver_cost_per_mile": {
+      "value": 0.58,
+      "unit": "$/mi",
+      "label": "Driver wages + benefits"
+    },
+    "fuel_cost_per_mile": {
+      "value": 0.593,
+      "unit": "$/mi",
+      "label": "Fuel cost"
+    },
+    "total_cost_per_mile": {
+      "value": 2.251,
+      "unit": "$/mi",
+      "label": "Total cost"
+    },
+    "avg_operating_ratio_pct": {
+      "value": 96.0,
+      "unit": "%",
+      "label": "Avg operating ratio"
+    },
+    "source": "ATRI 2024 Annual Operational Costs of Trucking (2023 data \u00b7 for-hire TL carriers)"
   }
 }
