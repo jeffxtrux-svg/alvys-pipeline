@@ -3,7 +3,7 @@ title: Customer Portfolio
 type: concept
 tags: [customers, sales, revenue]
 sources: ["raw/xfreight-customer-portfolio.md", "raw/xfreight-customers-additional.md"]
-related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[Viaflex]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
+related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Viaflex]]", "[[ABT Brokerage]]", "[[Kozy Heat Fireplaces]]", "[[Enertech Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
 ---
 
 # Customer Portfolio
@@ -24,8 +24,9 @@ Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates base
 | **Billion Auto** | ~$54,000–57,000 | MCY: X-TRUX / RPC: X-LINX | High — daily dedicated |
 | **Berry Global (via CH Robinson)** | ~$35,000–50,000 | X-TRUX (primary) + X-LINX | Medium — AR snapshot |
 | **Lewis Drug** | ~$13,500–14,000 | X-TRUX | Medium — AR snapshot |
-| **Kozy Heat Fireplaces** | Unknown | X-TRUX | Low — 2 invoices seen |
-| **Enertech Global** | Unknown | X-TRUX | Low — 4 invoices seen |
+| **ABT Brokerage** | ~$15,000–25,000+ | X-TRUX + X-LINX | Medium — AR snapshot, 2-year account |
+| **Kozy Heat Fireplaces** | ~$11,500–15,500 | X-TRUX | Medium — 3+ year account, load data |
+| **Enertech Global** | ~$9,000–13,000 | X-TRUX | Medium — 3+ year account, load data |
 | **Lanter/CNH** | Unknown | TBD | Low — not in June AR |
 | **Dakotaland Autoglass** | Unknown | TBD | Low — not in June AR |
 
@@ -48,8 +49,9 @@ Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates base
 | **DAG** | Recent | BOL in folder dated June 2025. Possibly Dakota AG (agricultural). |
 | **Lewis Drug** | Active (confidence: medium) | Regional SD pharmacy chain. Folder + workbook. See [[Lewis Drug]]. |
 | **Viaflex** | **Active, June 2026** | Plastic film products. 29+ invoices in June AR aging report; $450–$5,846/load range. High-frequency account. See [[Viaflex]]. |
-| **Kozy Heat Fireplaces** | Active, June 2026 | Fireplace manufacturer; 2 invoices in June snapshot, Simpsonville SC origin. X-TRUX INC. |
-| **Enertech Global LLC** | Active, June 2026 | Industrial heating/HVAC; 4 invoices in June snapshot. X-TRUX INC. |
+| **Kozy Heat Fireplaces** | **Active, 3+ years** | Lakefield MN → Simpsonville SC, air-ride van, 2 dedicated trailers, ~$3,850/load. See [[Kozy Heat Fireplaces]]. |
+| **Enertech Global** | **Active, 3+ years** | Mitchell SD dedicated account; Greenville IL primary lane, 1 spotted trailer, ~3/month. See [[Enertech Global]]. |
+| **ABT Brokerage** | **Active, ~2 years** | Freight broker; Cassleton ND + Philadelphia PA origins; X-TRUX asset + X-LINX brokered. See [[ABT Brokerage]]. |
 | **Amcor** | Active (confidence: low) | Global packaging. Folder exists, content not reviewed. |
 | **Twin City Fan** | Active (confidence: low) | Industrial fan/blower mfr. Folder exists. |
 | **Viaflex** | Active (confidence: low) | Plastic film products. Folder exists. |

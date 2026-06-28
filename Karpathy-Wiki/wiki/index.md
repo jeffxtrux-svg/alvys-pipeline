@@ -53,7 +53,10 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 - [[Dakotaland Autoglass]] — regional SD auto glass chain; rate sheet May 2025.
 - [[Lewis Drug]] — regional SD pharmacy chain; folder + workbook on file.
 - [[AGCO RFP]] — 2026 truckload RFP (NOT AWARDED Jan 2026); bid structure and next-cycle lessons.
-- [[Viaflex]] — plastic film manufacturer; 29+ invoices in June 2026 AR — one of the highest-frequency active accounts.
+- [[Viaflex]] — plastic film manufacturer; ~$75–85K/month, 5 dedicated trailers, one of the largest X-TRUX revenue accounts.
+- [[Kozy Heat Fireplaces]] — fireplace manufacturer; Lakefield MN → Simpsonville SC, air-ride van, 2 dedicated trailers, 3+ year account.
+- [[Enertech Global]] — HVAC/heating equipment manufacturer; Mitchell SD dedicated account, 3+ year relationship.
+- [[ABT Brokerage]] — freight broker; 2-year account, Cassleton ND + Philadelphia PA origins, spans X-TRUX and X-LINX.
 - [[JW Logistics]] — carrier relationship (X-Linx) with disputed history; hard-coded exclusion from all reports.
 
 ---
