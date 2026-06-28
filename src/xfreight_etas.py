@@ -468,6 +468,7 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
         "type": "AdaptiveCard",
         "version": "1.4",
         "body": body,
+        "msteams": {"width": "Full"},
     }
 
 
@@ -528,6 +529,7 @@ def _build_clear_card() -> dict:
                      f"{datetime.now(CT):%I:%M %p CT}",
              "size": "Small", "spacing": "None", "wrap": True},
         ],
+        "msteams": {"width": "Full"},
     }
 
 
@@ -548,6 +550,7 @@ def _build_resolved_card(resolved_load_nos: set[str]) -> dict:
                      "previous alert for this load is superseded.",
              "size": "Small", "color": "Good", "spacing": "None", "wrap": True},
         ],
+        "msteams": {"width": "Full"},
     }
 
 
