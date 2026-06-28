@@ -1756,8 +1756,14 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
             _proj_daily = daily_run_rate
         proj_rev = (_proj_daily * wdim) if _proj_daily else None
         proj_margin_t = (proj_rev * applied_pct) if (proj_rev and applied_pct is not None) else None
-        proj_margin = (settled_margin
-                       if (proj_margin_t is not None and settled_margin > proj_margin_t)
+        # Floor: use s_rev × applied_pct (not s_rev - s_cost) because s_cost
+        # only captures driver/carrier rate, not true cost, making the raw
+        # settled_margin much higher than actual and causing the floor to
+        # incorrectly override the MTD-rate projection.
+        _margin_floor = ((s_rev * applied_pct) if (s_rev and applied_pct is not None)
+                         else settled_margin)
+        proj_margin = (_margin_floor
+                       if (proj_margin_t is not None and _margin_floor > proj_margin_t)
                        else proj_margin_t)
         out[ent] = {
             "settled_mtd_margin": settled_margin or None,
@@ -1793,8 +1799,10 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         _c_proj_daily = c_daily
     c_proj_rev = (_c_proj_daily * wdim) if _c_proj_daily else None
     _c_t = (c_proj_rev * c_applied) if (c_proj_rev and c_applied is not None) else None
-    c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
-                     else (combined_settled_margin or _c_t))
+    _c_floor = ((combined_s_rev * c_applied) if (combined_s_rev and c_applied is not None)
+                else combined_settled_margin)
+    c_proj_margin = (_c_t if (_c_t is not None and _c_floor <= _c_t)
+                     else (_c_floor or _c_t))
     out["combined"] = {
         "settled_mtd_margin": combined_settled_margin or None,
         "trailing_margin_pct": c_trail_pct,
