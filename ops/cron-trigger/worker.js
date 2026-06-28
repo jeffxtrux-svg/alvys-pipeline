@@ -41,6 +41,7 @@ const REF = "main";
 const WORKFLOWS = [
   "scorecard_healthcheck.yml",
   "daily_upload_healthcheck.yml",
+  "safety_compliance_healthcheck.yml",
 ];
 
 async function dispatch(workflow, token) {
