@@ -35,9 +35,11 @@ Active trucking relationship via **CH Robinson** (the direct customer in Alvys; 
 | Alvys customer name | BERRY PLASTICS / CH ROBINSON |
 | Paying customer (direct) | CH Robinson Worldwide |
 | Underlying shipper | Berry Global (formerly Berry Plastics) |
-| Entity | X-TRUX INC |
-| Load rate | $2,125–$4,524/load (May 2026 range) |
-| Est. monthly revenue | ~$40,000–50,000 |
+| Primary entity | X-TRUX INC (asset hauls) |
+| Secondary entity | X-LINX INC (brokered — 2 invoices in June snapshot) |
+| Load rate (X-TRUX) | $2,122–$3,697/load (June 2026 range) |
+| Load rate (X-LINX) | ~$2,122/load |
+| Est. monthly revenue | ~$35,000–50,000 |
 | Internal contact | Dan Heeren (Logistics Manager) |
 | Accessorial rules | Berry Global Truckload Rules and Accessorial Charges (May 2026) |
 

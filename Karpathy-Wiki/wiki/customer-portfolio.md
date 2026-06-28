@@ -12,14 +12,30 @@ XFreight's active customers, historical RFPs, and prospecting pipeline as of mid
 
 ## Summary
 
-XFreight serves a mix of dedicated daily-rate customers, regional South Dakota accounts, and industrial/packaging accounts. [[JW Logistics]] is a carrier relationship but excluded from all reports. The [[AGCO RFP]] was not awarded in 2026. [[Billion Auto]] is the largest confirmed dedicated-lane customer (~$47K/month when active, though the rate agreement expired June 1, 2026).
+XFreight serves a mix of dedicated daily-rate customers, regional South Dakota accounts, and industrial/packaging accounts. [[JW Logistics]] is a carrier relationship but excluded from all reports. The [[AGCO RFP]] was not awarded in 2026. [[Billion Auto]] is the largest confirmed dedicated-lane customer (~$54–57K/month post-June 2026 renewal). [[Viaflex]] is potentially the second-largest X-TRUX revenue source at ~$75–85K/month.
+
+## Revenue Estimates by Customer (June 2026)
+
+Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates based on open AR snapshots; confirm from QB P&L.
+
+| Customer | Est. Monthly Revenue | Entity | Confidence |
+|---|---|---|---|
+| **Viaflex** | ~$75,000–85,000 | X-TRUX (primary) + X-LINX (small) | Medium — AR snapshot |
+| **Billion Auto** | ~$54,000–57,000 | MCY: X-TRUX / RPC: X-LINX | High — daily dedicated |
+| **Berry Global (via CH Robinson)** | ~$35,000–50,000 | X-TRUX (primary) + X-LINX | Medium — AR snapshot |
+| **Lewis Drug** | ~$13,500–14,000 | X-TRUX | Medium — AR snapshot |
+| **Kozy Heat Fireplaces** | Unknown | X-TRUX | Low — 2 invoices seen |
+| **Enertech Global** | Unknown | X-TRUX | Low — 4 invoices seen |
+| **Lanter/CNH** | Unknown | TBD | Low — not in June AR |
+| **Dakotaland Autoglass** | Unknown | TBD | Low — not in June AR |
 
 ## Key Ideas
 
-- No single customer dominates after JW Logistics was de-emphasized.
-- The 2026 jump to $2.39 RPM suggests customer mix shifted to higher-rate accounts even as fleet shrank.
+- **Viaflex is larger than previously recognized** — ~$75–85K/month makes it potentially the largest single X-TRUX account by revenue.
+- **Billion Auto renewed June 2026** with fuel surcharge, pushing combined lane revenue from ~$47K to ~$54–57K/month.
+- The 2026 jump to $2.39 RPM reflects this customer mix — high-rate long-haul (Viaflex Northeast lanes at $4,100–4,800) pulling the average up.
 - Ag-equipment supply chain access via **Lanter/CNH** even after losing the direct AGCO bid.
-- Berry Global (Fortune-500 packaging) is active as of May 2026; Dan Heeren manages that relationship.
+- Berry Global risk is actually CH Robinson risk — XFreight's direct relationship is with CH Robinson, not Berry.
 
 ## Active Customers (confirmed)
 
@@ -32,6 +48,8 @@ XFreight serves a mix of dedicated daily-rate customers, regional South Dakota a
 | **DAG** | Recent | BOL in folder dated June 2025. Possibly Dakota AG (agricultural). |
 | **Lewis Drug** | Active (confidence: medium) | Regional SD pharmacy chain. Folder + workbook. See [[Lewis Drug]]. |
 | **Viaflex** | **Active, June 2026** | Plastic film products. 29+ invoices in June AR aging report; $450–$5,846/load range. High-frequency account. See [[Viaflex]]. |
+| **Kozy Heat Fireplaces** | Active, June 2026 | Fireplace manufacturer; 2 invoices in June snapshot, Simpsonville SC origin. X-TRUX INC. |
+| **Enertech Global LLC** | Active, June 2026 | Industrial heating/HVAC; 4 invoices in June snapshot. X-TRUX INC. |
 | **Amcor** | Active (confidence: low) | Global packaging. Folder exists, content not reviewed. |
 | **Twin City Fan** | Active (confidence: low) | Industrial fan/blower mfr. Folder exists. |
 | **Viaflex** | Active (confidence: low) | Plastic film products. Folder exists. |

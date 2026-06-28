@@ -12,39 +12,44 @@ Billion Auto Parts is XFreight's largest confirmed dedicated-lane customer, gene
 
 ## Summary
 
-X-Trux holds a daily rate agreement with Billion Auto for two specific lanes: a round-trip between Sioux Falls and Rapid City, and a daily circuit through Worthington MN and Mason City IA. Combined daily revenue: $2,150. Status: **renewed June 2026** — both lanes maintained, fuel surcharge added for protection.
+XFreight runs two dedicated Billion Auto lanes with a renewed fuel-surcharge agreement (June 2026). The **MCY lane is X-TRUX INC** (asset haul, ~$1,093–$1,124/trip post-surcharge). The **RPC lane is X-LINX INC** (brokered via Button Enterprises LLC, ~$1,400–$1,468/trip). Combined: ~$2,493–$2,592/day, ~$54,000–57,000/month.
 
 ## Key Ideas
 
-- **$47K/month** in daily-volume revenue when both lanes are active (~$2,150/day × ~22 operating days).
+- **~$54–57K/month** in daily-volume revenue when both lanes are active (post-June 2026 renewal with fuel surcharge).
+- **Dual entity:** MCY lane = X-TRUX INC (asset); RPC lane = X-LINX INC (brokered, Button Enterprises LLC runs the truck).
 - Both lanes are bundled: if Billion removes one lane, either party can exit the whole agreement.
 - Early-morning pickup windows, spotted-trailer operation, no freight-volume guarantee.
 - **Renewed June 2026** (both lanes maintained + fuel surcharge added) — the portfolio's most immediate revenue risk is now secured.
 
 ## Lanes
 
-### Lane 1 — Sioux Falls ↔ Rapid City (daily, Sun–Fri)
+### Lane 1 — Sioux Falls ↔ Rapid City (RPC, daily Sun–Fri) — **X-LINX INC**
 
+- Brokered via X-LINX INC; Button Enterprises LLC runs the truck.
 - Spotted trailer on-site at Billion Auto Parts SF before 4:00 PM daily.
 - Pickup in Sioux Falls between **1:00–1:30 AM**.
 - Delivers to Billion Kia in Rapid City at **5:00 AM**.
-- **Rates:** $900 SF→RC + $300 RC→SF = **$1,200/round trip**.
+- **Pre-renewal rate:** $900 SF→RC + $300 RC→SF = **$1,200/round trip**. **Post-June 2026 renewal with fuel surcharge:** ~$1,400–$1,468/trip.
 
-### Lane 2 — SF → Worthington MN → Mason City IA → Worthington → SF (daily, Sun–Fri)
+### Lane 2 — SF → Worthington MN → Mason City IA → Worthington → SF (MCY, daily Sun–Fri) — **X-TRUX INC**
 
+- Asset haul, dispatched via X-TRUX INC.
 - Spotted trailer on-site SF before 12:00 PM.
 - Pickup SF between **4:30–5:00 PM**.
 - Delivers Worthington MN 6:00–6:30 PM.
 - Delivers Mason City IA 8:45–9:15 PM.
 - Pickup Worthington MN 1:00–1:30 PM (unassisted).
 - Drop trailer SF before 4:00 AM.
-- **Rate:** $950/round trip daily, all inclusive.
+- **Pre-renewal rate:** $950/round trip. **Post-June 2026 renewal with fuel surcharge:** ~$1,093–$1,124/trip.
 
 ## Agreement Terms
 
 | Term | Value |
 |---|---|
-| Carrier | X-Trux Inc (MC #375851) |
+| MCY lane entity | X-TRUX INC — asset haul |
+| RPC lane entity | X-LINX INC — brokered (Button Enterprises LLC) |
+| Carrier (MCY) | X-Trux Inc (MC #375851) |
 | Customer contact | Matthew Carpenter |
 | X-Trux contact | Jeff Hannahs |
 | Term | **Renewed June 2026** (both lanes maintained) |
@@ -54,7 +59,7 @@ X-Trux holds a daily rate agreement with Billion Auto for two specific lanes: a 
 
 ## Status — RENEWED (June 2026)
 
-**RENEWED** (Jeff, 2026-06-13). Both dedicated lanes were **maintained** — the Sioux Falls ↔ Rapid City round trip and the Worthington / Mason City circuit — and a **fuel surcharge was added to the agreement for protection this year**, hedging fuel-price swings. At ~$47K/month this is material daily-volume revenue; it was the portfolio's most immediate revenue risk and is now secured. Jeff Hannahs is the point of contact.
+**RENEWED** (Jeff, 2026-06-13). Both dedicated lanes were **maintained** — the Sioux Falls ↔ Rapid City round trip (RPC, X-LINX) and the Worthington / Mason City circuit (MCY, X-TRUX) — and a **fuel surcharge was added for protection this year**, hedging fuel-price swings. Post-renewal combined rate: ~$2,493–$2,592/day vs. ~$2,150/day before. Estimated ~$54–57K/month — material step up from the ~$47K estimate. Jeff Hannahs is the point of contact.
 
 ## Connections
 

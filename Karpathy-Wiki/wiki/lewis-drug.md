@@ -31,14 +31,13 @@ Active regional SD account with three confirmed routes: Madison, Brookings, and 
 | Route: Brookings | LewBro — ~$428/load |
 | Route: Huron | LewHur — ~$698/load |
 | Load frequency | ~2–3x/week per route |
-| Est. monthly revenue | ~$11,500–13,000 |
+| Est. monthly revenue | ~$13,500–14,000 |
 | File on record | `08 - Sales/Customers/Lewis Drug/Lewis Drug.xlsx` |
-| Entity | TBD — confirm X-Trux or X-Linx from Alvys loads |
+| Entity | X-TRUX INC (confirmed from Alvys load data) |
 
 ## Open Questions / Watch
 
-- Confirm entity (X-Trux asset haul vs. X-Linx brokered) from Alvys load records.
-- What's in `Lewis Drug.xlsx` — rate agreement or rate sheet? Confirm current rates vs. aging-report actuals.
+- What's in `Lewis Drug.xlsx` — rate agreement or rate sheet? Confirm current rates vs. load-data actuals.
 - Does volume have seasonality? (Pharmacy replenishment is generally stable, but holiday/Q4 could spike.)
 - Is there a master shipper or broker agreement on file?
 
