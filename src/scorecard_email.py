@@ -1779,10 +1779,26 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         # of the month).
         applied_pct = mtd_pct if mtd_pct is not None else trail_pct
         daily_run_rate = (t_rev / days) if days else 0.0
-        proj_rev = (daily_run_rate * wdim) if daily_run_rate else None
+        # When 5+ working days have elapsed, use this month's actual revenue
+        # pace (MTD ÷ wd_elapsed) instead of the 80-day trailing window.
+        # The trailing window spans prior months; when June tracks below the
+        # trailing average the old formula projects revenue too high and the
+        # estimate runs $50-60K above actual. MTD rate anchors the projection
+        # to what this specific month is actually delivering.
+        if wd_elapsed >= 5 and s_rev > 0:
+            _proj_daily = s_rev / wd_elapsed
+        else:
+            _proj_daily = daily_run_rate
+        proj_rev = (_proj_daily * wdim) if _proj_daily else None
         proj_margin_t = (proj_rev * applied_pct) if (proj_rev and applied_pct is not None) else None
-        proj_margin = (settled_margin
-                       if (proj_margin_t is not None and settled_margin > proj_margin_t)
+        # Floor: use s_rev × applied_pct (not s_rev - s_cost) because s_cost
+        # only captures driver/carrier rate, not true cost, making the raw
+        # settled_margin much higher than actual and causing the floor to
+        # incorrectly override the MTD-rate projection.
+        _margin_floor = ((s_rev * applied_pct) if (s_rev and applied_pct is not None)
+                         else settled_margin)
+        proj_margin = (_margin_floor
+                       if (proj_margin_t is not None and _margin_floor > proj_margin_t)
                        else proj_margin_t)
         out[ent] = {
             "settled_mtd_margin": settled_margin or None,
@@ -1812,10 +1828,16 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
     c_applied = c_mtd_pct if c_mtd_pct is not None else c_trail_pct
     c_daily = (combined_t_rev / days) if days else 0.0
-    c_proj_rev = (c_daily * wdim) if c_daily else None
+    if wd_elapsed >= 5 and combined_s_rev > 0:
+        _c_proj_daily = combined_s_rev / wd_elapsed
+    else:
+        _c_proj_daily = c_daily
+    c_proj_rev = (_c_proj_daily * wdim) if _c_proj_daily else None
     _c_t = (c_proj_rev * c_applied) if (c_proj_rev and c_applied is not None) else None
-    c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
-                     else (combined_settled_margin or _c_t))
+    _c_floor = ((combined_s_rev * c_applied) if (combined_s_rev and c_applied is not None)
+                else combined_settled_margin)
+    c_proj_margin = (_c_t if (_c_t is not None and _c_floor <= _c_t)
+                     else (_c_floor or _c_t))
     out["combined"] = {
         "settled_mtd_margin": combined_settled_margin or None,
         "trailing_margin_pct": c_trail_pct,
@@ -1824,11 +1846,15 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
-    log.info("compute_margin_projection: applying MTD margin %% to projection "
-             "(was 80wd blend); wd %d/%d. "
-             "X-Trux: MTD %s, trail %s. X-Linx: MTD %s, trail %s. "
-             "Combined: MTD %s, trail %s.",
-             wd_elapsed, wdim,
+    _rate_src = "MTD" if wd_elapsed >= 5 else "trailing"
+    log.info("compute_margin_projection: rate=%s wd %d/%d "
+             "combined_s_rev=$%s combined_t_rev_daily=$%s "
+             "proj_rev=$%s proj_margin=$%s. "
+             "X-Trux: MTD %s trail %s. X-Linx: MTD %s trail %s. Combined: MTD %s trail %s.",
+             _rate_src, wd_elapsed, wdim,
+             f"{combined_s_rev:,.0f}", f"{c_daily:,.0f}",
+             f"{c_proj_rev:,.0f}" if c_proj_rev else "n/a",
+             f"{out['combined'].get('projected_margin') or 0:,.0f}",
              f"{out['X-Trux'].get('mtd_margin_pct') or 0:.1%}",
              f"{out['X-Trux'].get('trailing_margin_pct') or 0:.1%}",
              f"{out['X-Linx'].get('mtd_margin_pct') or 0:.1%}",
@@ -3838,7 +3864,11 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
 
     week_totals = [sum(r["weeks"][k] for r in rows) for k in range(SETTLEMENT_WEEKS)]
     cur_idx = SETTLEMENT_WEEKS - 1
+    last_idx = cur_idx - 1
     drivers_cur = sum(1 for r in rows if r["weeks"][cur_idx] > 0)
+    # Active last week = any miles; on-target = at or above DRIVER_TARGET_MILES
+    drivers_active_lw   = sum(1 for r in rows if r["weeks"][last_idx] > 0)
+    drivers_on_target_lw = sum(1 for r in rows if r["weeks"][last_idx] >= DRIVER_TARGET_MILES)
     # Average distinct drivers running per week — averaged over the complete
     # prior weeks only (the current partial week would drag it low).
     drivers_per_week = [sum(1 for r in rows if r["weeks"][k] > 0) for k in range(SETTLEMENT_WEEKS)]
@@ -3854,6 +3884,8 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
         "miles_last_week": week_totals[cur_idx - 1] if SETTLEMENT_WEEKS >= 2 else None,
         "avg_per_driver": (week_totals[cur_idx] / drivers_cur) if drivers_cur else None,
         "avg_drivers_per_week": avg_drivers_per_week,
+        "drivers_active_last_week": drivers_active_lw,
+        "drivers_on_target_last_week": drivers_on_target_lw,
     }
 
 
@@ -7347,21 +7379,25 @@ def build_page4(mileage, date_str) -> str:
     week_totals = m.get("week_totals") or [0] * SETTLEMENT_WEEKS
     cur = SETTLEMENT_WEEKS - 1
 
-    # Drivers below target — measured on LAST settlement week (the most
-    # recent COMPLETE Wed-3pm-to-Wed-3pm cycle). The current week is partial,
-    # so a low number there could just mean the week hasn't elapsed yet —
-    # not actionable. Using last week's complete cycle gives a fair read.
+    # Goal hit-rate — measured on LAST settlement week (the most recent COMPLETE
+    # Wed-3pm-to-Wed-3pm cycle). The current week is partial so a low number
+    # there could just mean the week hasn't elapsed yet — not actionable.
     last_idx = cur - 1
-    _below_tgt = sum(1 for r in rows if 0 < r["weeks"][last_idx] < DRIVER_TARGET_MILES)
-    _below_kind = "bad" if _below_tgt >= 3 else ("warn" if _below_tgt >= 1 else "good")
+    _active_lw    = m.get("drivers_active_last_week") or sum(1 for r in rows if r["weeks"][last_idx] > 0)
+    _on_target_lw = m.get("drivers_on_target_last_week") or sum(1 for r in rows if r["weeks"][last_idx] >= DRIVER_TARGET_MILES)
+    _below_tgt    = _active_lw - _on_target_lw
+    _hit_pct      = round(_on_target_lw / _active_lw * 100) if _active_lw else 0
+    _goal_kind    = "good" if _hit_pct >= 80 else ("warn" if _hit_pct >= 60 else "bad")
+    _goal_label   = f"{_hit_pct}% hit {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last wk'}"
     tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")),
                    _pill("settled legs", "mute")
                    + " &middot; "
                    + _pill(f"avg {num(m.get('avg_per_driver'))} mi / driver", "mute"))
              + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
              + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
-             + _tile("Drivers below target &middot; last week", num(_below_tgt),
-                     _pill(f"&lt; {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last week'}", _below_kind)))
+             + _tile(f"Goal hit rate &middot; last week",
+                     f"{_on_target_lw}&thinsp;/&thinsp;{_active_lw}",
+                     _pill(_goal_label, _goal_kind)))
 
     def mcell(text, al="right", cur=False, bold=False, small=False):
         bg = f"background:{ACCENTBG};" if cur else ""
@@ -8372,14 +8408,15 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         )
     except Exception as exc:
         log.warning("retro_pattern_detector skipped (%s: %s)", type(exc).__name__, exc)
-    # Phase 2E — Market context: weekly FRED diesel price (refreshed Mon
-    # 6pm CT by market_context_refresh.yml). Silent when the cache file
-    # hasn't been seeded yet.
+    # Phase 2E — Market context: FRED benchmarks + XFreight RPM comparison.
+    # Refreshed Mon 6pm CT by market_context_refresh.yml. Silent when the
+    # cache file hasn't been seeded yet.
     market_context_html = ""
     try:
         from src import market_context as _market_context
         market_context_html = _market_context.render_chip_html(
             ink=INK, mute=MUTE, line=LINE, green=GOOD, red=BAD,
+            xfreight_rpm=rpm_goal,
         )
     except Exception as exc:
         log.warning("market_context render skipped (%s: %s)", type(exc).__name__, exc)

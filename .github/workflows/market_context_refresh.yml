@@ -1,8 +1,15 @@
-# Weekly market-context refresh — Phase 2E external benchmark.
+# Weekly market-context refresh — Phase 2E external benchmarks.
 #
-# Pulls FRED's weekly U.S. retail diesel price (free, no API key) and writes
+# Pulls four free FRED series (no API key) and writes
 # Karpathy-Wiki/wiki/market-context.json. The executive brief reads that
-# file each morning and renders a "Market Context · US Diesel" chip on page 1.
+# file each morning and renders a "Market Context · OTR Truckload" panel
+# on page 1 with live metrics + ATRI industry benchmarks.
+#
+# Series pulled:
+#   GASDESW    — weekly U.S. #2 retail diesel ($/gal)
+#   DCOILWTICO — daily WTI crude oil spot ($/bbl) — leads diesel ~1-2wk
+#   TRUCKD11   — monthly ATA Truck Tonnage Index (freight demand signal)
+#   WPU3012    — monthly PPI: Truck Transportation (cost inflation signal)
 #
 # EIA publishes new weekly retail diesel data on Mondays; FRED republishes
 # shortly after. Refresh Monday evening so Tuesday's brief has the new number.
@@ -58,7 +65,7 @@ jobs:
         if: steps.ct_gate.outputs.skip != '1'
         run: pip install requests
 
-      - name: Fetch FRED diesel price + write JSON
+      - name: Fetch FRED series (diesel, WTI, ATA tonnage, PPI) + write JSON
         if: steps.ct_gate.outputs.skip != '1'
         run: python -m src.market_context
 
@@ -76,6 +83,6 @@ jobs:
             echo "No change in market-context.json — skipping commit."
             exit 0
           fi
-          git commit -m "market-context: weekly FRED diesel refresh"
+          git commit -m "market-context: weekly FRED refresh (diesel · WTI · ATA tonnage · PPI)"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin HEAD:main
