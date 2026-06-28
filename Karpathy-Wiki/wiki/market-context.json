@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-28T22:33:35Z",
+  "generated_at": "2026-06-28T22:57:23Z",
   "sources": {
     "diesel_us": {
       "label": "US #2 retail diesel ($/gal, weekly avg)",
@@ -79,6 +79,26 @@
         "date": "2025-05-01",
         "value": 151.996,
         "pct_change": 17.26
+      }
+    },
+    "bts_freight_tsi": {
+      "label": "BTS Freight Transportation Services Index (monthly, 2000=100)",
+      "fred_series": "TSIFRGHT",
+      "unit": "index",
+      "current": {
+        "date": "2026-03-01",
+        "value": 138.7
+      },
+      "short_label": "vs 1mo ago",
+      "vs_short": {
+        "date": "2026-02-01",
+        "value": 138.1,
+        "pct_change": 0.43
+      },
+      "yoy_52w": {
+        "date": "2025-03-01",
+        "value": 137.7,
+        "pct_change": 0.73
       }
     }
   },
