@@ -882,6 +882,14 @@ def _occurrence_label(n: int, category: str) -> str:
     cat = category.lower()
     if "inspection" in cat or "dvir defect" in cat:
         return f" ({n}x this unit in 30d — escalate if no action)"
+    if "dvir compliance" in cat:
+        # Progressive discipline mirrors the 7-day refire cycle:
+        # Step 1 = coaching (initial alert), Step 2+ = escalation
+        if n == 2:
+            return " ⚠️ Step 3 — verbal warning required (no improvement after coaching)"
+        if n == 3:
+            return " 🔴 Step 4 — written warning required (repeat non-compliance)"
+        return f" 🚨 Step 5 — management escalation required ({n}x non-compliant)"
     if n == 2:
         return " ⚠️ 2nd occurrence in 30d — verbal warning required"
     if n == 3:
@@ -1189,6 +1197,9 @@ def _build_accountability_structured(
             })
 
     # DVIR compliance <90% last 7d → audra + ops (Safety Mgr owns coaching)
+    # After action is logged, suppressed for 7 days then re-checked:
+    #   improved  → suppress another 7d (keep watching)
+    #   not improved → refire with next progressive discipline step
     if samsara_sheets:
         try:
             comp_rows = compute_inspection_compliance(samsara_sheets, days=7)
@@ -1212,7 +1223,12 @@ def _build_accountability_structured(
                         "driver":   drv,
                         "unit":     None,
                         "detail":   f"{pct}% completion last 7d ({done}/{exp})",
-                        "prompt":   "Has driver been notified? What corrective action was taken?",
+                        "prompt":   (
+                            "Coaching conversation on pre/post-trip inspection "
+                            "expectations within 5 business days — document corrective "
+                            "action taken. Repeat within 60 days → written warning."
+                        ),
+                        "_dvir_pct": pct,
                     }
                     audra_items.append(item)
                     ops_items.append(item)
@@ -1463,6 +1479,68 @@ def _post_csa_threshold_alert(
         log.warning("Could not post CSA threshold alert: %s", exc)
 
 
+def _dvir_improvement_pass(registry: dict, all_items: list, today: datetime.date) -> None:
+    """Before pruning expired entries, check if DVIR compliance improved for
+    drivers whose 7-day watch window just expired.
+
+    Improved (current_pct > baseline_pct stored at action time)
+        → extend watch another 7 days with updated baseline; alert stays silent.
+    Not improved (flat or worse)
+        → leave entry expired so prune() removes it and the alert refires today.
+    """
+    from src.suppression_registry import add_suppression as _add_supp
+
+    pct_by_drv: dict[str, int] = {}
+    for item in all_items:
+        if (item.get("category") or "").lower().strip() != "dvir compliance":
+            continue
+        drv = (item.get("driver") or "").lower().strip()
+        p = item.get("_dvir_pct")
+        if drv and p is not None:
+            pct_by_drv[drv] = int(p)
+
+    prefix = "dvir compliance::"
+    for key in list(registry.keys()):
+        if not key.startswith(prefix):
+            continue
+        entry = registry.get(key) or {}
+        try:
+            window_end = datetime.date.fromisoformat(entry["until"])
+        except Exception:
+            continue
+        if window_end > today:
+            continue  # still active — do not touch
+        drv_norm = key[len(prefix):]
+        if not drv_norm:
+            continue  # wildcard entry — skip
+
+        current_pct = pct_by_drv.get(drv_norm)
+        if current_pct is None:
+            # Driver now ≥90% — condition is False so alert won't fire anyway
+            log.info("DVIR compliance watch expired for %s — driver now ≥90%%, no refire",
+                     drv_norm)
+            continue
+
+        baseline_pct = (entry.get("meta") or {}).get("baseline_pct")
+        if baseline_pct is not None and current_pct > baseline_pct:
+            log.info(
+                "DVIR compliance improved for %s (%d%% → %d%%) — extending watch 7d",
+                drv_norm, baseline_pct, current_pct,
+            )
+            _add_supp(
+                registry, "dvir compliance", drv_norm,
+                today + datetime.timedelta(days=7),
+                today=today,
+                meta={"baseline_pct": current_pct},
+            )
+        else:
+            log.info(
+                "DVIR compliance not improved for %s (baseline=%s%% current=%d%%) — refiring",
+                drv_norm, baseline_pct, current_pct,
+            )
+            # Entry stays expired; prune() removes it this run → alert refires
+
+
 def _write_accountability_json(
     today: datetime.date,
     audra_items: list[dict],
@@ -1486,6 +1564,10 @@ def _write_accountability_json(
     resolved_cats = resolved_cats or set()
 
     registry = load_registry(tok, upn)
+    # DVIR improvement check BEFORE pruning — expired entries still carry
+    # baseline_pct; improved drivers get a 7-day extension; unimproved entries
+    # stay expired so prune() removes them and the alert refires today.
+    _dvir_improvement_pass(registry, list(audra_items) + list(ops_items), today)
     prune(registry, today)
     # Rebuild if the registry is empty OR if it has no category-only wildcard
     # entries (keys ending with "::") — which means it was built before wildcard

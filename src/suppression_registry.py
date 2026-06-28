@@ -16,9 +16,10 @@ from pathlib import Path
 
 log = logging.getLogger("suppression_registry")
 
-_FOLDER       = "Safety"
-_FNAME        = "suppression-registry.json"
-_DEFAULT_DAYS = 30  # once actioned, suppress for 30 days (matches history window)
+_FOLDER              = "Safety"
+_FNAME               = "suppression-registry.json"
+_DEFAULT_DAYS        = 30  # once actioned, suppress for 30 days (matches history window)
+_DVIR_COMPLIANCE_DAYS = 7  # DVIR compliance: 7-day watch window then re-check improvement
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +155,13 @@ def add_suppression(
     drv_norm: str,
     until: datetime.date,
     today: datetime.date | None = None,
+    meta: dict | None = None,
 ) -> None:
-    """Add or extend a suppression window. No-op if already suppressed longer."""
+    """Add or extend a suppression window. No-op if already suppressed longer.
+
+    *meta* stores category-specific data alongside the window (e.g., DVIR compliance
+    baseline_pct so the 7-day improvement check can compare current vs. actioned pct).
+    """
     k = _key(cat_norm, drv_norm)
     existing = registry.get(k)
     if existing:
@@ -164,10 +170,13 @@ def add_suppression(
                 return
         except Exception:
             pass
-    registry[k] = {
+    entry = {
         "until": until.isoformat(),
         "added": (today or datetime.date.today()).isoformat(),
     }
+    if meta:
+        entry["meta"] = meta
+    registry[k] = entry
     log.info("Suppression added: [%s / %s] until %s", cat_norm, drv_norm, until.isoformat())
 
 
@@ -260,8 +269,10 @@ def apply_resolved_to_registry(
         drv_actioned = drv_norm and f"driver:{drv_norm}" in resolved_cats
         if not (cat_actioned or drv_actioned):
             continue
-        is_cdl = "cdl" in cat_norm or "disqualif" in cat_norm
-        is_dot = "dot inspection" in cat_norm
+        is_cdl  = "cdl" in cat_norm or "disqualif" in cat_norm
+        is_dot  = "dot inspection" in cat_norm
+        is_dvir = cat_norm == "dvir compliance"
+        meta = None
         if is_cdl and drv_norm and drv_norm in cdl_dates:
             until = cdl_dates[drv_norm]
         elif is_dot:
@@ -269,14 +280,22 @@ def apply_resolved_to_registry(
             # otherwise suppress for 7 days from today as a safe fallback.
             sched = dot_dates.get(drv_norm)
             until = (sched + datetime.timedelta(days=7)) if sched else (today + datetime.timedelta(days=7))
+        elif is_dvir:
+            # DVIR compliance: 7-day watch window instead of 30 days. After the
+            # window, the improvement pass in safety_compliance_email re-checks
+            # current vs baseline pct: improved → extend another 7d; flat/worse → refire.
+            until = today + datetime.timedelta(days=_DVIR_COMPLIANCE_DAYS)
+            baseline_pct = item.get("_dvir_pct")
+            if baseline_pct is not None:
+                meta = {"baseline_pct": baseline_pct}
         else:
             until = today + datetime.timedelta(days=_DEFAULT_DAYS)
-        add_suppression(registry, cat_norm, drv_norm, until, today=today)
+        add_suppression(registry, cat_norm, drv_norm, until, today=today, meta=meta)
         # When the log resolved this category explicitly, also write a wildcard
         # (cat::"") so tomorrow's is_suppressed catches any driver in the same
         # category even if the log driver field didn't match exactly.
-        # CDL and DOT Inspection are excluded — each unit/driver has its own
-        # schedule and actioning one must not suppress others in the category.
-        if cat_actioned and not is_cdl and not is_dot and cat_norm not in _cat_wildcard_written:
+        # CDL, DOT Inspection, and DVIR Compliance are excluded — each has per-driver
+        # windows and actioning one must not suppress others in the category.
+        if cat_actioned and not is_cdl and not is_dot and not is_dvir and cat_norm not in _cat_wildcard_written:
             add_suppression(registry, cat_norm, "", until, today=today)
             _cat_wildcard_written.add(cat_norm)
