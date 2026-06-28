@@ -3,7 +3,7 @@ title: Customer Portfolio
 type: concept
 tags: [customers, sales, revenue]
 sources: ["raw/xfreight-customer-portfolio.md", "raw/xfreight-customers-additional.md"]
-related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
+related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[Viaflex]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
 ---
 
 # Customer Portfolio
@@ -31,6 +31,7 @@ XFreight serves a mix of dedicated daily-rate customers, regional South Dakota a
 | **Dakotaland Autoglass** | Active/recent | Rate sheet dated May 2025. Regional SD chain. See [[Dakotaland Autoglass]]. |
 | **DAG** | Recent | BOL in folder dated June 2025. Possibly Dakota AG (agricultural). |
 | **Lewis Drug** | Active (confidence: medium) | Regional SD pharmacy chain. Folder + workbook. See [[Lewis Drug]]. |
+| **Viaflex** | **Active, June 2026** | Plastic film products. 29+ invoices in June AR aging report; $450–$5,846/load range. High-frequency account. See [[Viaflex]]. |
 | **Amcor** | Active (confidence: low) | Global packaging. Folder exists, content not reviewed. |
 | **Twin City Fan** | Active (confidence: low) | Industrial fan/blower mfr. Folder exists. |
 | **Viaflex** | Active (confidence: low) | Plastic film products. Folder exists. |

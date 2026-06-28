@@ -53,6 +53,7 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 - [[Dakotaland Autoglass]] — regional SD auto glass chain; rate sheet May 2025.
 - [[Lewis Drug]] — regional SD pharmacy chain; folder + workbook on file.
 - [[AGCO RFP]] — 2026 truckload RFP (NOT AWARDED Jan 2026); bid structure and next-cycle lessons.
+- [[Viaflex]] — plastic film manufacturer; 29+ invoices in June 2026 AR — one of the highest-frequency active accounts.
 - [[JW Logistics]] — carrier relationship (X-Linx) with disputed history; hard-coded exclusion from all reports.
 
 ---

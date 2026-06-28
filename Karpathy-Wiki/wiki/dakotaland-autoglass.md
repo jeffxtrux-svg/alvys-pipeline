@@ -32,9 +32,14 @@ Regional SD customer with a rate sheet on file from May 2025. Relationship statu
 | Revenue contribution | **Unknown** — needs QB pull |
 | Entity (X-Trux or X-Linx?) | TBD |
 
+## AR Visibility Note
+
+Dakotaland Autoglass did not appear in the Alvys AR aging report reviewed June 3, 2026. Given the rate sheet is from May 2025, this could mean: (a) the relationship is lower-frequency (sporadic loads rather than regular), (b) invoices were fully paid and closed by that date, or (c) the account has gone dormant. Verify current load activity by searching Alvys Loads for "Dakotaland" or "Dakota Land."
+
 ## Open Questions / Watch
 
 - Is the May 2025 rate sheet still active or has it expired / renewed?
+- Is the relationship still active in 2026? (Not in June AR aging report — verify.)
 - What is the monthly revenue contribution? (QB pull)
 - Typical lane profile — regional SD hauls? Specific origins/destinations?
 

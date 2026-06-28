@@ -36,6 +36,10 @@ Active linehaul rate agreement with Lanter for CNH Industrial lanes. Lanter acts
 
 The AGCO RFP outcome (not awarded, Jan 2026) cited price competitiveness as the likely gap. The Lanter/CNH relationship shows XFreight can handle ag-equipment freight operationally — a proof point for any future AGCO rebid. When the next AGCO cycle opens (expected late 2026 / early 2027), reference CNH lanes as operational credibility.
 
+## AR Visibility Note
+
+Lanter/CNH did not appear in the Alvys AR aging report reviewed June 3, 2026. This means either: (a) no open invoices at that snapshot date (loads had been paid/closed), or (b) loads billed under a different customer name in Alvys. Pull Alvys Loads sheet filtered by "Lanter" or "CNH" to confirm current load activity.
+
 ## Open Questions / Watch
 
 - What is the monthly revenue from Lanter/CNH lanes?
@@ -43,6 +47,7 @@ The AGCO RFP outcome (not awarded, Jan 2026) cited price competitiveness as the 
 - Is this X-Trux asset hauls or X-Linx brokered?
 - What are the rate terms? (Extract from `CNH Linehauls.xlsx`.)
 - Is there a master broker-carrier or shipper agreement with Lanter?
+- Confirm Alvys customer name — does not appear in June 2026 AR aging report; may be billed under a different label.
 
 ## Connections
 
