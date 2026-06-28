@@ -1288,6 +1288,41 @@ def compute_ontime(alvys_pipeline_sheets: dict | None) -> dict:
     }
 
 
+def compute_ontime_trend(alvys_pipeline_sheets: dict | None) -> dict:
+    """6-month on-time delivery % by month (actual delivery date, X-Trux + X-Linx)."""
+    empty = {"labels": [], "values": []}
+    if not alvys_pipeline_sheets:
+        return empty
+    loads = alvys_pipeline_sheets.get("Loads")
+    if loads is None or loads.empty:
+        return empty
+    sched_col = _find_col(loads, ["scheduled delivery"])
+    actual_col = _find_col(loads, ["actual delivery"])
+    if not sched_col or not actual_col:
+        return empty
+    if "Load Status" in loads.columns:
+        loads = loads[loads["Load Status"].astype(str).str.lower() != "cancelled"]
+    office_col = _find_col(loads, OFFICE_COL_NEEDLES)
+    if office_col:
+        loads = loads[loads[office_col].map(_entity_group).isin(ENTITY_ORDER)]
+    sched = _to_naive_dt(loads[sched_col])
+    actual = _to_naive_dt(loads[actual_col])
+    has_both = sched.notna() & actual.notna()
+    if not has_both.any():
+        return empty
+    labels, values = [], []
+    for i, (yy, mm) in enumerate(_last_6_months()):
+        mask = has_both & (actual.dt.year == yy) & (actual.dt.month == mm)
+        total = int(mask.sum())
+        on_time = int((actual[mask] <= sched[mask]).sum()) if total else 0
+        lab = pd.Timestamp(year=yy, month=mm, day=1).strftime("%b")
+        if i == 5:
+            lab += "*"
+        labels.append(lab)
+        values.append(round(on_time / total * 100, 1) if total else 0.0)
+    return {"labels": labels, "values": values}
+
+
 def compute_customer_rpm(alvys_pipeline_sheets: dict | None, top_n: int = 15) -> list[dict]:
     """Revenue per mile by customer (MTD, X-Trux + X-Linx, sorted by RPM desc)."""
     if not alvys_pipeline_sheets:
@@ -5527,7 +5562,7 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
                 rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
-                ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
+                ontime=None, ontime_trend=None, dh_trend=None, customer_rpm=None, equipment=None,
                 risk_watch_html: str = "", decision_grades_html: str = "",
                 forecast_grades_html: str = "", retro_html: str = "",
                 retro_patterns_html: str = "", market_context_html: str = "",
@@ -5718,16 +5753,16 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     _rpm_b_labels, _rpm_b_values = ((rpm_trend or {}).get("broker") or ([], []))
     _rpm_c_labels, _rpm_c_values = ((rpm_trend or {}).get("combined") or ([], []))
     _rpm_sub = "monthly avg &middot; X-Trux + XFreight &middot; *MTD"
-    _dh_t = dh_trend or {}
-    _dh_trend_td = (_bar_chart("Dead head % &middot; 6-month trend",
-                               _dh_t.get("labels") or [], _dh_t.get("values") or [],
-                               "X-Trux + XFreight &middot; *MTD",
-                               fmt=lambda v: f"{v:.1f}%")
-                    if _dh_t.get("labels") else empty_td)
+    _ot_t = ontime_trend or {}
+    _ot_trend_td = (_bar_chart("On-time delivery &middot; 6-month trend",
+                               _ot_t.get("labels") or [], _ot_t.get("values") or [],
+                               "X-Trux + X-Linx &middot; *MTD",
+                               fmt=lambda v: f"{v:.0f}%")
+                    if _ot_t.get("labels") else empty_td)
     xtrux_r3 = (_bar_chart("Overall &middot; rev / mile", _rpm_c_labels, _rpm_c_values, _rpm_sub, fmt=rpm2)
                 + _bar_chart("Direct customers &middot; rev / mile", _rpm_d_labels, _rpm_d_values, _rpm_sub, fmt=rpm2)
                 + _bar_chart("Broker freight &middot; rev / mile", _rpm_b_labels, _rpm_b_values, _rpm_sub, fmt=rpm2)
-                + _dh_trend_td)
+                + _ot_trend_td)
 
     # X-Trux rate-per-mile goal: fully-loaded cost per mile (driver pay + shared
     # office overhead), then the profit-loaded goal rate, vs. what we actually run.
@@ -5946,12 +5981,15 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
     goal_trend_row = ""
     if gt.get("labels") and (gt.get("cost") or gt.get("actual")):
         _gt_sub = "monthly &middot; X-Trux + XFreight &middot; *MTD"
+        _or_vals = [round(c / a * 100, 1) if a else 0.0
+                    for c, a in zip(gt.get("cost") or [], gt.get("actual") or [])]
         goal_trend_row = (
             _bar_chart("Cost / mile", gt["labels"], gt.get("cost") or [],
                        "overhead held at YTD rate &middot; *MTD", fmt=rpm2)
             + _bar_chart("Goal / mile", gt["labels"], gt.get("goal") or [], _gt_sub, fmt=rpm2)
             + _bar_chart("Actual / mile", gt["labels"], gt.get("actual") or [], _gt_sub, fmt=rpm2)
-            + empty_td)
+            + _bar_chart("Operating ratio", gt["labels"], _or_vals,
+                         "cost &divide; revenue &middot; *MTD", fmt=lambda v: f"{v:.1f}%"))
 
     # AR & AP 6-month balance trend
     ar_labels, ar_vals = ar_hist if ar_hist else ([], [])
@@ -6956,7 +6994,7 @@ def build_page2b(samsara, date_str, pg: int = 4) -> str:
             f"crashes) are the inputs that drove it.</div>")
 
 
-def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
+def build_page_fleet(samsara, date_str, customer_rpm=None, rpm_goal=None) -> str:
     """Page 8: Fleet Operations — MPG and speeding. Idle detail is its own
     page (build_page_idle, pg 9); driver safety scores live on the Safety
     Scores page (build_page2b, pg 4)."""
@@ -7059,6 +7097,41 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
                    if bot5_mpg
                    else f"<tr><td colspan='{len(mpg_headers)}' style='padding:12px 8px;color:{MUTE};font-size:12.5px;'>(no data)</td></tr>")
 
+    # Customer revenue per mile table — color-coded vs cost floor and goal.
+    # cost_floor = break-even (all-in cost/mi from QB + Alvys driver pay).
+    # goal_rpm   = profit-loaded target rate (cost / target OR).
+    _crpm_rows = customer_rpm or []
+    _cost_floor = (rpm_goal or {}).get("cost_per_mile")
+    _goal_rpm   = (rpm_goal or {}).get("goal_rpm")
+    crpm_section = ""
+    if _crpm_rows:
+        crpm_hdrs = ["Customer", "Loads", "Revenue", "Miles", "Rev / Mile"]
+        crpm_aligns = ["left", "right", "right", "right", "right"]
+        def _rpm_color(r_rpm):
+            if not _isnum(r_rpm):
+                return None
+            if _isnum(_cost_floor) and r_rpm < _cost_floor:
+                return "bad"
+            if _isnum(_goal_rpm) and r_rpm < _goal_rpm:
+                return "warn"
+            return "good"
+        crpm_tbl_rows = "".join(
+            _tr([d["customer"], num(d["loads"]), money(d["revenue"]),
+                 num(d["miles"]), rpm(d["rpm"])],
+                crpm_aligns,
+                [None, None, None, None, _rpm_color(d["rpm"])])
+            for d in _crpm_rows
+        )
+        _legend = ""
+        if _isnum(_cost_floor) and _isnum(_goal_rpm):
+            _legend = (f"&nbsp; <span style='color:{GOOD};'>&#9632;</span> &ge;{rpm(_goal_rpm)} goal"
+                       f" &nbsp; <span style='color:{WARN};'>&#9632;</span> {rpm(_cost_floor)}&ndash;{rpm(_goal_rpm)} above break-even"
+                       f" &nbsp; <span style='color:{BAD};'>&#9632;</span> &lt;{rpm(_cost_floor)} below cost")
+        crpm_section = (
+            f"{_section('Revenue / Mile by Customer &middot; MTD &middot; top 15' + _legend)}"
+            f"{_table(crpm_hdrs, crpm_aligns, crpm_tbl_rows)}"
+        )
+
     return (f"{_header('Fleet Operations &mdash; MPG / Speeding', 8, date_str, section='OPERATIONAL')}"
             f"<table width='100%' cellpadding='0' cellspacing='0' style='padding:8px 18px 0;'>"
             f"<tr>{tiles}</tr>"
@@ -7066,6 +7139,7 @@ def build_page_fleet(samsara, date_str, customer_rpm=None) -> str:
             f"{mpg_top_tbl}"
             f"{_section('Worst All-In MPG &middot; bottom 5 trucks (MTD &middot; ranked drive + idle)')}"
             f"{mpg_bot_tbl}"
+            f"{crpm_section}"
             f"</table><div style='padding:14px 24px 22px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};margin-top:14px;'>"
             f"Source: Samsara Trips (MPG, drive gallons). Idle gallons from "
             f"Samsara engine-state history over the same MTD window: integrated "
@@ -8205,8 +8279,8 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
-               dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None, csa=None, refresh_status=None) -> str:
+               dso_hist=None, avg_fuel_price=None, ontime=None, ontime_trend=None,
+               dh_trend=None, customer_rpm=None, csa=None, refresh_status=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     # Phase 2B — Risk Watch strip: read the machine-readable signal
     # definitions from Karpathy-Wiki/wiki/risk-signals.yml, evaluate each
@@ -8423,9 +8497,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, forecast_grades_html=forecast_grades_html, retro_html=retro_html, retro_patterns_html=retro_patterns_html, market_context_html=market_context_html, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, ontime_trend=ontime_trend, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, forecast_grades_html=forecast_grades_html, retro_html=retro_html, retro_patterns_html=retro_patterns_html, market_context_html=market_context_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
+            f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, ontime_trend=ontime_trend, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
             # stable for git history; the integer page-number arg to
             # _header()/_strip() is just an anchor id consumed by
@@ -8454,7 +8528,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             f"{wrap(_strip(6) + build_page_equipment(equipment, date_str, kind='trailers', pg=6))}{pb}"
             # -- OPERATIONAL --
             f"{wrap(_strip(7) + build_page4(mileage, date_str))}{pb}"
-            f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm))}{pb}"
+            f"{wrap(_strip(8) + build_page_fleet(samsara, date_str, customer_rpm=customer_rpm, rpm_goal=rpm_goal))}{pb}"
             f"{wrap(_strip(9) + build_page_idle(samsara, date_str, avg_fuel_price=avg_fuel_price))}{pb}"
             # -- CSA SCORECARD -- Skipped entirely when the CSA2010 Preview
             # Scorecard CSV is absent (per Jeff 2026-06-12: don't ship a
@@ -8538,6 +8612,7 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
     avg_fuel_price = compute_avg_fuel_price(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     dh_trend = compute_dh_trend(alvys_sheets) if alvys_sheets else None
     ontime = compute_ontime(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
+    ontime_trend = compute_ontime_trend(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     customer_rpm = compute_customer_rpm(alvys_pipeline_sheets) if alvys_pipeline_sheets else None
     html = build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                       alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, mileage=mileage,
@@ -8545,8 +8620,9 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       rpm_goal_trend=rpm_goal_trend, samba=samba, drag=drag,
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
-                      avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status)
+                      avg_fuel_price=avg_fuel_price, ontime=ontime, ontime_trend=ontime_trend,
+                      dh_trend=dh_trend, customer_rpm=customer_rpm, csa=csa,
+                      refresh_status=refresh_status)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
