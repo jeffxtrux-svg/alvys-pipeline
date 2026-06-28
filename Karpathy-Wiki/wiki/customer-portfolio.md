@@ -3,7 +3,7 @@ title: Customer Portfolio
 type: concept
 tags: [customers, sales, revenue]
 sources: ["raw/xfreight-customer-portfolio.md", "raw/xfreight-customers-additional.md"]
-related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Viaflex]]", "[[ABT Brokerage]]", "[[Kozy Heat Fireplaces]]", "[[Enertech Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
+related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Viaflex]]", "[[ABT Brokerage]]", "[[Kozy Heat Fireplaces]]", "[[Enertech Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Johnson Brothers SD]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
 ---
 
 # Customer Portfolio
@@ -27,6 +27,7 @@ Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates base
 | **ABT Brokerage** | ~$15,000–25,000+ | X-TRUX + X-LINX | Medium — AR snapshot, 2-year account |
 | **Kozy Heat Fireplaces** | ~$11,500–15,500 | X-TRUX | Medium — 3+ year account, load data |
 | **Enertech Global** | ~$9,000–13,000 | X-TRUX | Medium — 3+ year account, load data |
+| **Johnson Brothers SD** | ~$20,000–28,000 (at daily cadence) | X-LINX (currently) | Low-Medium — new lane, per-pallet pricing, cadence not yet confirmed |
 | **Lanter/CNH** | Unknown | TBD | Low — not in June AR |
 | **Dakotaland Autoglass** | Unknown | TBD | Low — not in June AR |
 
@@ -52,6 +53,7 @@ Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates base
 | **Kozy Heat Fireplaces** | **Active, 3+ years** | Lakefield MN → Simpsonville SC, air-ride van, 2 dedicated trailers, ~$3,850/load. See [[Kozy Heat Fireplaces]]. |
 | **Enertech Global** | **Active, 3+ years** | Mitchell SD dedicated account; Greenville IL primary lane, 1 spotted trailer, ~3/month. See [[Enertech Global]]. |
 | **ABT Brokerage** | **Active, ~2 years** | Freight broker; Cassleton ND + Philadelphia PA origins; X-TRUX asset + X-LINX brokered. See [[ABT Brokerage]]. |
+| **Johnson Brothers SD** | **Newly awarded, June 2026** | SD arm of Johnson Brothers (national wine/spirits distributor). Sioux Falls → Rapid City daily dedicated lane, $60/pallet + FSC%. Currently X-LINX via Button Enterprises LLC. Everyday business going forward. See [[Johnson Brothers SD]]. |
 | **Amcor** | Active (confidence: low) | Global packaging. Folder exists, content not reviewed. |
 | **Twin City Fan** | Active (confidence: low) | Industrial fan/blower mfr. Folder exists. |
 | **Viaflex** | Active (confidence: low) | Plastic film products. Folder exists. |

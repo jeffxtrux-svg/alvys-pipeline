@@ -58,6 +58,7 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 - [[Enertech Global]] — HVAC/heating equipment manufacturer; Mitchell SD dedicated account, 3+ year relationship.
 - [[ABT Brokerage]] — freight broker; 2-year account, Cassleton ND + Philadelphia PA origins, spans X-TRUX and X-LINX.
 - [[JW Logistics]] — carrier relationship (X-Linx) with disputed history; hard-coded exclusion from all reports.
+- [[Johnson Brothers SD]] — newly awarded SF→RC per-pallet daily lane; $60/pallet + FSC%; SD arm of national wine/spirits distributor; everyday business going forward.
 
 ---
 
