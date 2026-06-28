@@ -245,13 +245,18 @@ def render_chip_html(ctx: dict | None = None,
                       mute: str = "#6b6b6b",
                       line: str = "#ececec",
                       green: str = "#0f6b3d",
-                      red: str = "#c41e2a") -> str:
+                      red: str = "#c41e2a",
+                      xfreight_rpm: dict | None = None) -> str:
     """Multi-metric OTR market context panel for page 1 of the executive brief.
 
     Shows 4 live FRED series (diesel, WTI crude, ATA tonnage, PPI trucking)
-    plus a static ATRI industry benchmark bar. Each metric shows its current
-    value, short-term % change, and YoY % change with directional color coding.
-    Hidden entirely when no cached data exists.
+    plus a static ATRI industry benchmark bar and an optional XFreight
+    performance row comparing actual RPM to the ATRI total-cost benchmark and
+    the internal cost-out goal.  Hidden entirely when no cached data exists.
+
+    Args:
+        xfreight_rpm: dict from ``compute_rpm_goal`` — keys ``actual_rpm``,
+            ``goal_rpm``, ``cost_per_mile``, ``gap`` (goal minus actual).
     """
     ctx = ctx if ctx is not None else load_cached()
     sources = ctx.get("sources") or {}
@@ -361,6 +366,48 @@ def render_chip_html(ctx: dict | None = None,
             f"</td></tr>"
         )
 
+    # XFreight performance row — actual RPM vs ATRI total cost and internal goal
+    xf_html = ""
+    if xfreight_rpm:
+        actual   = xfreight_rpm.get("actual_rpm")
+        goal     = xfreight_rpm.get("goal_rpm")
+        atri_bm  = (benchmarks.get("total_cost_per_mile") or {}).get("value")
+        if actual:
+            parts_xf: list[str] = [
+                f"Actual RPM&nbsp;<b>${actual:.2f}/mi</b>"
+            ]
+            if atri_bm:
+                spread_vs_atri = actual - atri_bm
+                atri_color = green if spread_vs_atri >= 0 else red
+                atri_arrow = "▲" if spread_vs_atri >= 0 else "▼"
+                parts_xf.append(
+                    f"ATRI total cost&nbsp;<b>${atri_bm:.3f}/mi</b>"
+                    f"&nbsp;→&nbsp;"
+                    f"<span style='color:{atri_color};font-weight:700;'>"
+                    f"{atri_arrow}&nbsp;${abs(spread_vs_atri):.2f}/mi "
+                    f"{'above' if spread_vs_atri >= 0 else 'below'} cost</span>"
+                )
+            if goal:
+                gap = goal - actual   # positive = behind goal
+                goal_color = green if gap <= 0 else red
+                goal_arrow = "▼" if gap > 0 else "▲"
+                parts_xf.append(
+                    f"Goal&nbsp;<b>${goal:.2f}/mi</b>"
+                    f"&nbsp;→&nbsp;"
+                    f"<span style='color:{goal_color};font-weight:700;'>"
+                    f"{goal_arrow}&nbsp;${abs(gap):.2f}/mi "
+                    f"{'behind' if gap > 0 else 'above'} goal</span>"
+                )
+            xf_joined = "&nbsp;&nbsp;·&nbsp;&nbsp;".join(parts_xf)
+            xf_html = (
+                f"<tr><td colspan='4' style='padding:6px 10px 2px;"
+                f"border-top:1px solid {line};'>"
+                f"<span style='font-size:9px;font-weight:700;color:{mute};"
+                f"text-transform:uppercase;letter-spacing:1px;'>XFreight Performance (MTD)</span>"
+                f"<br><span style='font-size:10px;color:{ink};'>{xf_joined}</span>"
+                f"</td></tr>"
+            )
+
     generated = ctx.get("generated_at", "")
     footer_html = (
         f"<tr><td colspan='4' style='padding:4px 10px 0;'>"
@@ -380,6 +427,7 @@ def render_chip_html(ctx: dict | None = None,
         f"<table style='width:100%;border-collapse:collapse;'>"
         f"<tr>{metrics_row}</tr>"
         f"{benchmarks_html}"
+        f"{xf_html}"
         f"{footer_html}"
         f"</table>"
         f"</div>"

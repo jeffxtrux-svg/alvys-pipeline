@@ -3829,7 +3829,11 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
 
     week_totals = [sum(r["weeks"][k] for r in rows) for k in range(SETTLEMENT_WEEKS)]
     cur_idx = SETTLEMENT_WEEKS - 1
+    last_idx = cur_idx - 1
     drivers_cur = sum(1 for r in rows if r["weeks"][cur_idx] > 0)
+    # Active last week = any miles; on-target = at or above DRIVER_TARGET_MILES
+    drivers_active_lw   = sum(1 for r in rows if r["weeks"][last_idx] > 0)
+    drivers_on_target_lw = sum(1 for r in rows if r["weeks"][last_idx] >= DRIVER_TARGET_MILES)
     # Average distinct drivers running per week — averaged over the complete
     # prior weeks only (the current partial week would drag it low).
     drivers_per_week = [sum(1 for r in rows if r["weeks"][k] > 0) for k in range(SETTLEMENT_WEEKS)]
@@ -3845,6 +3849,8 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
         "miles_last_week": week_totals[cur_idx - 1] if SETTLEMENT_WEEKS >= 2 else None,
         "avg_per_driver": (week_totals[cur_idx] / drivers_cur) if drivers_cur else None,
         "avg_drivers_per_week": avg_drivers_per_week,
+        "drivers_active_last_week": drivers_active_lw,
+        "drivers_on_target_last_week": drivers_on_target_lw,
     }
 
 
@@ -7299,21 +7305,25 @@ def build_page4(mileage, date_str) -> str:
     week_totals = m.get("week_totals") or [0] * SETTLEMENT_WEEKS
     cur = SETTLEMENT_WEEKS - 1
 
-    # Drivers below target — measured on LAST settlement week (the most
-    # recent COMPLETE Wed-3pm-to-Wed-3pm cycle). The current week is partial,
-    # so a low number there could just mean the week hasn't elapsed yet —
-    # not actionable. Using last week's complete cycle gives a fair read.
+    # Goal hit-rate — measured on LAST settlement week (the most recent COMPLETE
+    # Wed-3pm-to-Wed-3pm cycle). The current week is partial so a low number
+    # there could just mean the week hasn't elapsed yet — not actionable.
     last_idx = cur - 1
-    _below_tgt = sum(1 for r in rows if 0 < r["weeks"][last_idx] < DRIVER_TARGET_MILES)
-    _below_kind = "bad" if _below_tgt >= 3 else ("warn" if _below_tgt >= 1 else "good")
+    _active_lw    = m.get("drivers_active_last_week") or sum(1 for r in rows if r["weeks"][last_idx] > 0)
+    _on_target_lw = m.get("drivers_on_target_last_week") or sum(1 for r in rows if r["weeks"][last_idx] >= DRIVER_TARGET_MILES)
+    _below_tgt    = _active_lw - _on_target_lw
+    _hit_pct      = round(_on_target_lw / _active_lw * 100) if _active_lw else 0
+    _goal_kind    = "good" if _hit_pct >= 80 else ("warn" if _hit_pct >= 60 else "bad")
+    _goal_label   = f"{_hit_pct}% hit {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last wk'}"
     tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")),
                    _pill("settled legs", "mute")
                    + " &middot; "
                    + _pill(f"avg {num(m.get('avg_per_driver'))} mi / driver", "mute"))
              + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
              + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
-             + _tile("Drivers below target &middot; last week", num(_below_tgt),
-                     _pill(f"&lt; {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last week'}", _below_kind)))
+             + _tile(f"Goal hit rate &middot; last week",
+                     f"{_on_target_lw}&thinsp;/&thinsp;{_active_lw}",
+                     _pill(_goal_label, _goal_kind)))
 
     def mcell(text, al="right", cur=False, bold=False, small=False):
         bg = f"background:{ACCENTBG};" if cur else ""
@@ -8324,14 +8334,15 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         )
     except Exception as exc:
         log.warning("retro_pattern_detector skipped (%s: %s)", type(exc).__name__, exc)
-    # Phase 2E — Market context: weekly FRED diesel price (refreshed Mon
-    # 6pm CT by market_context_refresh.yml). Silent when the cache file
-    # hasn't been seeded yet.
+    # Phase 2E — Market context: FRED benchmarks + XFreight RPM comparison.
+    # Refreshed Mon 6pm CT by market_context_refresh.yml. Silent when the
+    # cache file hasn't been seeded yet.
     market_context_html = ""
     try:
         from src import market_context as _market_context
         market_context_html = _market_context.render_chip_html(
             ink=INK, mute=MUTE, line=LINE, green=GOOD, red=BAD,
+            xfreight_rpm=rpm_goal,
         )
     except Exception as exc:
         log.warning("market_context render skipped (%s: %s)", type(exc).__name__, exc)
