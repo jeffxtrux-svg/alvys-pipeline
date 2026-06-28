@@ -277,6 +277,104 @@ def load_cached(path: Path | None = None) -> dict:
         return {}
 
 
+def _compute_outlook(sources: dict) -> dict:
+    """Rule-based near-term freight market outlook from FRED signals.
+
+    Returns a dict with keys: volume, rates, fuel, summary.
+    Each signal has 'label' (display text) and 'tone' (good/bad/neutral).
+    """
+    ata    = sources.get("ata_tonnage")    or {}
+    pmi    = sources.get("ism_pmi")        or {}
+    tsi    = sources.get("bts_freight_tsi") or {}
+    ppi    = sources.get("ppi_trucking")   or {}
+    diesel = sources.get("diesel_us")      or {}
+
+    def _yoy(s):  return (s.get("yoy_52w")  or {}).get("pct_change")
+    def _mom(s):  return (s.get("vs_short") or {}).get("pct_change")
+    def _cur(s):  return (s.get("current")  or {}).get("value")
+
+    ata_yoy     = _yoy(ata)
+    pmi_cur     = _cur(pmi)
+    tsi_yoy     = _yoy(tsi)
+    ppi_yoy     = _yoy(ppi)
+    diesel_yoy  = _yoy(diesel)
+    diesel_4w   = _mom(diesel)
+
+    signals: dict = {}
+
+    # --- Freight volume signal (ATA tonnage YoY + ISM PMI + BTS TSI YoY) ---
+    vol_votes: list[str] = []
+    if ata_yoy is not None:
+        vol_votes.append("expanding" if ata_yoy >= 3 else ("contracting" if ata_yoy < 0 else "flat"))
+    if pmi_cur is not None:
+        vol_votes.append("expanding" if pmi_cur >= 52 else ("contracting" if pmi_cur < 49 else "neutral"))
+    if tsi_yoy is not None:
+        vol_votes.append("expanding" if tsi_yoy >= 2 else ("contracting" if tsi_yoy < -1 else "flat"))
+    if vol_votes:
+        exp = vol_votes.count("expanding")
+        con = vol_votes.count("contracting")
+        if exp > con:
+            signals["volume"] = {"label": "Expanding", "tone": "good",
+                                 "note": "ATA tonnage / freight index trending up"}
+        elif con > exp:
+            signals["volume"] = {"label": "Contracting", "tone": "bad",
+                                 "note": "ATA tonnage or PMI below neutral"}
+        else:
+            signals["volume"] = {"label": "Flat / mixed", "tone": "neutral",
+                                 "note": "Mixed signals across tonnage + PMI"}
+
+    # --- Rate environment (PPI trucking YoY = proxy for market rates) ---
+    if ppi_yoy is not None:
+        if ppi_yoy >= 5:
+            signals["rates"] = {"label": "Rising", "tone": "good",
+                                "note": f"PPI truck transportation +{ppi_yoy:.1f}% YoY"}
+        elif ppi_yoy <= -2:
+            signals["rates"] = {"label": "Softening", "tone": "bad",
+                                "note": f"PPI truck transportation {ppi_yoy:.1f}% YoY"}
+        else:
+            signals["rates"] = {"label": "Stable", "tone": "neutral",
+                                "note": f"PPI truck transportation {ppi_yoy:+.1f}% YoY"}
+
+    # --- Fuel / cost pressure (diesel near-term + YoY) ---
+    if diesel_yoy is not None or diesel_4w is not None:
+        if (diesel_yoy or 0) >= 10:
+            if (diesel_4w or 0) <= -5:
+                signals["fuel"] = {"label": "Elevated but easing", "tone": "neutral",
+                                   "note": "Up YoY but falling near-term"}
+            else:
+                signals["fuel"] = {"label": "Elevated (cost ↑)", "tone": "bad",
+                                   "note": f"Diesel +{diesel_yoy:.1f}% YoY"}
+        elif (diesel_yoy or 0) <= -5 or (diesel_4w or 0) <= -5:
+            signals["fuel"] = {"label": "Easing (cost ↓)", "tone": "good",
+                               "note": "Diesel falling — near-term cost relief"}
+        else:
+            signals["fuel"] = {"label": "Stable", "tone": "neutral",
+                               "note": "Diesel price relatively steady"}
+
+    # --- ISM PMI near-term demand signal (separate for color callout) ---
+    if pmi_cur is not None:
+        if pmi_cur >= 52:
+            signals["pmi_signal"] = "Manufacturing expanding — freight demand likely to rise 30–60d"
+        elif pmi_cur >= 49:
+            signals["pmi_signal"] = f"PMI near neutral ({pmi_cur:.1f}) — freight demand flat near-term"
+        else:
+            signals["pmi_signal"] = f"PMI below 50 ({pmi_cur:.1f}) — manufacturing contracting, watch for softer volumes"
+
+    # --- One-line summary ---
+    parts: list[str] = []
+    vol_lbl  = (signals.get("volume") or {}).get("label")
+    rate_lbl = (signals.get("rates")  or {}).get("label")
+    fuel_lbl = (signals.get("fuel")   or {}).get("label")
+    if vol_lbl:
+        parts.append(f"volumes {vol_lbl.lower()}")
+    if rate_lbl:
+        parts.append(f"rates {rate_lbl.lower()}")
+    if fuel_lbl:
+        parts.append(f"fuel {fuel_lbl.lower()}")
+    signals["summary"] = " · ".join(parts)
+    return signals
+
+
 def render_chip_html(ctx: dict | None = None,
                       *,
                       ink: str = "#1a1a1a",
@@ -287,10 +385,10 @@ def render_chip_html(ctx: dict | None = None,
                       xfreight_rpm: dict | None = None) -> str:
     """Multi-metric OTR market context panel for page 1 of the executive brief.
 
-    Shows 4 live FRED series (diesel, WTI crude, ATA tonnage, PPI trucking)
-    plus a static ATRI industry benchmark bar and an optional XFreight
-    performance row comparing actual RPM to the ATRI total-cost benchmark and
-    the internal cost-out goal.  Hidden entirely when no cached data exists.
+    Shows 6 live FRED series (diesel, WTI crude, ATA tonnage, PPI trucking,
+    BTS Freight TSI, ISM Mfg PMI) plus a static ATRI industry benchmark bar,
+    an optional XFreight performance row, and a rule-based near-term outlook
+    section.  Hidden entirely when no cached data exists.
 
     Args:
         xfreight_rpm: dict from ``compute_rpm_goal`` — keys ``actual_rpm``,
@@ -448,6 +546,45 @@ def render_chip_html(ctx: dict | None = None,
                 f"</td></tr>"
             )
 
+    # Market outlook row — rule-based near-term forecast
+    outlook = _compute_outlook(sources)
+    outlook_html = ""
+    if outlook.get("summary"):
+        _tone_color = {"good": green, "bad": red, "neutral": mute}
+
+        def _sig_chip(sig_key: str, label: str) -> str:
+            sig  = outlook.get(sig_key) or {}
+            lbl  = sig.get("label")
+            tone = sig.get("tone", "neutral")
+            note = sig.get("note", "")
+            if not lbl:
+                return ""
+            color = _tone_color.get(tone, mute)
+            note_span = (f"&nbsp;<span style='color:{mute};font-weight:400;'>"
+                         f"({note})</span>") if note else ""
+            return (f"<b style='color:{mute};'>{label}</b>&nbsp;"
+                    f"<span style='color:{color};font-weight:700;'>{lbl}</span>"
+                    f"{note_span}")
+
+        chips = [p for p in [
+            _sig_chip("volume", "Volumes:"),
+            _sig_chip("rates",  "Rates:"),
+            _sig_chip("fuel",   "Fuel:"),
+        ] if p]
+        pmi_note = outlook.get("pmi_signal", "")
+        pmi_html = (f"<br><span style='font-size:9px;color:{mute};'>"
+                    f"&#8594;&nbsp;{pmi_note}</span>") if pmi_note else ""
+        outlook_html = (
+            f"<tr><td colspan='6' style='padding:6px 10px 4px;"
+            f"border-top:1px solid {line};'>"
+            f"<span style='font-size:9px;font-weight:700;color:{mute};"
+            f"text-transform:uppercase;letter-spacing:1px;'>Near-Term Outlook</span>"
+            f"<br><span style='font-size:10px;color:{ink};'>"
+            f"{'&nbsp;&nbsp;&middot;&nbsp;&nbsp;'.join(chips)}"
+            f"</span>{pmi_html}"
+            f"</td></tr>"
+        )
+
     generated = ctx.get("generated_at", "")
     footer_html = (
         f"<tr><td colspan='6' style='padding:4px 10px 0;'>"
@@ -468,6 +605,7 @@ def render_chip_html(ctx: dict | None = None,
         f"<tr>{metrics_row}</tr>"
         f"{benchmarks_html}"
         f"{xf_html}"
+        f"{outlook_html}"
         f"{footer_html}"
         f"</table>"
         f"</div>"
