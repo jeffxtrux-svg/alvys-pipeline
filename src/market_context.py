@@ -8,6 +8,8 @@ Live series (FRED — no API key, public CSV):
   • DCOILWTICO WTI crude oil spot ($/bbl, daily) — leads diesel ~1-2wk
   • TRUCKD11   ATA Truck Tonnage Index (monthly, SA) — freight demand signal
   • WPU3012    PPI: Truck Transportation of Freight (monthly) — cost inflation
+  • TSIFRGHT   BTS Freight Transportation Services Index (monthly) — direct freight volume measure
+  • NAPM       ISM Manufacturing PMI (monthly) — leading demand indicator; >50 = expansion
 
 Static industry benchmarks (ATRI 2024 report, 2023 operating data):
   • Driver wages + benefits: $0.580/mi
@@ -43,6 +45,8 @@ _FRED_DIESEL_URL  = _FRED_BASE + "GASDESW"     # weekly, $/gal
 _FRED_WTI_URL     = _FRED_BASE + "DCOILWTICO"  # daily,  $/bbl
 _FRED_ATA_URL     = _FRED_BASE + "TRUCKD11"    # monthly, SA index (2015=100)
 _FRED_PPI_URL     = _FRED_BASE + "WPU3012"     # monthly, index (2012=100)
+_FRED_TSI_URL     = _FRED_BASE + "TSIFRGHT"    # monthly, BTS Freight TSI (2000=100)
+_FRED_PMI_URL     = _FRED_BASE + "NAPM"        # monthly, ISM Mfg PMI (>50=expansion)
 
 # Static industry benchmarks — ATRI 2024 Annual Operational Costs of Trucking
 # (covers 2023 operating data; for-hire truckload carriers, all sizes)
@@ -214,6 +218,40 @@ def fetch_and_write(out_path: Path | None = None) -> bool:
     except Exception as exc:
         log.warning("FRED WPU3012 fetch failed: %s — skipping", exc)
 
+    # --- BTS Freight Transportation Services Index (monthly, secondary) ---
+    try:
+        tsi_series = _fetch_fred_csv(_FRED_TSI_URL)
+        if tsi_series:
+            sources["bts_freight_tsi"] = {
+                "label": "BTS Freight Transportation Services Index (monthly, 2000=100)",
+                "fred_series": "TSIFRGHT",
+                "unit": "index",
+                **_summarize(tsi_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED TSIFRGHT returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED TSIFRGHT fetch failed: %s — skipping", exc)
+
+    # --- ISM Manufacturing PMI (monthly, secondary) ---
+    try:
+        pmi_series = _fetch_fred_csv(_FRED_PMI_URL)
+        if pmi_series:
+            sources["ism_pmi"] = {
+                "label": "ISM Manufacturing PMI (monthly, >50=expansion)",
+                "fred_series": "NAPM",
+                "unit": "index",
+                **_summarize(pmi_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED NAPM returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED NAPM fetch failed: %s — skipping", exc)
+
     payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "sources": sources,
@@ -325,10 +363,12 @@ def render_chip_html(ctx: dict | None = None,
     )
 
     metrics_row = (
-        _metric_cell("diesel_us",    "US Diesel",        fmt="${:.3f}", invert=True,  border_right=True)
-        + _metric_cell("wti_crude",  "WTI Crude Oil",    fmt="${:.2f}", invert=True,  border_right=True)
-        + _metric_cell("ata_tonnage","ATA Truck Tonnage",fmt="{:.1f}",  invert=False, border_right=True)
-        + _metric_cell("ppi_trucking","PPI Trucking",    fmt="{:.1f}",  invert=True,  border_right=False)
+        _metric_cell("diesel_us",       "US Diesel",         fmt="${:.3f}", invert=True,  border_right=True)
+        + _metric_cell("wti_crude",     "WTI Crude Oil",     fmt="${:.2f}", invert=True,  border_right=True)
+        + _metric_cell("ata_tonnage",   "ATA Truck Tonnage", fmt="{:.1f}",  invert=False, border_right=True)
+        + _metric_cell("ppi_trucking",  "PPI Trucking",      fmt="{:.1f}",  invert=True,  border_right=True)
+        + _metric_cell("bts_freight_tsi","BTS Freight TSI",  fmt="{:.1f}",  invert=False, border_right=True)
+        + _metric_cell("ism_pmi",       "ISM Mfg PMI",       fmt="{:.1f}",  invert=False, border_right=False)
     )
 
     # Industry benchmarks bar
@@ -357,7 +397,7 @@ def render_chip_html(ctx: dict | None = None,
     if bm_parts:
         bm_joined = "&nbsp;&nbsp;·&nbsp;&nbsp;".join(bm_parts)
         benchmarks_html = (
-            f"<tr><td colspan='4' style='padding:7px 10px 2px;"
+            f"<tr><td colspan='6' style='padding:7px 10px 2px;"
             f"border-top:1px solid {line};'>"
             f"<span style='font-size:9px;font-weight:700;color:{mute};"
             f"text-transform:uppercase;letter-spacing:1px;'>Industry Benchmarks</span>"
@@ -400,7 +440,7 @@ def render_chip_html(ctx: dict | None = None,
                 )
             xf_joined = "&nbsp;&nbsp;·&nbsp;&nbsp;".join(parts_xf)
             xf_html = (
-                f"<tr><td colspan='4' style='padding:6px 10px 2px;"
+                f"<tr><td colspan='6' style='padding:6px 10px 2px;"
                 f"border-top:1px solid {line};'>"
                 f"<span style='font-size:9px;font-weight:700;color:{mute};"
                 f"text-transform:uppercase;letter-spacing:1px;'>XFreight Performance (MTD)</span>"
@@ -410,9 +450,9 @@ def render_chip_html(ctx: dict | None = None,
 
     generated = ctx.get("generated_at", "")
     footer_html = (
-        f"<tr><td colspan='4' style='padding:4px 10px 0;'>"
+        f"<tr><td colspan='6' style='padding:4px 10px 0;'>"
         f"<span style='font-size:9px;color:{mute};'>"
-        f"Source: FRED GASDESW · DCOILWTICO · TRUCKD11 · WPU3012"
+        f"Source: FRED GASDESW · DCOILWTICO · TRUCKD11 · WPU3012 · TSIFRGHT · NAPM"
         f"{(' · refreshed ' + generated[:10]) if generated else ''}"
         f"</span></td></tr>"
     )
