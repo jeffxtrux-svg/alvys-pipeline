@@ -2,7 +2,7 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-07"
+last_compiled: "2026-06-28"
 ---
 
 # Wiki Index
@@ -47,7 +47,11 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 ## Customers
 
 - [[Customer Portfolio]] — all active, historical, and prospective customers with status notes.
-- [[Billion Auto]] — dedicated 2-lane customer; rate agreement expired June 1, 2026 — renewal status unknown.
+- [[Billion Auto]] — dedicated 2-lane customer; rate agreement **renewed June 2026** with fuel surcharge added.
+- [[Berry Global]] — Fortune-500 packaging customer (active 2026); Dan Heeren managing; accessorial schedule on file.
+- [[Lanter Distributing]] — CNH Industrial (Case New Holland) linehaul rates; ag-equipment supply-chain foothold.
+- [[Dakotaland Autoglass]] — regional SD auto glass chain; rate sheet May 2025.
+- [[Lewis Drug]] — regional SD pharmacy chain; folder + workbook on file.
 - [[AGCO RFP]] — 2026 truckload RFP (NOT AWARDED Jan 2026); bid structure and next-cycle lessons.
 - [[JW Logistics]] — carrier relationship (X-Linx) with disputed history; hard-coded exclusion from all reports.
 

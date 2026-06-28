@@ -3,7 +3,7 @@ title: Customer Portfolio
 type: concept
 tags: [customers, sales, revenue]
 sources: ["raw/xfreight-customer-portfolio.md", "raw/xfreight-customers-additional.md"]
-related: ["[[Billion Auto]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
+related: ["[[Billion Auto]]", "[[Berry Global]]", "[[Lanter Distributing]]", "[[Dakotaland Autoglass]]", "[[Lewis Drug]]", "[[AGCO RFP]]", "[[JW Logistics]]", "[[Financial Performance]]", "[[Brokerage X-Linx]]"]
 ---
 
 # Customer Portfolio
@@ -25,12 +25,12 @@ XFreight serves a mix of dedicated daily-rate customers, regional South Dakota a
 
 | Customer | Status | Notes |
 |---|---|---|
-| **Billion Auto Parts** | Rate agreement **expired 06/01/2026** — renewal status unknown | 2-lane SF↔RC + SF→Worthington→Mason City. ~$2,150/day total. See [[Billion Auto]]. |
-| **Berry Global** | Active 2026 | Fortune-500 packaging. Dan Heeren handling. Detailed accessorial charge schedule. |
-| **Lanter Distributing (CNH)** | Active/recent | Logistics provider for CNH Industrial (Case New Holland ag equipment). Linehaul rates on file. |
-| **Dakotaland Autoglass** | Active/recent | Rate sheet dated May 2025. Regional SD chain. |
+| **Billion Auto Parts** | **Renewed June 2026** — both lanes maintained, fuel surcharge added | 2-lane SF↔RC + SF→Worthington→Mason City. ~$2,150/day total. See [[Billion Auto]]. |
+| **Berry Global** | Active 2026 | Fortune-500 packaging. Dan Heeren handling. Accessorial charge schedule on file. See [[Berry Global]]. |
+| **Lanter Distributing (CNH)** | Active/recent | Logistics provider for CNH Industrial (Case New Holland ag equipment). Linehaul rates on file. See [[Lanter Distributing]]. |
+| **Dakotaland Autoglass** | Active/recent | Rate sheet dated May 2025. Regional SD chain. See [[Dakotaland Autoglass]]. |
 | **DAG** | Recent | BOL in folder dated June 2025. Possibly Dakota AG (agricultural). |
-| **Lewis Drug** | Active (confidence: medium) | Regional SD pharmacy chain. Folder + workbook. |
+| **Lewis Drug** | Active (confidence: medium) | Regional SD pharmacy chain. Folder + workbook. See [[Lewis Drug]]. |
 | **Amcor** | Active (confidence: low) | Global packaging. Folder exists, content not reviewed. |
 | **Twin City Fan** | Active (confidence: low) | Industrial fan/blower mfr. Folder exists. |
 | **Viaflex** | Active (confidence: low) | Plastic film products. Folder exists. |
@@ -82,7 +82,7 @@ XFreight serves a mix of dedicated daily-rate customers, regional South Dakota a
 
 ## Strategic Observations
 
-- **Billion Auto** contract expired June 1, 2026. As of June 5, 2026, renewal status is unknown. This is the most time-sensitive action item in the customer portfolio.
+- **Billion Auto** contract **renewed June 2026** — both dedicated lanes maintained, fuel surcharge added. Revenue risk resolved.
 - **AGCO** won't be in the revenue picture until the next bid cycle (likely late 2026/early 2027).
 - **JW Logistics de-emphasis** likely contributed to the X-Linx revenue collapse from ~$185K/mo (2024) to ~$60K/mo (2026).
 

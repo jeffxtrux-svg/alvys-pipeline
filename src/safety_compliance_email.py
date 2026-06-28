@@ -47,6 +47,7 @@ from src.onedrive_upload import (
     get_token,
     upload_file,
 )
+from src import coaching_outcomes as _coutcomes
 from src.scorecard_email import (
     BAD,
     BADBG,
@@ -1512,7 +1513,8 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
                           action_items: list[dict] | None = None,
                           risk_signals: list[dict] | None = None,
                           samsara_sheets: dict | None = None,
-                          equipment: dict | None = None) -> str:
+                          equipment: dict | None = None,
+                          persistent_coaching_html: str = "") -> str:
     """Executive summary — bottom line + URGENT banner + Risk Watch strip
     + Action items. The dense metrics view (24h/7d/MTD tiles, 6-month
     trend bars, detail tables) moved to its own logical page 2 so page 1
@@ -1534,8 +1536,17 @@ def build_page1_overview(samsara: dict | None, metrics: dict,
         f"</td></tr>"
     )
 
+    persistent_block = ""
+    if persistent_coaching_html:
+        persistent_block = (
+            f"<tr><td style='padding:8px 24px 0;'>"
+            f"{persistent_coaching_html}"
+            f"</td></tr>"
+        )
+
     body = (
         bottom_line_block
+        + persistent_block
         + _urgent_banner(urgent_items)
         + _risk_watch_block(risk_signals, equipment=equipment)
         + _action_items_block(action_items)
@@ -2645,7 +2656,8 @@ def _build_html_report(*,
                         alvys_sheets: dict | None,
                         equipment: dict | None,
                         risk_signals: list[dict] | None,
-                        action_items: list[dict] | None) -> str:
+                        action_items: list[dict] | None,
+                        persistent_coaching_html: str = "") -> str:
     metrics = compute_metrics(samsara)
     urgent_items = [i for i in (action_items or []) if i.get("priority") == 1]
 
@@ -2674,7 +2686,8 @@ def _build_html_report(*,
                               action_items=(action_items or []),
                               risk_signals=(risk_signals or []),
                               samsara_sheets=samsara_sheets,
-                              equipment=equipment),
+                              equipment=equipment,
+                              persistent_coaching_html=persistent_coaching_html),
         build_page2_metrics(samsara, samsara_sheets, 2, total),
         build_page_safety_events_hos(samsara, samsara_sheets, 3, total),
         build_page_dvir_coaching(samsara, 4, total),
@@ -2822,11 +2835,28 @@ def main() -> int:
         carrier_backlog=None, csa=csa,
     )
 
+    # Coaching outcome tracker — flags drivers who've been on the coaching
+    # list for 30+ days (coaching happened but behavior hasn't changed).
+    persistent_coaching_html = ""
+    try:
+        coaching_list = (samsara or {}).get("coaching_list") or []
+        current_coaching_drivers = [
+            c["driver"] for c in coaching_list if not c.get("acked")
+        ]
+        co_tracker = _coutcomes.load_tracker(tok, upn)
+        _coutcomes.update_tracker(co_tracker, current_coaching_drivers, today)
+        persistent = _coutcomes.get_persistent_drivers(co_tracker, today)
+        _coutcomes.save_tracker(tok, upn, co_tracker)
+        persistent_coaching_html = _coutcomes.render_persistent_html(persistent)
+    except Exception as exc:
+        log.warning("coaching_outcomes tracker failed (non-fatal): %s", exc)
+
     html = _build_html_report(
         samsara=samsara, samsara_sheets=samsara_sheets,
         samba=samba, csa=csa, alvys_drivers=alvys_drivers,
         alvys_sheets=alvys_sheets, equipment=equipment,
         risk_signals=risk_signals, action_items=action_items,
+        persistent_coaching_html=persistent_coaching_html,
     )
     pdf = _render_pdf(html)
 
