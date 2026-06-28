@@ -22,6 +22,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.scorecard_email import (compute_alvys_entities, _alvys_health,  # noqa: E402
                                  compute_alvys_drivers, _own_fleet_mask)
 
+# Pin the X-Trux hold-out margin to its documented default. Operations sets
+# ALVYS_XTRUX_HOLDOUT_MARGIN as a live env override (it is present in CI), which
+# would shift the 74% threshold the assertions below lock in and make the
+# holdout tests fail for reasons unrelated to the code. Neutralize it so the
+# tests exercise what they document, regardless of the ambient environment
+# (mirrors the RPM_GOAL_OVERHEAD_PIN=0 pin in test_rpm_goal.py).
+os.environ["ALVYS_XTRUX_HOLDOUT_MARGIN"] = "0.74"
+
 APR_START = pd.Timestamp(2026, 4, 1)
 APR_END = pd.Timestamp(2026, 5, 1)
 
