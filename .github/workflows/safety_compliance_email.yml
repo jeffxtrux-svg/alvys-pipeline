@@ -125,9 +125,23 @@ jobs:
         # Silent no-op if TEAMS_SAFETY_WEBHOOK is not set.
         if: steps.ct_gate.outputs.skip != '1'
         env:
-          TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
-          TEAMS_FORM_URL:       ${{ secrets.TEAMS_FORM_URL }}
+          TEAMS_SAFETY_WEBHOOK:    ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_FORM_URL:          ${{ secrets.TEAMS_FORM_URL }}
+          TEAMS_DISMISS_FORM_URL:  ${{ secrets.TEAMS_DISMISS_FORM_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Power Automate — OneDrive file trigger (free standard connectors).
+          # Set TEAMS_PA_ONEDRIVE=1 once the PA flows are configured to activate.
+          TEAMS_PA_ONEDRIVE:       ${{ secrets.TEAMS_PA_ONEDRIVE }}
+          # Power Automate HTTP trigger (premium license fallback).
+          TEAMS_PA_URL_AUDRA:      ${{ secrets.TEAMS_PA_URL_AUDRA }}
+          TEAMS_PA_URL_OPS:        ${{ secrets.TEAMS_PA_URL_OPS }}
+          # Graph API cleanup (fallback if no PA method configured).
+          AZURE_TENANT_ID:          ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:          ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET:      ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN:        ${{ secrets.ONEDRIVE_USER_UPN }}
+          TEAMS_SAFETY_TEAM_ID:     ${{ secrets.TEAMS_SAFETY_TEAM_ID }}
+          TEAMS_SAFETY_CHANNEL_ID:  ${{ secrets.TEAMS_SAFETY_CHANNEL_ID }}
         run: python -m src.teams_adaptive_cards
 
       - name: Notify on failure

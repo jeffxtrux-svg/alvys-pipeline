@@ -33,6 +33,14 @@ from src.samsara_main import build_dvir_defects  # noqa: E402
 from src import lookups  # noqa: E402
 from src.column_mappings import _customer_name  # noqa: E402
 
+# Pin the X-Trux hold-out margin to its documented default. compute_rpm_trend
+# applies _own_fleet_mask, which reads ALVYS_XTRUX_HOLDOUT_MARGIN — a live env
+# override that is present in CI. The rpm-trend fixture loads sit below the
+# default holdout (kept as own fleet); a non-default ambient value would shift
+# that boundary and drop them. Neutralize it so the test is hermetic (mirrors
+# the same pin in test_scorecard_alvys.py).
+os.environ["ALVYS_XTRUX_HOLDOUT_MARGIN"] = "0.81"
+
 
 def _today():
     return pd.Timestamp.now().normalize()
@@ -337,27 +345,33 @@ def test_compute_rpm_trend_splits_and_scopes_to_xtrux():
     # Per 629127a — compute_rpm_trend uses billed Loaded + Empty Miles
     # (not Total Dispatch Mileage) so the trend chart matches the page-1
     # Revenue/Mile tile. Supplying both columns in the fixture.
+    # Driver Rate is required: compute_rpm_trend now applies _own_fleet_mask,
+    # which drops X-Trux loads brokered to outside carriers (Corrected Margin %
+    # (Rev - Driver Rate)/Rev >= the holdout). These are real own-fleet loads, so
+    # each carries a normal driver rate (~67% margin, below the holdout) and is
+    # kept. Without a Driver Rate column every load reads as 100% margin and the
+    # mask would drop them all.
     loads = pd.DataFrame([
         # Direct shipper, X-Trux office.
         {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS",
-         "Customer Revenue": 2400, "Loaded Miles": 950, "Empty Miles": 50,
+         "Customer Revenue": 2400, "Driver Rate": 800, "Loaded Miles": 950, "Empty Miles": 50,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Brokered (slash) under X-Trux — still direct because the shipper segment
         # ("BERRY PLASTICS") is in the allow-list.
         {"Office": "X-Trux, Inc", "Customer": "BERRY PLASTICS / CH ROBINSON",
-         "Customer Revenue": 1800, "Loaded Miles": 950, "Empty Miles": 50,
+         "Customer Revenue": 1800, "Driver Rate": 600, "Loaded Miles": 950, "Empty Miles": 50,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Broker-only (no direct shipper anywhere in the name).
         {"Office": "X-Trux, Inc", "Customer": "CH ROBINSON",
-         "Customer Revenue": 1500, "Loaded Miles": 950, "Empty Miles": 50,
+         "Customer Revenue": 1500, "Driver Rate": 500, "Loaded Miles": 950, "Empty Miles": 50,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
         # Cancelled — excluded.
         {"Office": "X-Trux, Inc", "Customer": "AMCOR PACKAGING",
-         "Customer Revenue": 9999, "Loaded Miles": 100, "Empty Miles": 0,
+         "Customer Revenue": 9999, "Driver Rate": 3000, "Loaded Miles": 100, "Empty Miles": 0,
          "Scheduled Pickup": today, "Load Status": "Cancelled"},
         # X-Linx brokerage — must be excluded by the office filter.
         {"Office": "X-Linx, Inc.", "Customer": "ECHO GLOBAL LOGISTICS",
-         "Customer Revenue": 5000, "Loaded Miles": 100, "Empty Miles": 0,
+         "Customer Revenue": 5000, "Driver Rate": 1500, "Loaded Miles": 100, "Empty Miles": 0,
          "Scheduled Pickup": today, "Load Status": "Delivered"},
     ])
     out = compute_rpm_trend({"Loads": loads})

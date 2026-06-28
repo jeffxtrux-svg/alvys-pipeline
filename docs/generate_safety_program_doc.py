@@ -7,7 +7,7 @@ HTML = """<!DOCTYPE html>
 <style>
   @page {
     size: letter;
-    margin: 0.85in 0.8in 0.85in 0.8in;
+    margin: 0.6in 0.7in 0.6in 0.7in;
     @bottom-center {
       content: "XFreight Safety & Compliance Program — Confidential";
       font-family: Arial, sans-serif;
@@ -31,10 +31,6 @@ HTML = """<!DOCTYPE html>
 
   /* ── COVER ── */
   .cover {
-    height: 9.3in;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
     page-break-after: always;
   }
   .cover-stripe {
@@ -128,10 +124,12 @@ HTML = """<!DOCTYPE html>
 
   /* ── SECTIONS ── */
   .section {
-    margin-bottom: 28px;
-    page-break-inside: avoid;
+    margin-bottom: 16px;
   }
-  .page-break { page-break-before: always; }
+  /* Keep section headings with the content that follows */
+  .section h2, .section h3, .section h4 { page-break-after: avoid; }
+  /* Tables stay intact (header + body together when possible) */
+  table { page-break-inside: avoid; }
 
   p { margin-bottom: 9px; }
   ul, ol { margin: 8px 0 10px 22px; }
@@ -324,8 +322,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 2 — TABLE OF CONTENTS + EXECUTIVE SUMMARY
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Executive Summary</h1>
   <p>
@@ -398,8 +394,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 3 — DATA SOURCES
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Data Sources &amp; Integration</h1>
   <p>The program pulls live data from three separate SaaS platforms that do not natively communicate with each other. A custom Python pipeline running on GitHub Actions normalizes and joins the data each morning before the brief is generated.</p>
@@ -461,8 +455,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 4 — DAILY BRIEF
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Daily Safety Brief</h1>
 
@@ -514,8 +506,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 5 — TEAMS ACCOUNTABILITY
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Microsoft Teams Accountability Cards</h1>
 
@@ -565,8 +555,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 6 — SUPPRESSION & ESCALATION
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Accountability Tracking — Suppression &amp; Escalation</h1>
 
@@ -667,8 +655,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 7 — RESPONSIBILITIES & WORKFLOW
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Roles &amp; Responsibilities</h1>
 
@@ -722,8 +708,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 8 — CSA & FMCSA
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>FMCSA CSA Scorecard Integration</h1>
 
@@ -763,8 +747,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 9 — TECHNOLOGY ARCHITECTURE
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Technology Architecture</h1>
 
@@ -832,8 +814,6 @@ HTML = """<!DOCTYPE html>
 <!-- ═══════════════════════════════════════════════════
      PAGE 10 — OUTCOMES & NEXT STEPS
 ═══════════════════════════════════════════════════ -->
-<div class="page-break"></div>
-
 <div class="section">
   <h1>Program Outcomes &amp; Goals</h1>
 

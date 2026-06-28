@@ -2,12 +2,12 @@
 title: Index
 type: moc
 tags: [index, map-of-content]
-last_compiled: "2026-06-17"
+last_compiled: "2026-06-19"
 ---
 
 # Wiki Index
 
-The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-17.
+The map of this knowledge base. Every compiled page is listed here, grouped by topic, with a one-line description. **Kept up to date automatically by the daily librarian pass** (see `/CLAUDE.md` rules). Last compiled: 2026-06-19.
 
 ## Meta
 
@@ -17,8 +17,12 @@ The map of this knowledge base. Every compiled page is listed here, grouped by t
 
 ## Decision Support
 
-- [[Risk Register]] — living list of open business risks, ranked by severity, each with its exposure, mitigation, and the watch signal that means it's getting worse.
-- [[Decision Journal]] — consequential decisions logged with rationale, assumptions, and predicted outcome, then graded later — so you can tell judgment from luck.
+- [[Risk Register]] — living list of open business risks, ranked by severity, each with its exposure, mitigation, and the watch signal that means it's getting worse. Machine-readable companion: `wiki/risk-signals.yml` (read by the brief's Risk Watch strip).
+- [[Decision Journal]] — consequential decisions logged with rationale, assumptions, and predicted outcome, then graded later — so you can tell judgment from luck. Companions: `wiki/decision-outcomes.yml` (predictions) + `wiki/decision-grades.json` (live grading state, written by the brief each run).
+- **Predictions & Lessons (Phase 2D)** — Group A of the KB roadmap, shipped 2026-06-19:
+  - `wiki/jb-mtd-forecasts.yml` — JB's monthly MTD-landing forecasts, auto-graded against actuals by `src/forecast_grader.py`. Brief surfaces a "Forecast Accuracy" chip on page 1 (silent until first forecast is graded).
+  - `wiki/weekly-retros.yml` — Friday qualitative log: surprised-by / worked / didn't-work / lessons. Brief surfaces the most recent retro on page 1 as "This Week's Lessons." `.github/workflows/weekly_retro_draft.yml` auto-opens a PR every Friday 4pm CT with a pre-populated draft.
+  - `src/retro_pattern_detector.py` — scans the retros file for lessons recurring across 2+ weeks within 90 days; renders a "Recurring Patterns" panel on the brief (silent until enough retros exist).
 - [[Recent Decisions 2026-06-05]] — changelog of pipeline/code changes and the rationale behind each (distinct from the business Decision Journal).
 
 ---
@@ -67,6 +71,17 @@ Per-category response guides for the 9 accountability items surfaced in the Team
 - [[Billion Auto]] — dedicated 2-lane customer; rate agreement renewed June 2026 (both lanes + FSC added).
 - [[AGCO RFP]] — 2026 truckload RFP (NOT AWARDED Jan 2026); bid structure and next-cycle lessons.
 - [[JW Logistics]] — carrier relationship (X-Linx) with disputed history; hard-coded exclusion from all reports.
+- `wiki/customers/_README.md` — per-customer pattern-page directory (new 2026-06-19). Documents the schema for living entity pages that accumulate history / patterns / what's-worked over time. Existing customer pages at the flat wiki root keep their location; the brief's entity-context lookup matches both.
+
+---
+
+## Per-Driver Pattern Pages
+
+New 2026-06-19 (Phase 2E / Group B). Living one-page-per-driver files capturing what we know about each — coaching history, recurring issues, what's worked / hasn't. Append-only history sections accumulate into pattern material the AI can reference when the driver surfaces in today's data.
+
+- `wiki/drivers/_README.md` — directory README + page template + creation criteria.
+- [[Michael Hall]] — X-Trux owner-operator with chronic ~2.5% speed-over-limit pattern; "Need to sit down with this driver" brief comment tier (seed).
+- [[Lacey Campbell]] — X-Trux driver with multi-category breadth (3.6% speed + CDL + license + MVR + risk flag); unusual cross-category pattern (seed).
 
 ---
 
@@ -80,6 +95,7 @@ Per-category response guides for the 9 accountability items surfaced in the Team
 - [[Insurance and Banking]] — insurance program (Acrisure/Great West), historical broker, banking (First Dakota NB), and entity IDs.
 - [[SBA 504 Financing]] — ~$3M real-estate+business purchase under evaluation; shelved as of 2026-06-13.
 - [[Active Disputes and Open Issues]] — consolidated watch list: Acrisure resolved, Billion Auto renewed, JWL, AGCO, X-Linx collapse, fleet shrinkage.
+- **Market Context (Phase 2E)** — `wiki/market-context.json` (managed by `src/market_context.py` + `.github/workflows/market_context_refresh.yml`, weekly Monday 6pm CT). Pulls U.S. retail diesel from FRED (series GASDESW); brief renders a "Market Context · US Diesel" chip on page 1 with current price + WoW + YoY change. Silent until the workflow has fired at least once.
 
 ---
 

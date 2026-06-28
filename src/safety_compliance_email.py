@@ -548,9 +548,9 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
                                                  "with outcome of challenge/factual decision recorded.")))
 
     # Overdue annual inspections — action items trigger at 150 days for tractors
-    # (30d past 120d company policy) and 180 days for trailers (60d past policy).
-    # Units appear on the equipment pages at 120 days; Teams cards don't fire
-    # until the higher threshold to reduce noise on units recently past due.
+    # (30d past 120-day company policy) and 180 days for trailers (60d past policy).
+    # Units appear on equipment pages at 120 days; Teams cards don't fire until
+    # the higher threshold to reduce noise on units recently past due.
     if equipment:
         od_t = [r for r in (equipment.get("tractors") or [])
                 if isinstance(r.get("annual_days"), int) and r["annual_days"] <= -30]
@@ -692,7 +692,7 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         except Exception:
             return None
     on_duty_now = sorted(
-        [r for r in uncert if (_span_end_ai(r) or pd.Timestamp.min.date()) >= _yesterday],
+        [r for r in uncert if r.get("active_today")],
         key=lambda x: -x.get("days_missing", 0))
     for r in on_duty_now:
         drv  = r.get("driver", "Unknown Driver")
@@ -886,7 +886,7 @@ def _occurrence_label(n: int, category: str) -> str:
         return " ⚠️ 2nd occurrence in 30d — verbal warning required"
     if n == 3:
         return " 🔴 3rd occurrence in 30d — written warning required"
-    return f" 🚨 {n}th occurrence in 30d — escalate to JB immediately"
+    return f" 🚨 {n}th occurrence in 30d — management escalation required"
 
 
 def _build_accountability_structured(
@@ -910,19 +910,37 @@ def _build_accountability_structured(
     audra_items: list[dict] = []
     ops_items:   list[dict] = []
 
-    # HOS violations in last 24h
+    # HOS violations in last 24h — one item per driver when detail rows available
     if m.get("hos_24h", 0) > 0:
-        n = m["hos_24h"]
-        item = {
-            "category": "HOS Violation",
-            "severity": "high",
-            "driver":   None,
-            "unit":     None,
-            "detail":   f"{n} violation{'s' if n != 1 else ''} in last 24h",
-            "prompt":   "Has driver been counseled? What corrective action was taken?",
-        }
-        ops_items.append(item)
-        audra_items.append(item)
+        hos_rows = detail.get("hos", []) or []
+        yest_str = (pd.Timestamp.now(tz="America/Chicago") - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        recent = [r for r in hos_rows if (r.get("date") or "") >= yest_str]
+        if recent:
+            for r in recent:
+                drv = r.get("driver name") or None
+                if not drv or drv == "&mdash;":
+                    drv = None
+                vtype = r.get("violation type") or "HOS violation"
+                if vtype == "&mdash;":
+                    vtype = "HOS violation"
+                audra_items.append({
+                    "category": "HOS Violation",
+                    "severity": "high",
+                    "driver":   drv,
+                    "unit":     None,
+                    "detail":   vtype,
+                    "prompt":   "Has driver been counseled? What corrective action was taken?",
+                })
+        else:
+            n = m["hos_24h"]
+            audra_items.append({
+                "category": "HOS Violation",
+                "severity": "high",
+                "driver":   None,
+                "unit":     None,
+                "detail":   f"{n} violation{'s' if n != 1 else ''} in last 24h",
+                "prompt":   "Has driver been counseled? What corrective action was taken?",
+            })
 
     # Open DVIR defects
     unique_dvirs = _dedup_dvirs(detail.get("dvir", []) or [])
@@ -938,9 +956,8 @@ def _build_accountability_structured(
             "prompt":   "Has defect been repaired and cleared in Samsara?",
         }
         audra_items.append(item)
-        ops_items.append(item)
 
-    # Safety events needing coaching (coaching_list, not yet acked) → audra + ops
+    # Safety events needing coaching (coaching_list, not yet acked) → audra only
     coaching_list = (samsara or {}).get("coaching_list") or []
     for c in coaching_list:
         if c.get("acked"):
@@ -957,9 +974,8 @@ def _build_accountability_structured(
             "prompt":   "When will coaching be completed? What corrective action was taken?",
         }
         audra_items.append(item)
-        ops_items.append(item)
 
-    # Safety events needing disposition → audra + ops
+    # Safety events needing disposition → audra only
     _needs_disp_statuses = {
         "needsCoaching", "needs_coaching", "NEEDS_COACHING",
         "needsDisposition", "needs_disposition", "NEEDS_DISPOSITION",
@@ -967,8 +983,10 @@ def _build_accountability_structured(
     for ev in (detail.get("events") or []):
         if ev.get("status") not in _needs_disp_statuses:
             continue
-        drv   = ev.get("driver") or "Unknown"
-        etype = ev.get("type") or ev.get("event_type") or "safety event"
+        drv   = ev.get("driver name") or ev.get("driver") or None
+        if not drv or drv == "&mdash;":
+            drv = None
+        etype = ev.get("event type") or ev.get("type") or ev.get("event_type") or "safety event"
         edate = ""
         raw_ts = ev.get("time") or ev.get("event_time") or ev.get("date") or ""
         if raw_ts:
@@ -985,7 +1003,6 @@ def _build_accountability_structured(
             "prompt":   "Has this event been dispositioned in Samsara? What coaching action was taken?",
         }
         audra_items.append(item)
-        ops_items.append(item)
 
     # CDL disqualified → audra (critical)
     if samba and samba.get("invalid_licenses"):
@@ -1106,32 +1123,28 @@ def _build_accountability_structured(
                 "prompt":   "Challenge the violation OR acknowledge as factual. Document decision and action taken.",
             })
 
-    # DOT inspection — Tractors: Teams cards fire at 150d since last inspection
-    # (30d past the 120d company policy). Both audra + ops owners.
+    # DOT inspection — Tractors (annual_days < 0 → overdue); both audra + ops
     if equipment:
         for r in (equipment.get("tractors") or []):
             annual_days = r.get("annual_days")
-            if not isinstance(annual_days, int) or annual_days > -30:
-                continue   # not yet at 150-day tractor threshold
+            if not isinstance(annual_days, int) or annual_days >= 0:
+                continue
             unit = r.get("unit", "?")
-            over = abs(annual_days)   # days past 120d policy
-            if over >= 245:
+            over = abs(annual_days)
+            if over >= 120:
                 sev        = "critical"
-                prompt     = "UNIT IS FEDERALLY OUT OF SERVICE. Do not move until inspected."
-                detail_str = f"{over}d past 120d policy ({120 + over}d since inspection) — FEDERAL OOS"
-            elif over >= 120:
-                sev        = "critical"
-                prompt     = "UNIT IS PAST COMPANY DEADLINE. Inspection required before dispatch."
+                prompt     = "UNIT IS OUT OF SERVICE. Must be inspected before moving."
                 detail_str = f"{over}d past 120d policy — DEADLINED"
-            elif over >= 60:
+            elif over > 60:
                 sev        = "critical"
-                prompt     = "Inspection must be scheduled immediately. When is the appointment?"
-                detail_str = f"{over}d past 120d policy — schedule now"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
             else:
                 sev        = "high"
-                prompt     = "Inspection must be scheduled. When is the appointment?"
-                detail_str = f"{over}d past 120d policy — schedule inspection"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
             # Federal OOS: 245+ days past 120d policy = 365+ days since last inspection.
+            # These units cannot be suppressed — they stay on the card until inspected.
             federal_oos = over >= 245
             item = {
                 "category":     "DOT Inspection — Tractor",
@@ -1145,26 +1158,25 @@ def _build_accountability_structured(
             audra_items.append(item)
             ops_items.append(item)
 
-        # DOT inspection — Trailers: Teams cards fire at 180d since last inspection
-        # (60d past the 120d company policy). Ops owners only.
+        # DOT inspection — Trailers (ops only)
         for r in (equipment.get("trailers") or []):
             annual_days = r.get("annual_days")
-            if not isinstance(annual_days, int) or annual_days > -60:
-                continue   # not yet at 180-day trailer threshold
+            if not isinstance(annual_days, int) or annual_days >= 0:
+                continue
             unit = r.get("unit", "?")
             over = abs(annual_days)
-            if over >= 245:
+            if over >= 120:
                 sev        = "critical"
-                prompt     = "UNIT IS FEDERALLY OUT OF SERVICE. Do not move until inspected."
-                detail_str = f"{over}d past 120d policy ({120 + over}d since inspection) — FEDERAL OOS"
-            elif over >= 120:
-                sev        = "critical"
-                prompt     = "UNIT IS PAST COMPANY DEADLINE. Inspection required before dispatch."
+                prompt     = "UNIT IS OUT OF SERVICE. Must be inspected before moving."
                 detail_str = f"{over}d past 120d policy — DEADLINED"
+            elif over > 60:
+                sev        = "critical"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
             else:
                 sev        = "high"
-                prompt     = "Inspection must be scheduled. When is the appointment?"
-                detail_str = f"{over}d past 120d policy — schedule inspection"
+                prompt     = "Inspection must be scheduled immediately. When is appointment?"
+                detail_str = f"{over}d past 120d policy"
             federal_oos = over >= 245
             ops_items.append({
                 "category":     "DOT Inspection — Trailer",
@@ -1222,7 +1234,7 @@ def _build_accountability_structured(
 
     on_duty_now = [
         r for r in uncert
-        if (_span_end_ac(r) or pd.Timestamp.min.date()) >= _yesterday_d
+        if r.get("active_today")
     ]
     for r in on_duty_now:
         drv  = r.get("driver", "Unknown Driver")
@@ -1271,23 +1283,44 @@ def _build_accountability_structured(
     return audra_items, ops_items
 
 
+def _post_admin_alert(webhook: str, title: str, text: str) -> None:
+    """Post a plain Teams MessageCard for infra/config alerts. Fails soft."""
+    if not webhook:
+        return
+    try:
+        import requests as _req
+        _req.post(webhook, json={
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "B01C2E",
+            "summary": title,
+            "sections": [{"activityTitle": title, "text": text}],
+        }, timeout=10)
+    except Exception as exc:
+        log.warning("Could not post admin alert to Teams: %s", exc)
+
+
 def _load_accountability_log(
     tok: str,
     upn: str,
     check_date: datetime.date,
-) -> "tuple[set[str], dict[str, datetime.date]]":
-    """Return tokens and CDL reinstatement dates from the log for check_date.
+    webhook: str = "",
+) -> "tuple[set[str], dict[str, datetime.date], dict[str, datetime.date]]":
+    """Return tokens, CDL reinstatement dates, and DOT scheduled dates for check_date.
 
-    Returns (resolved, cdl_dates) where:
+    Returns (resolved, cdl_dates, dot_dates) where:
       resolved   — flat set of lowercased category names and "driver:<name>"
                    tokens (used for actioned-yesterday matching).
       cdl_dates  — dict mapping drv_norm → reinstatement date parsed from the
                    Action Taken / Notes column for CDL Disqualified rows.
+      dot_dates  — dict mapping unit_norm → scheduled inspection date parsed
+                   from Action Taken / Notes for DOT Inspection rows.
     """
     import io
     from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
     cdl_dates: dict[str, datetime.date] = {}
+    dot_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
@@ -1299,6 +1332,15 @@ def _load_accountability_log(
         action_col = next((c for c in df.columns if "action" in c), None)
         notes_col  = next((c for c in df.columns if "note" in c), None)
         if date_col is None:
+            cols = ", ".join(df.columns.tolist()) or "(empty)"
+            log.warning("Accountability Log.xlsx: date column not found. Columns: %s", cols)
+            _post_admin_alert(
+                webhook,
+                "⚠️ Accountability Log format changed — suppression disabled",
+                f"The date column could not be found in **Accountability Log.xlsx**. "
+                f"Suppression, resolution matching, and EOD summary will not work until "
+                f"the column header is restored. Columns found: `{cols}`",
+            )
             return resolved, cdl_dates
         for _, row in df.iterrows():
             raw_date = row[date_col]
@@ -1325,18 +1367,23 @@ def _load_accountability_log(
             # For CDL Disqualified rows, try to extract a reinstatement date
             # from the free-text Action Taken / Notes fields.
             is_cdl = "cdl" in cat or "disqualif" in cat
-            if is_cdl and drv:
+            is_dot = "dot inspection" in cat
+            if (is_cdl or is_dot) and drv:
                 text = " ".join(filter(None, [
                     str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
                     str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
                 ]))
                 parsed = extract_date_from_text(text)
                 if parsed and parsed > check_date:
-                    cdl_dates[drv] = parsed
-                    log.info("CDL reinstatement date for %s: %s", drv, parsed.isoformat())
+                    if is_cdl:
+                        cdl_dates[drv] = parsed
+                        log.info("CDL reinstatement date for %s: %s", drv, parsed.isoformat())
+                    else:
+                        dot_dates[drv] = parsed
+                        log.info("DOT inspection scheduled date for %s: %s", drv, parsed.isoformat())
     except Exception as exc:
         log.info("Accountability Log.xlsx not loaded (%s) — skipping resolution check", exc)
-    return resolved, cdl_dates
+    return resolved, cdl_dates, dot_dates
 
 
 # ---------------------------------------------------------------------------
@@ -1425,28 +1472,36 @@ def _write_accountability_json(
     upn: str,
     resolved_cats: set[str] | None = None,
     cdl_reinstate_dates: "dict[str, datetime.date] | None" = None,
+    dot_sched_dates: "dict[str, datetime.date] | None" = None,
 ) -> None:
     """Enrich items with carry-forward (days_open) and occurrence counts,
     then write to output/ and upload to OneDrive/Safety/."""
     from src.suppression_registry import (
         load_registry, save_registry, prune,
         is_suppressed, add_suppression, apply_resolved_to_registry,
+        rebuild_from_accountability_log,
     )
 
     yesterday = today - datetime.timedelta(days=1)
     resolved_cats = resolved_cats or set()
 
-    # Load suppression registry; record new suppressions for items actioned yesterday.
-    # Pass `today` (not `yesterday`) — add_suppression computes until = today + N_days,
-    # then is_suppressed checks `today < until`. If we pass yesterday for a 1-day
-    # window, until = yesterday+1 = today, and `today < today` is False, so the
-    # actioned item re-fires on today's brief. Passing today gives until = tomorrow,
-    # `today < tomorrow` = True, item correctly hidden today and re-fires tomorrow.
     registry = load_registry(tok, upn)
     prune(registry, today)
+    # Rebuild if the registry is empty OR if it has no category-only wildcard
+    # entries (keys ending with "::") — which means it was built before wildcard
+    # support was added and won't suppress items whose driver names differ from
+    # the log's driver field.
+    needs_rebuild = not registry or not any(k.endswith("::") for k in registry)
+    if needs_rebuild:
+        log.info(
+            "Suppression registry %s — rebuilding from Accountability Log history.",
+            "empty" if not registry else "has no wildcards",
+        )
+        rebuild_from_accountability_log(registry, tok, upn, today)
     all_items_combined = list(audra_items) + list(ops_items)
     apply_resolved_to_registry(registry, resolved_cats, all_items_combined, today,
-                               cdl_dates=cdl_reinstate_dates)
+                               cdl_dates=cdl_reinstate_dates,
+                               dot_dates=dot_sched_dates or {})
     save_registry(tok, upn, registry)
 
     # Build yesterday's key→days_open map for carry-forward
@@ -1713,73 +1768,159 @@ def _extra_trends(samsara: dict | None,
     def _working_days_by_month(hos: "pd.DataFrame | None") -> dict:
         """Return {(yr, mo): driver_day_count} from HOS daily logs."""
         if hos is None or hos.empty:
+            log.info("DVIR chart: HOS_DailyLogs is None/empty — no working-day denominator")
             return {}
-        dc  = _find_col(hos, ["log date", "starttime", "start time", "date"])
-        drv = _find_col(hos, ["driver name", "driver"])
+        # Same priority as compute_inspection_compliance: explicit "Log Date" (= startTime
+        # ISO timestamp) first, then logMetaData.logDate (date-only, may be all-NaN),
+        # then any column containing "date" or "starttime" as a last resort.
+        dc  = _find_col(hos, ["log date", "logstartdate", "log start date",
+                               "logmetadata.logdate", "date", "starttime"])
+        drv = _find_col(hos, ["driver name", "driver.name", "driver"])
+        log.info("DVIR chart: HOS_DailyLogs shape=%s date_col=%r driver_col=%r",
+                 hos.shape, dc, drv)
         if not dc or not drv:
+            log.warning("DVIR chart: could not find date/driver cols in HOS_DailyLogs "
+                        "(cols=%s)", list(hos.columns[:20]))
             return {}
-        # Include ALL drive/onduty columns — both certified (dutyStatusDurations.*)
-        # and pending (pendingDutyStatusDurations.*) so recent uncertified log days
-        # (where certified driveDurationMs=0 but pending > 0) are counted correctly.
-        drive_cols = [c for c in hos.columns if "drivedurationms" in str(c).lower()]
-        onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
-        activity_cols = drive_cols + onduty_cols
-        h = hos[[dc, drv] + activity_cols].copy()
+        # Samsara only emits HOS rows for actual working days — no activity filter.
+        h = hos[[dc, drv]].copy()
         h["_dt"] = _to_naive_dt(h[dc])
         h["_drv"] = h[drv].astype(str).str.strip()
-        if activity_cols:
-            active = pd.Series([False] * len(h), index=h.index)
-            for col in activity_cols:
-                active |= pd.to_numeric(h[col], errors="coerce").fillna(0) > 0
-            h = h[active]
         h = h[h["_drv"].ne("") & h["_dt"].notna()]
         result: dict = {}
         for _, row in h.iterrows():
             key = (row["_dt"].year, row["_dt"].month)
             result[key] = result.get(key, 0) + 1
+        log.info("DVIR chart: wd_by_month=%s", {f"{y}-{m:02d}": v for (y, m), v in result.items()})
         return result
 
-    if insp_df is not None and not insp_df.empty:
-        idc = _find_col(insp_df, ["reported", "createdat"])
-        drv_col_i = _find_col(insp_df, ["driver"])
-        if idc:
-            cols_i = [idc] + ([drv_col_i] if drv_col_i else [])
-            di = insp_df[cols_i].copy()
-            di["_dt"] = _to_naive_dt(di[idc])
-            if drv_col_i:
-                di["_drv"] = di[drv_col_i].astype(str).str.strip()
-            wd_by_month = _working_days_by_month(hos_df)
-            months6 = _last_6_months()
-            labels, pcts = [], []
-            for i, (yr, mo) in enumerate(months6):
-                mask  = (di["_dt"].dt.year == yr) & (di["_dt"].dt.month == mo)
-                done  = int(mask.sum())
-                wd    = wd_by_month.get((yr, mo), 0)
-                exp   = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
-                lab = pd.Timestamp(year=yr, month=mo, day=1).strftime("%b")
-                if i == len(months6) - 1:
-                    lab += "*"
-                labels.append(lab)
-                if exp > 0:
-                    pcts.append(min(round(done / exp * 100), 100))
+    # Last-7d DVIR compliance KPI — computed unconditionally from DVIRs + HOS_DailyLogs
+    # via compute_inspection_compliance. Not gated behind DVIR_Inspections so the tile
+    # shows a value (even 0%) whenever HOS working-day data exists.
+    _comp_rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
+    log.info("DVIR 7d tile: compute_inspection_compliance returned %d rows", len(_comp_rows_7d))
+    if _comp_rows_7d:
+        _td = sum(r.get("done_total", 0) for r in _comp_rows_7d)
+        _te = sum(r.get("expected_total", 0) for r in _comp_rows_7d)
+        log.info("DVIR 7d tile: done=%d expected=%d", _td, _te)
+        out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
+    else:
+        # HOS data unavailable — use pre-trip DVIR count as denominator:
+        # required = pre_trips × 2 (each pre expects a matching post-trip).
+        _dvirs_7d = (samsara_sheets or {}).get("DVIRs")
+        if _dvirs_7d is not None and not _dvirs_7d.empty:
+            _dt_col  = _find_col(_dvirs_7d, ["starttime", "start time", "createdattime"])
+            _typ_col = _find_col(_dvirs_7d, ["inspectiontype", "dvirtype", "type"])
+            if _dt_col:
+                _7d_start = pd.Timestamp.now() - pd.Timedelta(days=7)
+                _dts  = _to_naive_dt(_dvirs_7d[_dt_col])
+                _mask = _dts >= _7d_start
+                _win  = _dvirs_7d[_mask]
+                _done_7d = int(_mask.sum())
+                _pre_7d  = 0
+                if _typ_col and not _win.empty:
+                    _pre_7d = int(
+                        _win[_typ_col].astype(str).str.lower().str.contains("pre", na=False).sum()
+                    )
+                if _pre_7d > 0:
+                    _exp_7d = _pre_7d * 2
+                    _pct_7d = min(round(_done_7d / _exp_7d * 100), 100)
+                    log.info("DVIR 7d tile: pre-trip fallback — done=%d pre=%d expected=%d pct=%d%%",
+                             _done_7d, _pre_7d, _exp_7d, _pct_7d)
+                    out["dvir_comp_7d"] = _pct_7d
                 else:
-                    pcts.append(0)
-            out["dvir_pct"] = (labels, pcts)
-            # Last-7d KPI — use the same source as the compliance table
-            # (compute_inspection_compliance) so the KPI matches the table exactly.
-            _comp_rows_7d = compute_inspection_compliance(samsara_sheets, days=7)
-            if _comp_rows_7d:
-                _td = sum(r.get("done_total", 0) for r in _comp_rows_7d)
-                _te = sum(r.get("expected_total", 0) for r in _comp_rows_7d)
-                out["dvir_comp_7d"] = min(round(_td / _te * 100), 100) if _te > 0 else None
+                    log.info("DVIR 7d tile: no pre-trip DVIRs in 7d window — tile n/a")
+                    out["dvir_comp_7d"] = None
             else:
                 out["dvir_comp_7d"] = None
         else:
-            out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
             out["dvir_comp_7d"] = None
+
+    # Monthly DVIR compliance bar chart — uses DVIRs + HOS_DailyLogs (same source
+    # as the 7d tile) so the chart isn't gated on DVIR_Inspections being populated.
+    dvirs_df = (samsara_sheets or {}).get("DVIRs")
+    dvirs_by_month: dict = {}
+    if dvirs_df is not None and not dvirs_df.empty:
+        dvir_time_col = _find_col(dvirs_df, ["starttime", "start time",
+                                              "createdattime", "submittedattime"])
+        log.info("DVIR chart: DVIRs sheet shape=%s time_col=%r", dvirs_df.shape, dvir_time_col)
+        if dvir_time_col:
+            dv = dvirs_df[[dvir_time_col]].copy()
+            dv["_dt"] = _to_naive_dt(dv[dvir_time_col])
+            for _, row in dv.iterrows():
+                if pd.isna(row["_dt"]):
+                    continue
+                key = (row["_dt"].year, row["_dt"].month)
+                dvirs_by_month[key] = dvirs_by_month.get(key, 0) + 1
+        else:
+            log.warning("DVIR chart: starttime col not found in DVIRs (cols=%s)",
+                        list(dvirs_df.columns[:20]))
     else:
-        out["dvir_pct"] = (fallback_months, [0] * len(fallback_months))
-        out["dvir_comp_7d"] = None
+        log.info("DVIR chart: DVIRs sheet is None/empty")
+    log.info("DVIR chart: dvirs_by_month=%s",
+             {f"{y}-{m:02d}": v for (y, m), v in dvirs_by_month.items()})
+
+    wd_by_month = _working_days_by_month(hos_df)
+    months6 = _last_6_months()
+
+    # Build pre-trip count per month from DVIRs.inspectionType as a denominator
+    # fallback when HOS working-day data is unavailable or stale.
+    pre_trips_by_month: dict = {}
+    if dvirs_df is not None and not dvirs_df.empty:
+        _type_col = _find_col(dvirs_df, ["inspectiontype", "dvirtype", "type"])
+        _time_col_dvir = dvir_time_col if dvir_time_col else _find_col(
+            dvirs_df, ["starttime", "start time", "createdattime", "submittedattime"]
+        )
+        if _type_col and _time_col_dvir:
+            _dv2 = dvirs_df[[_time_col_dvir, _type_col]].copy()
+            _dv2["_dt"] = _to_naive_dt(_dv2[_time_col_dvir])
+            _dv2["_is_pre"] = _dv2[_type_col].astype(str).str.lower().str.contains("pre", na=False)
+            for _, row in _dv2.iterrows():
+                if pd.isna(row["_dt"]) or not row["_is_pre"]:
+                    continue
+                key = (row["_dt"].year, row["_dt"].month)
+                pre_trips_by_month[key] = pre_trips_by_month.get(key, 0) + 1
+        log.info("DVIR chart: pre_trips_by_month=%s type_col=%r",
+                 {f"{y}-{m:02d}": v for (y, m), v in pre_trips_by_month.items()}, _type_col)
+
+    labels, pcts = [], []
+    for i, (yr, mo) in enumerate(months6):
+        done = dvirs_by_month.get((yr, mo), 0)
+        wd   = wd_by_month.get((yr, mo), 0)
+        pre  = pre_trips_by_month.get((yr, mo), 0)
+        # Prefer HOS-based denominator; fall back to pre-trip × 2 when HOS is stale
+        if wd > 0:
+            exp = wd * 4  # 4 expected per working day: pre+post × tractor+trailer
+        elif pre > 0:
+            exp = pre * 2  # each pre-trip expects a matching post-trip
+        else:
+            exp = 0
+        lab  = pd.Timestamp(year=yr, month=mo, day=1).strftime("%b")
+        if i == len(months6) - 1:
+            lab += "*"
+        labels.append(lab)
+        pcts.append(min(round(done / exp * 100), 100) if exp > 0 else 0)
+    log.info("DVIR chart: months=%s pcts=%s wd_totals=%s pre_totals=%s",
+             labels, pcts,
+             [wd_by_month.get((yr, mo), 0) for yr, mo in months6],
+             [pre_trips_by_month.get((yr, mo), 0) for yr, mo in months6])
+
+    # Use compliance % chart whenever any month has a real denominator
+    _has_denominator = any(
+        wd_by_month.get((yr, mo), 0) > 0 or pre_trips_by_month.get((yr, mo), 0) > 0
+        for yr, mo in months6
+    )
+    if any(pcts) and _has_denominator:
+        out["dvir_pct"] = (labels, pcts)
+        # dvir_pct_is_count stays absent → tile & chart render as %
+    elif any(dvirs_by_month.get((yr, mo), 0) for yr, mo in months6):
+        # No denominator at all — last resort: raw count (should rarely happen)
+        log.info("DVIR chart: no denominator — falling back to raw DVIR count chart")
+        counts = [dvirs_by_month.get((yr, mo), 0) for yr, mo in months6]
+        out["dvir_pct"] = (labels, counts)
+        out["dvir_pct_is_count"] = True
+    else:
+        out["dvir_pct"] = (_fallback_labels, _fallback_zeros)
 
     # Speed over limit — fleet avg % drive time per calendar month.
     # samsara_main now makes per-month API calls and stores them in speeds_monthly.
@@ -1878,7 +2019,7 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
     if dvir_comp_7d is not None:
         dvir_comp_pct = dvir_comp_7d
         dvir_comp_txt = f"{dvir_comp_pct}%"
-    elif dvir_pct_c and dvir_pct_c[-1]:
+    elif dvir_pct_c and dvir_pct_c[-1] and not xt.get("dvir_pct_is_count"):
         dvir_comp_pct = dvir_pct_c[-1]
         dvir_comp_txt = f"{dvir_comp_pct}%"
     else:
@@ -1907,9 +2048,12 @@ def build_page_metrics(samsara: dict | None, metrics: dict, pg: int,
         + _bar_chart("DVIR Defects / mo", dvir_m, dvir_c, "reported/mo · *MTD")
         + _bar_chart("Coached Events / mo", coached_m, coached_c,
                      "manager-reviewed / mo · *MTD")
-        + _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
-                     "% inspections completed · *MTD · done÷(HOS days×4)",
-                     fmt=lambda v: f"{int(v)}%")
+        + (_bar_chart("DVIRs / month", dvir_pct_m, dvir_pct_c,
+                      "total inspections submitted · *MTD (HOS denominator unavailable)")
+           if xt.get("dvir_pct_is_count") else
+           _bar_chart("DVIR Compliance %", dvir_pct_m, dvir_pct_c,
+                      "% inspections completed · *MTD · done÷(HOS days×4)",
+                      fmt=lambda v: f"{int(v)}%"))
         + "</tr></table>"
     )
 
@@ -2356,18 +2500,19 @@ def build_page_dvir_compliance(samsara_sheets: dict | None, pg: int,
 
 def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
                            total: int, date_str: str) -> str:
-    """DVIR inspection detail — last 14 days, grouped by driver.
+    """DVIR inspection detail — last 7 days, grouped by driver.
 
     Per-driver header shows name, inspection count, required/completed/missing/%.
     Row columns: Date/Time · Location · Vehicle · Trailer · Type · Safe · Defects
                  · Mechanic Notes.
     Data source: DVIR_Inspections sheet (one row per inspection leg).
+    Cross-check footer uses compute_inspection_compliance so total matches tile.
     """
     header = _sc_header(
-        "DVIR Inspection Detail — last 14 days", pg, total, date_str, section="EQUIPMENT")
+        "DVIR Inspection Detail — last 7 days", pg, total, date_str, section="EQUIPMENT")
 
     now = pd.Timestamp.now()
-    cutoff_14d = now - pd.Timedelta(days=14)
+    cutoff_7d = now - pd.Timedelta(days=7)
 
     # ── Load DVIR_Inspections ────────────────────────────────────────────────
     insp_df = (samsara_sheets or {}).get("DVIR_Inspections")
@@ -2388,7 +2533,7 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
             df_i = insp_df.copy()
             df_i["_dt"] = pd.to_datetime(df_i[dc], errors="coerce", utc=True).dt.tz_localize(None)
             df_i["_drv"] = df_i[drv].astype(str).str.strip()
-            df_i = df_i[(df_i["_dt"] >= cutoff_14d) & df_i["_drv"].ne("")]
+            df_i = df_i[(df_i["_dt"] >= cutoff_7d) & df_i["_drv"].ne("")]
             df_i = df_i.sort_values("_dt", ascending=False)
 
             for _, row in df_i.iterrows():
@@ -2416,24 +2561,17 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
                 })
 
     # ── Load worked days for expected calculation ────────────────────────────
+    # Samsara only emits HOS rows for actual working days — no activity filter.
     worked: dict[str, int] = {}
     hos_df = (samsara_sheets or {}).get("HOS_DailyLogs")
     if hos_df is not None and not hos_df.empty:
         hdc  = _find_col(hos_df, ["log date", "starttime", "date"])
         hdrv = _find_col(hos_df, ["driver name", "driver"])
-        hdrvc = _find_col(hos_df, ["drivems", "drive ms"])
-        hdutc = _find_col(hos_df, ["ondutytime", "on duty ms"])
         if hdc and hdrv:
             h7 = hos_df.copy()
             h7["_dt"] = pd.to_datetime(h7[hdc], errors="coerce", utc=True).dt.tz_localize(None)
             h7["_drv"] = h7[hdrv].astype(str).str.strip()
-            h7 = h7[(h7["_dt"] >= cutoff_14d) & h7["_drv"].ne("")]
-            if hdrvc or hdutc:
-                act = pd.Series([False] * len(h7), index=h7.index)
-                for col in [hdrvc, hdutc]:
-                    if col:
-                        act |= pd.to_numeric(h7[col], errors="coerce").fillna(0) > 0
-                h7 = h7[act]
+            h7 = h7[(h7["_dt"] >= cutoff_7d) & h7["_drv"].ne("")]
             for d, grp in h7.groupby("_drv"):
                 worked[d] = grp["_dt"].dt.date.nunique()
 
@@ -2451,27 +2589,79 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
     thead = f"<thead><tr>{thead_cells}</tr></thead>"
 
     def _driver_block(drv: str, rows: list[dict]) -> str:
-        days    = worked.get(drv, 0)
-        exp     = days * 2
-        done    = len(rows)
-        missing = max(0, exp - done)
-        pct     = round(done / exp * 100) if exp > 0 else 0
-        pct_color = BAD if pct < 80 else (WARN if pct < 95 else GOOD)
-        summary = (
-            f"Required: <b>{exp}</b>&nbsp;&nbsp;"
-            f"Completed: <b>{done}</b>&nbsp;&nbsp;"
-            f"Missing: <b>{missing}</b>&nbsp;&nbsp;"
-            f"<span style='color:{pct_color};font-weight:800;'>{pct}%</span>"
+        # Working days: prefer HOS (accurate — includes days with zero DVIRs).
+        # Fall back to unique inspection dates when the HOS name doesn't match
+        # (name mismatch causes worked.get() to return 0 even for active drivers).
+        hos_days = worked.get(drv, 0)
+        insp_dates = {r["dt"][:10] for r in rows if r["dt"] not in ("&mdash;", "")}
+        days = hos_days if hos_days > 0 else len(insp_dates)
+
+        # Tractor vs trailer split (set by unit_type in the row dict)
+        trac_done = sum(1 for r in rows if r["vehicle"] != "&mdash;")
+        trlr_done = sum(1 for r in rows if r["trailer"] != "&mdash;")
+        comb_done = len(rows)
+
+        exp_t  = days * 2
+        exp_tr = days * 2
+        exp_c  = days * 4
+
+        miss_t  = max(0, exp_t  - trac_done)
+        miss_tr = max(0, exp_tr - trlr_done)
+        miss_c  = max(0, exp_c  - comb_done)
+
+        pct_t  = min(round(trac_done / exp_t  * 100), 100) if exp_t  > 0 else 0
+        pct_tr = min(round(trlr_done / exp_tr * 100), 100) if exp_tr > 0 else 0
+        pct_c  = min(round(comb_done / exp_c  * 100), 100) if exp_c  > 0 else 0
+
+        def _pc(p: int) -> str:
+            return BAD if p < 80 else (WARN if p < 95 else GOOD)
+
+        def _sum_row(label: str, exp: int, done: int, miss: int, pct: int) -> str:
+            mc = BAD if miss > 0 else GOOD
+            return (
+                f"<tr>"
+                f"<td style='padding:2px 10px 2px 0;font-size:9.5px;color:{MUTE};"
+                f"font-weight:700;text-transform:uppercase;letter-spacing:0.5px;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};'>{label}</td>"
+                f"<td style='padding:2px 10px;font-size:10.5px;text-align:right;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};'>"
+                f"Req&nbsp;<b>{exp}</b></td>"
+                f"<td style='padding:2px 10px;font-size:10.5px;text-align:right;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};'>"
+                f"Done&nbsp;<b>{done}</b></td>"
+                f"<td style='padding:2px 10px;font-size:10.5px;text-align:right;"
+                f"white-space:nowrap;border-bottom:1px solid {LINE};"
+                f"color:{mc};'>Missing&nbsp;<b>{miss}</b></td>"
+                f"<td style='padding:2px 0 2px 10px;font-size:12px;font-weight:800;"
+                f"color:{_pc(pct)};text-align:right;white-space:nowrap;"
+                f"border-bottom:1px solid {LINE};'>{pct}%</td>"
+                f"</tr>"
+            )
+
+        summary_table = (
+            f"<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;'>"
+            + _sum_row("Tractor",  exp_t,  trac_done, miss_t,  pct_t)
+            + _sum_row("Trailer",  exp_tr, trlr_done, miss_tr, pct_tr)
+            + _sum_row("Combined", exp_c,  comb_done, miss_c,  pct_c)
+            + f"</table>"
         )
+
+        day_src = "" if hos_days > 0 else "&ensp;<span style='font-size:9px;color:{MUTE};'>(days from inspections)</span>"
         drv_header = (
-            f"<div style='display:flex;justify-content:space-between;align-items:baseline;"
-            f"padding:18px 0 6px;border-bottom:2px solid {INK};margin-bottom:0;'>"
-            f"<span style='font-size:13px;font-weight:700;color:{INK};letter-spacing:0.3px;'>"
-            f"{drv}</span>"
+            f"<div style='padding:18px 0 10px;border-bottom:2px solid {INK};'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-start;"
+            f"flex-wrap:wrap;gap:8px;'>"
+            f"<div>"
+            f"<span style='font-size:13px;font-weight:700;color:{INK};"
+            f"letter-spacing:0.3px;'>{drv}</span>"
             f"<span style='font-size:9.5px;color:{MUTE};margin-left:10px;'>"
-            f"·&nbsp;{done} inspection{'s' if done != 1 else ''}</span>"
-            f"<span style='flex:1;'></span>"
-            f"<span style='font-size:11px;color:{INK};'>{summary}</span>"
+            f"·&nbsp;{comb_done} inspection{'s' if comb_done != 1 else ''}"
+            f"&ensp;·&ensp;{days} working day{'s' if days != 1 else ''}"
+            + ("" if hos_days > 0 else "&ensp;<span style='font-size:9px;'>(est from inspections)</span>")
+            + f"</span>"
+            f"</div>"
+            f"<div>{summary_table}</div>"
+            f"</div>"
             f"</div>"
         )
         tbody_rows = ""
@@ -2501,11 +2691,31 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
         )
         return drv_header + table
 
+    # ── Cross-check footer: exact tile numbers via compute_inspection_compliance ─
+    _xc_rows  = compute_inspection_compliance(samsara_sheets, days=7)
+    _xc_done  = sum(r.get("done_total", 0) for r in _xc_rows)
+    _xc_exp   = sum(r.get("expected_total", 0) for r in _xc_rows)
+    _xc_pct   = min(round(_xc_done / _xc_exp * 100), 100) if _xc_exp > 0 else 0
+    _xc_color = BAD if _xc_pct < 80 else (WARN if _xc_pct < 95 else GOOD)
+    cross_check = (
+        f"<div style='margin:24px 0 0;padding:14px 18px;"
+        f"border-top:3px solid {INK};border-bottom:3px solid {INK};"
+        f"background:#f5f5f5;display:flex;justify-content:space-between;align-items:center;'>"
+        f"<span style='font-size:9.5px;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:0.8px;color:{MUTE};'>"
+        f"Fleet total &mdash; matches DVIR Compliance tile exactly</span>"
+        f"<span style='font-size:12px;color:{INK};'>"
+        f"Done:&nbsp;<b>{_xc_done}</b>&ensp;|&ensp;"
+        f"Expected:&nbsp;<b>{_xc_exp}</b>&ensp;|&ensp;"
+        f"<span style='color:{_xc_color};font-weight:800;font-size:15px;'>{_xc_pct}%</span>"
+        f"</span></div>"
+    ) if _xc_exp > 0 else ""
+
     if not driver_inspections:
         body = (
             f"<div style='padding:24px;'>"
             + _all_clear_row(
-                "No DVIR inspection data for the last 14 days — "
+                "No DVIR inspection data for the last 7 days — "
                 "DVIR_Inspections sheet will populate after the next Samsara refresh.",
                 span=8)
             + f"</div>"
@@ -2514,12 +2724,12 @@ def build_page_dvir_detail(samsara_sheets: dict | None, pg: int,
         blocks = "".join(
             _driver_block(drv, rows)
             for drv, rows in sorted(driver_inspections.items()))
-        body = f"<div style='padding:0 24px 24px;'>{blocks}</div>"
+        body = f"<div style='padding:0 24px 24px;'>{blocks}{cross_check}</div>"
 
     return (
         header
         + f"<div style='padding:0 24px 4px;'>"
-        + _section("DVIR inspection log — last 14 days")
+        + _section("DVIR inspection log — last 7 days")
         + f"</div>"
         + body
     )
@@ -2793,16 +3003,22 @@ def main() -> int:
 
     # Check yesterday's Accountability Log to break escalation chain for actioned items
     yesterday = today - datetime.timedelta(days=1)
-    resolved_cats, cdl_reinstate_dates = _load_accountability_log(tok, upn, yesterday)
+    resolved_cats, cdl_reinstate_dates, dot_sched_dates = _load_accountability_log(
+        tok, upn, yesterday,
+        webhook=os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip(),
+    )
     if resolved_cats:
         log.info("Resolved categories (actioned yesterday): %s", resolved_cats)
     if cdl_reinstate_dates:
         log.info("CDL reinstatement dates: %s", cdl_reinstate_dates)
+    if dot_sched_dates:
+        log.info("DOT inspection scheduled dates: %s", dot_sched_dates)
 
     # Write accountability JSON (local output/ + OneDrive/Safety/)
     _write_accountability_json(today, audra_items, ops_items, acc_history, tok, upn,
                                resolved_cats=resolved_cats,
-                               cdl_reinstate_dates=cdl_reinstate_dates)
+                               cdl_reinstate_dates=cdl_reinstate_dates,
+                               dot_sched_dates=dot_sched_dates)
 
     # Recurrence registry — flag items with 3+ appearances in 90 days and
     # track first-seen date for coaching escalation timer.

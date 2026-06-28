@@ -621,7 +621,7 @@ ALVYS_OPEN_STATUSES = {"open"}
 # they settle, surfaced as `unsettled`. X-Trux ONLY — X-Linx brokerage
 # legitimately runs thin and is exempt. Override at runtime via
 # ALVYS_XTRUX_HOLDOUT_MARGIN.
-ALVYS_XTRUX_HOLDOUT_MARGIN = 0.74
+ALVYS_XTRUX_HOLDOUT_MARGIN = 0.81
 
 
 def _entity_group(office) -> str | None:
@@ -1113,7 +1113,8 @@ def compute_alvys_uninvoiced(sheets: dict[str, pd.DataFrame] | None, limit: int 
     rev_col = _find_col(loads, ["customer revenue", "revenue"])
 
     sub = loads.copy()
-    sub = sub[sub[status_col].astype(str).str.strip().str.lower() == "delivered"]
+    _delivered_statuses = {"delivered", "released"}
+    sub = sub[sub[status_col].astype(str).str.strip().str.lower().isin(_delivered_statuses)]
     sub = sub[pd.to_datetime(sub[inv_col], errors="coerce").isna()]   # not yet invoiced
 
     office_col = _find_col(sub, OFFICE_COL_NEEDLES)
@@ -1468,11 +1469,14 @@ def compute_rpm_trend(sheets: dict[str, pd.DataFrame] | None) -> dict:
     # mismatch (see also: column logic alignment a few lines below).
     if "Driver Rate" in sub.columns:
         sub = sub[_col(sub, "Driver Rate").fillna(0) > 0]
-    # Scope to the X-Trux + XFreight asset fleet (matches the X-Trux Overview
-    # section where these charts now live; X-Linx brokerage is excluded).
+    # Scope to the X-Trux + XFreight own-fleet (matches the Rev/Mile tile and
+    # Power BI). _own_fleet_mask drops X-Trux loads brokered to outside carriers
+    # (Corrected Margin % >= holdout) — their miles belong to the carrier, not
+    # our trucks, so including them overstates chart RPM vs the tile.
     office_col = _find_col(sub, OFFICE_COL_NEEDLES)
     if office_col:
         sub = sub[sub[office_col].map(_entity_group) == "X-Trux"]
+    sub = sub[_own_fleet_mask(sub)]
     dates = _to_naive_dt(sub[date_col])
     keep = dates.notna()
     sub = sub.loc[keep]
@@ -1740,10 +1744,26 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         # of the month).
         applied_pct = mtd_pct if mtd_pct is not None else trail_pct
         daily_run_rate = (t_rev / days) if days else 0.0
-        proj_rev = (daily_run_rate * wdim) if daily_run_rate else None
+        # When 5+ working days have elapsed, use this month's actual revenue
+        # pace (MTD ÷ wd_elapsed) instead of the 80-day trailing window.
+        # The trailing window spans prior months; when June tracks below the
+        # trailing average the old formula projects revenue too high and the
+        # estimate runs $50-60K above actual. MTD rate anchors the projection
+        # to what this specific month is actually delivering.
+        if wd_elapsed >= 5 and s_rev > 0:
+            _proj_daily = s_rev / wd_elapsed
+        else:
+            _proj_daily = daily_run_rate
+        proj_rev = (_proj_daily * wdim) if _proj_daily else None
         proj_margin_t = (proj_rev * applied_pct) if (proj_rev and applied_pct is not None) else None
-        proj_margin = (settled_margin
-                       if (proj_margin_t is not None and settled_margin > proj_margin_t)
+        # Floor: use s_rev × applied_pct (not s_rev - s_cost) because s_cost
+        # only captures driver/carrier rate, not true cost, making the raw
+        # settled_margin much higher than actual and causing the floor to
+        # incorrectly override the MTD-rate projection.
+        _margin_floor = ((s_rev * applied_pct) if (s_rev and applied_pct is not None)
+                         else settled_margin)
+        proj_margin = (_margin_floor
+                       if (proj_margin_t is not None and _margin_floor > proj_margin_t)
                        else proj_margin_t)
         out[ent] = {
             "settled_mtd_margin": settled_margin or None,
@@ -1773,10 +1793,16 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         c_mtd_pct = ((combined_s_rev - combined_s_cost) / combined_s_rev) if combined_s_rev else None
     c_applied = c_mtd_pct if c_mtd_pct is not None else c_trail_pct
     c_daily = (combined_t_rev / days) if days else 0.0
-    c_proj_rev = (c_daily * wdim) if c_daily else None
+    if wd_elapsed >= 5 and combined_s_rev > 0:
+        _c_proj_daily = combined_s_rev / wd_elapsed
+    else:
+        _c_proj_daily = c_daily
+    c_proj_rev = (_c_proj_daily * wdim) if _c_proj_daily else None
     _c_t = (c_proj_rev * c_applied) if (c_proj_rev and c_applied is not None) else None
-    c_proj_margin = (_c_t if (_c_t is not None and combined_settled_margin <= _c_t)
-                     else (combined_settled_margin or _c_t))
+    _c_floor = ((combined_s_rev * c_applied) if (combined_s_rev and c_applied is not None)
+                else combined_settled_margin)
+    c_proj_margin = (_c_t if (_c_t is not None and _c_floor <= _c_t)
+                     else (_c_floor or _c_t))
     out["combined"] = {
         "settled_mtd_margin": combined_settled_margin or None,
         "trailing_margin_pct": c_trail_pct,
@@ -1785,11 +1811,15 @@ def compute_margin_projection(sheets: dict[str, pd.DataFrame] | None, days: int 
         "projected_revenue": c_proj_rev,
         "projected_margin": c_proj_margin,
     }
-    log.info("compute_margin_projection: applying MTD margin %% to projection "
-             "(was 80wd blend); wd %d/%d. "
-             "X-Trux: MTD %s, trail %s. X-Linx: MTD %s, trail %s. "
-             "Combined: MTD %s, trail %s.",
-             wd_elapsed, wdim,
+    _rate_src = "MTD" if wd_elapsed >= 5 else "trailing"
+    log.info("compute_margin_projection: rate=%s wd %d/%d "
+             "combined_s_rev=$%s combined_t_rev_daily=$%s "
+             "proj_rev=$%s proj_margin=$%s. "
+             "X-Trux: MTD %s trail %s. X-Linx: MTD %s trail %s. Combined: MTD %s trail %s.",
+             _rate_src, wd_elapsed, wdim,
+             f"{combined_s_rev:,.0f}", f"{c_daily:,.0f}",
+             f"{c_proj_rev:,.0f}" if c_proj_rev else "n/a",
+             f"{out['combined'].get('projected_margin') or 0:,.0f}",
              f"{out['X-Trux'].get('mtd_margin_pct') or 0:.1%}",
              f"{out['X-Trux'].get('trailing_margin_pct') or 0:.1%}",
              f"{out['X-Linx'].get('mtd_margin_pct') or 0:.1%}",
@@ -2977,6 +3007,12 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         return False
                     return s.lower() == s
                 uncert = uncert[~uncert["_driver"].apply(_looks_like_placeholder)]
+                # Drivers with any HOS log for today are actively on duty/driving.
+                active_today = set(
+                    hos_daily.assign(_d=_to_naive_dt(hos_daily[date_col]),
+                                     _drv=hos_daily[drv_col].astype(str).str.strip())
+                    .pipe(lambda df: df[df["_d"] >= _today_chi]["_drv"].unique())
+                )
                 rows: list[dict] = []
                 for drv, grp in uncert.groupby("_driver"):
                     days = grp["_date"].dropna()
@@ -2988,6 +3024,7 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                         "days_missing": int(len(grp)),
                         "span": span,
                         "latest": latest,
+                        "active_today": drv in active_today,
                     })
                 rows.sort(key=lambda r: (-r["days_missing"], r["driver"]))
                 out["detail"]["hos_uncert"] = rows[:30]
@@ -3792,7 +3829,11 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
 
     week_totals = [sum(r["weeks"][k] for r in rows) for k in range(SETTLEMENT_WEEKS)]
     cur_idx = SETTLEMENT_WEEKS - 1
+    last_idx = cur_idx - 1
     drivers_cur = sum(1 for r in rows if r["weeks"][cur_idx] > 0)
+    # Active last week = any miles; on-target = at or above DRIVER_TARGET_MILES
+    drivers_active_lw   = sum(1 for r in rows if r["weeks"][last_idx] > 0)
+    drivers_on_target_lw = sum(1 for r in rows if r["weeks"][last_idx] >= DRIVER_TARGET_MILES)
     # Average distinct drivers running per week — averaged over the complete
     # prior weeks only (the current partial week would drag it low).
     drivers_per_week = [sum(1 for r in rows if r["weeks"][k] > 0) for k in range(SETTLEMENT_WEEKS)]
@@ -3808,6 +3849,8 @@ def compute_driver_mileage(sheets: dict[str, pd.DataFrame] | None, now: pd.Times
         "miles_last_week": week_totals[cur_idx - 1] if SETTLEMENT_WEEKS >= 2 else None,
         "avg_per_driver": (week_totals[cur_idx] / drivers_cur) if drivers_cur else None,
         "avg_drivers_per_week": avg_drivers_per_week,
+        "drivers_active_last_week": drivers_active_lw,
+        "drivers_on_target_last_week": drivers_on_target_lw,
     }
 
 
@@ -4004,27 +4047,82 @@ def compute_inspection_compliance(samsara_sheets: dict | None,
     window_start = pd.Timestamp.now() - pd.Timedelta(days=days)
 
     hos_name_col = _find_col(hos, ["driver name", "driver.name"])
-    hos_date_col = _find_col(hos, ["logstartdate", "log start date", "date",
-                                     "logmetadata.logdate"])
+    # Prioritise the explicit "Log Date" column (= startTime ISO timestamp) that
+    # samsara_main.py adds after json_normalize. Falls back to logMetaData.logDate
+    # (date-only, but may be all-NaN if Samsara omits it) or any column with "date".
+    hos_date_col = _find_col(hos, ["log date", "logstartdate", "log start date",
+                                    "logmetadata.logdate", "date", "starttime"])
+    log.debug("compute_inspection_compliance: HOS shape=%s name_col=%r date_col=%r",
+              hos.shape, hos_name_col, hos_date_col)
     if not (hos_name_col and hos_date_col):
+        log.warning("compute_inspection_compliance: could not find name/date cols in "
+                    "HOS_DailyLogs (cols=%s)", list(hos.columns[:20]))
         return []
 
-    # Check ALL drive/onduty columns — certified (dutyStatusDurations.*) and
-    # pending (pendingDutyStatusDurations.*) — so uncertified recent log days
-    # where certified driveDurationMs=0 but pending > 0 are not filtered out.
-    drive_cols = [c for c in hos.columns if "drivedurationms" in str(c).lower()]
-    onduty_cols = [c for c in hos.columns if "ondutydurationms" in str(c).lower()]
-    activity_cols = drive_cols + onduty_cols
+    # Samsara only emits HOS daily log rows for actual working days —
+    # no activity-duration filter needed (and it breaks on uncertified recent logs).
     hos_dt = _to_naive_dt(hos[hos_date_col])
-    if activity_cols:
-        active = pd.Series(False, index=hos.index)
-        for col in activity_cols:
-            active |= pd.to_numeric(hos[col], errors="coerce").fillna(0) > 0
-    else:
-        active = pd.Series(True, index=hos.index)
-    hos_window = hos[active & (hos_dt >= window_start)].copy()
+    hos_window = hos[hos_dt >= window_start].copy()
     if hos_window.empty:
-        return []
+        # HOS data not in window (stale file) — derive working-day proxy from
+        # pre-trip DVIRs: each pre-trip implies a working day for that driver.
+        log.info("compute_inspection_compliance: HOS empty for window — falling back "
+                 "to pre-trip DVIR count as working-day denominator")
+        dvirs_fb = samsara_sheets.get("DVIRs")
+        if dvirs_fb is None or dvirs_fb.empty:
+            return []
+        fb_driver_col = _find_col(dvirs_fb, [
+            "driver.name", "driver name",
+            "authorsignature.signatoryuser.name",
+            "submittedby.name", "createdby.name",
+        ])
+        fb_time_col = _find_col(dvirs_fb, ["starttime", "start time",
+                                            "createdattime", "submittedattime"])
+        fb_type_col = _find_col(dvirs_fb, ["inspectiontype", "dvirtype", "type"])
+        fb_vehicle_col = _find_col(dvirs_fb, ["vehicle.name", "vehicle name"])
+        fb_trailer_col = _find_col(dvirs_fb, ["trailer.name", "trailer name", "asset.name"])
+        if not (fb_driver_col and fb_time_col):
+            return []
+        fb_dt = _to_naive_dt(dvirs_fb[fb_time_col])
+        dvirs_window_fb = dvirs_fb[fb_dt >= window_start].copy()
+        if dvirs_window_fb.empty:
+            return []
+        rows_fb: list[dict] = []
+        for nm, grp in dvirs_window_fb.groupby(
+            dvirs_window_fb[fb_driver_col].astype(str).str.strip()
+        ):
+            if not nm or nm.lower() == "nan":
+                continue
+            done = len(grp)
+            pre_trips = 0
+            if fb_type_col:
+                types = grp[fb_type_col].astype(str).str.lower()
+                pre_trips = int((types.str.contains("pre", na=False)).sum())
+            else:
+                # No inspectionType col — use total DVIRs ÷ 2 as proxy
+                pre_trips = done // 2 if done >= 2 else done
+            expected = pre_trips * 2
+            if expected == 0:
+                continue
+            # Split tractor vs trailer if columns available
+            d_t = int(grp[fb_vehicle_col].notna().sum() if fb_vehicle_col else done)
+            d_tr = int(grp[fb_trailer_col].notna().sum() if fb_trailer_col else 0)
+            pre_t = pre_trips  # pre-trip proxy; can't split further without type+vehicle
+            rows_fb.append({
+                "driver": nm,
+                "working_days": pre_trips,
+                "expected_tractor": pre_t * 2 if fb_vehicle_col else expected,
+                "done_tractor": d_t,
+                "defects_tractor": 0,
+                "expected_trailer": pre_t * 2 if fb_trailer_col else 0,
+                "done_trailer": d_tr,
+                "defects_trailer": 0,
+                "expected_total": expected,
+                "done_total": done,
+                "defects_total": 0,
+            })
+        rows_fb.sort(key=lambda r: -(r["expected_total"] - r["done_total"]))
+        return rows_fb
     working_days_by_driver = (
         hos_window.groupby(hos_window[hos_name_col].astype(str).str.strip())
         .size()
@@ -5463,6 +5561,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
                 samba=None, alvys_drivers=None, dso_hist=None,
                 ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
                 risk_watch_html: str = "", decision_grades_html: str = "",
+                forecast_grades_html: str = "", retro_html: str = "",
+                retro_patterns_html: str = "", market_context_html: str = "",
                 part: str = "all") -> str:
     """Executive overview page. `part` controls split rendering so build_page8
     (bill-by-bill matching) can land on physical PDF page 5 between the AR
@@ -5772,6 +5872,104 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         else:
             goal_note = _brief("Rate-per-mile cost is pending the QuickBooks P&amp;L this run "
                                "(office overhead comes from X-Trux + X-Linx Total Expenses).", "mute")
+
+    # RPM synopsis — secondary bottom line explaining the direction, what's
+    # driving it, and where the fleet needs to be. Appears beneath the goal tiles.
+    rpm_synopsis = ""
+    if _isnum(_xt_rpm):
+        _syn: list[str] = []
+
+        # Month-over-month direction (current MTD vs prior completed month bar)
+        if _rpm_c_values and len(_rpm_c_values) >= 2 and _rpm_c_values[-2] > 0:
+            _prev_rpm = _rpm_c_values[-2]
+            _curr_rpm = _rpm_c_values[-1]
+            _delta    = _curr_rpm - _prev_rpm
+            _arrow    = "▲" if _delta >= 0 else "▼"
+            _prev_lbl = (_rpm_c_labels[-2].replace("*", "") if _rpm_c_labels and len(_rpm_c_labels) >= 2 else "prior month")
+            _syn.append(
+                f"Revenue/mile is {_arrow}&nbsp;<b>{'up' if _delta >= 0 else 'down'} {rpm2(abs(_delta))}</b> "
+                f"vs {_prev_lbl} ({rpm(_prev_rpm)}&nbsp;&rarr;&nbsp;{rpm(_xt_rpm)} MTD*)."
+            )
+
+        # Dead-head: quantify the revenue cost or credit vs target
+        _dh     = _xt_asset.get("deadhead")
+        _mi_mtd = fleet.get("miles")
+        if _isnum(_dh) and _isnum(_mi_mtd) and _mi_mtd:
+            _dh_vs = _dh - TARGET_DEADHEAD
+            if _dh_vs > 0.003:
+                _extra = int(_dh_vs * _mi_mtd)
+                _syn.append(
+                    f"Dead-head at {pct(_dh)} is {pct(abs(_dh_vs))} above the {pct(TARGET_DEADHEAD)} target — "
+                    f"the extra {num(_extra)} empty miles cost approximately "
+                    f"<b>{money(_dh_vs * _mi_mtd * _xt_rpm)}</b> in unrealized revenue this month."
+                )
+            elif _dh_vs < -0.003:
+                _syn.append(
+                    f"Dead-head at {pct(_dh)} is {pct(abs(_dh_vs))} below the {pct(TARGET_DEADHEAD)} target — "
+                    f"efficient routing is protecting revenue/mile this month."
+                )
+            else:
+                _syn.append(f"Dead-head at {pct(_dh)} is on plan ({pct(TARGET_DEADHEAD)} goal).")
+
+        # Direct vs broker rate premium — highest-leverage customer-mix signal
+        if (_rpm_d_values and _rpm_b_values
+                and _rpm_d_values[-1] > 0 and _rpm_b_values[-1] > 0):
+            _d_cur  = _rpm_d_values[-1]
+            _b_cur  = _rpm_b_values[-1]
+            _prem   = _d_cur - _b_cur
+            if abs(_prem) > 0.01:
+                _prem_desc = ("premium for direct — growing direct volume is the highest-leverage rate lever available"
+                              if _prem > 0 else
+                              "premium for broker this month — spot market rates are unusually strong")
+                _syn.append(
+                    f"Direct customers run at {rpm(_d_cur)}/mi vs broker at {rpm(_b_cur)}/mi "
+                    f"({rpm(abs(_prem))}/mi {_prem_desc})."
+                )
+
+        # Gap to goal in dollars — makes the shortfall concrete
+        _goal_rpm_v   = g.get("goal_rpm")   if g else None
+        _cost_rpm_v   = g.get("cost_per_mile") if g else None
+        _target_mar_v = g.get("target_margin") if g else None
+        if _isnum(_goal_rpm_v):
+            _gap = _goal_rpm_v - _xt_rpm
+            _gap_total = (_gap * _mi_mtd) if _isnum(_mi_mtd) and _mi_mtd else None
+            if _gap > 0.005:
+                _gap_str = (
+                    f"Against the <b>{rpm(_goal_rpm_v)}/mi</b> goal ({pct(_target_mar_v)} net margin target), "
+                    f"the fleet is <b>{rpm(_gap)}/mi short"
+                    + (f" — approximately <b>{money(_gap_total)}</b> in unrealized margin on this month&rsquo;s mileage" if _isnum(_gap_total) else "")
+                    + ".</b>"
+                )
+                if _isnum(_cost_rpm_v):
+                    if _xt_rpm >= _cost_rpm_v:
+                        _gap_str += (
+                            f" Operations are profitable (above the {rpm(_cost_rpm_v)} break-even) "
+                            f"but have not yet reached the profit margin target."
+                        )
+                    else:
+                        _gap_str += (
+                            f" <b>⚠ Current rate is below fully-loaded break-even ({rpm(_cost_rpm_v)}/mi) — "
+                            f"operations are running at a loss on fully-loaded cost this month.</b>"
+                        )
+                _syn.append(_gap_str)
+            else:
+                _syn.append(
+                    f"At {rpm(_xt_rpm)}/mi the fleet is at or above the {rpm(_goal_rpm_v)}/mi profit goal — "
+                    f"on target margin or better."
+                )
+
+        # Closing call-to-action: where we need to be and how to get there
+        _tgt = _goal_rpm_v or TARGET_RPM
+        _syn.append(
+            f"<b>Where we need to be:</b> <b>{rpm(_tgt)}/mi</b> to reach the "
+            f"{pct(_target_mar_v or 0.05)} net margin target. "
+            f"Primary levers: ① negotiate higher rates on broker spot loads, "
+            f"② shift volume toward higher-rate direct customers, "
+            f"③ keep dead-head at or below {pct(TARGET_DEADHEAD)}."
+        )
+
+        _syn_kind = "good" if (_isnum(_goal_rpm_v) and _xt_rpm >= _goal_rpm_v) else "bad"
+        rpm_synopsis = _brief(" ".join(_syn), _syn_kind)
 
     # X-Trux cost / goal / actual revenue per mile — 6-month trend. Cost and goal
     # only render when the QB overhead leg is available (held flat at the YTD rate);
@@ -6309,17 +6507,36 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         f"<tr><td colspan='4' style='padding:0 24px;'>{decision_grades_html}</td></tr>"
         if decision_grades_html else ""
     )
+    # Phase 2D — Predictions & Lessons: JB MTD-forecast accuracy chip and the
+    # latest weekly retro. Same silent-empty pattern as the strips above —
+    # hidden when nothing is tracked yet.
+    _forecast_grades_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{forecast_grades_html}</td></tr>"
+        if forecast_grades_html else ""
+    )
+    _retro_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{retro_html}</td></tr>"
+        if retro_html else ""
+    )
+    _retro_patterns_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{retro_patterns_html}</td></tr>"
+        if retro_patterns_html else ""
+    )
+    _market_context_row = (
+        f"<tr><td colspan='4' style='padding:0 24px;'>{market_context_html}</td></tr>"
+        if market_context_html else ""
+    )
     _overview_rows = (
         f"{warn_row}"
         f"{_risk_watch_row}"
-        f"{_decision_grades_row}"
+        f"{_market_context_row}"
         f"{_section('XFreight Overview')}"
         f"<tr>{t1}</tr><tr>{t1b}</tr>"
         f"{_section(_entity_section)}"
         f"{_table(['Entity', 'Revenue', 'Cost', 'Margin', 'Margin %'], ['left', 'right', 'right', 'right', 'right'], entity_rows + entity_total)}"
         f"{mtd_note}"
         f"{_section('X-Trux Overview')}<tr>{xtrux_r1}</tr><tr>{xtrux_r2}</tr><tr>{xtrux_r3}</tr>"
-        + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}"
+        + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}{rpm_synopsis}"
            + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
            if goal_tiles else "")
         + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
@@ -7088,21 +7305,25 @@ def build_page4(mileage, date_str) -> str:
     week_totals = m.get("week_totals") or [0] * SETTLEMENT_WEEKS
     cur = SETTLEMENT_WEEKS - 1
 
-    # Drivers below target — measured on LAST settlement week (the most
-    # recent COMPLETE Wed-3pm-to-Wed-3pm cycle). The current week is partial,
-    # so a low number there could just mean the week hasn't elapsed yet —
-    # not actionable. Using last week's complete cycle gives a fair read.
+    # Goal hit-rate — measured on LAST settlement week (the most recent COMPLETE
+    # Wed-3pm-to-Wed-3pm cycle). The current week is partial so a low number
+    # there could just mean the week hasn't elapsed yet — not actionable.
     last_idx = cur - 1
-    _below_tgt = sum(1 for r in rows if 0 < r["weeks"][last_idx] < DRIVER_TARGET_MILES)
-    _below_kind = "bad" if _below_tgt >= 3 else ("warn" if _below_tgt >= 1 else "good")
+    _active_lw    = m.get("drivers_active_last_week") or sum(1 for r in rows if r["weeks"][last_idx] > 0)
+    _on_target_lw = m.get("drivers_on_target_last_week") or sum(1 for r in rows if r["weeks"][last_idx] >= DRIVER_TARGET_MILES)
+    _below_tgt    = _active_lw - _on_target_lw
+    _hit_pct      = round(_on_target_lw / _active_lw * 100) if _active_lw else 0
+    _goal_kind    = "good" if _hit_pct >= 80 else ("warn" if _hit_pct >= 60 else "bad")
+    _goal_label   = f"{_hit_pct}% hit {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last wk'}"
     tiles = (_tile("Drivers &middot; this week", num(m.get("drivers_this_week")),
                    _pill("settled legs", "mute")
                    + " &middot; "
                    + _pill(f"avg {num(m.get('avg_per_driver'))} mi / driver", "mute"))
              + _tile("Miles &middot; this week", num(m.get("miles_this_week")), _pill(labels[cur] or "current", "mute"))
              + _tile("Miles &middot; last week", num(m.get("miles_last_week")), _pill(labels[cur - 1] or "prior", "mute"))
-             + _tile("Drivers below target &middot; last week", num(_below_tgt),
-                     _pill(f"&lt; {num(DRIVER_TARGET_MILES)} mi {labels[last_idx] or 'last week'}", _below_kind)))
+             + _tile(f"Goal hit rate &middot; last week",
+                     f"{_on_target_lw}&thinsp;/&thinsp;{_active_lw}",
+                     _pill(_goal_label, _goal_kind)))
 
     def mcell(text, al="right", cur=False, bold=False, small=False):
         bg = f"background:{ACCENTBG};" if cur else ""
@@ -7997,6 +8218,25 @@ def build_refresh_status_page(refresh_status, date_str) -> str:
     return head + _section("Data refresh status &middot; as of " + date_str) + table + note
 
 
+def _decisions_retro_inner(
+    decision_grades_html: str,
+    forecast_grades_html: str,
+    retro_html: str,
+    retro_patterns_html: str,
+    date_str: str,
+) -> str:
+    """Inner HTML for the decisions/lessons final page. Returns '' when all blocks are empty."""
+    blocks = [decision_grades_html, forecast_grades_html, retro_html, retro_patterns_html]
+    if not any(blocks):
+        return ""
+    head = _header("Decisions &amp; lessons", 16, date_str, section="DECISIONS")
+    rows = "".join(
+        f"<tr><td colspan='4' style='padding:0 24px;'>{b}</td></tr>"
+        for b in blocks if b
+    )
+    return head + f"<table style='width:100%;border-collapse:collapse;'>{rows}</table>"
+
+
 def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, missing,
                alvys_ar=None, warnings=None, data_asof=None, mileage=None, uninvoiced=None,
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
@@ -8021,6 +8261,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "samba": samba or {},
         "alvys_ar": alvys_ar or {},
         "uninvoiced": uninvoiced or {},
+        # Exposed for decision_grader — lets outcomes reference fields like
+        # goal.overhead_per_mile (Acrisure-renewal-absorbed check).
+        "goal": rpm_goal or {},
     }
     try:
         from src import risk_watch as _risk_watch
@@ -8054,6 +8297,55 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         _decision_grader.write_grades_snapshot(_grades)
     except Exception as exc:
         log.warning("decision_grader render skipped (%s: %s)", type(exc).__name__, exc)
+    # Phase 2D — Forecast & Retro: JB MTD-landing forecasts get auto-graded
+    # against actuals (same fail-soft pattern as decision_grader). Weekly
+    # retros are surfaced verbatim for human-eye lesson visibility.
+    forecast_grades_html = ""
+    retro_html = ""
+    retro_patterns_html = ""
+    try:
+        from src import forecast_grader as _forecast_grader
+        _fgrades = _forecast_grader.evaluate(_watch_data)
+        if _fgrades:
+            log.info("forecast_grader: graded %d forecasts (%s)",
+                     len(_fgrades),
+                     ", ".join(f"{k}={v}" for k, v in
+                                _forecast_grader.summary_counts(_fgrades).items() if v))
+        forecast_grades_html = _forecast_grader.render_summary_html(
+            _fgrades, red=BAD, green=GOOD, mute=MUTE, line=LINE,
+        )
+        _recent_retro = _forecast_grader.load_recent_retro()
+        retro_html = _forecast_grader.render_retro_html(
+            _recent_retro, ink=INK, mute=MUTE, line=LINE,
+        )
+    except Exception as exc:
+        log.warning("forecast_grader render skipped (%s: %s)", type(exc).__name__, exc)
+    # Phase 2D — Recurring-pattern detector: scans the retros file for
+    # observations / lessons that have appeared in 2+ different weeks
+    # within the lookback window. Silent until enough retros exist.
+    try:
+        from src import retro_pattern_detector as _retro_patterns
+        _patterns = _retro_patterns.find_patterns()
+        if _patterns:
+            log.info("retro_pattern_detector: %d recurring pattern(s) detected",
+                     len(_patterns))
+        retro_patterns_html = _retro_patterns.render_patterns_html(
+            _patterns, ink=INK, mute=MUTE, line=LINE, warn=WARN,
+        )
+    except Exception as exc:
+        log.warning("retro_pattern_detector skipped (%s: %s)", type(exc).__name__, exc)
+    # Phase 2E — Market context: FRED benchmarks + XFreight RPM comparison.
+    # Refreshed Mon 6pm CT by market_context_refresh.yml. Silent when the
+    # cache file hasn't been seeded yet.
+    market_context_html = ""
+    try:
+        from src import market_context as _market_context
+        market_context_html = _market_context.render_chip_html(
+            ink=INK, mute=MUTE, line=LINE, green=GOOD, red=BAD,
+            xfreight_rpm=rpm_goal,
+        )
+    except Exception as exc:
+        log.warning("market_context render skipped (%s: %s)", type(exc).__name__, exc)
     pb = f"<div class='page-break' style='height:18px;background:#f3f3f3;'></div>"
     note = ""
     if missing:
@@ -8154,6 +8446,10 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
         "}"
         "</style>"
     )
+    _decisions_retro_html = _decisions_retro_inner(
+        decision_grades_html, forecast_grades_html,
+        retro_html, retro_patterns_html, date_str,
+    )
     return (f"<!doctype html><html><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"{mobile_css}{print_css}</head>"
@@ -8164,7 +8460,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, forecast_grades_html=forecast_grades_html, retro_html=retro_html, retro_patterns_html=retro_patterns_html, market_context_html=market_context_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
             f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
@@ -8221,10 +8517,11 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # first. Coach name column is a placeholder until Samsara
             # exposes user attribution — see build_page_coached docstring.
             f"{wrap(build_page_coached(samsara, date_str))}{pb}"
-            # FINAL PAGE — data refresh status: when each source last updated and
-            # whether its refresh workflow ran clean.
-            f"{wrap(build_refresh_status_page(refresh_status, date_str))}"
-            f"</body></html>")
+            f"{wrap(build_refresh_status_page(refresh_status, date_str))}{pb}"
+            # FINAL PAGE — decisions graded + weekly retro/lessons. Only
+            # rendered when at least one of the four blocks has content.
+            + (wrap(_decisions_retro_html) if _decisions_retro_html else "")
+            + f"</body></html>")
 
 
 # ----------------------------------------------------------------------

@@ -35,21 +35,49 @@ from src.teams_adaptive_cards import post_adaptive_cards
 _ACC_FOLDER = "Safety"
 
 
+def _post_log_format_alert(webhook: str, cols: str) -> None:
+    """Post a Teams MessageCard when Accountability Log column format has changed."""
+    if not webhook:
+        return
+    try:
+        import requests as _req
+        _req.post(webhook, json={
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "B01C2E",
+            "summary": "⚠️ Accountability Log format changed — suppression disabled",
+            "sections": [{
+                "activityTitle": "⚠️ Accountability Log format changed — suppression disabled",
+                "text": (
+                    "The date column could not be found in **Accountability Log.xlsx**. "
+                    "Suppression, resolution matching, and EOD summary will not work until "
+                    f"the column header is restored. Columns found: `{cols}`"
+                ),
+            }],
+        }, timeout=10)
+    except Exception as exc:
+        print(f"Could not post log format alert to Teams: {exc}")
+
+
 def _load_resolved_today(
     tok: str,
     upn: str,
     today: datetime.date,
-) -> "tuple[set[str], dict[str, datetime.date]]":
-    """Return resolved tokens and CDL reinstatement dates from the log for today.
+    webhook: str = "",
+) -> "tuple[set[str], dict[str, datetime.date], dict[str, datetime.date]]":
+    """Return resolved tokens, CDL reinstatement dates, and DOT scheduled dates for today.
 
-    Returns (resolved, cdl_dates) where:
+    Returns (resolved, cdl_dates, dot_dates) where:
       resolved  — flat set of lowercased category names and "driver:<name>" tokens.
       cdl_dates — drv_norm → reinstatement date parsed from Action Taken / Notes
                   for CDL Disqualified rows.
+      dot_dates — unit_norm → scheduled inspection date parsed from Action Taken /
+                  Notes for DOT Inspection rows.
     """
     from src.suppression_registry import extract_date_from_text
     resolved: set[str] = set()
     cdl_dates: dict[str, datetime.date] = {}
+    dot_dates: dict[str, datetime.date] = {}
     try:
         raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
@@ -61,7 +89,9 @@ def _load_resolved_today(
         action_col = next((c for c in df.columns if "action" in c), None)
         notes_col  = next((c for c in df.columns if "note" in c), None)
         if date_col is None:
-            print("Accountability Log.xlsx: date column not found.")
+            cols = ", ".join(df.columns.tolist()) or "(empty)"
+            print(f"Accountability Log.xlsx: date column not found. Columns: {cols}")
+            _post_log_format_alert(webhook, cols)
             return resolved, cdl_dates
         for _, row in df.iterrows():
             raw_date = row[date_col]
@@ -87,18 +117,23 @@ def _load_resolved_today(
                 if drv and drv != "nan":
                     resolved.add(f"driver:{drv}")
             is_cdl = "cdl" in cat or "disqualif" in cat
-            if is_cdl and drv:
+            is_dot = "dot inspection" in cat
+            if (is_cdl or is_dot) and drv:
                 text = " ".join(filter(None, [
                     str(row[action_col]) if action_col and not pd.isna(row[action_col]) else "",
                     str(row[notes_col])  if notes_col  and not pd.isna(row[notes_col])  else "",
                 ]))
                 parsed = extract_date_from_text(text)
                 if parsed and parsed > today:
-                    cdl_dates[drv] = parsed
-                    print(f"CDL reinstatement date for {drv}: {parsed.isoformat()}")
+                    if is_cdl:
+                        cdl_dates[drv] = parsed
+                        print(f"CDL reinstatement date for {drv}: {parsed.isoformat()}")
+                    else:
+                        dot_dates[drv] = parsed
+                        print(f"DOT inspection scheduled date for {drv}: {parsed.isoformat()}")
     except Exception as exc:
         print(f"Could not read Accountability Log.xlsx: {exc}")
-    return resolved, cdl_dates
+    return resolved, cdl_dates, dot_dates
 
 
 def main() -> int:
@@ -132,10 +167,12 @@ def main() -> int:
             print(f"No accountability JSON found for {today}: {exc}")
             return 0
 
-    resolved_today, cdl_dates = _load_resolved_today(tok, upn, today)
+    resolved_today, cdl_dates, dot_dates = _load_resolved_today(tok, upn, today, webhook=webhook)
     print(f"Actioned today: {sorted(resolved_today) or 'none'}")
     if cdl_dates:
         print(f"CDL reinstatement dates: {cdl_dates}")
+    if dot_dates:
+        print(f"DOT inspection scheduled dates: {dot_dates}")
 
     # Update suppression registry so tomorrow's brief skips newly actioned items.
     if resolved_today:
@@ -145,7 +182,7 @@ def main() -> int:
             registry   = load_registry(tok, upn)
             prune(registry, today)
             apply_resolved_to_registry(registry, resolved_today, all_items, today,
-                                       cdl_dates=cdl_dates)
+                                       cdl_dates=cdl_dates, dot_dates=dot_dates)
             save_registry(tok, upn, registry)
         except Exception as exc:
             print(f"Warning: could not update suppression registry: {exc}")

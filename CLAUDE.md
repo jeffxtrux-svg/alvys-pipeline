@@ -270,3 +270,55 @@ Consult these before large changes; keep them in sync when behavior changes.
 `Karpathy-Wiki/` is an unrelated personal knowledge-base project that happens to
 live in this repo and has **its own** `CLAUDE.md`. It is not part of the data
 pipeline — don't conflate the two.
+
+## Architectural decisions — key invariants baked into email scripts
+
+### DVIR compliance % (as of 2026-06-28)
+
+DVIR compliance is `done / required × 100` where `required = pre_trip_count × 2`
+(each pre-trip expects a matching post-trip per FMCSA 396.11/396.13).
+
+**The `HOS_DailyLogs` OneDrive sheet only covers Dec 2025–Jan 2026 and is
+effectively stale for any recent window.** All three places that need a
+working-days denominator fall back to counting `inspectionType == "preTrip"` rows
+from the DVIRs sheet instead:
+
+1. `compute_inspection_compliance` (`src/scorecard_email.py` ~line 4034) — the
+   per-driver DVIR detail table. When `hos_window.empty`, uses the DVIRs sheet
+   directly: `required = pre_trips × 2`.
+2. 7d tile fallback in `_extra_trends` (`src/safety_compliance_email.py`) — when
+   `compute_inspection_compliance` returns 0 rows, counts pre-trip DVIRs in the
+   last 7d and computes `pct = done / (pre × 2)`.
+3. 6-month bar chart in `_extra_trends` — builds `pre_trips_by_month` dict from
+   DVIRs `inspectionType`; uses `pre × 2` as denominator when `wd_by_month` is
+   empty for that month.
+
+The `inspectionType` column is found via `_find_col(df, ["inspectiontype", "dvirtype", "type"])`;
+in production it resolves to the column named `'type'`.
+
+### Est. month margin projection (`compute_margin_projection`, `src/scorecard_email.py` ~line 1745)
+
+Two invariants — **do not revert either**:
+
+1. **MTD rate (not trailing window)**: When `wd_elapsed >= 5`, the daily revenue
+   rate used for projection is `s_rev / wd_elapsed` (month-to-date actuals ÷
+   working days elapsed). The older trailing 80-working-day rate (`t_rev / days`)
+   spans prior months with higher revenue and overstates the projection. The MTD
+   rate is only bypassed when fewer than 5 working days have elapsed (early-month
+   instability).
+
+2. **Floor = `s_rev × applied_pct`**: The floor preventing the projection from
+   dropping below settled actuals is `settled_revenue × margin_pct`, **not**
+   `settled_revenue − settled_cost`. The `s_cost` leg only captures Driver Rate
+   from Alvys, not full overhead, so `s_rev - s_cost` was inflating the floor
+   above true gross margin.
+
+Verified result: June 2026 projection `$178,067` (was `$228,917`), within
+target $165–170K range.
+
+### Executive brief page order (as of 2026-06-28)
+
+The "Decisions Graded" + "Weekly Lessons" block (rendered by
+`_decisions_retro_inner()` in `src/scorecard_email.py`) is placed on the **last
+page** of the executive brief, after all data pages. It was formerly rendered at
+the top of page 1. Do not move it back to page 1.

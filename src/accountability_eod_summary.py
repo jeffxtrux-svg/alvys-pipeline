@@ -17,7 +17,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -330,7 +329,7 @@ def main() -> int:
         return 1
 
     tok   = get_token(tenant, client, secret)
-    today = datetime.datetime.now(ZoneInfo("America/Chicago")).date()
+    today = datetime.date.today()
 
     post_eod_summary(tok, upn, webhook, today, run_url)
     return 0

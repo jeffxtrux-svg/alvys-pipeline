@@ -1,32 +1,9 @@
-"""Per-category suppression registry for safety accountability items.
+"""Suppression registry for safety accountability items.
 
-Stored as Safety/suppression-registry.json in OneDrive.  The morning brief
-loads this registry before building today's accountability JSON and skips any
-item whose suppression window has not yet expired.
-
-Smart suppression windows by category:
-  Driver License Expiring / DOT Medical Card
-      → Suppress until 3 days before the expiration date (using _expires_iso
-        stored on the item).  Within the 3-day window the item stays on
-        every day until the license/card is renewed in the source system.
-  CDL Disqualified
-      → Suppress until the reinstatement date entered in the form's Action
-        Taken / Notes field (parsed by _load_accountability_log).  Falls back
-        to 1 day if no date was found.
-  DOT Inspection — Tractor / Trailer
-      → 7-day suppression when an appointment is scheduled.  No suppression
-        at all when the unit is federally out of service (365 days since last
-        inspection, flagged by _federal_oos=True on the item).
-  MVR Violation
-      → 1 day (actioned / challenged; recheck tomorrow vs. live SambaSafety).
-  HOS Violation
-      → 1 day per occurrence; a new violation the next day is a new item.
-  DVIR Compliance / Speeding / Low Safety Score
-      → 7-day coaching grace period before the item refires.
-  SambaSafety Risk Flag (high-risk leaderboard)
-      → 180 days (6-month hold after action plan is filed).
-  Safety Event Coaching / DVIR Defects / Prior-Day Log Certification
-      → Never suppressed here; Samsara data drives their removal naturally.
+Persists as Safety/suppression-registry.json on OneDrive. Each entry maps a
+category::driver key to an ISO-date 'until' field — is_suppressed returns True
+while today < until, so the item is hidden from Teams cards and not counted as
+open in the brief.
 """
 from __future__ import annotations
 
@@ -34,267 +11,272 @@ import datetime
 import json
 import logging
 import re
+import tempfile
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("suppression_registry")
 
-_FOLDER   = "Safety"
-_FILENAME = "suppression-registry.json"
-_OD_PATH  = f"{_FOLDER}/{_FILENAME}"
+_FOLDER       = "Safety"
+_FNAME        = "suppression-registry.json"
+_DEFAULT_DAYS = 30  # once actioned, suppress for 30 days (matches history window)
 
-# Fallback window (days) for categories without smart logic.
-# Any category not listed here gets a 1-day default (see add_suppression) so
-# the user's "actioned" form submission always honors at least one day,
-# regardless of whether the category was anticipated.
-_FALLBACK_DAYS: dict[str, int] = {
-    "cdl disqualified":               1,    # overridden by reinstatement date if provided
-    "driver license expiring":        1,    # overridden by expiry-date logic
-    "dot medical card":               1,    # overridden by expiry-date logic
-    "mvr violation":                  1,
-    "dot inspection — tractor":       7,    # overridden; blocked when federal OOS (365d)
-    "dot inspection — trailer":       7,    # overridden; blocked when federal OOS (365d)
-    "hos violation":                  1,
-    "dvir compliance":                7,
-    "dvir defect":                    1,    # cleared in Samsara when defect resolved
-    "speeding":                       7,
-    "low safety score":               7,
-    "sambasafety risk flag":        180,
-    "safety event — coaching needed": 1,   # cleared in Samsara when coached
-    "safety event — needs disposition":1,  # cleared in Samsara when dispositioned
-    "prior day logs not certified":   1,    # cleared in HOS when driver certifies
-}
-# Default suppression window (days) for any user-actioned category not above.
-_DEFAULT_DAYS = 1
 
-# Days before expiry at which License / Med Card items reappear and stay on.
-_LICENSE_REFIRE_DAYS = 3
+# ---------------------------------------------------------------------------
+# Date extraction from free text
+# ---------------------------------------------------------------------------
 
+_DATE_PATTERNS = [
+    r"\b(\d{4}-\d{2}-\d{2})\b",
+    r"\b(\d{1,2}/\d{1,2}/\d{4})\b",
+    r"\b(\d{1,2}-\d{1,2}-\d{4})\b",
+    r"\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\.?\s+\d{1,2},?\s+\d{4})\b",
+]
+_DATE_FMTS = [
+    "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y",
+    "%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y",
+]
+
+
+def extract_date_from_text(text: str) -> datetime.date | None:
+    """Return the first recognisable date found in *text*, or None."""
+    if not text:
+        return None
+    for pat in _DATE_PATTERNS:
+        m = re.search(pat, text, re.IGNORECASE)
+        if not m:
+            continue
+        raw = m.group(1)
+        for fmt in _DATE_FMTS:
+            try:
+                return datetime.datetime.strptime(raw, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+# ---------------------------------------------------------------------------
+# OneDrive persistence
+# ---------------------------------------------------------------------------
 
 def load_registry(tok: str, upn: str) -> dict:
-    """Load from OneDrive. Returns an empty registry dict on any failure."""
+    """Download registry from OneDrive. Returns {} on 404 or any error.
+
+    Validates that every value is a dict with an 'until' key. If the file
+    exists but contains an old/incompatible format (e.g. list values from a
+    prior implementation), discards it and starts fresh — old entries would
+    have expired anyway.
+    """
     try:
         from src.onedrive_upload import download_file
-        data = json.loads(download_file(tok, upn, _OD_PATH))
-        data.setdefault("suppressions", [])
-        return data
+        raw = download_file(tok, upn, f"{_FOLDER}/{_FNAME}")
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            log.warning("Suppression registry has unexpected type %s — resetting.", type(data).__name__)
+            return {}
+        # Discard entries that don't have the expected {"until": ..., "added": ...} shape.
+        valid = {
+            k: v for k, v in data.items()
+            if isinstance(v, dict) and "until" in v
+        }
+        if len(valid) != len(data):
+            log.warning(
+                "Suppression registry: %d/%d entries had old format — discarded.",
+                len(data) - len(valid), len(data),
+            )
+        return valid
     except Exception as exc:
-        log.info("Suppression registry not found or unreadable (%s) — starting fresh.", exc)
-        return {"suppressions": []}
+        log.debug("Suppression registry not loaded (%s) — starting empty.", exc)
+        return {}
 
 
 def save_registry(tok: str, upn: str, registry: dict) -> None:
-    """Save registry to OneDrive. Fails soft — logs warning on error."""
+    """Upload registry to OneDrive."""
     try:
         from src.onedrive_upload import ensure_folder, upload_file
-        tmp = Path("output") / _FILENAME
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(registry, indent=2, default=str))
         ensure_folder(tok, upn, _FOLDER)
-        upload_file(tok, upn, folder_path=_FOLDER, filename=_FILENAME, file_path=tmp)
-        log.info("Suppression registry saved (%d active entries).",
-                 len(registry.get("suppressions", [])))
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            json.dump(registry, tf, indent=2)
+            tmp = Path(tf.name)
+        upload_file(tok, upn, folder_path=_FOLDER, filename=_FNAME, file_path=tmp)
+        tmp.unlink(missing_ok=True)
+        log.info("Suppression registry saved (%d entries).", len(registry))
     except Exception as exc:
         log.warning("Could not save suppression registry: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# Registry operations
+# ---------------------------------------------------------------------------
+
 def prune(registry: dict, today: datetime.date) -> None:
-    """Remove entries whose window has expired (suppressed_until <= today)."""
-    before = len(registry.get("suppressions", []))
-    registry["suppressions"] = [
-        s for s in registry.get("suppressions", [])
-        if datetime.date.fromisoformat(s["suppressed_until"]) > today
+    """Remove entries whose window has expired (until <= today)."""
+    expired = [
+        k for k, v in registry.items()
+        if datetime.date.fromisoformat(v["until"]) <= today
     ]
-    removed = before - len(registry["suppressions"])
-    if removed:
-        log.info("Pruned %d expired suppression entries.", removed)
+    for k in expired:
+        del registry[k]
+    if expired:
+        log.info("Pruned %d expired suppression entries.", len(expired))
+
+
+def _key(cat_norm: str, drv_norm: str) -> str:
+    return f"{cat_norm}::{drv_norm}"
 
 
 def is_suppressed(
     registry: dict,
-    category: str,
-    subject: str,
+    cat_norm: str,
+    drv_norm: str,
     today: datetime.date,
 ) -> bool:
-    """Return True if this (category, subject) pair is actively suppressed.
+    """Return True if the category+driver combo is suppressed on *today*.
 
-    subject is the driver name OR unit string, lowercased.  Pass "" for
-    aggregate items (e.g. HOS Violation with no specific driver attached).
+    Checks the specific cat::drv key first; falls back to the category-only
+    wildcard key (cat::) so a category-level resolution suppresses all drivers
+    in that category even when the log's driver field didn't match exactly.
     """
-    cat_norm  = (category or "").lower().strip()
-    subj_norm = (subject  or "").lower().strip()
-    for s in registry.get("suppressions", []):
-        if s.get("category") == cat_norm and s.get("subject") == subj_norm:
-            try:
-                until = datetime.date.fromisoformat(s["suppressed_until"])
-            except Exception:
-                continue
-            if today < until:
+    for k in (_key(cat_norm, drv_norm), _key(cat_norm, "")):
+        entry = registry.get(k)
+        if not entry:
+            continue
+        try:
+            if today < datetime.date.fromisoformat(entry["until"]):
                 return True
+        except Exception:
+            continue
     return False
-
-
-def _set_suppression(
-    registry: dict,
-    cat_norm: str,
-    subj_norm: str,
-    until_iso: str,
-    today: datetime.date,
-) -> None:
-    """Insert or update a suppression entry with an explicit until date."""
-    for s in registry.get("suppressions", []):
-        if s.get("category") == cat_norm and s.get("subject") == subj_norm:
-            s["suppressed_until"] = until_iso
-            s["suppressed_on"]    = today.isoformat()
-            log.info("Suppression refreshed: [%s / %s] → until %s",
-                     cat_norm, subj_norm, until_iso)
-            return
-    registry.setdefault("suppressions", []).append({
-        "category":         cat_norm,
-        "subject":          subj_norm,
-        "suppressed_until": until_iso,
-        "suppressed_on":    today.isoformat(),
-    })
-    log.info("Suppression added: [%s / %s] → until %s", cat_norm, subj_norm, until_iso)
 
 
 def add_suppression(
     registry: dict,
-    category: str,
-    subject: str,
-    today: datetime.date,
+    cat_norm: str,
+    drv_norm: str,
+    until: datetime.date,
+    today: datetime.date | None = None,
 ) -> None:
-    """Add or refresh a suppression using the standard fallback window.
-
-    Falls back to _DEFAULT_DAYS (1 day) for categories not in _FALLBACK_DAYS,
-    so the user's "actioned" form submission always honors at least one day
-    regardless of whether the category was anticipated when this code was
-    written. Without this default, brand-new category strings the user
-    actions via the form would silently re-fire on the next brief.
-    """
-    cat_norm  = (category or "").lower().strip()
-    subj_norm = (subject  or "").lower().strip()
-    days = _FALLBACK_DAYS.get(cat_norm, _DEFAULT_DAYS)
-    until = (today + datetime.timedelta(days=days)).isoformat()
-    _set_suppression(registry, cat_norm, subj_norm, until, today)
-
-
-def extract_date_from_text(text: str) -> "datetime.date | None":
-    """Parse the first date found in free text (M/D/YY, MM/DD/YYYY, YYYY-MM-DD)."""
-    if not text:
-        return None
-    # ISO date first (unambiguous)
-    m = re.search(r'\b(20\d{2})[/\-](\d{1,2})[/\-](\d{1,2})\b', text)
-    if m:
+    """Add or extend a suppression window. No-op if already suppressed longer."""
+    k = _key(cat_norm, drv_norm)
+    existing = registry.get(k)
+    if existing:
         try:
-            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except Exception:
-            pass
-    # MM/DD/YY or MM/DD/YYYY
-    m = re.search(r'\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})\b', text)
-    if m:
-        try:
-            mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if y < 100:
-                y += 2000
-            return datetime.date(y, mo, d)
-        except Exception:
-            pass
-    return None
-
-
-def add_suppression_smart(
-    registry: dict,
-    item: dict,
-    today: datetime.date,
-    cdl_dates: "dict[str, datetime.date] | None" = None,
-) -> None:
-    """Add suppression using per-category smart windows.
-
-    item must be a dict from the accountability JSON with at minimum a
-    "category" key and optionally "driver", "unit", "_expires_iso",
-    "_federal_oos".
-
-    cdl_dates maps drv_norm → reinstatement_date parsed from form notes.
-    """
-    cat_norm  = (item.get("category") or "").lower().strip()
-    subj_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
-
-    if cat_norm in ("driver license expiring", "dot medical card"):
-        # Suppress until _LICENSE_REFIRE_DAYS before expiry so the item stays
-        # quiet while the appointment is pending, then reappears as the deadline
-        # approaches and remains until the source system shows renewal.
-        expires_iso = item.get("_expires_iso")
-        if expires_iso:
-            try:
-                expiry = datetime.date.fromisoformat(expires_iso)
-                until  = expiry - datetime.timedelta(days=_LICENSE_REFIRE_DAYS)
-                if until > today:
-                    _set_suppression(registry, cat_norm, subj_norm,
-                                     until.isoformat(), today)
-                    return
-                # Already inside the 3-day window — don't suppress so it
-                # appears every day until renewed.
-                log.info("Within %dd of expiry — no suppression for [%s / %s].",
-                         _LICENSE_REFIRE_DAYS, cat_norm, subj_norm)
+            if datetime.date.fromisoformat(existing["until"]) >= until:
                 return
+        except Exception:
+            pass
+    registry[k] = {
+        "until": until.isoformat(),
+        "added": (today or datetime.date.today()).isoformat(),
+    }
+    log.info("Suppression added: [%s / %s] until %s", cat_norm, drv_norm, until.isoformat())
+
+
+def rebuild_from_accountability_log(
+    registry: dict,
+    tok: str,
+    upn: str,
+    today: datetime.date,
+    acc_folder: str = "Safety",
+    acc_filename: str = "Accountability Log.xlsx",
+    suppress_days: int = _DEFAULT_DAYS,
+) -> int:
+    """Backfill suppressions from the full Accountability Log history.
+
+    Called when the registry is empty (first run or after a reset) so that
+    items actioned in previous weeks don't flood back. Reads every row in
+    Accountability Log.xlsx and adds a suppression for any action within the
+    last suppress_days days, setting until = action_date + suppress_days.
+    Returns the number of suppressions added.
+    """
+    try:
+        import io
+        import pandas as pd
+        from src.onedrive_upload import download_file
+        raw = download_file(tok, upn, f"{acc_folder}/{acc_filename}")
+        xl  = pd.ExcelFile(io.BytesIO(raw))
+        df  = xl.parse(xl.sheet_names[0])
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        date_col = next((c for c in df.columns if "date" in c), None)
+        cat_col  = next((c for c in df.columns if "category" in c), None)
+        drv_col  = next((c for c in df.columns if "driver" in c or "unit" in c), None)
+        if date_col is None:
+            log.warning("rebuild_from_accountability_log: date column not found — skipping.")
+            return 0
+        cutoff = today - datetime.timedelta(days=suppress_days)
+        added = 0
+        for _, row in df.iterrows():
+            try:
+                row_date = pd.Timestamp(row[date_col]).date()
             except Exception:
-                pass
-        # No expiry date in item data — fall back to 1 day
-        add_suppression(registry, cat_norm, subj_norm, today)
-
-    elif cat_norm == "cdl disqualified":
-        # Use the reinstatement date entered in the form's Action / Notes field
-        # if it was found and is in the future; otherwise 1-day recheck.
-        reinstate = (cdl_dates or {}).get(subj_norm)
-        if reinstate and isinstance(reinstate, datetime.date) and reinstate > today:
-            _set_suppression(registry, cat_norm, subj_norm,
-                             reinstate.isoformat(), today)
-        else:
-            add_suppression(registry, cat_norm, subj_norm, today)  # 1-day fallback
-
-    elif cat_norm in ("dot inspection — tractor", "dot inspection — trailer"):
-        # Federally OOS units (365 days since last inspection) cannot be
-        # suppressed — they stay on the card until the inspection is done.
-        if item.get("_federal_oos"):
-            log.info("DOT Inspection [%s / %s] is federal OOS — not suppressible.",
-                     cat_norm, subj_norm)
-            return
-        # Appointment scheduled: 7-day grace before refiring.
-        until = (today + datetime.timedelta(days=7)).isoformat()
-        _set_suppression(registry, cat_norm, subj_norm, until, today)
-
-    else:
-        add_suppression(registry, cat_norm, subj_norm, today)
+                continue
+            if row_date < cutoff or row_date > today:
+                continue
+            cat_norm = (str(row[cat_col]).strip().lower() if cat_col else "")
+            drv_norm = (str(row[drv_col]).strip().lower() if drv_col else "")
+            if cat_norm in ("", "nan") and drv_norm in ("", "nan"):
+                continue
+            until = row_date + datetime.timedelta(days=suppress_days)
+            if until <= today:
+                continue
+            # Always write category-only wildcard so is_suppressed can match even
+            # when the log's driver field (ID, blank, etc.) differs from the
+            # item's actual driver name.
+            if cat_norm not in ("", "nan"):
+                add_suppression(registry, cat_norm, "", until, today=row_date)
+            # Also write specific cat::drv entry when driver is available.
+            if drv_norm not in ("", "nan"):
+                add_suppression(registry, cat_norm, drv_norm, until, today=row_date)
+            added += 1
+        log.info("Rebuilt %d suppression(s) from accountability log history.", added)
+        return added
+    except Exception as exc:
+        log.warning("Could not rebuild suppressions from log: %s", exc)
+        return 0
 
 
 def apply_resolved_to_registry(
     registry: dict,
-    resolved_tokens: "set[str]",
-    all_items: "list[dict]",
+    resolved_cats: set,
+    all_items: list,
     today: datetime.date,
-    cdl_dates: "dict[str, datetime.date] | None" = None,
+    cdl_dates: "dict | None" = None,
+    dot_dates: "dict | None" = None,
 ) -> None:
-    """For each accountability item matched by resolved_tokens, add a suppression.
+    """Suppress every item whose category or driver appears in *resolved_cats*.
 
-    resolved_tokens — flat set from _load_accountability_log / _load_resolved_today:
-        lowercased category names and "driver:<name>" strings.
-    all_items — combined audra + ops list from the accountability JSON.
-        Items carry _expires_iso / _federal_oos metadata set by
-        _build_accountability_structured.
-    cdl_dates — drv_norm → reinstatement date parsed from form notes.
+    CDL Disqualified items use the reinstatement date from *cdl_dates* when
+    available.  DOT Inspection items are suppressed for 7 days past the
+    scheduled inspection date in *dot_dates* (or 7 days from today if no date
+    was recorded).  All others are suppressed for _DEFAULT_DAYS.
     """
-    if not resolved_tokens:
-        return
-    seen: set[tuple[str, str]] = set()
+    cdl_dates = cdl_dates or {}
+    dot_dates = dot_dates or {}
+    # Track which categories we've already written a wildcard for this run.
+    _cat_wildcard_written: set = set()
     for item in all_items:
-        cat_norm  = (item.get("category") or "").lower().strip()
-        subj_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
-        matched = (
-            cat_norm in resolved_tokens
-            or (subj_norm and f"driver:{subj_norm}" in resolved_tokens)
-        )
-        if matched:
-            key = (cat_norm, subj_norm)
-            if key not in seen:
-                seen.add(key)
-                add_suppression_smart(registry, item, today, cdl_dates=cdl_dates)
+        cat_norm = (item.get("category") or "").lower().strip()
+        drv_norm = (item.get("driver") or item.get("unit") or "").lower().strip()
+        cat_actioned = cat_norm in resolved_cats
+        drv_actioned = drv_norm and f"driver:{drv_norm}" in resolved_cats
+        if not (cat_actioned or drv_actioned):
+            continue
+        is_cdl = "cdl" in cat_norm or "disqualif" in cat_norm
+        is_dot = "dot inspection" in cat_norm
+        if is_cdl and drv_norm and drv_norm in cdl_dates:
+            until = cdl_dates[drv_norm]
+        elif is_dot:
+            # Use the scheduled inspection date + 7 days when the log captured one;
+            # otherwise suppress for 7 days from today as a safe fallback.
+            sched = dot_dates.get(drv_norm)
+            until = (sched + datetime.timedelta(days=7)) if sched else (today + datetime.timedelta(days=7))
+        else:
+            until = today + datetime.timedelta(days=_DEFAULT_DAYS)
+        add_suppression(registry, cat_norm, drv_norm, until, today=today)
+        # When the log resolved this category explicitly, also write a wildcard
+        # (cat::"") so tomorrow's is_suppressed catches any driver in the same
+        # category even if the log driver field didn't match exactly.
+        # CDL and DOT Inspection are excluded — each unit/driver has its own
+        # schedule and actioning one must not suppress others in the category.
+        if cat_actioned and not is_cdl and not is_dot and cat_norm not in _cat_wildcard_written:
+            add_suppression(registry, cat_norm, "", until, today=today)
+            _cat_wildcard_written.add(cat_norm)

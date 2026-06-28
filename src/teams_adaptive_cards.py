@@ -6,29 +6,202 @@ owner (Audra first, then Jackson + Dan).
 
 Each card is a read-only summary of today's action items with severity
 badges, days-open carry-forward, and occurrence escalation flags.  Each
-item has its own "📋 Record action" button linking to a Microsoft Form
-(TEAMS_FORM_URL) where the owner logs what they did; the form's Power
-Automate flow writes a row into Accountability Log.xlsx in
-OneDrive/Safety/ — no Premium license required.
+item has two buttons:
+  📋 Record action — links to the main Microsoft Form (TEAMS_FORM_URL)
+      where the owner logs coaching / corrective action taken.
+  🚫 Dismiss — links to a lightweight dismiss form (TEAMS_DISMISS_FORM_URL)
+      for false reports or non-issues. Pre-fills the same fields so the
+      Power Automate flow can write a "Dismissed" row to Accountability
+      Log.xlsx, which triggers the existing suppression pipeline and removes
+      the item from tomorrow's card. The button is hidden when
+      TEAMS_DISMISS_FORM_URL is not configured.
 
 GitHub Secrets used:
-  TEAMS_SAFETY_WEBHOOK  — incoming webhook URL
-  TEAMS_FORM_URL        — Microsoft Form fill-in URL (optional; button
-                          is hidden when not set)
+  TEAMS_SAFETY_WEBHOOK      — incoming webhook URL
+  TEAMS_FORM_URL            — Microsoft Form fill-in URL (optional; button
+                              hidden when not set)
+  TEAMS_DISMISS_FORM_URL    — Lightweight dismiss form URL (optional; button
+                              hidden when not set)
 """
 
 import datetime
 import json
 import os
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
 
 try:
     import requests as _requests
 except ImportError:
     _requests = None  # type: ignore
+
+# ---------------------------------------------------------------------------
+# Graph API — channel message management
+# ---------------------------------------------------------------------------
+
+_GRAPH = "https://graph.microsoft.com/v1.0"
+_CARD_IDS_FOLDER = "Safety"
+_CARD_IDS_FILE   = "teams-card-ids.json"
+
+
+def _graph_token() -> "str | None":
+    """Get a Graph API token using the existing Azure app credentials."""
+    tid = os.environ.get("AZURE_TENANT_ID", "").strip()
+    cid = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    sec = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+    if not (tid and cid and sec) or _requests is None:
+        return None
+    try:
+        r = _requests.post(
+            f"https://login.microsoftonline.com/{tid}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": cid,
+                "client_secret": sec,
+                "scope": "https://graph.microsoft.com/.default",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()["access_token"]
+    except Exception as exc:
+        print(f"teams_adaptive_cards: could not get Graph token: {exc}")
+        return None
+
+
+def _load_card_ids(od_tok: str, upn: str) -> dict:
+    """Load stored Teams message IDs from OneDrive. Returns {} on any error."""
+    try:
+        from src.onedrive_upload import download_file
+        raw = download_file(od_tok, upn, f"{_CARD_IDS_FOLDER}/{_CARD_IDS_FILE}")
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_card_ids(od_tok: str, upn: str, ids: dict) -> None:
+    """Persist message IDs to OneDrive so the next run can delete them."""
+    try:
+        from src.onedrive_upload import ensure_folder, upload_file
+        ensure_folder(od_tok, upn, _CARD_IDS_FOLDER)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            json.dump(ids, tf)
+            tmp = Path(tf.name)
+        upload_file(od_tok, upn, folder_path=_CARD_IDS_FOLDER,
+                    filename=_CARD_IDS_FILE, file_path=tmp)
+        tmp.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"teams_adaptive_cards: could not save card IDs: {exc}")
+
+
+def _delete_cards(gtok: str, team_id: str, channel_id: str, ids: dict) -> None:
+    """Soft-delete previous cards by stored message ID (shows 'message deleted')."""
+    for label, msg_id in ids.items():
+        try:
+            r = _requests.delete(
+                f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {gtok}"},
+                timeout=15,
+            )
+            if r.status_code in (200, 204):
+                print(f"Deleted old {label} card (msg {msg_id})")
+            else:
+                print(f"Could not delete {label} card {msg_id}: HTTP {r.status_code}")
+        except Exception as exc:
+            print(f"Error deleting {label} card {msg_id}: {exc}")
+
+
+def _trigger_pa_via_onedrive(
+    od_tok: str, upn: str, card: dict, label: str,
+    webhook_payload: dict | None = None,
+) -> bool:
+    """Write card JSON to OneDrive to trigger the Power Automate flow.
+
+    PA watches Safety/pa-triggers/ for file changes (free standard connector).
+    The trigger file contains:
+      payload — full Teams incoming-webhook message ({type, attachments}) so the
+                PA flow can POST it directly to the Teams webhook without any
+                JSON reshaping.  Configure the PA HTTP action body as the
+                expression: triggerBody()?['payload']
+      card    — adaptive-card content only (backward-compat; some flow designs
+                extract this and wrap it themselves)
+      _ts     — ISO timestamp so OneDrive detects a content change every run
+
+    Returns True if the trigger file was written successfully.
+    """
+    filename = "teams-card-audra.json" if "AUDRA" in label.upper() else "teams-card-ops.json"
+    try:
+        from src.onedrive_upload import ensure_folder, upload_file
+        ensure_folder(od_tok, upn, "Safety/pa-triggers")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            json.dump({
+                "payload": webhook_payload or {
+                    "type": "message",
+                    "attachments": [{
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "contentUrl": None,
+                        "content": card,
+                    }],
+                },
+                "card": card,
+                "_ts": datetime.datetime.utcnow().isoformat(),
+            }, tf)
+            tmp = Path(tf.name)
+        upload_file(od_tok, upn, folder_path="Safety/pa-triggers",
+                    filename=filename, file_path=tmp)
+        tmp.unlink(missing_ok=True)
+        print(f"{label}: PA trigger file written → Safety/pa-triggers/{filename}")
+        return True
+    except Exception as exc:
+        print(f"{label}: could not write PA trigger file: {exc}")
+        return False
+
+
+def _post_card_pa(pa_url: str, card: dict) -> bool:
+    """POST an Adaptive Card to a Power Automate HTTP trigger. Returns True on success."""
+    try:
+        r = _requests.post(pa_url, json={"card": card}, timeout=45)
+        if r.status_code in range(200, 300):
+            return True
+        print(f"PA flow returned HTTP {r.status_code}: {r.text[:300]}")
+    except Exception as exc:
+        print(f"PA flow post failed: {exc}")
+    return False
+
+
+def _post_card_graph(gtok: str, team_id: str, channel_id: str, card: dict) -> "str | None":
+    """Post an Adaptive Card via Graph API. Returns the new message ID or None."""
+    att_id  = uuid.uuid4().hex
+    payload = {
+        "body": {
+            "contentType": "html",
+            "content": f'<attachment id="{att_id}"></attachment>',
+        },
+        "attachments": [{
+            "id": att_id,
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": json.dumps(card),
+        }],
+    }
+    try:
+        r = _requests.post(
+            f"{_GRAPH}/teams/{team_id}/channels/{channel_id}/messages",
+            headers={
+                "Authorization": f"Bearer {gtok}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        if r.status_code in (200, 201):
+            return r.json().get("id")
+        print(f"Graph post failed: HTTP {r.status_code} — {r.text[:400]}")
+    except Exception as exc:
+        print(f"Error posting card via Graph: {exc}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +260,7 @@ def _prefill_url(
         f"{_FF_DRIVER_UNIT}={_qtxt(drv)}",
         f"{_FF_DETAIL}={_qtxt(item.get('detail', ''))}",
         f"{_FF_DAYS_OPEN}={item.get('days_open', 1)}",
-        f"{_FF_OCCURRENCES}={item.get('_recurrence_count') or item.get('occurrence', 1)}",
+        f"{_FF_OCCURRENCES}={item.get('occurrence', 1)}",
     ]
 
     owner_name = _OWNER_NAME.get(owner_label)
@@ -101,8 +274,8 @@ def _prefill_url(
 # Card builder
 # ---------------------------------------------------------------------------
 
-def _item_block(item: dict, form_url: str = "") -> dict:
-    """One Container block per accountability item with its own action button."""
+def _item_block(item: dict, form_url: str = "", dismiss_url: str = "") -> dict:
+    """One Container block per accountability item with its own action buttons."""
     sev    = item.get("severity", "medium")
     emoji  = _SEV_EMOJI.get(sev, "🟡")
     color  = _SEV_COLOR.get(sev, "Accent")
@@ -115,68 +288,21 @@ def _item_block(item: dict, form_url: str = "") -> dict:
 
     actioned = item.get("actioned_yesterday", False)
 
-    if actioned:
-        # Green completed block — no Record action button, dimmed text
-        header = f"✅ ~~{cat}~~" if cat else "✅ Completed"
-        subject = (f"{drv} — " if drv else "") + detail
-        block_items: list[dict] = [
-            {
-                "type": "TextBlock",
-                "text": header,
-                "wrap": True,
-                "weight": "Bolder",
-                "color": "Good",
-            },
-            {
-                "type": "TextBlock",
-                "text": subject,
-                "wrap": True,
-                "spacing": "None",
-                "isSubtle": True,
-            },
-            {
-                "type": "TextBlock",
-                "text": "✅ Action recorded",
-                "wrap": True,
-                "isSubtle": True,
-                "spacing": "Small",
-                "color": "Good",
-                "size": "Small",
-            },
-        ]
-        return {
-            "type": "Container",
-            "style": "good",
-            "separator": True,
-            "spacing": "Medium",
-            "items": block_items,
-        }
-
-    is_coaching = "coaching needed" in cat.lower()
-    rec_count   = item.get("_recurrence_count", 0)
-    first_days  = item.get("_first_seen_days", days)
-
-    # Normal open item
     header = f"{emoji} **{cat}**"
-    # Day-open indicator (coaching gets a stronger escalation at day 5)
-    if is_coaching and first_days >= 5:
-        header += f"  🔴 Day {first_days} — Supervisor follow-up required"
+    if actioned:
+        header += "  ✅ Actioned"
     elif days >= 3:
         header += f"  ⚠️ Day {days} — ESCALATED"
     elif days > 1:
         header += f"  ↩ Day {days} open"
-    # 30-day occurrence badge
     if occ >= 3:
         header += f"  🚨 #{occ} in 30d"
     elif occ == 2:
         header += f"  ⚠️ 2nd in 30d"
-    # 90-day chronic pattern badge — overrides 30d badge when triggered
-    if rec_count >= 3:
-        header += f"  🔁 {rec_count}x in 90d — Progressive discipline"
 
     subject = (f"{drv} — " if drv else "") + detail
 
-    block_items = [
+    block_items: list[dict] = [
         {
             "type": "TextBlock",
             "text": header,
@@ -200,18 +326,26 @@ def _item_block(item: dict, form_url: str = "") -> dict:
         },
     ]
 
+    buttons: list[dict] = []
     if form_url:
+        buttons.append({
+            "type": "Action.OpenUrl",
+            "title": "📋 Record action",
+            "url": form_url,
+            "style": "positive",
+        })
+    if dismiss_url:
+        buttons.append({
+            "type": "Action.OpenUrl",
+            "title": "🚫 Dismiss",
+            "url": dismiss_url,
+            "style": "destructive",
+        })
+    if buttons:
         block_items.append({
             "type": "ActionSet",
             "spacing": "Small",
-            "actions": [
-                {
-                    "type": "Action.OpenUrl",
-                    "title": "📋 Record action",
-                    "url": form_url,
-                    "style": "positive",
-                }
-            ],
+            "actions": buttons,
         })
 
     return {
@@ -222,103 +356,36 @@ def _item_block(item: dict, form_url: str = "") -> dict:
     }
 
 
-def _all_clear_card(
-    owner_label: str,
-    today: datetime.date,
-    suppressed_count: int,
-    run_url: str = "",
-) -> dict:
-    """Return a compact 'all clear' card when every item was actioned yesterday."""
-    body: list[dict] = [
-        {
-            "type": "Container",
-            "style": "good",
-            "bleed": True,
-            "items": [
-                {
-                    "type": "TextBlock",
-                    "text": f"✅ {owner_label} — Safety Accountability",
-                    "weight": "Bolder",
-                    "size": "Large",
-                    "color": "Light",
-                    "wrap": True,
-                },
-                {
-                    "type": "TextBlock",
-                    "text": today.strftime("%A, %B %-d, %Y"),
-                    "color": "Light",
-                    "spacing": "None",
-                    "isSubtle": True,
-                },
-                {
-                    "type": "TextBlock",
-                    "text": f"All {suppressed_count} item(s) from yesterday were actioned — no new items today.",
-                    "color": "Light",
-                    "spacing": "None",
-                    "wrap": True,
-                },
-            ],
-        }
-    ]
-    actions: list[dict] = []
-    if run_url:
-        actions.append({"type": "Action.OpenUrl", "title": "View workflow run", "url": run_url})
-    card = {
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard",
-        "version": "1.4",
-        "body": body,
-        "actions": actions,
-        "msteams": {"width": "Full"},
-    }
-    return {
-        "type": "message",
-        "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
-                         "contentUrl": None, "content": card}],
-    }
-
-
 def build_owner_card(
     owner_label: str,
     items: list[dict],
     today: datetime.date,
     run_url: str = "",
     form_url: str = "",
+    dismiss_url: str = "",
 ) -> dict:
     """Return the full Teams Adaptive Card payload for one owner."""
     if not items:
         return {}
 
-    actioned_items = [i for i in items if i.get("actioned_yesterday")]
-    open_items     = [i for i in items if not i.get("actioned_yesterday")]
-
-    # All clear — every item was actioned
-    if not open_items:
-        return _all_clear_card(owner_label, today, len(actioned_items), run_url)
-
-    # Open items sorted by urgency; actioned items appended at the bottom
-    sorted_open = sorted(
-        open_items,
+    sorted_items = sorted(
+        items,
         key=lambda i: (-i.get("days_open", 1),
                        _SEV_RANK.get(i.get("severity", "medium"), 2)),
     )
-    sorted_items = sorted_open + actioned_items
 
-    n_open   = len(open_items)
-    n_done   = len(actioned_items)
-    new_cnt  = sum(1 for i in open_items if i.get("days_open", 1) == 1)
-    cf_cnt   = sum(1 for i in open_items if i.get("days_open", 1) > 1)
-    esc_cnt  = sum(1 for i in open_items if i.get("days_open", 1) >= 3)
+    n        = len(items)
+    new_cnt  = sum(1 for i in items if i.get("days_open", 1) == 1)
+    cf_cnt   = sum(1 for i in items if i.get("days_open", 1) > 1)
+    esc_cnt  = sum(1 for i in items if i.get("days_open", 1) >= 3)
 
-    parts = [f"{n_open} open"]
+    parts = [f"{n} action item(s)"]
     if new_cnt:
         parts.append(f"{new_cnt} new today")
     if cf_cnt:
         parts.append(f"{cf_cnt} carried forward")
     if esc_cnt:
         parts.append(f"⚠️ {esc_cnt} escalated (3+ days open)")
-    if n_done:
-        parts.append(f"✅ {n_done} completed")
     subtitle = " · ".join(parts)
 
     body: list[dict] = [
@@ -355,12 +422,9 @@ def build_owner_card(
     ]
 
     for item in sorted_items:
-        # Don't show "Record action" button on already-completed items
-        if item.get("actioned_yesterday"):
-            body.append(_item_block(item, ""))
-        else:
-            item_url = _prefill_url(form_url, item, today, owner_label) if form_url else ""
-            body.append(_item_block(item, item_url))
+        item_url    = _prefill_url(form_url,    item, today, owner_label) if form_url    else ""
+        dismiss_item_url = _prefill_url(dismiss_url, item, today, owner_label) if dismiss_url else ""
+        body.append(_item_block(item, item_url, dismiss_item_url))
 
     actions: list[dict] = []
     if run_url:
@@ -400,16 +464,22 @@ def post_adaptive_cards(
     webhook: str,
     run_url: str = "",
     form_url: str = "",
-    resolved_today: "set[str] | None" = None,
+    dismiss_url: str = "",
+    resolved_today: "set | None" = None,
 ) -> None:
-    """Read accountability JSON and POST Adaptive Cards to Teams webhook.
+    """Read accountability JSON and POST Adaptive Cards to Teams.
 
-    resolved_today: category names (case-insensitive) actioned today.
-    Matching items get the ✅ Actioned badge without waiting for tomorrow.
+    Posting priority (first success wins):
+      1. OneDrive trigger (TEAMS_PA_ONEDRIVE=1) — writes a JSON file that a
+         Power Automate flow watches; PA handles delete-old + post-new using
+         free standard connectors.
+      2. Power Automate HTTP trigger (TEAMS_PA_URL_AUDRA / _OPS) — PA handles
+         delete + post; requires premium PA license.
+      3. Microsoft Graph API — posts directly and tracks message IDs; deletion
+         requires ChannelMessage.ReadWrite.All (may not be available).
+      4. Incoming webhook — no ID tracking, no cleanup.
+    Silent no-op when no method is configured.
     """
-    if not webhook:
-        print("TEAMS_SAFETY_WEBHOOK not set — skipping Teams posts.")
-        return
     if _requests is None:
         print("requests library not available — skipping Teams posts.")
         return
@@ -417,42 +487,121 @@ def post_adaptive_cards(
         print(f"Accountability JSON not found at {acc_path} — skipping.")
         return
 
+    pa_url_audra = os.environ.get("TEAMS_PA_URL_AUDRA", "").strip()
+    pa_url_ops   = os.environ.get("TEAMS_PA_URL_OPS",   "").strip()
+    use_pa_od    = os.environ.get("TEAMS_PA_ONEDRIVE", "").strip().lower() in ("1", "true", "yes")
+
+    team_id    = os.environ.get("TEAMS_SAFETY_TEAM_ID", "").strip()
+    channel_id = os.environ.get("TEAMS_SAFETY_CHANNEL_ID", "").strip()
+    upn        = os.environ.get("ONEDRIVE_USER_UPN", "").strip()
+    use_graph  = bool(team_id and channel_id and upn)
+
+    # Acquire OneDrive token upfront — needed for OneDrive PA trigger and/or Graph cleanup.
+    od_tok: "str | None" = None
+    if (use_pa_od or use_graph) and upn:
+        try:
+            from src.onedrive_upload import get_token as _get_od_tok
+            od_tok = _get_od_tok(
+                os.environ.get("AZURE_TENANT_ID", ""),
+                os.environ.get("AZURE_CLIENT_ID", ""),
+                os.environ.get("AZURE_CLIENT_SECRET", ""),
+            )
+        except Exception as exc:
+            print(f"teams_adaptive_cards: could not get OneDrive token: {exc}")
+
+    # Graph token is only needed when Graph API posting is in scope.
+    gtok    = _graph_token() if (use_graph and not use_pa_od and not pa_url_audra) else None
+    new_ids: dict = {}
+
+    # Graph cleanup runs only when no PA method is active.
+    if use_graph and gtok and od_tok and not use_pa_od and not pa_url_audra:
+        try:
+            old_ids = _load_card_ids(od_tok, upn)
+            if old_ids:
+                print(f"Cleaning up {len(old_ids)} previous card(s) via Graph...")
+                _delete_cards(gtok, team_id, channel_id, old_ids)
+        except Exception as exc:
+            print(f"Graph card cleanup skipped: {exc}")
+
     data  = json.loads(acc_path.read_text())
     today = datetime.date.fromisoformat(
         data.get("date", datetime.date.today().isoformat())
     )
 
-    resolved_norm = {c.lower() for c in (resolved_today or set())}
+    def _stamp_actioned(items: list[dict]) -> list[dict]:
+        """Remove items that have been actioned (today or yesterday).
 
-    def _apply_resolved(items: list[dict]) -> list[dict]:
-        if not resolved_norm:
-            return items
-        result = []
+        The Teams card is an action queue — once an item is resolved it should
+        disappear from the card immediately, not pile up with ✅ marks.
+        items with actioned_yesterday=True were already actioned and suppressed;
+        items matching resolved_today were just actioned this session.
+        """
+        out = []
         for item in items:
-            item = dict(item)
-            cat = item.get("category", "").lower()
-            drv = (item.get("driver") or item.get("unit") or "").lower()
-            if (cat in resolved_norm or
-                    (drv and f"driver:{drv}" in resolved_norm)):
-                item["actioned_yesterday"] = True
-            result.append(item)
-        return result
+            # Already actioned yesterday (suppression should have removed it, but filter here as backstop)
+            if item.get("actioned_yesterday"):
+                continue
+            # Actioned today — remove from card so the queue stays clean
+            if resolved_today:
+                cat = (item.get("category") or "").lower().strip()
+                drv = (item.get("driver") or item.get("unit") or "").lower().strip()
+                if cat in resolved_today or (drv and f"driver:{drv}" in resolved_today):
+                    continue
+            out.append(item)
+        return out
 
-    def _post(label: str, items: list[dict]) -> None:
-        items = _apply_resolved(items)
+    def _post(label: str, items: list[dict], pa_url: str = "") -> None:
+        items = _stamp_actioned(items)
         if not items:
             print(f"{label}: no action items today — skipping card.")
             return
-        payload = build_owner_card(label, items, today, run_url, form_url)
+        payload = build_owner_card(label, items, today, run_url, form_url, dismiss_url)
         if not payload:
             return
+        card = payload["attachments"][0]["content"]
+
+        # 1. OneDrive trigger — write file for PA flow (future card management).
+        # Does NOT early-return: webhook below always fires so cards reliably appear.
+        if use_pa_od and od_tok and upn:
+            ok = _trigger_pa_via_onedrive(od_tok, upn, card, label,
+                                          webhook_payload=payload)
+            if ok:
+                print(f"{label}: PA trigger file written (webhook will also post)")
+            else:
+                print(f"{label}: OneDrive PA trigger write failed — continuing to webhook.")
+
+        # 2. Power Automate HTTP trigger (requires premium PA license)
+        if pa_url:
+            ok = _post_card_pa(pa_url, card)
+            if ok:
+                print(f"{label} card posted via Power Automate HTTP ({len(items)} items)")
+                return
+            print(f"{label}: PA HTTP flow failed — falling back.")
+
+        # 3. Graph API (post + track IDs; deletion requires ChannelMessage.ReadWrite.All)
+        if use_graph and gtok:
+            msg_id = _post_card_graph(gtok, team_id, channel_id, card)
+            if msg_id:
+                new_ids[label] = msg_id
+                print(f"{label} card posted via Graph ({len(items)} items, msg {msg_id})")
+                return
+            print(f"{label}: Graph post failed — falling back to webhook.")
+
+        # 4. Webhook (no ID tracking, no cleanup)
+        if not webhook:
+            print(f"{label}: no posting method available — skipping.")
+            return
         resp = _requests.post(webhook, json=payload, timeout=30)
-        print(f"{label} card: HTTP {resp.status_code} ({len(items)} items)")
+        print(f"{label} card (webhook): HTTP {resp.status_code} ({len(items)} items)")
         if resp.status_code not in range(200, 300):
             print(f"  Response body: {resp.text[:400]}")
 
-    _post("AUDRA", data.get("audra", []))
-    _post("JACKSON + DAN", data.get("ops", []))
+    _post("AUDRA",         data.get("audra", []), pa_url_audra)
+    _post("JACKSON + DAN", data.get("ops",   []), pa_url_ops)
+
+    if new_ids and od_tok and upn:
+        _save_card_ids(od_tok, upn, new_ids)
+        print(f"Saved {len(new_ids)} card ID(s) → {_CARD_IDS_FILE}")
 
 
 # ---------------------------------------------------------------------------
@@ -460,11 +609,13 @@ def post_adaptive_cards(
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    webhook  = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
-    run_url  = os.environ.get("RUN_URL", "").strip()
-    form_url = os.environ.get("TEAMS_FORM_URL", "").strip()
+    webhook     = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
+    run_url     = os.environ.get("RUN_URL", "").strip()
+    form_url    = os.environ.get("TEAMS_FORM_URL", "").strip()
+    dismiss_url = os.environ.get("TEAMS_DISMISS_FORM_URL", "").strip()
+    # PA URLs are read inside post_adaptive_cards via os.environ directly.
 
-    today = datetime.datetime.now(ZoneInfo("America/Chicago")).date()
+    today = datetime.date.today()
     acc_path = Path(f"output/accountability-{today.isoformat()}.json")
     if not acc_path.exists():
         yesterday = today - datetime.timedelta(days=1)
@@ -474,7 +625,7 @@ def main() -> int:
         print(f"No accountability JSON found for {today} — skipping Teams post.")
         return 0
 
-    post_adaptive_cards(acc_path, webhook, run_url, form_url)
+    post_adaptive_cards(acc_path, webhook, run_url, form_url, dismiss_url)
     return 0
 
 
