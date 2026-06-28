@@ -1,36 +1,36 @@
 ---
 title: Lanter Distributing (CNH Industrial)
 type: concept
-tags: [customers, active, ag-equipment, linehaul]
+tags: [customers, pipeline, prospecting, ag-equipment, linehaul]
 sources: ["raw/xfreight-customers-additional.md", "raw/xfreight-customer-portfolio.md"]
 related: ["[[Customer Portfolio]]", "[[Financial Performance]]", "[[agco-rfp]]"]
 ---
 
 # Lanter Distributing (CNH Industrial)
 
-Lanter Distributing is a logistics provider for CNH Industrial (Case New Holland — maker of Case and New Holland agricultural equipment). XFreight holds active linehaul rates for CNH lanes sourced through Lanter. This makes XFreight a de-facto ag-equipment supply-chain carrier via the Lanter/CNH relationship — the same vertical where the AGCO direct bid was lost.
+Lanter Distributing is a logistics provider for CNH Industrial (Case New Holland — maker of Case and New Holland agricultural equipment). XFreight has submitted linehaul rates for CNH lanes sourced through Lanter but has **not yet been awarded freight**. This is an active prospect in the ag-equipment supply-chain vertical — the same vertical where the AGCO direct bid was lost.
 
 ## Summary
 
-Active linehaul rate agreement with Lanter for CNH Industrial lanes. Lanter acts as the 4PL/3PL layer between CNH and carriers; XFreight is one of those carriers. Revenue contribution not yet quantified — pull from QB customer revenue split to determine monthly contribution and lane composition.
+Prospecting — linehaul rates submitted for CNH Industrial lanes via Lanter, no award received as of June 2026. Lanter acts as the 4PL/3PL layer between CNH and carriers. If awarded, this would give XFreight ag-equipment supply-chain exposure without a direct CNH relationship.
 
 ## Key Ideas
 
-- **Ag-equipment supply chain via 4PL** — Lanter is the logistics layer; CNH (Case/New Holland) is the underlying shipper. This mirrors how AGCO used 4flow in the AGCO RFP — XFreight is now in the ag-equipment vertical via Lanter even after missing AGCO direct.
-- **Active rate agreement** — `08 - Sales/Customers/Lanter/CNH Linehauls.xlsx` is the rate sheet. Specifics (per-lane rates, lanes served) not yet extracted.
-- **Strategic parallel to AGCO** — AGCO (Massey Ferguson / Fendt) and CNH (Case / New Holland) are direct competitors. XFreight carries CNH freight. If AGCO comes back to bid in late 2026 / early 2027, the CNH operational history is relevant proof of ag-equipment experience.
-- **Revenue unknown** — needs QB pull to quantify.
+- **Ag-equipment supply chain via 4PL** — Lanter is the logistics layer; CNH (Case/New Holland) is the underlying shipper. This mirrors how AGCO used 4flow in the AGCO RFP.
+- **Rate sheet submitted, no award yet** — `08 - Sales/Customers/Lanter/CNH Linehauls.xlsx` contains the submitted rate sheet. No loads have been tendered or carried as of June 2026.
+- **Strategic parallel to AGCO** — AGCO (Massey Ferguson / Fendt) and CNH (Case / New Holland) are direct competitors. If awarded, XFreight would have operational proof in the ag-equipment vertical — directly useful for any AGCO rebid in late 2026 / early 2027.
+- **No revenue yet** — account is in pursuit stage.
 
 ## What We Know
 
 | Field | Value |
 |---|---|
-| Status | Active |
+| Status | **Pipeline — rates submitted, no award as of June 2026** |
 | Underlying shipper | CNH Industrial (Case New Holland ag equipment) |
 | 3PL/4PL layer | Lanter Distributing |
 | Rate file | `08 - Sales/Customers/Lanter/CNH Linehauls.xlsx` |
-| Revenue contribution | **Unknown** — needs QB pull |
-| Entity (X-Trux or X-Linx?) | TBD |
+| Revenue contribution | None yet |
+| Entity (X-Trux or X-Linx?) | TBD — no loads have been tendered |
 
 ## Strategic Notes
 
@@ -38,16 +38,15 @@ The AGCO RFP outcome (not awarded, Jan 2026) cited price competitiveness as the 
 
 ## AR Visibility Note
 
-Lanter/CNH did not appear in the Alvys AR aging report reviewed June 3, 2026. This means either: (a) no open invoices at that snapshot date (loads had been paid/closed), or (b) loads billed under a different customer name in Alvys. Pull Alvys Loads sheet filtered by "Lanter" or "CNH" to confirm current load activity.
+Lanter/CNH does not appear in the June 2026 AR aging report — consistent with no loads having been awarded or carried yet.
 
 ## Open Questions / Watch
 
-- What is the monthly revenue from Lanter/CNH lanes?
-- Which specific CNH facilities / lanes are served?
-- Is this X-Trux asset hauls or X-Linx brokered?
-- What are the rate terms? (Extract from `CNH Linehauls.xlsx`.)
-- Is there a master broker-carrier or shipper agreement with Lanter?
-- Confirm Alvys customer name — does not appear in June 2026 AR aging report; may be billed under a different label.
+- Has Lanter awarded any freight? What is the status of the rate submission?
+- Which specific CNH facilities / lanes were quoted?
+- Is there a follow-up cadence with the Lanter contact?
+- What are the submitted rate terms? (Extract from `CNH Linehauls.xlsx`.)
+- When is the next opportunity to re-engage if no award is coming?
 
 ## Connections
 
@@ -59,9 +58,9 @@ Lanter/CNH did not appear in the Alvys AR aging report reviewed June 3, 2026. Th
 
 | Date | Event |
 |---|---|
-| 2025–2026 | Active CNH linehaul rates on file; relationship ongoing |
-| 2026-01-20 | AGCO bid not awarded (competitor vertical); Lanter/CNH relationship continues independently |
-| 2026-06-28 | Page created from raw file review; revenue TBD |
+| 2025–2026 | CNH linehaul rates submitted to Lanter; no award received |
+| 2026-01-20 | AGCO bid not awarded; Lanter/CNH pursuit continues as the ag-equipment vertical entry point |
+| 2026-06-28 | Page created; status corrected to pipeline/prospecting — no loads carried as of this date |
 
 ## Sources
 

@@ -28,8 +28,8 @@ Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates base
 | **Kozy Heat Fireplaces** | ~$11,500–15,500 | X-TRUX | Medium — 3+ year account, load data |
 | **Enertech Global** | ~$9,000–13,000 | X-TRUX | Medium — 3+ year account, load data |
 | **Johnson Brothers SD** | ~$20,000–28,000 (at daily cadence) | X-LINX (currently) | Low-Medium — new lane, per-pallet pricing, cadence not yet confirmed |
-| **Lanter/CNH** | Unknown | TBD | Low — not in June AR |
-| **Dakotaland Autoglass** | Unknown | TBD | Low — not in June AR |
+| **Lanter/CNH** | $0 | N/A | Not awarded — pipeline only |
+| **Dakotaland Autoglass** | $0 | N/A | Not awarded — pipeline only |
 
 ## Key Ideas
 
@@ -45,8 +45,8 @@ Derived from Alvys Triumph Go Live load data (June 22, 2026). All estimates base
 |---|---|---|
 | **Billion Auto Parts** | **Renewed June 2026** — both lanes maintained, fuel surcharge added | 2-lane SF↔RC + SF→Worthington→Mason City. ~$2,150/day total. See [[Billion Auto]]. |
 | **Berry Global** | Active 2026 | Fortune-500 packaging. Dan Heeren handling. Accessorial charge schedule on file. See [[Berry Global]]. |
-| **Lanter Distributing (CNH)** | Active/recent | Logistics provider for CNH Industrial (Case New Holland ag equipment). Linehaul rates on file. See [[Lanter Distributing]]. |
-| **Dakotaland Autoglass** | Active/recent | Rate sheet dated May 2025. Regional SD chain. See [[Dakotaland Autoglass]]. |
+| **Lanter Distributing (CNH)** | **Pipeline — not awarded** | Rate sheet submitted; no loads tendered as of June 2026. CNH Industrial (Case New Holland ag equipment) via Lanter 3PL. See [[Lanter Distributing]]. |
+| **Dakotaland Autoglass** | **Pipeline — not awarded** | Rate sheet submitted May 2025; no loads tendered as of June 2026. Regional SD auto glass chain. See [[Dakotaland Autoglass]]. |
 | **DAG** | Recent | BOL in folder dated June 2025. Possibly Dakota AG (agricultural). |
 | **Lewis Drug** | Active (confidence: medium) | Regional SD pharmacy chain. Folder + workbook. See [[Lewis Drug]]. |
 | **Viaflex** | **Active, June 2026** | Plastic film products. 29+ invoices in June AR aging report; $450–$5,846/load range. High-frequency account. See [[Viaflex]]. |
