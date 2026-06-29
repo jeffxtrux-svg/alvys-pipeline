@@ -9,12 +9,13 @@ Or via pytest: pytest tests/test_xfreight_etas.py
 """
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.xfreight_etas import (  # noqa: E402
     _stop_appt_iso, _stop_window_begin_iso, _fmt_appt_cell, _fmt_delta,
+    _is_appt_stale, _fmt_appt_age, _STALE_APPT_HOURS,
 )
 
 # ---------------------------------------------------------------------------
@@ -166,6 +167,64 @@ def test_fmt_delta_within_30_early_is_green():
 def test_fmt_delta_more_than_30_early_is_ink():
     _, color = _fmt_delta(60)
     assert color == "#1a1a1a"   # INK
+
+
+# ---------------------------------------------------------------------------
+# _is_appt_stale — guard against already-delivered / un-rescheduled loads
+# (the "153h late" card on a 6-day-old appointment)
+# ---------------------------------------------------------------------------
+_NOW = datetime(2026, 6, 28, 22, 26, tzinfo=timezone.utc)
+
+
+def test_appt_six_days_old_is_stale():
+    # The Truck 42187 case: appt window closed Jun 22, "now" is Jun 28.
+    appt = datetime(2026, 6, 22, 15, 0, tzinfo=timezone.utc)
+    assert _is_appt_stale(appt, _NOW) is True
+
+
+def test_appt_today_is_not_stale():
+    # A same-day appt a few hours back is a real live-late event, not stale.
+    appt = _NOW - timedelta(hours=3)
+    assert _is_appt_stale(appt, _NOW) is False
+
+
+def test_appt_just_inside_window_is_not_stale():
+    # Exactly at the threshold is not yet stale (strictly greater than).
+    appt = _NOW - timedelta(hours=_STALE_APPT_HOURS)
+    assert _is_appt_stale(appt, _NOW) is False
+
+
+def test_appt_just_past_window_is_stale():
+    appt = _NOW - timedelta(hours=_STALE_APPT_HOURS + 1)
+    assert _is_appt_stale(appt, _NOW) is True
+
+
+def test_appt_none_is_not_stale():
+    assert _is_appt_stale(None, _NOW) is False
+
+
+def test_future_appt_is_not_stale():
+    assert _is_appt_stale(_NOW + timedelta(hours=5), _NOW) is False
+
+
+# ---------------------------------------------------------------------------
+# _fmt_appt_age — "how long ago" label for the stale flag
+# ---------------------------------------------------------------------------
+def test_fmt_appt_age_days():
+    appt = datetime(2026, 6, 22, 15, 0, tzinfo=timezone.utc)   # ~6.3 days before _NOW
+    assert _fmt_appt_age(appt, _NOW) == "6d ago"
+
+
+def test_fmt_appt_age_hours():
+    assert _fmt_appt_age(_NOW - timedelta(hours=18), _NOW) == "18h ago"
+
+
+def test_fmt_appt_age_future_is_blank():
+    assert _fmt_appt_age(_NOW + timedelta(hours=2), _NOW) == ""
+
+
+def test_fmt_appt_age_none_is_blank():
+    assert _fmt_appt_age(None, _NOW) == ""
 
 
 # ---------------------------------------------------------------------------

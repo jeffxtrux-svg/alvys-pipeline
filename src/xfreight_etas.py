@@ -106,6 +106,28 @@ def _fmt_delta(minutes: int | None) -> tuple[str, str]:
     return (f"{minutes} min early", INK)
 
 
+def _fmt_appt_age(appt_dt: datetime | None, now: datetime) -> str:
+    """Human 'how long ago' for a past appointment, e.g. '6d ago' / '18h ago'."""
+    if appt_dt is None:
+        return ""
+    hrs = (now - appt_dt).total_seconds() / 3600
+    if hrs < 0:
+        return ""
+    if hrs >= 48:
+        return f"{int(round(hrs / 24))}d ago"
+    return f"{int(round(hrs))}h ago"
+
+
+def _is_appt_stale(appt_dt: datetime | None, now: datetime) -> bool:
+    """True when an appointment is more than _STALE_APPT_HOURS in the past.
+
+    A stale appt means the truck is almost certainly already delivered (with
+    ArrivedAt unset in Alvys) or the appt was never rescheduled — so the precise
+    "Xh late" figure is a data gap, not a live tracking event.
+    """
+    return bool(appt_dt) and appt_dt < now - timedelta(hours=_STALE_APPT_HOURS)
+
+
 # ----------------------------------------------------------------------
 # HOS helpers
 # ----------------------------------------------------------------------
@@ -362,6 +384,13 @@ _TEAMS_STATE_FILE = "eta_state.json"
 _ETA_LOG_FILE = "eta_log.csv"
 _ETA_LOG_KEEP_DAYS = 90   # rows older than this are pruned on each run
 _GPS_STALE_MINUTES = 45  # GPS fix older than this is treated as unreliable
+# An appointment more than this many hours in the past is treated as stale: the
+# truck is almost certainly already delivered with ArrivedAt unset in Alvys, or
+# the appt was never rescheduled after the load slipped. Either way the precise
+# "Xh late" figure is misleading, so these are flagged "verify delivery" instead
+# of firing a hard late alert (a delta of −45 min on a same-day appt is real;
+# −9000 min on a 6-day-old appt is a data gap, not a live tracking event).
+_STALE_APPT_HOURS = 24
 
 
 # ----------------------------------------------------------------------
@@ -652,7 +681,7 @@ def _append_eta_log(token: str, user_upn: str, folder: str,
 
     Columns: run_ts, load_no, truck, driver, consignee, consignee_city,
              consignee_state, appt_iso, eta_iso, delta_min, late_45plus,
-             gps_stale, untracked, reason
+             gps_stale, appt_stale, untracked, reason
     """
     import csv as _csv
     import io as _io
@@ -660,7 +689,7 @@ def _append_eta_log(token: str, user_upn: str, folder: str,
     _FIELDS = [
         "run_ts", "load_no", "truck", "driver", "consignee",
         "consignee_city", "consignee_state", "appt_iso", "eta_iso",
-        "delta_min", "late_45plus", "gps_stale", "untracked", "reason",
+        "delta_min", "late_45plus", "gps_stale", "appt_stale", "untracked", "reason",
     ]
 
     path = f"{folder}/{_ETA_LOG_FILE}"
@@ -704,6 +733,7 @@ def _append_eta_log(token: str, user_upn: str, folder: str,
             "delta_min": str(delta) if delta is not None else "",
             "late_45plus": "1" if (delta is not None and delta <= _LATE_THRESHOLD_MIN) else "0",
             "gps_stale": "1" if r.get("gps_stale") else "0",
+            "appt_stale": "1" if r.get("appt_stale") else "0",
             "untracked": "0",
             "reason": "",
         })
@@ -722,6 +752,7 @@ def _append_eta_log(token: str, user_upn: str, folder: str,
             "delta_min": "",
             "late_45plus": "",
             "gps_stale": "",
+            "appt_stale": "",
             "untracked": "1",
             "reason": str(r.get("reason") or ""),
         })
@@ -789,11 +820,20 @@ FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
 def _render_html(rows: list[dict], generated_at: datetime,
                  untracked: list[dict] | None = None) -> str:
     untracked = untracked or []
-    late_count = sum(1 for r in rows if (r.get("delta_min") or 0) <= _LATE_THRESHOLD_MIN)
+    # Live-late count EXCLUDES stale appointments — a 6-day-old appt isn't a live
+    # late event (see _STALE_APPT_HOURS), so it must not inflate the red banner.
+    late_count = sum(1 for r in rows
+                     if (r.get("delta_min") or 0) <= _LATE_THRESHOLD_MIN
+                     and not r.get("appt_stale"))
+    stale_count = sum(1 for r in rows if r.get("appt_stale"))
 
     if late_count:
         strip_bg = RED
         strip_msg = f"⚠ {late_count} load{'s' if late_count != 1 else ''} 45+ min late"
+    elif stale_count and rows:
+        strip_bg = AMBER
+        strip_msg = (f"{stale_count} load{'s' if stale_count != 1 else ''} with a stale "
+                     f"appointment — verify delivery")
     elif rows:
         strip_bg = "#16a34a"
         strip_msg = "All loads on schedule"
@@ -802,6 +842,9 @@ def _render_html(rows: list[dict], generated_at: datetime,
         strip_msg = "No active X-Trux loads"
 
     untracked_badge = (f" &middot; {len(untracked)} untracked" if untracked else "")
+    # Show the stale chip on the sub-line unless the strip already leads with it.
+    stale_badge = (f" &middot; {stale_count} stale appt"
+                   if (stale_count and late_count) else "")
 
     if not rows:
         body = (f"<div style='padding:40px;text-align:center;color:{MUTE};font-size:14px;'>"
@@ -825,6 +868,7 @@ def _render_html(rows: list[dict], generated_at: datetime,
         )
 
         tbody_rows = ""
+        _now_ct = generated_at
         for r in rows:
             delta_txt, delta_color = _fmt_delta(r.get("delta_min"))
             shipper_loc = f"{r['shipper_city']}, {r['shipper_state']}".strip(", ")
@@ -839,6 +883,14 @@ def _render_html(rows: list[dict], generated_at: datetime,
                            f"<span style='color:{AMBER};font-size:10px;font-weight:400;'>"
                            f"&#9888; GPS {r['gps_age_min']}m old</span>")
                 delta_txt = f"~{delta_txt}"
+
+            # Stale appointment: don't show a precise (and misleading) "Xh late".
+            # The appt is days old → the load is almost certainly already
+            # delivered or never rescheduled. Flag for a status check instead.
+            if r.get("appt_stale"):
+                _age = _fmt_appt_age(r.get("appt_dt"), _now_ct)
+                delta_txt = f"&#9888; verify delivery (appt {_age})" if _age else "&#9888; verify delivery"
+                delta_color = AMBER
 
             tbody_rows += (
                 f"<tr style='border-bottom:1px solid {LINE};'>"
@@ -919,7 +971,7 @@ def _render_html(rows: list[dict], generated_at: datetime,
         "</head><body>"
         f"<div style='background:{strip_bg};color:#fff;padding:8px 24px;"
         f"font-size:12px;font-weight:700;letter-spacing:0.3px;'>"
-        f"{strip_msg} &middot; {len(rows)} tracked{untracked_badge}</div>"
+        f"{strip_msg} &middot; {len(rows)} tracked{stale_badge}{untracked_badge}</div>"
         f"<div style='padding:20px 24px;border-bottom:3px solid {RED};'>"
         f"<div style='font-weight:700;letter-spacing:1.5px;font-size:11px;"
         f"color:{RED};text-transform:uppercase;'>XFreight &middot; ETAs</div>"
@@ -1191,11 +1243,20 @@ def main() -> int:
         delta_min = None
         if row["appt_dt"]:
             delta_min = int(round((row["appt_dt"] - eta_dt).total_seconds() / 60))
-        log.info("load %s truck %-6s  gps=%s  hos=%s  appt=%s  eta=%s  delta=%s min",
+
+        # Stale-appointment guard: an appt > _STALE_APPT_HOURS in the past means
+        # the truck is almost certainly already delivered (ArrivedAt unset in
+        # Alvys) or the appt was never rescheduled — not a live "Xh late" event.
+        # Flag it so it shows as "verify delivery" instead of firing a hard alert.
+        appt_stale = _is_appt_stale(row["appt_dt"], now)
+
+        log.info("load %s truck %-6s  gps=%s  hos=%s  appt=%s  eta=%s  delta=%s min%s",
                  row["load_no"], row["truck_name"],
                  f"{gps_age_min}m old" if gps_age_min is not None else "fresh",
                  _fmt_hos(hos_remaining_s),
-                 _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min)
+                 _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min,
+                 f"  [STALE APPT {_fmt_appt_age(row['appt_dt'], now)} — verify delivery]"
+                 if appt_stale else "")
         rows_with_eta.append({
             **row,
             "eta_dt": eta_dt,
@@ -1204,6 +1265,7 @@ def main() -> int:
             "hos_delay": hos_delay_s > 0,
             "gps_age_min": gps_age_min,
             "gps_stale": gps_stale,
+            "appt_stale": appt_stale,
         })
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
@@ -1252,10 +1314,21 @@ def main() -> int:
     ensure_folder(tok, user_upn, folder)
 
     # --- Teams alert for loads 45+ min late -----------------------------
+    # Exclude stale GPS (ETA may be wrong) AND stale appointments (the load is
+    # almost certainly already delivered / never rescheduled — a hard "153h late"
+    # card would just be alert noise on an already-serviced stop).
     late = [r for r in rows_with_eta
             if r.get("delta_min") is not None
             and r["delta_min"] <= _LATE_THRESHOLD_MIN
-            and not r.get("gps_stale")]  # don't alert on stale GPS — ETA may be wrong
+            and not r.get("gps_stale")
+            and not r.get("appt_stale")]
+    stale_appt_rows = [r for r in rows_with_eta if r.get("appt_stale")]
+    if stale_appt_rows:
+        log.info("Suppressed %d stale-appt load(s) from the Teams late alert "
+                 "(appt > %dh old — verify delivery/reschedule): %s",
+                 len(stale_appt_rows), _STALE_APPT_HOURS,
+                 ", ".join(f"#{r['load_no']} ({_fmt_appt_age(r['appt_dt'], now)})"
+                           for r in stale_appt_rows))
     webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
     if webhook:
         _sync_teams_webhook(webhook, tok, user_upn, folder, late)
