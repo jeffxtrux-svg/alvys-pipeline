@@ -41,6 +41,10 @@ on:
         description: "Set true to force-resend even if today's marker exists"
         type: boolean
         default: false
+      force_test_ops_item:
+        description: 'Post one synthetic test item to verify Operations channel routing (does not touch real accountability data or the suppression registry)'
+        type: boolean
+        default: false
   # Reusable so a Refresh-All workflow can call it after the data pulls.
   workflow_call:
   # Editing this file fires a run — handy for triggering from mobile.
@@ -166,6 +170,51 @@ jobs:
           TEAMS_SAFETY_TEAM_ID:     ${{ secrets.TEAMS_SAFETY_TEAM_ID }}
           TEAMS_SAFETY_CHANNEL_ID:  ${{ secrets.TEAMS_SAFETY_CHANNEL_ID }}
         run: python -m src.teams_adaptive_cards
+
+      - name: Test — verify Operations channel routing
+        # Only runs when explicitly requested via the force_test_ops_item
+        # dispatch input (default false; never fires on schedule). Posts ONE
+        # synthetic item through the REAL post_adaptive_cards() routing logic
+        # with the real secrets, so it actually proves TEAMS_OPERATIONS_WEBHOOK
+        # is wired correctly — but writes to a throwaway local JSON file, not
+        # OneDrive's real accountability-{date}.json, so it never touches the
+        # suppression registry, the weekly digest, or Accountability Log.xlsx.
+        # The "audra" list is left empty so only the Operations-bound
+        # "JACKSON + DAN" card posts — nothing goes to Audra's channel.
+        if: ${{ inputs.force_test_ops_item == true }}
+        env:
+          TEAMS_SAFETY_WEBHOOK:     ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          TEAMS_OPERATIONS_WEBHOOK: ${{ secrets.TEAMS_OPERATIONS_WEBHOOK }}
+        run: |
+          python3 - <<'EOF'
+          import datetime, json, os
+          from pathlib import Path
+          from src.teams_adaptive_cards import post_adaptive_cards
+
+          today = datetime.date.today()
+          acc = {
+              "date": today.isoformat(),
+              "audra": [],
+              "ops": [{
+                  "category": "\U0001F9EA TEST — Operations Channel Verification",
+                  "severity": "medium",
+                  "driver": None,
+                  "unit": "TEST",
+                  "detail": ("One-off test post confirming TEAMS_OPERATIONS_WEBHOOK "
+                             "routing is wired correctly. Safe to ignore or delete."),
+                  "prompt": "No action needed — this is a routing verification test, not a real item.",
+              }],
+          }
+          path = Path("output/test-ops-verification.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(acc))
+
+          webhook = os.environ.get("TEAMS_SAFETY_WEBHOOK", "").strip()
+          run_url = (f"https://github.com/{os.environ.get('GITHUB_REPOSITORY','')}"
+                     f"/actions/runs/{os.environ.get('GITHUB_RUN_ID','')}")
+          post_adaptive_cards(path, webhook, run_url)
+          print("Test post complete — check the Operations channel in Teams.")
+          EOF
 
       - name: Notify on failure
         if: failure() && steps.ct_gate.outputs.skip != '1'
