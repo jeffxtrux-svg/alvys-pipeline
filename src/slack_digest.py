@@ -39,6 +39,7 @@ log = logging.getLogger("slack_digest")
 _REPO = Path(__file__).resolve().parent.parent
 _SNAP_DIR = _REPO / "Karpathy-Wiki" / "raw" / "snapshots"
 _WIKI_DIR = _REPO / "Karpathy-Wiki" / "wiki"
+_ONEDRIVE_FOLDER = "Scorecard"
 
 
 def _read_json(path: Path) -> dict | None:
@@ -51,8 +52,32 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def _onedrive_json(filename: str) -> dict | None:
+    """Best-effort read of a Scorecard/<filename> mirror from OneDrive.
+
+    This is the live source: the scorecard run that precedes this digest
+    writes its snapshot/signals/grades to a fresh GitHub Actions checkout,
+    which is gitignored and discarded when that job ends — local files are
+    only ever present for local dry-runs, not in CI. Returns None if Azure
+    creds aren't set or the file isn't there yet."""
+    try:
+        from src.onedrive_upload import download_file, get_token_from_env
+        token, upn = get_token_from_env()
+        if not token:
+            return None
+        raw = download_file(token, upn, f"{_ONEDRIVE_FOLDER}/{filename}")
+        return json.loads(raw)
+    except Exception as exc:
+        log.info("OneDrive read of %s unavailable: %s", filename, exc)
+        return None
+
+
 def _latest_snapshot(today: date | None = None) -> dict | None:
-    """Return today's snapshot if present, else the most recent prior one."""
+    """Return the latest KPI snapshot — OneDrive mirror first (the live
+    source in CI), falling back to local files for local dry-runs."""
+    onedrive = _onedrive_json("snapshot-latest.json")
+    if onedrive is not None:
+        return onedrive
     today = today or date.today()
     todays = _SNAP_DIR / f"{today.isoformat()}.json"
     if todays.exists():
@@ -247,12 +272,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     snapshot = _latest_snapshot()
-    signals = _read_json(_WIKI_DIR / "risk-watch-latest.json")
-    grades = _read_json(_WIKI_DIR / "decision-grades.json")
+    signals = _onedrive_json("risk-watch-latest.json") or _read_json(_WIKI_DIR / "risk-watch-latest.json")
+    grades = _onedrive_json("decision-grades.json") or _read_json(_WIKI_DIR / "decision-grades.json")
 
     if not any((snapshot, signals, grades)):
         log.warning("No source files found — nothing to digest. "
-                    "Run the scorecard first so it writes the snapshot files.")
+                    "Run the scorecard first so it writes its OneDrive snapshot "
+                    "(Scorecard/snapshot-latest.json), or set AZURE_TENANT_ID/"
+                    "CLIENT_ID/CLIENT_SECRET/ONEDRIVE_USER_UPN to read it.")
         return 0  # not an error; just nothing to post
 
     blocks = build_blocks(snapshot=snapshot, signals=signals, grades=grades,

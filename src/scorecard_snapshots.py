@@ -6,8 +6,15 @@ morning's run reads the most recent prior snapshot and feeds it to
 `scorecard_insights.action_items()` so trend labels like "CLIMBING" /
 "GROWING" can be verified rather than asserted.
 
-Storage cost: ~1 KB per day, ~365 KB/year, auto-committed by the same
-workflow step that already archives the rendered brief.
+Storage cost: ~1 KB per day, ~365 KB/year.
+
+`Karpathy-Wiki/.gitignore` deliberately keeps `raw/*` (business data) out of
+git, so the local file below never survives past the GitHub Actions runner
+it was written on — a fresh checkout the next morning starts with an empty
+SNAPSHOT_DIR. To actually carry yesterday's snapshot forward (and to give
+the Slack/Teams digest something to read), write_snapshot() also mirrors
+the file to OneDrive (Scorecard/snapshot-latest.json), and
+read_prior_snapshot() falls back to that mirror when local disk is empty.
 
 Schema is intentionally flat — one level deep, all leaf values — so adding
 a new tracked KPI is a one-line change in `collect_kpis()`.
@@ -22,6 +29,8 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 SNAPSHOT_DIR = Path("Karpathy-Wiki/raw/snapshots")
+_ONEDRIVE_FOLDER = "Scorecard"
+_ONEDRIVE_FILENAME = "snapshot-latest.json"
 
 
 def _safe_get(d, *keys, default=None):
@@ -89,32 +98,65 @@ def collect_kpis(*, alvys, qb_ar, alvys_ar, samsara, uninvoiced,
 def write_snapshot(kpis: dict) -> str | None:
     """Write today's snapshot to disk. Overwrites if a run already wrote
     today; the last run of the day wins (which is fine — KPIs are
-    cumulative within a day and we want the most recent close)."""
+    cumulative within a day and we want the most recent close).
+
+    Also best-effort mirrors the file to OneDrive (Scorecard/snapshot-latest.json)
+    so it survives past this runner — see module docstring."""
     try:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         today = kpis.get("date") or date.today().isoformat()
         path = SNAPSHOT_DIR / f"{today}.json"
         path.write_text(json.dumps(kpis, indent=2, sort_keys=True))
         log.info("Snapshot written: %s (%d keys)", path, len(kpis))
-        return str(path)
     except Exception as e:
         log.warning("Snapshot write failed: %s: %s", type(e).__name__, e)
         return None
+    _mirror_to_onedrive(path)
+    return str(path)
+
+
+def _mirror_to_onedrive(path: Path) -> None:
+    from src.onedrive_upload import ensure_folder, get_token_from_env, upload_file
+    token, upn = get_token_from_env()
+    if not token:
+        return
+    try:
+        ensure_folder(token, upn, _ONEDRIVE_FOLDER)
+        upload_file(token=token, user_upn=upn, folder_path=_ONEDRIVE_FOLDER,
+                   filename=_ONEDRIVE_FILENAME, file_path=path)
+        log.info("Snapshot mirrored to OneDrive: %s/%s", _ONEDRIVE_FOLDER, _ONEDRIVE_FILENAME)
+    except Exception as e:
+        log.warning("Snapshot OneDrive mirror failed: %s: %s", type(e).__name__, e)
 
 
 def read_prior_snapshot(today: date | None = None) -> dict | None:
-    """Return the most recent snapshot file whose date < today, or None.
-    Used by action_items() to compute trend deltas."""
+    """Return the most recent snapshot whose date < today, or None.
+    Used by action_items() to compute trend deltas.
+
+    Checks local disk first (same-process / local-dev reruns), then falls
+    back to the OneDrive mirror — a fresh GitHub Actions checkout starts
+    with an empty SNAPSHOT_DIR every morning, so OneDrive is what actually
+    carries yesterday's numbers forward in CI."""
     today = today or date.today()
-    if not SNAPSHOT_DIR.exists():
-        return None
     today_str = today.isoformat()
-    candidates = sorted(p for p in SNAPSHOT_DIR.glob("*.json")
-                        if p.stem < today_str)
-    if not candidates:
+    if SNAPSHOT_DIR.exists():
+        candidates = sorted(p for p in SNAPSHOT_DIR.glob("*.json")
+                            if p.stem < today_str)
+        if candidates:
+            try:
+                return json.loads(candidates[-1].read_text())
+            except Exception as e:
+                log.warning("Prior snapshot read failed (%s): %s", candidates[-1], e)
+    from src.onedrive_upload import download_file, get_token_from_env
+    token, upn = get_token_from_env()
+    if not token:
         return None
     try:
-        return json.loads(candidates[-1].read_text())
+        raw = download_file(token, upn, f"{_ONEDRIVE_FOLDER}/{_ONEDRIVE_FILENAME}")
+        snap = json.loads(raw)
+        if (snap.get("date") or "") < today_str:
+            return snap
+        return None  # only today's own snapshot mirrored so far — not "prior"
     except Exception as e:
-        log.warning("Prior snapshot read failed (%s): %s", candidates[-1], e)
+        log.info("No OneDrive prior snapshot available: %s", e)
         return None
