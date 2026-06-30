@@ -264,6 +264,26 @@ def get_required(key: str) -> str:
     return val
 
 
+def get_token_from_env() -> "tuple[str | None, str | None]":
+    """Best-effort (token, user_upn) from the standard Azure env vars.
+
+    Returns (None, None) if any var is unset or the token request fails,
+    instead of raising — for optional OneDrive mirrors that should degrade
+    gracefully rather than abort the caller. Required-OneDrive callers
+    should keep using get_required() + get_token() directly."""
+    tenant = os.environ.get("AZURE_TENANT_ID")
+    client = os.environ.get("AZURE_CLIENT_ID")
+    secret = os.environ.get("AZURE_CLIENT_SECRET")
+    upn = os.environ.get("ONEDRIVE_USER_UPN")
+    if not all([tenant, client, secret, upn]):
+        return None, None
+    try:
+        return get_token(tenant, client, secret), upn
+    except Exception as exc:
+        log.warning("OneDrive token fetch failed: %s: %s", type(exc).__name__, exc)
+        return None, None
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
