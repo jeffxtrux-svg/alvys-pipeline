@@ -23,7 +23,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 | 2026-06-13 | X-Trux P&L hold-out at ≥74% margin | P&L matches Power BI, reflects own-fleet | **Confirmed** — monitor |
 | 2026-06-13 | Deadhead / RPM = own-fleet only | 5.448% true own-fleet deadhead | **Confirmed** |
 | 2026-06-12 | Retire SambaSafety API → CSV-drop | Compliance/CSA data keeps flowing | Pending — review ~7/12 |
-| 2026-06-13 | Next oil change as a 25k estimate | "Close enough" until real data | Pending |
+| 2026-06-13 | Next oil change as a 25k estimate | "Close enough" until real data | **Confirmed** |
 | Standing | Dispatch date locks the pay rate | Consistent settlement, no disputes | Confirmed |
 | 2026-05-01 | Renew with Acrisure (+$0.08–0.10/mi) | Increase absorbed into costing | Confirmed |
 | 2026-01 | Bid the AGCO 2026 RFP | (win the lane) | **Wrong** — not awarded |
@@ -49,7 +49,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 **Decision.** After the API token expired 2026-06-02, retire API mode and read the CSVs Power Automate drops into OneDrive. **Rationale.** API access lapsed; CSV covers driver compliance + CSA needs without renewal cost. **Assumption.** The Power Automate CSV drop stays reliable. **Predicted outcome.** Driver-compliance and CSA data keep flowing. **Actual.** _TBD — review ~2026-07-12._ Paired risk: "SambaSafety CSV fragility" in [[Risk Register]]. See [[Safety Program]], [[Data Pipeline Architecture]].
 
 ## 2026-06-13 — Next oil change shown as a 25k estimate
-**Decision.** Show estimated next-oil-due mileage (current odometer → next 25k mark, labeled "est") rather than wait for real odometer-at-service capture. **Rationale.** Deliver visible value now; the page auto-flips to a real value once Alvys logs the odometer at each oil change. **Predicted outcome.** The estimate is close enough to be useful in the interim. **Actual.** _TBD when real oil-odometer data exists._ See [[Daily Scorecard Email]].
+**Decision.** Show estimated next-oil-due mileage (current odometer → next 25k mark, labeled "est") rather than wait for real odometer-at-service capture. **Rationale.** Deliver visible value now; the page auto-flips to a real value once Alvys logs the odometer at each oil change. **Predicted outcome.** The estimate is close enough to be useful in the interim. **Actual (2026-06-30).** Working with no issues. Graded **confirmed**. See [[Daily Scorecard Email]].
 
 ## Standing rule — dispatch date locks the per-mile pay rate
 **Decision.** Driver per-mile pay rate is revised weekly on Wednesday; a load's dispatch date determines which week's rate applies (Tuesday dispatch → prior rate, Wednesday → new rate). **Rationale.** An unambiguous rule for which rate a load pays, for settlement. **Predicted outcome.** Consistent settlement, no rate disputes. **Actual.** In effect — treated as confirmed. See [[Owner-Operator Program]], [[Rate-Per-Mile Goal]].
