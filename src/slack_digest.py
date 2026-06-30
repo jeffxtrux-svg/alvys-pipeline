@@ -5,12 +5,17 @@ it to a Slack/Teams incoming-webhook URL. Designed to run as a
 separate workflow immediately after the scorecard email so the digest
 reads the snapshot files the brief just wrote — no recompute.
 
-Sources (all written by the scorecard run that precedes this):
-  * Karpathy-Wiki/raw/snapshots/YYYY-MM-DD.json — today's KPIs
-    (collect_kpis output: mtd_revenue, qb_ar_91_plus, fleet_mpg, ...).
-  * Karpathy-Wiki/wiki/risk-watch-latest.json — current risk signals
-    with tripped/ok state.
-  * Karpathy-Wiki/wiki/decision-grades.json — current decision grades.
+Sources (all mirrored to OneDrive by the scorecard run that precedes this,
+under the "Scorecard" folder — NOT read from git: Karpathy-Wiki/raw is
+gitignored and the scorecard workflow's commit step never stages
+Karpathy-Wiki/wiki either, so neither ever reaches a checkout of main):
+  * Scorecard/snapshot-latest.json — today's KPIs (collect_kpis output:
+    mtd_revenue, qb_ar_91_plus, fleet_mpg, ...).
+  * Scorecard/risk-watch-latest.json — current risk signals with
+    tripped/ok state.
+  * Scorecard/decision-grades.json — current decision grades.
+Falls back to the local Karpathy-Wiki/raw|wiki files when OneDrive creds
+aren't set, for local dry-runs against files written in the same session.
 
 Output: a Slack Block Kit payload posted to SLACK_WEBHOOK_URL (env var).
 The webhook URL is the only secret needed; both Slack and Teams
