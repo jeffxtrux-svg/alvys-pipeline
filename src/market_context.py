@@ -10,6 +10,8 @@ Live series (FRED — no API key, public CSV):
   • WPU3012    PPI: Truck Transportation of Freight (monthly) — cost inflation
   • TSIFRGHT   BTS Freight Transportation Services Index (monthly) — direct freight volume measure
   • NAPM       ISM Manufacturing PMI (monthly) — leading demand indicator; >50 = expansion
+  • RSAFS      US Retail & Food Services Sales (monthly, billions $, SA) — consumer demand → dry-van loads
+  • TCU        Total Industrial Capacity Utilization (monthly, %) — >80% = tight freight market
 
 Static industry benchmarks (ATRI 2024 report, 2023 operating data):
   • Driver wages + benefits: $0.580/mi
@@ -47,6 +49,8 @@ _FRED_ATA_URL     = _FRED_BASE + "TRUCKD11"    # monthly, SA index (2015=100)
 _FRED_PPI_URL     = _FRED_BASE + "WPU3012"     # monthly, index (2012=100)
 _FRED_TSI_URL     = _FRED_BASE + "TSIFRGHT"    # monthly, BTS Freight TSI (2000=100)
 _FRED_PMI_URL     = _FRED_BASE + "NAPM"        # monthly, ISM Mfg PMI (>50=expansion)
+_FRED_RETAIL_URL  = _FRED_BASE + "RSAFS"       # monthly, US retail & food services sales (billions $, SA)
+_FRED_CAPU_URL    = _FRED_BASE + "TCU"         # monthly, total industrial capacity utilization (%)
 
 # Fuel cost constants
 _ATRI_DIESEL_BASE = 3.994  # avg US retail diesel $/gal in 2023 (ATRI 2024 report period, EIA data)
@@ -257,6 +261,40 @@ def fetch_and_write(out_path: Path | None = None) -> bool:
     except Exception as exc:
         log.warning("FRED NAPM fetch failed: %s — skipping", exc)
 
+    # --- US Retail & Food Services Sales (monthly, secondary) ---
+    try:
+        retail_series = _fetch_fred_csv(_FRED_RETAIL_URL)
+        if retail_series:
+            sources["retail_sales"] = {
+                "label": "US Retail & Food Services Sales (monthly, billions $, SA)",
+                "fred_series": "RSAFS",
+                "unit": "B$",
+                **_summarize(retail_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED RSAFS returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED RSAFS fetch failed: %s — skipping", exc)
+
+    # --- Total Industrial Capacity Utilization (monthly, secondary) ---
+    try:
+        capu_series = _fetch_fred_csv(_FRED_CAPU_URL)
+        if capu_series:
+            sources["capacity_util"] = {
+                "label": "Total Industrial Capacity Utilization (monthly, %)",
+                "fred_series": "TCU",
+                "unit": "%",
+                **_summarize(capu_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED TCU returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED TCU fetch failed: %s — skipping", exc)
+
     payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "sources": sources,
@@ -288,11 +326,14 @@ def _compute_outlook(sources: dict) -> dict:
     Returns a dict with keys: volume, rates, fuel, summary.
     Each signal has 'label' (display text) and 'tone' (good/bad/neutral).
     """
-    ata    = sources.get("ata_tonnage")    or {}
-    pmi    = sources.get("ism_pmi")        or {}
+    ata    = sources.get("ata_tonnage")     or {}
+    pmi    = sources.get("ism_pmi")         or {}
     tsi    = sources.get("bts_freight_tsi") or {}
-    ppi    = sources.get("ppi_trucking")   or {}
-    diesel = sources.get("diesel_us")      or {}
+    ppi    = sources.get("ppi_trucking")    or {}
+    diesel = sources.get("diesel_us")       or {}
+    wti    = sources.get("wti_crude")       or {}
+    retail = sources.get("retail_sales")    or {}
+    capu   = sources.get("capacity_util")   or {}
 
     def _yoy(s):  return (s.get("yoy_52w")  or {}).get("pct_change")
     def _mom(s):  return (s.get("vs_short") or {}).get("pct_change")
@@ -304,10 +345,13 @@ def _compute_outlook(sources: dict) -> dict:
     ppi_yoy     = _yoy(ppi)
     diesel_yoy  = _yoy(diesel)
     diesel_4w   = _mom(diesel)
+    wti_4w      = _mom(wti)
+    retail_yoy  = _yoy(retail)
+    capu_cur    = _cur(capu)
 
     signals: dict = {}
 
-    # --- Freight volume signal (ATA tonnage YoY + ISM PMI + BTS TSI YoY) ---
+    # --- Freight volume signal (ATA tonnage YoY + ISM PMI + BTS TSI YoY + retail sales YoY + cap util) ---
     vol_votes: list[str] = []
     if ata_yoy is not None:
         vol_votes.append("expanding" if ata_yoy >= 3 else ("contracting" if ata_yoy < 0 else "flat"))
@@ -315,6 +359,24 @@ def _compute_outlook(sources: dict) -> dict:
         vol_votes.append("expanding" if pmi_cur >= 52 else ("contracting" if pmi_cur < 49 else "neutral"))
     if tsi_yoy is not None:
         vol_votes.append("expanding" if tsi_yoy >= 2 else ("contracting" if tsi_yoy < -1 else "flat"))
+    if retail_yoy is not None:
+        vol_votes.append("expanding" if retail_yoy >= 4 else ("contracting" if retail_yoy < 0 else "flat"))
+        if retail_yoy >= 4:
+            signals["retail_signal"] = f"Retail sales +{retail_yoy:.1f}% YoY — consumer demand driving dry-van loads"
+        elif retail_yoy < 0:
+            signals["retail_signal"] = f"Retail sales {retail_yoy:.1f}% YoY — weak consumer demand, watch for softer load volumes"
+        else:
+            signals["retail_signal"] = f"Retail sales +{retail_yoy:.1f}% YoY — moderate consumer demand"
+    if capu_cur is not None:
+        if capu_cur >= 80:
+            vol_votes.append("expanding")
+            signals["capu_signal"] = f"Industrial capacity utilization {capu_cur:.1f}% (≥80%) — tight industrial freight signal"
+        elif capu_cur < 75:
+            vol_votes.append("contracting")
+            signals["capu_signal"] = f"Industrial capacity utilization {capu_cur:.1f}% (<75%) — slack industrial freight signal"
+        else:
+            vol_votes.append("neutral")
+            signals["capu_signal"] = f"Capacity utilization {capu_cur:.1f}% (75–80% range — neutral)"
     if vol_votes:
         exp = vol_votes.count("expanding")
         con = vol_votes.count("contracting")
@@ -375,6 +437,21 @@ def _compute_outlook(sources: dict) -> dict:
             "spread": round(squeeze, 1),
         }
 
+    # --- WTI → diesel lag signal (item 5): crude moves ~1-2wk ahead of pump price ---
+    if wti_4w is not None and diesel_4w is not None:
+        if wti_4w <= -8 and diesel_4w > -3:
+            signals["wti_lag"] = {
+                "direction": "down",
+                "note": (f"WTI crude fell {abs(wti_4w):.1f}% in 4wk but diesel hasn't followed"
+                         f" — fuel cost relief likely in 1–2 weeks"),
+            }
+        elif wti_4w >= 8 and diesel_4w < 3:
+            signals["wti_lag"] = {
+                "direction": "up",
+                "note": (f"WTI crude up {wti_4w:.1f}% in 4wk but diesel hasn't followed"
+                         f" — fuel cost pressure likely in 1–2 weeks"),
+            }
+
     # --- Seasonal context (from diesel series date → quarter) ---
     diesel_date = ((sources.get("diesel_us") or {}).get("current") or {}).get("date")
     if diesel_date:
@@ -416,13 +493,19 @@ def _compute_cost_intel(sources: dict, benchmarks: dict) -> dict:
     current_diesel = ((sources.get("diesel_us") or {}).get("current") or {}).get("value")
     if not current_diesel:
         return {}
-    atri_fuel_cpm = (benchmarks.get("fuel_cost_per_mile") or {}).get("value") or 0.593
+    atri_fuel_cpm  = (benchmarks.get("fuel_cost_per_mile") or {}).get("value") or 0.593
+    atri_total_cpm = (benchmarks.get("total_cost_per_mile") or {}).get("value") or 2.251
+    est_fuel_cpm   = round(atri_fuel_cpm * (current_diesel / _ATRI_DIESEL_BASE), 3)
+    # Break-even: replace fuel component with current-price estimate; all other costs held at ATRI baseline
+    non_fuel_cpm   = atri_total_cpm - atri_fuel_cpm
     return {
-        "current_diesel":  current_diesel,
-        "est_fuel_cpm":    round(atri_fuel_cpm * (current_diesel / _ATRI_DIESEL_BASE), 3),
-        "atri_fuel_cpm":   atri_fuel_cpm,
+        "current_diesel":   current_diesel,
+        "est_fuel_cpm":     est_fuel_cpm,
+        "atri_fuel_cpm":    atri_fuel_cpm,
         "atri_diesel_base": _ATRI_DIESEL_BASE,
-        "fsc_per_mile":    round(max(0.0, (current_diesel - _FSC_DIESEL_BASE) / _FSC_MPG_AVG), 3),
+        "fsc_per_mile":     round(max(0.0, (current_diesel - _FSC_DIESEL_BASE) / _FSC_MPG_AVG), 3),
+        "breakeven_rpm":    round(non_fuel_cpm + est_fuel_cpm, 3),
+        "atri_total_cpm":   atri_total_cpm,
     }
 
 
@@ -442,7 +525,7 @@ def render_chip_html(ctx: dict | None = None,
     section.  Hidden entirely when no cached data exists.
 
     Args:
-        xfreight_rpm: dict from ``compute_rpm_goal`` -- keys ``actual_rpm``,
+        xfreight_rpm: dict from ``compute_rpm_goal`` — keys ``actual_rpm``,
             ``goal_rpm``, ``cost_per_mile``, ``gap`` (goal minus actual).
     """
     ctx = ctx if ctx is not None else load_cached()
@@ -519,6 +602,53 @@ def render_chip_html(ctx: dict | None = None,
         + _metric_cell("bts_freight_tsi","BTS Freight TSI",  fmt="{:.1f}",  invert=False, border_right=True)
         + _metric_cell("ism_pmi",       "ISM Mfg PMI",       fmt="{:.1f}",  invert=False, border_right=False)
     )
+
+    # Secondary metrics row: US retail sales + capacity utilization (3 cols each)
+    def _wide_cell(key: str, name: str, fmt: str, invert: bool,
+                   colspan: int, border_right: bool) -> str:
+        src     = sources.get(key) or {}
+        current = src.get("current") or {}
+        val     = current.get("value")
+        asof    = current.get("date", "")
+        unit    = src.get("unit", "")
+        border  = f"border-right:1px solid {line};" if border_right else ""
+        if val is None:
+            return (
+                f"<td colspan='{colspan}' style='padding:4px 10px;vertical-align:top;{border}'>"
+                f"<div style='font-size:9px;color:{mute};text-transform:uppercase;"
+                f"letter-spacing:1px;margin-bottom:2px;'>{name}</div>"
+                f"<div style='font-size:11px;color:{mute};'>n/a</div>"
+                f"</td>"
+            )
+        val_str    = fmt.format(val)
+        vs_short   = src.get("vs_short") or {}
+        vs_long    = src.get("yoy_52w") or {}
+        short_lbl  = src.get("short_label", "1mo")
+        short_html = _pct_span(vs_short.get("pct_change"), invert=invert)
+        long_html  = _pct_span(vs_long.get("pct_change"),  invert=invert)
+        return (
+            f"<td colspan='{colspan}' style='padding:4px 10px;vertical-align:top;{border}'>"
+            f"<div style='font-size:9px;color:{mute};text-transform:uppercase;"
+            f"letter-spacing:1px;margin-bottom:2px;'>{name}</div>"
+            f"<div style='font-size:12px;font-weight:700;color:{ink};'>{val_str}"
+            f"<span style='font-size:10px;font-weight:400;color:{mute};'>&nbsp;{unit}</span></div>"
+            f"<div style='font-size:10px;margin-top:2px;line-height:1.5;'>"
+            f"{short_html}&nbsp;<span style='color:{mute};'>{short_lbl}</span>"
+            f"&nbsp;&middot;&nbsp;{long_html}&nbsp;<span style='color:{mute};'>YoY</span></div>"
+            f"<div style='font-size:9px;color:{mute};margin-top:1px;'>{asof}</div>"
+            f"</td>"
+        )
+
+    retail_src = sources.get("retail_sales") or {}
+    capu_src   = sources.get("capacity_util") or {}
+    secondary_row = ""
+    if retail_src or capu_src:
+        secondary_row = (
+            f"<tr style='border-top:1px solid {line};'>"
+            + _wide_cell("retail_sales",  "US Retail Sales",    "${:.1f}",   False, 3, True)
+            + _wide_cell("capacity_util", "Mfg Capacity Util.", "{:.1f}",    False, 3, False)
+            + "</tr>"
+        )
 
     # Industry benchmarks bar
     bm_parts: list[str] = []
@@ -597,16 +727,29 @@ def render_chip_html(ctx: dict | None = None,
                 f"</td></tr>"
             )
 
-    # Cost intelligence row (items 1, 3): fuel sensitivity + FSC guidance
+    # Cost intelligence row (items 1, 3): fuel sensitivity + FSC guidance + break-even RPM
     ci = _compute_cost_intel(sources, benchmarks)
     cost_intel_html = ""
     if ci:
-        est  = ci["est_fuel_cpm"]
-        base = ci["atri_fuel_cpm"]
-        fsc  = ci["fsc_per_mile"]
-        cur_d = ci["current_diesel"]
-        abase = ci["atri_diesel_base"]
+        est       = ci["est_fuel_cpm"]
+        base      = ci["atri_fuel_cpm"]
+        fsc       = ci["fsc_per_mile"]
+        cur_d     = ci["current_diesel"]
+        abase     = ci["atri_diesel_base"]
+        breakeven = ci.get("breakeven_rpm")
+        atri_tot  = ci.get("atri_total_cpm")
         fuel_color = red if est > base * 1.05 else (green if est < base * 0.97 else mute)
+        breakeven_html = ""
+        if breakeven and atri_tot:
+            breakeven_html = (
+                f"<br><span style='font-size:10px;color:{ink};'>"
+                f"<b>Break-even RPM:</b>&nbsp;"
+                f"<span style='font-weight:700;color:{ink};'>${breakeven:.3f}/mi</span>"
+                f"&nbsp;<span style='color:{mute};'>(ATRI total ${atri_tot:.3f}/mi"
+                f"&nbsp;&middot;&nbsp;fuel component scaled to today"
+                f"&nbsp;&middot;&nbsp;don't take freight below this rate)</span>"
+                f"</span>"
+            )
         cost_intel_html = (
             f"<tr><td colspan='6' style='padding:6px 10px 4px;"
             f"border-top:1px solid {line};'>"
@@ -620,7 +763,9 @@ def render_chip_html(ctx: dict | None = None,
             f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
             f"<b>Std FSC:</b>&nbsp;<span style='font-weight:700;color:{ink};'>${fsc:.3f}/mi</span>"
             f"&nbsp;<span style='color:{mute};'>(ATA: (${cur_d:.3f}&minus;$0.70)&divide;6&nbsp;mpg)</span>"
-            f"</span></td></tr>"
+            f"</span>"
+            f"{breakeven_html}"
+            f"</td></tr>"
         )
 
     # Near-term outlook row (items 2, 4): margin squeeze + seasonal context + signals
@@ -675,6 +820,30 @@ def render_chip_html(ctx: dict | None = None,
                 f"&#128197;&nbsp;<b>{seasonal['quarter']}:</b>&nbsp;{seasonal['note']}</span>"
             )
 
+        # WTI→diesel lag signal (item 5)
+        wti_lag = outlook.get("wti_lag") or {}
+        wti_lag_html = ""
+        if wti_lag:
+            lag_color = green if wti_lag.get("direction") == "down" else red
+            lag_icon  = "&#9660;" if wti_lag.get("direction") == "down" else "&#9650;"
+            wti_lag_html = (
+                f"<br><span style='font-size:9px;color:{lag_color};'>"
+                f"{lag_icon}&nbsp;{wti_lag['note']}</span>"
+            )
+
+        # Retail sales + capacity utilization signals
+        retail_sig = outlook.get("retail_signal", "")
+        retail_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#128722;&nbsp;{retail_sig}</span>"
+        ) if retail_sig else ""
+
+        capu_sig = outlook.get("capu_signal", "")
+        capu_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#127981;&nbsp;{capu_sig}</span>"
+        ) if capu_sig else ""
+
         outlook_html = (
             f"<tr><td colspan='6' style='padding:6px 10px 4px;"
             f"border-top:1px solid {line};'>"
@@ -682,7 +851,7 @@ def render_chip_html(ctx: dict | None = None,
             f"text-transform:uppercase;letter-spacing:1px;'>Near-Term Outlook</span>"
             f"<br><span style='font-size:10px;color:{ink};'>"
             f"{'&nbsp;&nbsp;&middot;&nbsp;&nbsp;'.join(chips)}"
-            f"</span>{squeeze_html}{pmi_html}{season_html}"
+            f"</span>{squeeze_html}{wti_lag_html}{pmi_html}{retail_html}{capu_html}{season_html}"
             f"</td></tr>"
         )
 
@@ -690,7 +859,7 @@ def render_chip_html(ctx: dict | None = None,
     footer_html = (
         f"<tr><td colspan='6' style='padding:4px 10px 0;'>"
         f"<span style='font-size:9px;color:{mute};'>"
-        f"Source: FRED GASDESW · DCOILWTICO · TRUCKD11 · WPU3012 · TSIFRGHT · NAPM"
+        f"Source: FRED GASDESW · DCOILWTICO · TRUCKD11 · WPU3012 · TSIFRGHT · NAPM · RSAFS · TCU"
         f"{(' · refreshed ' + generated[:10]) if generated else ''}"
         f"</span></td></tr>"
     )
@@ -704,6 +873,7 @@ def render_chip_html(ctx: dict | None = None,
         f"Market Context · OTR Truckload{asof_display}</div>"
         f"<table style='width:100%;border-collapse:collapse;'>"
         f"<tr>{metrics_row}</tr>"
+        f"{secondary_row}"
         f"{benchmarks_html}"
         f"{xf_html}"
         f"{cost_intel_html}"
