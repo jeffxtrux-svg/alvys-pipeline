@@ -13,6 +13,10 @@
 #   ONEDRIVE_USER_UPN      — mailbox to send from
 #   SAFETY_RECIPIENTS      — standing list (audra@, jeff@, jb@xfreight.net)
 #   TEAMS_SAFETY_WEBHOOK   — Teams incoming webhook URL (optional; no-op if unset)
+#   ALVYS_CLIENT_ID, ALVYS_CLIENT_SECRET — optional; powers the fuel-cost-per-mile
+#     coaching items (src/fuel_analytics.py), pulled direct from the Alvys API
+#     with no Excel staging. Unset = no fuel coaching items, everything else
+#     in the brief is unaffected.
 
 name: Safety & Compliance Report (5am CT)
 
@@ -102,6 +106,12 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
+          # Fuel coaching items (src/fuel_analytics.py) — pulled DIRECT from
+          # the Alvys API, no Excel staging. Optional: unset just means no
+          # fuel coaching items this run (same fail-soft pattern as Samba/Alvys
+          # Pipeline above).
+          ALVYS_CLIENT_ID: ${{ secrets.ALVYS_CLIENT_ID }}
+          ALVYS_CLIENT_SECRET: ${{ secrets.ALVYS_CLIENT_SECRET }}
           # Recipient routing (mirrors scorecard_email.yml pattern):
           #   dispatch/push with `recipients` input set → use that TO override
           #   dispatch/push with no input → jeff-only (quiet test send)

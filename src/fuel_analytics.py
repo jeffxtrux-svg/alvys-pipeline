@@ -40,9 +40,16 @@ Also deliberately out of scope here (follow-up phases):
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+# Cached FRED diesel price written by market_context.py — read it instead of
+# making a second live FRED call from this module.
+_MARKET_CONTEXT_PATH = (Path(__file__).resolve().parent.parent
+                        / "Karpathy-Wiki" / "wiki" / "market-context.json")
 
 # Per spec: a driver above this fuel $/mile gets flagged for coaching.
 FUEL_HIGH_COST_THRESHOLD_PER_MILE = 0.55
@@ -357,6 +364,41 @@ def fetch_and_compute_fuel(alvys_client, start_date: str, **kwargs) -> dict | No
     fuel_records = alvys_client.fetch_fuel(start_date)
     trip_records = alvys_client.fetch_trips(start_date)
     return compute_fuel(fuel_records, trip_records, **kwargs)
+
+
+def read_national_diesel_price(path: "Path | str | None" = None) -> float | None:
+    """Read the live US diesel $/gal that market_context.py already fetched
+    and cached, instead of making a second live FRED call from here.
+    Fail-soft: returns None on any missing/unreadable/malformed cache —
+    callers should treat the national comparison as optional."""
+    p = Path(path) if path else _MARKET_CONTEXT_PATH
+    try:
+        data = json.loads(p.read_text())
+        val = data["sources"]["diesel_us"]["current"]["value"]
+        return float(val) if _isnum(val) else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Coaching talk-track — matches the quoted, threshold-tiered style already
+# used by scorecard_insights.py::_pick_talk_track for idle-time coaching.
+# ---------------------------------------------------------------------------
+def fuel_talk_track(cost_per_mile: float, threshold: float,
+                    fleet_avg: float | None = None) -> str:
+    """Pre-written talk track for a high-fuel-cost-per-mile coaching card."""
+    over = cost_per_mile - threshold
+    avg_note = (f" Fleet average is ${fleet_avg:.2f}/mi."
+                if _isnum(fleet_avg) else "")
+    if cost_per_mile > threshold * 1.5:
+        return (f'"You\'re running ${cost_per_mile:.2f}/mi in fuel — about '
+                f'{(cost_per_mile / threshold - 1) * 100:.0f}% over our '
+                f'${threshold:.2f}/mi line.{avg_note} Let\'s check idle time, '
+                f'route choice, and whether you\'re buying at preferred-network '
+                f'stops on the card."')
+    return (f'"Fuel cost is ${cost_per_mile:.2f}/mi this month, ${over:.2f} over '
+            f'our ${threshold:.2f}/mi target.{avg_note} Anything different about '
+            f'your routes, idle habits, or where you\'re fueling up lately?"')
 
 
 # ---------------------------------------------------------------------------

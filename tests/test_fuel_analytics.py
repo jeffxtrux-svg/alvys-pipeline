@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.fuel_analytics import (  # noqa: E402
     compute_fuel, compute_fuel_trend, render_fuel_section_html,
     fetch_and_compute_fuel, _norm_driver_name,
+    fuel_talk_track, read_national_diesel_price,
 )
 
 _NOW = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)   # "today" for all tests
@@ -304,6 +305,52 @@ def test_fetch_and_compute_fuel_calls_client_and_computes():
 def test_norm_driver_name_handles_case_and_whitespace():
     assert _norm_driver_name("  Michael   HALL ") == "michael hall"
     assert _norm_driver_name(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# fuel_talk_track
+# ---------------------------------------------------------------------------
+def test_talk_track_moderate_overage_mentions_target_and_fleet_avg():
+    track = fuel_talk_track(0.68, 0.55, fleet_avg=0.41)
+    assert "$0.68/mi" in track and "$0.55/mi" in track
+    assert "$0.41/mi" in track   # fleet average note included
+
+
+def test_talk_track_severe_overage_uses_stronger_script():
+    track = fuel_talk_track(0.95, 0.55, fleet_avg=0.41)
+    assert "$0.95/mi" in track
+    assert "%" in track   # the severe script leads with a percentage-over figure
+
+
+def test_talk_track_works_without_fleet_avg():
+    track = fuel_talk_track(0.60, 0.55)
+    assert "$0.60/mi" in track
+    assert "Fleet average" not in track
+
+
+# ---------------------------------------------------------------------------
+# read_national_diesel_price
+# ---------------------------------------------------------------------------
+def test_read_national_diesel_price_missing_file_returns_none():
+    assert read_national_diesel_price("/tmp/definitely-does-not-exist.json") is None
+
+
+def test_read_national_diesel_price_malformed_json_returns_none(tmp_path=None):
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write("{not valid json")
+        path = f.name
+    assert read_national_diesel_price(path) is None
+
+
+def test_read_national_diesel_price_parses_real_shape():
+    import json
+    import tempfile
+    payload = {"sources": {"diesel_us": {"current": {"date": "2026-06-22", "value": 4.832}}}}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        path = f.name
+    assert read_national_diesel_price(path) == 4.832
 
 
 # ---------------------------------------------------------------------------
