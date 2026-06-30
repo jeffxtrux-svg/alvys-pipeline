@@ -18,17 +18,31 @@ Every workflow runs at fixed Central wall-clock times year-round. GitHub Actions
 
 | Central Time | Job | Workflow file |
 |---|---|---|
-| **2:30am** | SambaSafety merge (CSVs → `SambaSafety_Master.xlsx`) | `sambasafety_refresh.yml` |
-| **4:00am** | Alvys + Samsara + QB pulls (concurrent) | `refresh.yml`, `samsara_refresh.yml`, `qb_refresh.yml` |
+| **1am / 3am** | SambaSafety merge (CSVs → `SambaSafety_Master.xlsx`) | `sambasafety_refresh.yml` |
+| **4:00am** | Alvys + Samsara + QB pulls (1st of 8 daily runs) | `refresh.yml`, `samsara_refresh.yml`, `qb_refresh.yml` |
 | **4:30am** | Google Sheets KPI dashboard (morning) | `sheets_refresh.yml` |
+| **5:00am** | Safety & Compliance report primary | `safety_compliance_email.yml` |
 | **5:00am** | Scorecard email primary (13-page PDF) | `scorecard_email.yml` |
-| 5:15 / 5:30 / 6:00am | Scorecard email backups (only fire if primary dropped) | `scorecard_email.yml` |
+| 5:15 / 5:30am | Scorecard email backups (only fire if primary dropped) | `scorecard_email.yml` |
+| **5:30am** | Cloudflare Worker dispatches all three healthchecks | External — `ops/cron-trigger/worker.js` |
+| **6:00am** | Scorecard / Daily-upload / Safety healthchecks (marker-gated) | `scorecard_healthcheck.yml`, `daily_upload_healthcheck.yml`, `safety_compliance_healthcheck.yml` |
+| **6:00am / 8:00am** | Alvys + Samsara + QB pulls (2nd / 3rd runs) | same as 4am |
+| **7:00am** | Financial Brief (AR + invoicing focus) | `financial_email.yml` |
 | **7:15am** | Karpathy-Wiki librarian (morning) | `karpathy_compile.yml` |
-| **11:00am** | Alvys + Samsara + QB pulls (midday) | same as 4am |
+| **10:00am / 12:00pm / 2:00pm** | Alvys + Samsara + QB pulls (4th–6th runs) | same as 4am |
 | **1:00pm** | Google Sheets KPI dashboard (midday) | `sheets_refresh.yml` |
 | **1:00pm** | Karpathy-Wiki librarian (afternoon) | `karpathy_compile.yml` |
-| **5:00pm** | Alvys + Samsara + QB pulls (evening) | same as 4am |
+| **4:00pm / 6:00pm** | Alvys + Samsara + QB pulls (7th–8th runs) | same as 4am |
 | **5:30pm** | Google Sheets KPI dashboard (evening) | `sheets_refresh.yml` |
+| **Every :15 / :45** | ETA tracker backstop (Cloudflare Worker) | External — `ops/cron-trigger/worker.js` |
+
+### Source Data Refresh Cadence (as of June 10, 2026)
+
+Alvys, Samsara, and QuickBooks pulls were bumped from 3×/day (4am / 11am / 5pm) to **8×/day** (every 2 hours from 4am to 6pm CT). Target hours: `{4, 6, 8, 10, 12, 14, 16, 18}`.
+
+**Why:** The Power BI report and brief entity P&L are checked intraday, not just at 5am. With a 6-hour gap between pulls, mid-day load activity (new bookings, status changes, brokered carrier rate adjustments) wasn't visible until the next refresh. The specific trigger: Power BI's X-Linx June MTD cost showed $21,890 (stale) while the API said $22,282 (current) — $390 of carrier rate updates had landed between PBI's last pull and the brief.
+
+**Cost:** ~24 CI-minutes/day across the 3 source workflows × 8 runs × 3 sources — well within GitHub Actions' free tier.
 
 ## Why This Ordering
 
@@ -76,12 +90,17 @@ The wrong-season cron fires but the gate exits it cleanly. **DST flip in early-N
 
 | Workflow | Target CT times | Gate accepts |
 |---|---|---|
-| `refresh.yml` (Alvys) | 4am / 11am / 5pm | `{4, 11, 17}` |
-| `samsara_refresh.yml` | 4am / 11am / 5pm | `{4, 11, 17}` |
-| `qb_refresh.yml` | 4am / 11am / 5pm | `{4, 11, 17}` |
-| `sambasafety_refresh.yml` | 2:30am | `{2}` |
+| `refresh.yml` (Alvys) | every 2h, 4am–6pm | `{4, 6, 8, 10, 12, 14, 16, 18}` |
+| `samsara_refresh.yml` | every 2h, 4am–6pm | `{4, 6, 8, 10, 12, 14, 16, 18}` |
+| `qb_refresh.yml` | every 2h, 4am–6pm | `{4, 6, 8, 10, 12, 14, 16, 18}` |
+| `sambasafety_refresh.yml` | 1am + 3am + every 2h 4am–6pm | `{1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18}` |
 | `sheets_refresh.yml` | 4:30am / 1pm / 5:30pm | `{4, 13, 17}` |
-| `scorecard_email.yml` | 5am + backups through ~6am | `≥ 5` |
+| `safety_compliance_email.yml` | 5am + backups | `≥ 5, skip 6` |
+| `scorecard_email.yml` | 5am + backups through ~7am | `≥ 5, skip 6` |
+| `scorecard_healthcheck.yml` | 6am | `{6}` |
+| `daily_upload_healthcheck.yml` | 6am | `{6}` |
+| `safety_compliance_healthcheck.yml` | 6am | `{6}` |
+| `financial_email.yml` | 7am | `≥ 7, skip 8` |
 | `karpathy_compile.yml` | 7:15am / 1pm | `{7, 13}` |
 
 ## Failure Handling
@@ -111,10 +130,12 @@ The wrong-season cron fires but the gate exits it cleanly. **DST flip in early-N
 ## Connections
 
 - [[Data Pipeline Architecture]] — what each job pulls and writes.
-- [[Daily Scorecard Email]] — the 5am job described in detail.
+- [[Daily Scorecard Email]] — the 5am scorecard job described in detail.
+- [[Slack & Teams Digest]] — fires immediately after scorecard email completes.
 - [[OneDrive]] — where all job outputs land.
 
 ## Sources
 
 - `raw/xfreight-daily-schedule.md`
 - `raw/xfreight-daily-operations-reports.md` (human rhythm)
+- `raw/xfreight-refresh-cadence-2hr.md` — source-data pull bump to 8×/day (June 10, 2026)

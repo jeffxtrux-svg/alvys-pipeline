@@ -41,6 +41,7 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 - [[XFreight Entities]] — the five legal entities: X-Trux (carrier), X-Linx (broker), Truk-Way (leasing/payroll), and two future N&J entities.
 - [[Truk-Way Leasing]] — equipment leasing, employer of W-2 staff, and owner-op group payment hub — three roles in one entity.
 - [[Key People]] — JB Sweere (President), Jeff Hannahs (VP BD), Audra Newman (Safety/AP), Dan Heeren (Logistics), plus key external partners.
+- [[Contact Directory]] — quick-reference: office address/phones, principals' emails, entity IDs, banking (Mike Flint/First Dakota NB), insurance, factoring vendor contacts, customer contacts, co-broker ABT MC#.
 
 ---
 
@@ -88,9 +89,11 @@ Codified response patterns — "what to do when X happens." Each playbook has a 
 ## Operations
 
 - [[Brokerage X-Linx]] — X-Linx brokerage operations: co-broker (ABT), margin target (17.5%), revenue collapse 2024→2026.
-- [[Daily Schedule]] — year-round Central wall-clock automation schedule; dual-cron + CT-hour-gate DST pattern.
+- [[Daily Schedule]] — year-round Central wall-clock automation schedule; dual-cron + CT-hour-gate DST pattern; source pulls now every 2 hours 4am–6pm.
 - [[Daily Scorecard Email]] — 13-page daily executive brief: page-by-page breakdown, key constants, Bottom Line logic.
 - [[Daily Operations]] — day-to-day operating rhythm: three email cadences, escalation patterns, full phone directory, fuel spend.
+- [[Slack & Teams Digest]] — compact morning post to Slack/Teams summarizing the brief: MTD KPIs, Risk Watch top signals, Decisions Graded. Fires after scorecard email.
+- [[X-Trux Open-Trip Rule]] — loads with any leg still in "Open" status are excluded from both revenue and cost on the entity P&L until every leg moves past Open; prevents margin inflation from mid-trip loads.
 
 ---
 
