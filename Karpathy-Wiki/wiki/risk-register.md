@@ -21,7 +21,7 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 | CSA BASIC near intervention | **High** | Monitor | Safety | A BASIC ≥ its 65th/80th threshold |
 | Rate-per-mile goal may be light | Medium | Watch | Jeff | Live cost/mi creeping above the $0.98 goal pin |
 | Customer concentration | Medium | Watch | Jeff (BD) | One customer > ~25% of revenue |
-| Factoring onboarding (Triumph) | Medium | Improving | JB / Jeff | Onboarding ~6/16–17, then cash-flow relief |
+| Factoring — Triumph post-onboarding | Low | Monitor | JB / Jeff | Factoring fees + refi debt service vs cash-flow gain |
 | SambaSafety CSV fragility | Medium | Mitigated | Pipeline | CSV age > 60h |
 | Manual Alvys upload dependency | Medium | Open | Ops | File age > 30h |
 | Pipeline cron fragility | Medium | Mitigated | Pipeline | A morning with no brief by ~7am CT |
@@ -56,11 +56,15 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 ### Pipeline cron fragility
 **What it is.** GitHub's scheduled cron is best-effort and has dropped whole morning batches (e.g., 2026-06-08). **Exposure:** no brief / stale dashboards on drop mornings. **Mitigation:** dual-cron DST hardening, staggered backups, 6am healthchecks, and an off-GitHub Cloudflare Worker backstop. **Watch:** a morning with no brief by ~7am CT. **Owner:** pipeline. See [[Data Pipeline Architecture]], [[Daily Scorecard Email]].
 
-### Factoring onboarding (Triumph)
-**What it is.** **Triumph** selected for invoice factoring; onboarding expected **~June 16–17, 2026** to relieve cash flow. Onboarding required clearing the existing operating loan — funded by a **$40K owner capital injection ($20K Jeff + $20K JB)** plus a **trailer refinance** to cover the gap. **Exposure (residual):** onboarding execution this week; factoring fees (~1%); new trailer-refi debt service. **Watch:** onboarding completes on schedule, then AR aging should shorten. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]].
-
 ### AR aging / collections
 **What it is.** Overdue AR (31+/90+) and the QB-vs-Alvys variance from un-invoiced loads are tracked on the accounting pages. **Exposure:** cash flow and factoring penalties. **Watch:** 90+ AR rising. **Owner:** Audra (AP/AR). See [[Daily Scorecard Email]], [[Factoring]].
+
+---
+
+## Low severity
+
+### Factoring — Triumph post-onboarding
+**What it is.** Triumph onboarding completed ~June 16–17, 2026. Triumph is **live** as of June 30. Cash flow has improved but is not yet measurably quantified. Transition involved significant friction (details in `raw/` from Friday 2026-06-27; not yet compiled here). **Residual exposure:** factoring fees (~1%) + new trailer-refi debt service — net benefit needs a 90-day read. **Watch:** factoring fees + refi debt service vs cash-flow gain; AR aging trend. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]], [[Decision Journal]], [[Playbook — Factoring Partner Switch]].
 
 ---
 
