@@ -1138,7 +1138,7 @@ def main() -> int:
     qb_dir = os.environ.get("DAILY_UPLOAD_QB_DIR", "QuickBooks").strip("/")
     to_emails = [e.strip()
                  for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS",
-                                          "jeff@xfreight.net").split(",")
+                                          "jeff@xfreight.net,Dan@xfreight.net").split(",")
                  if e.strip()]
     token = get_token(tenant, client, secret)
 
