@@ -63,8 +63,8 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 
 ## Low severity
 
-### Factoring — Triumph post-onboarding
-**What it is.** Triumph onboarding completed ~June 16–17, 2026. Triumph is **live** as of June 30. Cash flow has improved but is not yet measurably quantified. Transition involved significant friction (details in `raw/` from Friday 2026-06-27; not yet compiled here). **Residual exposure:** factoring fees (~1%) + new trailer-refi debt service — net benefit needs a 90-day read. **Watch:** factoring fees + refi debt service vs cash-flow gain; AR aging trend. **Owner:** JB / Jeff. See [[Factoring]], [[Financial Performance]], [[Decision Journal]], [[Playbook — Factoring Partner Switch]].
+### Factoring — Triumph / X-Linx integration incomplete
+**What it is.** Triumph went live week of 6/23/26. X-Trux (asset side) flows correctly. **X-Linx (brokerage) side broke at go-live** — Alvys was not passing carrier payables to Triumph alongside AR invoices. 144 invoices from the initial buyout were unrecorded in both Alvys and QBO. Meeting 6/26/26: Alvys acknowledged the gap and owns the fix. **Open items as of 6/30:** (1) Alvys syncs 144 invoices to QBO this week; (2) QBO third-party accounting setup week of 6/30 or following; (3) Andreas (Alvys head engineer) to contact Jeff re: sandbox access 6/30. Triumph Audit feature has been turned off for XFreight. No custom build required from XFreight. **Watch:** confirm 144-invoice sync and QBO setup complete by ~7/7; X-Linx carrier payables flowing to Triumph; AR aging shortening. **Owner:** JB / Jeff (monitor Alvys delivery). See [[Factoring]], [[Financial Performance]], [[Decision Journal]], [[Playbook — Factoring Partner Switch]].
 
 ---
 
