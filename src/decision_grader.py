@@ -207,7 +207,12 @@ def render_summary_html(results: list[dict],
 def write_grades_snapshot(results: list[dict], path: Path | None = None) -> None:
     """Write a small JSON snapshot of the current grades so the librarian
     can pick it up on its next compile and stamp badges into
-    wiki/decision-journal.md."""
+    wiki/decision-journal.md.
+
+    The scorecard workflow's commit step only stages `Karpathy-Wiki/raw`,
+    so this file (under `wiki/`) never reaches main from CI. Also
+    best-effort mirrors it to OneDrive (Scorecard/decision-grades.json) so
+    the Slack/Teams digest has a source that's actually populated."""
     import json
     target = path or (_OUTCOMES_PATH.parent / "decision-grades.json")
     snap = {
@@ -229,3 +234,14 @@ def write_grades_snapshot(results: list[dict], path: Path | None = None) -> None
         target.write_text(json.dumps(snap, indent=2, default=str))
     except Exception as exc:
         log.warning("decision_grader: failed to write grades snapshot (%s)", exc)
+        return
+    try:
+        from src.onedrive_upload import ensure_folder, get_token_from_env, upload_file
+        token, upn = get_token_from_env()
+        if token:
+            ensure_folder(token, upn, "Scorecard")
+            upload_file(token=token, user_upn=upn, folder_path="Scorecard",
+                       filename="decision-grades.json", file_path=target)
+            log.info("decision_grader: grades snapshot mirrored to OneDrive")
+    except Exception as exc:
+        log.warning("decision_grader: OneDrive mirror failed (%s)", exc)
