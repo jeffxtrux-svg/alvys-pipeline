@@ -410,6 +410,66 @@ def test_build_page1_renders_three_rpm_charts_in_xtrux_overview():
 
 
 # ---------------------------------------------------------------------------
+# Page 1 fuel section — src.fuel_analytics.compute_fuel() result rendered as
+# its own adjacent section near the RPM goal (not merged into it; see
+# fuel_analytics.py module docstring for why). Fail-soft: section must not
+# appear at all when fuel data is unavailable, matching the goal-tiles pattern.
+# ---------------------------------------------------------------------------
+def _fuel_for_page1():
+    return {
+        "spend_mtd": 1107.0, "gallons_mtd": 213.0, "avg_price_per_gallon": 5.197,
+        "national_diesel_price": 4.832, "price_vs_national": 0.365,
+        "fuel_cost_per_mile": 0.41, "high_cost_threshold": 0.55,
+        "high_cost_drivers": [
+            {"driver": "Gary Abla", "truck": "44202", "cost_per_mile": 0.68,
+             "spend": 612.0, "gallons": 118.0},
+        ],
+    }
+
+
+def test_page1_fuel_section_renders_tiles_and_high_cost_driver():
+    alvys_entities = compute_alvys_entities({"Loads": pd.DataFrame([
+        {"Office": "X-Trux, Inc", "Customer Revenue": 1000, "Driver Rate": 500,
+         "Carrier Rate": 0, "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 10,
+         "Scheduled Pickup": pd.Timestamp.now().normalize(), "Load Status": "Delivered"}])})
+    html = build_page1(None, alvys_entities, {}, {}, ([], []), ([], []), None,
+                       "Thursday, May 28, 2026", fuel=_fuel_for_page1(), part="overview")
+    assert "X-Trux Fuel Cost" in html
+    assert "$1,107" in html            # spend MTD
+    assert "213" in html               # gallons MTD
+    assert "$5.20" in html             # avg price/gal
+    assert "$0.410" in html            # fuel cost/mile (rpm() = 3 decimals)
+    assert "Gary Abla" in html         # high-cost driver named in the note
+    assert "vs natl" in html           # national diesel comparison pill
+
+
+def test_page1_fuel_section_absent_when_no_drivers_over_threshold():
+    fuel = _fuel_for_page1()
+    fuel["high_cost_drivers"] = []
+    alvys_entities = compute_alvys_entities({"Loads": pd.DataFrame([
+        {"Office": "X-Trux, Inc", "Customer Revenue": 1000, "Driver Rate": 500,
+         "Carrier Rate": 0, "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 10,
+         "Scheduled Pickup": pd.Timestamp.now().normalize(), "Load Status": "Delivered"}])})
+    html = build_page1(None, alvys_entities, {}, {}, ([], []), ([], []), None,
+                       "Thursday, May 28, 2026", fuel=fuel, part="overview")
+    # Tiles still render (spend/gallons are always useful); the note changes tone.
+    assert "X-Trux Fuel Cost" in html
+    assert "No drivers above" in html
+
+
+def test_page1_fuel_section_absent_entirely_when_fuel_unavailable():
+    # No live Alvys creds this run (or fetch failed) → fuel=None upstream.
+    # The section must not render at all — not even an empty/placeholder box.
+    alvys_entities = compute_alvys_entities({"Loads": pd.DataFrame([
+        {"Office": "X-Trux, Inc", "Customer Revenue": 1000, "Driver Rate": 500,
+         "Carrier Rate": 0, "Total Dispatch Mileage": 100, "Empty Dispatch Mileage": 10,
+         "Scheduled Pickup": pd.Timestamp.now().normalize(), "Load Status": "Delivered"}])})
+    html = build_page1(None, alvys_entities, {}, {}, ([], []), ([], []), None,
+                       "Thursday, May 28, 2026", fuel=None, part="overview")
+    assert "X-Trux Fuel Cost" not in html
+
+
+# ---------------------------------------------------------------------------
 # Bottom-line lead phrase: must be honest about MTD profitability, not
 # hardcoded to "Profitable picture" regardless of the actual margin.
 # ---------------------------------------------------------------------------

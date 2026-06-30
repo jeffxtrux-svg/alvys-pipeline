@@ -179,6 +179,11 @@ jobs:
           # creds above for the Power BI token.
           PBI_WORKSPACE_ID: ${{ secrets.PBI_WORKSPACE_ID }}
           PBI_DATASET_ID: ${{ secrets.PBI_DATASET_ID }}
+          # X-Trux Fuel Cost section on page 1 (src/fuel_analytics.py) — pulled
+          # DIRECT from the Alvys API, no Excel staging. Optional: unset just
+          # means no fuel section this run, everything else is unaffected.
+          ALVYS_CLIENT_ID: ${{ secrets.ALVYS_CLIENT_ID }}
+          ALVYS_CLIENT_SECRET: ${{ secrets.ALVYS_CLIENT_SECRET }}
         run: python -m src.scorecard_email
 
       - name: Commit Karpathy-Wiki archive
