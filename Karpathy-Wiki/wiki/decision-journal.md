@@ -21,7 +21,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 | 2026-06 | Billion Auto renewed (lanes + FSC) | Secures ~$47K/mo + fuel protection | **Confirmed** |
 | 2026-06 | Factoring: selected Triumph | Cash-flow relief once onboarded | **Mixed** — live, friction in transition |
 | 2026-06-13 | X-Trux P&L hold-out at ≥74% margin | P&L matches Power BI, reflects own-fleet | **Confirmed** — monitor |
-| 2026-06-13 | Deadhead / RPM = own-fleet only | 5.448% true own-fleet deadhead | Pending |
+| 2026-06-13 | Deadhead / RPM = own-fleet only | 5.448% true own-fleet deadhead | **Mixed** → working |
 | 2026-06-12 | Retire SambaSafety API → CSV-drop | Compliance/CSA data keeps flowing | Pending — review ~7/12 |
 | 2026-06-13 | Next oil change as a 25k estimate | "Close enough" until real data | Pending |
 | Standing | Dispatch date locks the pay rate | Consistent settlement, no disputes | Confirmed |
@@ -43,7 +43,7 @@ A running log of XFreight's consequential decisions — each with the **rational
 **Decision.** Exclude X-Trux loads that are status "Open" OR have Corrected Margin % = (Revenue − Driver Rate)/Revenue ≥ 74% from the entity P&L. **Rationale.** Those are office loads brokered to outside carriers with a tiny placeholder driver rate; counting them inflates own-fleet P&L. **Assumption.** ≥74% margin reliably identifies brokered/under-costed loads. **Predicted outcome.** Brief P&L matches Power BI to the penny and reflects true own-fleet economics. **Actual (2026-06-30).** Working well — filter is capturing the correct loads. Graded **confirmed**. Continuing to monitor to ensure no legitimate high-margin own-fleet loads are wrongly held out. See [[Brokerage X-Linx]], [[Rate-Per-Mile Goal]].
 
 ## 2026-06-13 — Deadhead / RPM scoped to own-fleet only
-**Decision.** Deadhead %, asset RPM, and mileage tiles count X-Trux own-fleet loads only (exclude X-Linx AND brokered X-Trux). **Rationale.** Deadhead is empty miles *your own trucks* drive; carrier-driven loads aren't your deadhead. **Predicted outcome.** 5.448% true own-fleet deadhead (vs 4.90% with brokered loads in). **Actual.** _TBD._ See [[Rate-Per-Mile Goal]].
+**Decision.** Deadhead %, asset RPM, and mileage tiles count X-Trux own-fleet loads only (exclude X-Linx AND brokered X-Trux). **Rationale.** Deadhead is empty miles *your own trucks* drive; carrier-driven loads aren't your deadhead. **Predicted outcome.** 5.448% true own-fleet deadhead (vs 4.90% with brokered loads in). **Actual (2026-06-30).** Direction was right; required a few adjustments before the numbers settled correctly. Now working and reflecting true own-fleet economics. Graded **mixed** (needed tuning) → trending confirmed. See [[Rate-Per-Mile Goal]].
 
 ## 2026-06-12 — Retire SambaSafety API, switch to CSV-drop
 **Decision.** After the API token expired 2026-06-02, retire API mode and read the CSVs Power Automate drops into OneDrive. **Rationale.** API access lapsed; CSV covers driver compliance + CSA needs without renewal cost. **Assumption.** The Power Automate CSV drop stays reliable. **Predicted outcome.** Driver-compliance and CSA data keep flowing. **Actual.** _TBD — review ~2026-07-12._ Paired risk: "SambaSafety CSV fragility" in [[Risk Register]]. See [[Safety Program]], [[Data Pipeline Architecture]].
