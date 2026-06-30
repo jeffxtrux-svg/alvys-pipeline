@@ -41,3 +41,4 @@ jobs:
           python tests/test_sambasafety_combine.py
           python tests/test_sambasafety_client.py
           python tests/test_xfreight_etas.py
+          python tests/test_fuel_analytics.py
