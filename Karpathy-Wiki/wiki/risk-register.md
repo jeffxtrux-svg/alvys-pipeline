@@ -4,7 +4,7 @@ type: register
 tags: [risk, compliance, finance, operations, decision-support]
 sources: ["raw/xfreight-risk-register.md"]
 related: ["[[Decision Journal]]", "[[Safety Program]]", "[[FMCSA CSA Scorecard]]", "[[Acrisure Dispute]]", "[[Active Disputes and Open Issues]]", "[[Customer Portfolio]]", "[[Factoring]]", "[[Data Pipeline Architecture]]", "[[SBA 504 Financing]]"]
-last_reviewed: "2026-06-13"
+last_reviewed: "2026-06-30"
 ---
 
 # Risk Register
@@ -21,7 +21,6 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 | CSA BASIC near intervention | **High** | Monitor | Safety | A BASIC ≥ its 65th/80th threshold |
 | Rate-per-mile goal may be light | Medium | Watch | Jeff | Live cost/mi creeping above the $0.98 goal pin |
 | Customer concentration | Medium | Watch | Jeff (BD) | One customer > ~25% of revenue |
-| Insurance — Acrisure (renewal done) | Medium | Monitor | JB / Jeff | Cost trend; shop alternatives by next renewal |
 | Factoring onboarding (Triumph) | Medium | Improving | JB / Jeff | Onboarding ~6/16–17, then cash-flow relief |
 | SambaSafety CSV fragility | Medium | Mitigated | Pipeline | CSV age > 60h |
 | Manual Alvys upload dependency | Medium | Open | Ops | File age > 30h |
@@ -45,9 +44,6 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 ### Rate-per-mile goal may be light
 **What it is.** The $0.08–0.10/mi insurance increase may exceed what the cost-out absorbed — the overhead pin moved $0.92→$0.98 (~$0.06/mi), ~$0.02–0.04/mi less than the stated increase. If so, the [[Rate-Per-Mile Goal]] is set a touch below true cost (under-pricing). **Mitigation:** Jeff asked to monitor the costing and **alert on evidence we're light**. **Watch:** actual all-in cost per mile creeping above the $0.98 goal pin; insurance expense per mile (QB) vs what the pin assumes. **Owner:** Jeff. See [[Decision Journal]].
 
-### Insurance — Acrisure (renewal done, billing settled)
-**What it is.** The 2026 renewal went through May 1, 2026 (+~$0.08–0.10/mi, in the cost-out), and the back-billing reconciliation was **negotiated to $18,000, paid, and resolved** (2026-06-13) — near Jeff's floor, well under the ~$95K ask and ~$31K mid-estimate. **Residual:** the higher premium is a permanent margin drag; evaluate an alternative broker/carrier before the next renewal. **Owner:** JB / Jeff. See [[Acrisure Dispute]], [[Insurance and Banking]].
-
 ### Customer concentration
 **What it is.** Revenue may be concentrated in a few customers. **Action:** quantify each customer's share of X-Trux + X-Linx revenue from Alvys (the data exists — a good first analysis). **Exposure:** losing one large account materially hits revenue. **Watch:** any single customer above ~25% of revenue. **Owner:** Jeff (BD). See [[Customer Portfolio]].
 
@@ -70,8 +66,8 @@ A living list of XFreight's open business risks — ranked by severity, each wit
 
 ## Archive (closed risks)
 
-### Acrisure renewal + billing dispute — RESOLVED (2026-05-01 / 2026-06-13)
-The 2026 insurance renewal went through May 1, 2026 (+~$0.08–0.10/mi, in the cost-out), and the back-billing reconciliation was **negotiated to $18,000, paid, and resolved** (2026-06-13) — near Jeff's floor, well under the ~$95K ask. The residual cost-watch continues under "Rate-per-mile goal may be light" and "Insurance — Acrisure (renewal done, billing settled)" above.
+### Acrisure renewal + billing dispute — CLOSED (2026-05-01 / 2026-06-13)
+The 2026 insurance renewal went through May 1, 2026 (+~$0.08–0.10/mi, absorbed into the cost-out). The back-billing reconciliation was **negotiated to $18,000, paid, and resolved** (2026-06-13) — near Jeff's floor, well under the ~$95K ask and ~$31K mid-estimate. Closed 2026-06-30. **Residual watch:** the higher premium is a permanent margin drag; shop alternative broker/carrier before the next renewal cycle. That forward-looking item rolls into the "Rate-per-mile goal may be light" watch. See [[Acrisure Dispute]], [[Insurance and Banking]].
 
 ### Billion Auto contract — RENEWED (June 2026)
 The dedicated rate agreement **renewed** — both the Rapid City and Mason City lanes maintained, plus a **fuel surcharge added for protection**. Was the portfolio's most immediate revenue risk; now secured. See [[Billion Auto]].
