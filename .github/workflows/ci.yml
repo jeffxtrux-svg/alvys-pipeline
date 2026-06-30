@@ -43,3 +43,4 @@ jobs:
           python tests/test_xfreight_etas.py
           python tests/test_fuel_analytics.py
           python tests/test_safety_accountability_fuel.py
+          python tests/test_teams_operations_routing.py

@@ -12,6 +12,9 @@
 #
 # GitHub Secrets required:
 #   TEAMS_SAFETY_WEBHOOK
+#   TEAMS_OPERATIONS_WEBHOOK (optional — must match the same secret used in
+#     safety_compliance_email.yml's Teams-post step, or Jackson + Dan's card
+#     refresh would land back on the shared Safety & Compliance webhook)
 #   TEAMS_FORM_URL        (optional)
 #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
 #   ONEDRIVE_USER_UPN
@@ -72,6 +75,10 @@ jobs:
         if: steps.ct_gate.outputs.skip != '1'
         env:
           TEAMS_SAFETY_WEBHOOK: ${{ secrets.TEAMS_SAFETY_WEBHOOK }}
+          # Must match the same secret used in safety_compliance_email.yml's
+          # Teams-post step — otherwise this refresh would re-post Jackson +
+          # Dan's card to the old shared webhook instead of Operations.
+          TEAMS_OPERATIONS_WEBHOOK: ${{ secrets.TEAMS_OPERATIONS_WEBHOOK }}
           TEAMS_FORM_URL:       ${{ secrets.TEAMS_FORM_URL }}
           AZURE_TENANT_ID:      ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID:      ${{ secrets.AZURE_CLIENT_ID }}
