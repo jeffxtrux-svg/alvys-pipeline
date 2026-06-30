@@ -37,6 +37,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -93,6 +94,26 @@ def _fmt_dt_ct(dt: datetime | None) -> str:
     return dt.astimezone(CT).strftime("%a %b %d, %I:%M%p").replace("AM", "am").replace("PM", "pm")
 
 
+def _fmt_date_local(dt: datetime | None) -> str:
+    """Date only (no time) in the timestamp's OWN zone, e.g. 'Mon Jun 30'.
+
+    For date-only appointments: the receiver gave a calendar date in their local
+    zone, so converting to Central could flip the day (an Eastern midnight is the
+    prior evening in CT). Format the date as written instead of converting.
+    """
+    if dt is None:
+        return ""
+    return dt.strftime("%a %b %d")
+
+
+def _is_midnight(iso: str | None) -> bool:
+    """True when an ISO timestamp falls exactly on midnight in its own offset
+    (i.e. it carries a date but no time-of-day). Alvys emits date-only stop
+    windows as Begin==End==00:00:00 in the stop's local zone."""
+    dt = _parse_iso(iso)
+    return dt is not None and (dt.hour, dt.minute, dt.second) == (0, 0, 0)
+
+
 def _fmt_delta(minutes: int | None) -> tuple[str, str]:
     """Return (display_text, css_color) for the Delta column."""
     if minutes is None:
@@ -134,9 +155,44 @@ def _is_appt_stale(appt_dt: datetime | None, now: datetime) -> bool:
 _HOS_REST_SECONDS = 10 * 3600  # federal property-carrier mandatory break
 
 
+def _norm_name(name: str | None) -> str:
+    """Normalize a person name for matching: lowercase, drop punctuation,
+    digits and common suffixes, collapse whitespace. 'John A. Smith Jr.' →
+    'john a smith'."""
+    s = (name or "").lower()
+    s = re.sub(r"[^a-z\s]", " ", s)                      # drop punctuation/digits
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", " ", s)        # drop generational suffixes
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _name_keys(name: str | None) -> list[str]:
+    """Match keys for a name, most specific first: full normalized name, then
+    first+last (drops middle names/initials so 'John A Smith' matches 'John
+    Smith'). Deliberately never falls back to last-name-only — that would risk
+    matching the wrong driver and a wrong HOS clock is worse than none."""
+    n = _norm_name(name)
+    if not n:
+        return []
+    keys = [n]
+    parts = n.split()
+    if len(parts) >= 2:
+        fl = f"{parts[0]} {parts[-1]}"
+        if fl != n:
+            keys.append(fl)
+    return keys
+
+
 def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
-    """{driver_name_lower: remaining_drive_seconds} from Samsara HOS clocks."""
-    idx: dict[str, int] = {}
+    """{match_key: remaining_drive_seconds} from Samsara HOS clocks.
+
+    Keyed by the full normalized driver name AND, when unambiguous, a
+    first+last alias — so an Alvys name carrying a middle name/initial still
+    matches the Samsara clock. Ambiguous first+last aliases (two drivers who
+    share them) are dropped rather than risk a wrong match.
+    """
+    by_full: dict[str, int] = {}
+    fl_owners: dict[str, set] = {}   # first_last -> set of distinct full names
+    fl_value: dict[str, int] = {}
     for rec in hos_clocks:
         drv = rec.get("driver") or {}
         name = (drv.get("name") or "").strip()
@@ -148,17 +204,36 @@ def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
                         or drive.get("remainingMs"))
         remaining_s = drive.get("remainingSeconds")
         if remaining_ms is not None:
-            idx[name.lower()] = int(remaining_ms) // 1000
+            val = int(remaining_ms) // 1000
         elif remaining_s is not None:
-            idx[name.lower()] = int(remaining_s)
+            val = int(remaining_s)
+        else:
+            continue
+        full = _norm_name(name)
+        if not full:
+            continue
+        by_full[full] = val
+        parts = full.split()
+        if len(parts) >= 2:
+            fl = f"{parts[0]} {parts[-1]}"
+            fl_owners.setdefault(fl, set()).add(full)
+            fl_value[fl] = val
+    idx = dict(by_full)
+    for fl, owners in fl_owners.items():
+        if len(owners) == 1 and fl not in idx:   # unambiguous, doesn't shadow a full name
+            idx[fl] = fl_value[fl]
     return idx
 
 
 def _hos_remaining(hos_index: dict[str, int], driver_name: str) -> int | None:
-    """Return remaining drive seconds for a driver, or None if not found."""
+    """Return remaining drive seconds for a driver, or None if not found.
+    Tries the full normalized name, then an unambiguous first+last alias."""
     if not driver_name or not hos_index:
         return None
-    return hos_index.get(driver_name.lower().strip())
+    for key in _name_keys(driver_name):
+        if key in hos_index:
+            return hos_index[key]
+    return None
 
 
 def _fmt_hos(remaining_seconds: int | None) -> str:
@@ -188,12 +263,27 @@ def _remaining_undelivered_stops(load: dict) -> list[dict]:
     return [s for s in (load.get("Stops") or []) if not s.get("ArrivedAt")]
 
 
+def _is_date_only_window(begin: str | None, end: str | None) -> bool:
+    """True when a stop window carries a date but no real time-of-day.
+
+    Alvys returns these as Begin==End at midnight (also seen as End-only at
+    midnight). There is no hard time deadline — the receiver gave a date — so
+    tracking lateness against the midnight boundary would make a same-day
+    daytime delivery look hours "late".
+    """
+    if not end or not _is_midnight(end):
+        return False
+    # End is midnight → date-only, unless Begin supplies a real daytime time.
+    return (not begin) or (begin == end) or _is_midnight(begin)
+
+
 def _stop_appt_iso(stop: dict) -> str | None:
     """ISO string used for delta calculation (ETA vs. deadline).
     - APPT  → AppointmentDate (fixed time; truck is late if ETA > appt)
     - WINDOW → StopWindow.End (late only when truck misses the window close)
     - FCFS with End → StopWindow.End (receiver closes at End; arriving later = late)
     - FCFS with no End → None (open-ended FCFS; no hard deadline to track)
+    - Date-only window (Begin==End at midnight) → None (no hard time deadline)
     """
     stype = (stop.get("ScheduleType") or "").upper()
     window = stop.get("StopWindow") or {}
@@ -201,6 +291,9 @@ def _stop_appt_iso(stop: dict) -> str | None:
         return stop.get("AppointmentDate")
     end = window.get("End")
     begin = window.get("Begin")
+    # Date-only window — a date with no time-of-day carries no hard deadline.
+    if _is_date_only_window(begin, end):
+        return None
     if end:
         # Both WINDOW and FCFS: if a window closes, arriving after close = late.
         return end
@@ -213,14 +306,28 @@ def _stop_appt_iso(stop: dict) -> str | None:
 
 def _stop_window_begin_iso(stop: dict) -> str | None:
     """Window open time for display purposes (shown as 'Begin – End' in Appt column).
-    Only returned when End also exists, so the display always shows a complete range."""
+    Only returned when End also exists AND the window is a real time range — never
+    for a date-only window (would render a degenerate '12:00am – 12:00am') or a
+    single fixed time (Begin==End)."""
     stype = (stop.get("ScheduleType") or "").upper()
     if stype == "APPT":
         return None
     window = stop.get("StopWindow") or {}
-    # Show Begin only when End is also present — avoids a half-range like "8am –"
-    if window.get("End") and window.get("Begin"):
-        return window.get("Begin")
+    begin, end = window.get("Begin"), window.get("End")
+    if _is_date_only_window(begin, end):
+        return None
+    # Real range only: End present and Begin is a distinct earlier time.
+    if end and begin and begin != end:
+        return begin
+    return None
+
+
+def _stop_date_only_iso(stop: dict) -> str | None:
+    """For a date-only window, the calendar date to DISPLAY (no time deadline)."""
+    window = stop.get("StopWindow") or {}
+    begin, end = window.get("Begin"), window.get("End")
+    if _is_date_only_window(begin, end):
+        return end or begin
     return None
 
 
@@ -303,6 +410,8 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "consignee_state": _g(last_stop, "Address", "State") or "",
         "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
         "appt_window_begin_dt": _parse_iso(_stop_window_begin_iso(last_stop)),
+        # Date-only window (date, no time deadline): the date to display.
+        "_date_only_dt": _parse_iso(_stop_date_only_iso(last_stop)),
         "appt_stype": _stype,          # "APPT" / "WINDOW" / "FCFS" / "—"
         # For FCFS-with-Begin-only: the dock open time, shown as "FCFS 8:00am".
         # Distinct from appt_window_begin_dt (which is the left side of "Begin – End").
@@ -325,8 +434,16 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
 # Samsara location join
 # ----------------------------------------------------------------------
 def _locations_by_truck_name(samsara_locations: list[dict]) -> dict:
-    """{truck_name: {lat, lng, ts}} from Samsara /fleet/vehicles/locations."""
+    """{truck_name: {lat, lng, ts}} from Samsara /fleet/vehicles/locations.
+
+    Also adds an unambiguous digits-only alias per vehicle (so an Alvys truck
+    number '42187' matches a Samsara name like 'Truck 42187' or '#42187').
+    Aliases never shadow an exact name and are dropped when two vehicles share
+    the same digits.
+    """
     out: dict[str, dict] = {}
+    digit_owners: dict[str, set] = {}
+    digit_val: dict[str, dict] = {}
     for rec in samsara_locations:
         name = rec.get("name") or rec.get("vehicle", {}).get("name")
         loc = rec.get("location") or {}
@@ -334,8 +451,28 @@ def _locations_by_truck_name(samsara_locations: list[dict]) -> dict:
         lng = loc.get("longitude")
         ts = _parse_iso(loc.get("time") or rec.get("time"))
         if name and lat is not None and lng is not None:
-            out[str(name).strip()] = {"lat": float(lat), "lng": float(lng), "ts": ts}
+            key = str(name).strip()
+            val = {"lat": float(lat), "lng": float(lng), "ts": ts}
+            out[key] = val
+            digits = re.sub(r"\D", "", key)
+            if digits:
+                digit_owners.setdefault(digits, set()).add(key)
+                digit_val[digits] = val
+    for digits, owners in digit_owners.items():
+        if len(owners) == 1 and digits not in out:
+            out[digits] = digit_val[digits]
     return out
+
+
+def _lookup_truck_gps(locs_by_truck: dict, truck_name) -> dict | None:
+    """Find a truck's GPS by exact name, then by its digits-only alias."""
+    if not truck_name:
+        return None
+    hit = locs_by_truck.get(str(truck_name).strip())
+    if hit:
+        return hit
+    digits = re.sub(r"\D", "", str(truck_name))
+    return locs_by_truck.get(digits) if digits else None
 
 
 # ----------------------------------------------------------------------
@@ -793,6 +930,7 @@ def _fmt_appt_cell(row: dict) -> str:
     - APPT          → fixed time   e.g. "Tue Jun 23, 08:00am"
     - WINDOW/FCFS with End → "Begin – End"  e.g. "8:00am – 5:00pm"
     - FCFS with Begin only (no End) → "FCFS 8:00am"  (dock open time, no close deadline)
+    - Date-only window → "Mon Jun 30 (any time)"  (a date, no hard time deadline)
     - No schedule info → "—"
     """
     end_str = _fmt_dt_ct(row.get("appt_dt"))
@@ -807,6 +945,11 @@ def _fmt_appt_cell(row: dict) -> str:
         win_begin = row.get("_fcfs_open_dt")
         if win_begin:
             return f"FCFS&nbsp;{_fmt_dt_ct(win_begin)}"
+    # Date-only window — show the date and make clear there is no time deadline.
+    date_only = row.get("_date_only_dt")
+    if date_only:
+        return (f"{_fmt_date_local(date_only)}&nbsp;"
+                f"<span style='color:{MUTE};font-size:10px;'>(any time)</span>")
     return "—"
 MUTE = "#6b6b6b"
 AMBER = "#d97706"
@@ -1198,7 +1341,7 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     rows_with_eta: list[dict] = []
     for row in load_rows:
-        gps = locs_by_truck.get(row["truck_name"])
+        gps = _lookup_truck_gps(locs_by_truck, row["truck_name"])
         if not gps:
             log.info("SKIP load %s (truck %s): no Samsara GPS",
                      row["load_no"], row["truck_name"])
@@ -1288,7 +1431,7 @@ def main() -> int:
         driver = (driver_obj.get("FullName") or driver_obj.get("Name") or "")
         if ln in load_rows_by_ln:
             row_r = load_rows_by_ln[ln]
-            reason = ("No GPS fix" if not locs_by_truck.get(row_r["truck_name"])
+            reason = ("No GPS fix" if not _lookup_truck_gps(locs_by_truck, row_r["truck_name"])
                       else "No Mapbox route")
         elif not trip:
             reason = "No trip found"

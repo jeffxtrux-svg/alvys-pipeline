@@ -16,6 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.xfreight_etas import (  # noqa: E402
     _stop_appt_iso, _stop_window_begin_iso, _fmt_appt_cell, _fmt_delta,
     _is_appt_stale, _fmt_appt_age, _STALE_APPT_HOURS,
+    _norm_name, _name_keys, _build_hos_index, _hos_remaining,
+    _is_date_only_window, _stop_date_only_iso,
+    _locations_by_truck_name, _lookup_truck_gps,
 )
 
 # ---------------------------------------------------------------------------
@@ -225,6 +228,154 @@ def test_fmt_appt_age_future_is_blank():
 
 def test_fmt_appt_age_none_is_blank():
     assert _fmt_appt_age(None, _NOW) == ""
+
+
+# ---------------------------------------------------------------------------
+# Driver-name matching for HOS — closes the ~40% "hos = —" gap seen in prod
+# ---------------------------------------------------------------------------
+def test_norm_name_strips_punctuation_and_suffix():
+    assert _norm_name("John A. Smith Jr.") == "john a smith"
+    assert _norm_name("  MICHAEL   HALL  ") == "michael hall"
+
+
+def test_name_keys_full_then_first_last():
+    assert _name_keys("John A Smith") == ["john a smith", "john smith"]
+    assert _name_keys("Michael Hall") == ["michael hall"]   # no middle → one key
+
+
+def _hos_rec(name, ms):
+    return {"driver": {"name": name}, "clocks": {"drive": {"driveRemainingDurationMs": ms}}}
+
+
+def test_hos_exact_match_after_normalization():
+    idx = _build_hos_index([_hos_rec("MICHAEL HALL", 11 * 3600 * 1000)])
+    # Alvys gives a differently-cased name → still matches.
+    assert _hos_remaining(idx, "Michael Hall") == 11 * 3600
+
+
+def test_hos_first_last_alias_matches_across_middle_name():
+    # Samsara clock has a middle initial; Alvys load has none (or vice versa).
+    idx = _build_hos_index([_hos_rec("John A Smith", 5 * 3600 * 1000)])
+    assert _hos_remaining(idx, "John Smith") == 5 * 3600
+    # And the reverse: clock without middle, Alvys with one.
+    idx2 = _build_hos_index([_hos_rec("John Smith", 5 * 3600 * 1000)])
+    assert _hos_remaining(idx2, "John A Smith") == 5 * 3600
+
+
+def test_hos_ambiguous_first_last_not_matched():
+    # Two distinct drivers share first+last → the alias is dropped, so a
+    # middle-less query does NOT silently bind to the wrong HOS clock.
+    idx = _build_hos_index([
+        _hos_rec("John A Smith", 1000 * 1000),
+        _hos_rec("John B Smith", 2000 * 1000),
+    ])
+    assert _hos_remaining(idx, "John Smith") is None
+    # …but each exact full name still resolves.
+    assert _hos_remaining(idx, "John A Smith") == 1000
+    assert _hos_remaining(idx, "John B Smith") == 2000
+
+
+def test_hos_no_last_name_only_fallback():
+    # Last-name-only must never match (wrong clock is worse than none).
+    idx = _build_hos_index([_hos_rec("Gary Abla", 4 * 3600 * 1000)])
+    assert _hos_remaining(idx, "Steve Abla") is None
+
+
+def test_hos_missing_driver_returns_none():
+    idx = _build_hos_index([_hos_rec("Gary Abla", 1000)])
+    assert _hos_remaining(idx, "Benjamin Young") is None
+    assert _hos_remaining(idx, "") is None
+
+
+# ---------------------------------------------------------------------------
+# Date-only window handling — a date with no time carries no hard deadline
+# (the begin==end==midnight FCFS pattern seen across many prod loads)
+# ---------------------------------------------------------------------------
+_MIDNIGHT = "2026-06-30T00:00:00-05:00"
+_STOP_DATE_ONLY = {
+    "ScheduleType": "FCFS",
+    "AppointmentDate": None,
+    "StopWindow": {"Begin": _MIDNIGHT, "End": _MIDNIGHT},
+}
+
+
+def test_is_date_only_window_true_for_equal_midnight():
+    assert _is_date_only_window(_MIDNIGHT, _MIDNIGHT) is True
+
+
+def test_is_date_only_window_false_for_real_range():
+    assert _is_date_only_window(_WIN_BEGIN, _WIN_END) is False
+
+
+def test_date_only_stop_has_no_deadline():
+    # The fix: midnight date-only window → no deadline, so no false lateness.
+    assert _stop_appt_iso(_STOP_DATE_ONLY) is None
+    # …but the date is still available for display.
+    assert _stop_date_only_iso(_STOP_DATE_ONLY) == _MIDNIGHT
+
+
+def test_date_only_stop_no_degenerate_range():
+    # Must NOT return a window-begin (would render '12:00am – 12:00am').
+    assert _stop_window_begin_iso(_STOP_DATE_ONLY) is None
+
+
+def test_fmt_appt_cell_date_only_shows_date_any_time():
+    from src.xfreight_etas import _parse_iso
+    row = {
+        "appt_dt": _parse_iso(_stop_appt_iso(_STOP_DATE_ONLY)),          # None
+        "appt_window_begin_dt": _parse_iso(_stop_window_begin_iso(_STOP_DATE_ONLY)),
+        "appt_stype": "FCFS",
+        "_fcfs_open_dt": None,
+        "_date_only_dt": _parse_iso(_stop_date_only_iso(_STOP_DATE_ONLY)),
+    }
+    cell = _fmt_appt_cell(row)
+    assert "any time" in cell and "–" not in cell and cell != "—"
+
+
+def test_date_only_displays_in_stop_zone_not_central():
+    # An Eastern (-04:00) date-only delivery for Jun 30 must show 'Jun 30',
+    # not 'Jun 29' — converting midnight-Eastern to Central would flip the day.
+    from src.xfreight_etas import _parse_iso
+    eastern_midnight = "2026-06-30T00:00:00-04:00"
+    stop = {"ScheduleType": "FCFS",
+            "StopWindow": {"Begin": eastern_midnight, "End": eastern_midnight}}
+    row = {"appt_dt": None, "appt_window_begin_dt": None, "appt_stype": "FCFS",
+           "_fcfs_open_dt": None, "_date_only_dt": _parse_iso(_stop_date_only_iso(stop))}
+    cell = _fmt_appt_cell(row)
+    assert "Jun 30" in cell and "Jun 29" not in cell
+
+
+def test_equal_nonmidnight_window_is_fixed_time_not_date_only():
+    # Begin==End at a real time is a fixed appointment, not date-only.
+    t = "2026-06-30T14:00:00-05:00"
+    stop = {"ScheduleType": "WINDOW", "StopWindow": {"Begin": t, "End": t}}
+    assert _is_date_only_window(t, t) is False
+    assert _stop_appt_iso(stop) == t           # the fixed time is the deadline
+    assert _stop_window_begin_iso(stop) is None  # not a range
+
+
+# ---------------------------------------------------------------------------
+# Truck GPS matching — digits-only alias closes prefix mismatches
+# ---------------------------------------------------------------------------
+def _loc(name, lat=40.0, lng=-90.0):
+    return {"name": name, "location": {"latitude": lat, "longitude": lng,
+                                        "time": "2026-06-28T22:00:00Z"}}
+
+
+def test_truck_gps_exact_match():
+    locs = _locations_by_truck_name([_loc("42187")])
+    assert _lookup_truck_gps(locs, "42187") is not None
+
+
+def test_truck_gps_digits_alias_matches_prefixed_name():
+    locs = _locations_by_truck_name([_loc("Truck 42187")])
+    assert _lookup_truck_gps(locs, "42187") is not None   # Alvys plain number
+
+
+def test_truck_gps_ambiguous_digits_not_aliased():
+    # Two vehicles resolving to the same digits → alias dropped (no wrong GPS).
+    locs = _locations_by_truck_name([_loc("Truck 5", 1, 1), _loc("#5", 2, 2)])
+    assert _lookup_truck_gps(locs, "5") is None
 
 
 # ---------------------------------------------------------------------------
