@@ -48,6 +48,11 @@ _FRED_PPI_URL     = _FRED_BASE + "WPU3012"     # monthly, index (2012=100)
 _FRED_TSI_URL     = _FRED_BASE + "TSIFRGHT"    # monthly, BTS Freight TSI (2000=100)
 _FRED_PMI_URL     = _FRED_BASE + "NAPM"        # monthly, ISM Mfg PMI (>50=expansion)
 
+# Fuel cost constants
+_ATRI_DIESEL_BASE = 3.994  # avg US retail diesel $/gal in 2023 (ATRI 2024 report period, EIA data)
+_FSC_DIESEL_BASE  = 0.70   # DOE/ATA fuel surcharge formula base $/gal
+_FSC_MPG_AVG      = 6.0    # industry avg mpg used in standard FSC formula
+
 # Static industry benchmarks — ATRI 2024 Annual Operational Costs of Trucking
 # (covers 2023 operating data; for-hire truckload carriers, all sizes)
 _INDUSTRY_BENCHMARKS: dict = {
@@ -360,6 +365,33 @@ def _compute_outlook(sources: dict) -> dict:
         else:
             signals["pmi_signal"] = f"PMI below 50 ({pmi_cur:.1f}) — manufacturing contracting, watch for softer volumes"
 
+    # --- Margin squeeze: fuel costs rising faster than market rates ---
+    if diesel_yoy is not None and ppi_yoy is not None:
+        squeeze = diesel_yoy - ppi_yoy
+        signals["margin_squeeze"] = {
+            "active": squeeze > 5,
+            "diesel_yoy": diesel_yoy,
+            "ppi_yoy": ppi_yoy,
+            "spread": round(squeeze, 1),
+        }
+
+    # --- Seasonal context (from diesel series date → quarter) ---
+    diesel_date = ((sources.get("diesel_us") or {}).get("current") or {}).get("date")
+    if diesel_date:
+        try:
+            month = int(diesel_date[5:7])
+            quarter = (month - 1) // 3 + 1
+            _SEASONS = {
+                1: ("Q1", "Typically soft — post-holiday inventory correction; expect rate softness"),
+                2: ("Q2", "Spring pickup — freight strengthening; agricultural freight begins"),
+                3: ("Q3", "Historically strong — back-to-school + retail pre-build season; pricing power window"),
+                4: ("Q4", "Peak season — holiday goods + harvest freight; typically highest rates of year"),
+            }
+            q_label, q_note = _SEASONS[quarter]
+            signals["seasonal"] = {"quarter": q_label, "note": q_note}
+        except Exception:
+            pass
+
     # --- One-line summary ---
     parts: list[str] = []
     vol_lbl  = (signals.get("volume") or {}).get("label")
@@ -373,6 +405,25 @@ def _compute_outlook(sources: dict) -> dict:
         parts.append(f"fuel {fuel_lbl.lower()}")
     signals["summary"] = " · ".join(parts)
     return signals
+
+
+def _compute_cost_intel(sources: dict, benchmarks: dict) -> dict:
+    """Fuel sensitivity and FSC guidance from current diesel price.
+
+    Returns est_fuel_cpm (scaled from ATRI base), fsc_per_mile (ATA formula),
+    and metadata for rendering.  Returns {} if diesel price unavailable.
+    """
+    current_diesel = ((sources.get("diesel_us") or {}).get("current") or {}).get("value")
+    if not current_diesel:
+        return {}
+    atri_fuel_cpm = (benchmarks.get("fuel_cost_per_mile") or {}).get("value") or 0.593
+    return {
+        "current_diesel":  current_diesel,
+        "est_fuel_cpm":    round(atri_fuel_cpm * (current_diesel / _ATRI_DIESEL_BASE), 3),
+        "atri_fuel_cpm":   atri_fuel_cpm,
+        "atri_diesel_base": _ATRI_DIESEL_BASE,
+        "fsc_per_mile":    round(max(0.0, (current_diesel - _FSC_DIESEL_BASE) / _FSC_MPG_AVG), 3),
+    }
 
 
 def render_chip_html(ctx: dict | None = None,
@@ -546,7 +597,33 @@ def render_chip_html(ctx: dict | None = None,
                 f"</td></tr>"
             )
 
-    # Market outlook row — rule-based near-term forecast
+    # Cost intelligence row (items 1, 3): fuel sensitivity + FSC guidance
+    ci = _compute_cost_intel(sources, benchmarks)
+    cost_intel_html = ""
+    if ci:
+        est  = ci["est_fuel_cpm"]
+        base = ci["atri_fuel_cpm"]
+        fsc  = ci["fsc_per_mile"]
+        cur_d = ci["current_diesel"]
+        abase = ci["atri_diesel_base"]
+        fuel_color = red if est > base * 1.05 else (green if est < base * 0.97 else mute)
+        cost_intel_html = (
+            f"<tr><td colspan='6' style='padding:6px 10px 4px;"
+            f"border-top:1px solid {line};'>"
+            f"<span style='font-size:9px;font-weight:700;color:{mute};"
+            f"text-transform:uppercase;letter-spacing:1px;'>Cost Intelligence</span>"
+            f"<br><span style='font-size:10px;color:{ink};'>"
+            f"<b>Est. fuel cost/mi:</b>&nbsp;"
+            f"<span style='color:{fuel_color};font-weight:700;'>${est:.3f}/mi</span>"
+            f"&nbsp;<span style='color:{mute};'>(ATRI benchmark ${base:.3f}/mi at ${abase:.3f}/gal"
+            f"&nbsp;&middot;&nbsp;scaled to current ${cur_d:.3f}/gal)</span>"
+            f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
+            f"<b>Std FSC:</b>&nbsp;<span style='font-weight:700;color:{ink};'>${fsc:.3f}/mi</span>"
+            f"&nbsp;<span style='color:{mute};'>(ATA: (${cur_d:.3f}&minus;$0.70)&divide;6&nbsp;mpg)</span>"
+            f"</span></td></tr>"
+        )
+
+    # Near-term outlook row (items 2, 4): margin squeeze + seasonal context + signals
     outlook = _compute_outlook(sources)
     outlook_html = ""
     if outlook.get("summary"):
@@ -571,9 +648,33 @@ def render_chip_html(ctx: dict | None = None,
             _sig_chip("rates",  "Rates:"),
             _sig_chip("fuel",   "Fuel:"),
         ] if p]
+
+        # Margin squeeze alert (item 2)
+        ms = outlook.get("margin_squeeze") or {}
+        squeeze_html = ""
+        if ms.get("active"):
+            d_yoy = ms.get("diesel_yoy", 0)
+            p_yoy = ms.get("ppi_yoy", 0)
+            squeeze_html = (
+                f"<br><span style='font-size:10px;color:{red};font-weight:700;'>"
+                f"&#9888;&nbsp;Margin squeeze: fuel +{d_yoy:.1f}% YoY vs rates +{p_yoy:.1f}% YoY"
+                f"&nbsp;&mdash;&nbsp;fuel costs rising faster than market rates</span>"
+            )
+
+        # PMI lead signal
         pmi_note = outlook.get("pmi_signal", "")
         pmi_html = (f"<br><span style='font-size:9px;color:{mute};'>"
                     f"&#8594;&nbsp;{pmi_note}</span>") if pmi_note else ""
+
+        # Seasonal context (item 4)
+        seasonal = outlook.get("seasonal") or {}
+        season_html = ""
+        if seasonal:
+            season_html = (
+                f"<br><span style='font-size:9px;color:{mute};'>"
+                f"&#128197;&nbsp;<b>{seasonal['quarter']}:</b>&nbsp;{seasonal['note']}</span>"
+            )
+
         outlook_html = (
             f"<tr><td colspan='6' style='padding:6px 10px 4px;"
             f"border-top:1px solid {line};'>"
@@ -581,7 +682,7 @@ def render_chip_html(ctx: dict | None = None,
             f"text-transform:uppercase;letter-spacing:1px;'>Near-Term Outlook</span>"
             f"<br><span style='font-size:10px;color:{ink};'>"
             f"{'&nbsp;&nbsp;&middot;&nbsp;&nbsp;'.join(chips)}"
-            f"</span>{pmi_html}"
+            f"</span>{squeeze_html}{pmi_html}{season_html}"
             f"</td></tr>"
         )
 
@@ -605,6 +706,7 @@ def render_chip_html(ctx: dict | None = None,
         f"<tr>{metrics_row}</tr>"
         f"{benchmarks_html}"
         f"{xf_html}"
+        f"{cost_intel_html}"
         f"{outlook_html}"
         f"{footer_html}"
         f"</table>"
