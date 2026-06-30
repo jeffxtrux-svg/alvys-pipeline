@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-30T03:06:58Z",
+  "generated_at": "2026-06-30T03:31:06Z",
   "sources": {
     "diesel_us": {
       "label": "US #2 retail diesel ($/gal, weekly avg)",
@@ -99,6 +99,46 @@
         "date": "2025-03-01",
         "value": 137.7,
         "pct_change": 0.73
+      }
+    },
+    "retail_sales": {
+      "label": "US Retail & Food Services Sales (monthly, billions $, SA)",
+      "fred_series": "RSAFS",
+      "unit": "B$",
+      "current": {
+        "date": "2026-05-01",
+        "value": 763705.0
+      },
+      "short_label": "vs 1mo ago",
+      "vs_short": {
+        "date": "2026-04-01",
+        "value": 757036.0,
+        "pct_change": 0.88
+      },
+      "yoy_52w": {
+        "date": "2025-05-01",
+        "value": 714568.0,
+        "pct_change": 6.88
+      }
+    },
+    "capacity_util": {
+      "label": "Total Industrial Capacity Utilization (monthly, %)",
+      "fred_series": "TCU",
+      "unit": "%",
+      "current": {
+        "date": "2026-05-01",
+        "value": 76.166
+      },
+      "short_label": "vs 1mo ago",
+      "vs_short": {
+        "date": "2026-04-01",
+        "value": 76.129,
+        "pct_change": 0.05
+      },
+      "yoy_52w": {
+        "date": "2025-05-01",
+        "value": 75.889,
+        "pct_change": 0.36
       }
     }
   },
