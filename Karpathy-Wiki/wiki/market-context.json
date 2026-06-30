@@ -1,24 +1,24 @@
 {
-  "generated_at": "2026-06-28T22:57:23Z",
+  "generated_at": "2026-06-30T18:25:21Z",
   "sources": {
     "diesel_us": {
       "label": "US #2 retail diesel ($/gal, weekly avg)",
       "fred_series": "GASDESW",
       "unit": "$/gal",
       "current": {
-        "date": "2026-06-22",
-        "value": 4.832
+        "date": "2026-06-29",
+        "value": 4.668
       },
       "short_label": "vs 4wk ago",
       "vs_short": {
-        "date": "2026-05-25",
-        "value": 5.523,
-        "pct_change": -12.51
+        "date": "2026-06-01",
+        "value": 5.35,
+        "pct_change": -12.75
       },
       "yoy_52w": {
-        "date": "2025-06-23",
-        "value": 3.775,
-        "pct_change": 28.0
+        "date": "2025-06-30",
+        "value": 3.727,
+        "pct_change": 25.25
       }
     },
     "wti_crude": {
@@ -99,6 +99,66 @@
         "date": "2025-03-01",
         "value": 137.7,
         "pct_change": 0.73
+      }
+    },
+    "retail_sales": {
+      "label": "US Retail & Food Services Sales (monthly, billions $, SA)",
+      "fred_series": "RSAFS",
+      "unit": "B$",
+      "current": {
+        "date": "2026-05-01",
+        "value": 763705.0
+      },
+      "short_label": "vs 1mo ago",
+      "vs_short": {
+        "date": "2026-04-01",
+        "value": 757036.0,
+        "pct_change": 0.88
+      },
+      "yoy_52w": {
+        "date": "2025-05-01",
+        "value": 714568.0,
+        "pct_change": 6.88
+      }
+    },
+    "capacity_util": {
+      "label": "Total Industrial Capacity Utilization (monthly, %)",
+      "fred_series": "TCU",
+      "unit": "%",
+      "current": {
+        "date": "2026-05-01",
+        "value": 76.166
+      },
+      "short_label": "vs 1mo ago",
+      "vs_short": {
+        "date": "2026-04-01",
+        "value": 76.129,
+        "pct_change": 0.05
+      },
+      "yoy_52w": {
+        "date": "2025-05-01",
+        "value": 75.889,
+        "pct_change": 0.36
+      }
+    },
+    "inv_sales_ratio": {
+      "label": "Total Business Inventory/Sales Ratio (monthly)",
+      "fred_series": "ISRATIO",
+      "unit": "x",
+      "current": {
+        "date": "2026-04-01",
+        "value": 1.31
+      },
+      "short_label": "vs 1mo ago",
+      "vs_short": {
+        "date": "2026-03-01",
+        "value": 1.32,
+        "pct_change": -0.76
+      },
+      "yoy_52w": {
+        "date": "2025-04-01",
+        "value": 1.38,
+        "pct_change": -5.07
       }
     }
   },

@@ -675,8 +675,6 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     scale_factor  = days_in_month / day_of_month
 
     total_mi_ref = f"(M{sum_row}+N{sum_row})"
-    rpm_ref      = f"IFERROR({total_mi_ref}=0,0,O{sum_row}/{total_mi_ref})"  # safe-rpm
-    # Actually use IFERROR wrapper consistently:
     rpm_ref      = f"IFERROR(O{sum_row}/{total_mi_ref},0)"
     dh_ref       = f"IFERROR(M{sum_row}/{total_mi_ref},0)"
     est_mi_ref   = f"({total_mi_ref}*{scale_factor})"
@@ -716,7 +714,6 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
     trucks_needed_be  = f"IFERROR({total_needed_be}/{est_mi_per_truck},0)"
     trucks_needed_gl  = f"IFERROR({total_needed_gl}/{est_mi_per_truck},0)"
 
-    # Spec list: (label, cur_formula, be_formula, gl_formula, fmt, fill_kind)
     proj_rows = [
         ("Dead Head",                   f"={dh_ref}",       f"={dh_ref}",       f"={dh_ref}",       "0.00%",        None),
         ("Trux RPM",                    f"={rpm_ref}",      f"={BREAK_EVEN_RPM}", f"={goal_rpm}",  '"$"#,##0.00',  "tunable_cd"),
@@ -771,11 +768,6 @@ def _write_grand_total(ws, row: int, agent_sum_rows: list[tuple[str, int, int, i
             c_cell.fill = YELLOW_FILL
             d_cell.fill = YELLOW_FILL
         elif kind == "variance":
-            # Conditional red-on-negative is dynamic — can't determine from
-            # the formula at write time. Use Excel conditional formatting
-            # via a static color; setting RED_FILL would always color it
-            # red. Compromise: leave as GRAY_FILL (matches sample's neutral
-            # presentation); user sees the sign from the value itself.
             label_cell.fill = YELLOW_FILL
             b_cell.fill = GRAY_FILL
             c_cell.fill = GRAY_FILL
@@ -873,13 +865,7 @@ def _write_brokerage_analysis(ws, row: int, df: pd.DataFrame) -> int:
 
 
 def _autosize_columns(ws, padding: int = 2, min_width: int = 8, max_width: int = 50) -> None:
-    """Set each column width to fit its widest non-formula content.
-
-    Formula cells are skipped — their rendered width can't be known without
-    calculating the workbook. The header row and all literal-value cells
-    (text, numbers) determine the width; numeric columns fall back to their
-    header name length, which is the right floor for those columns.
-    """
+    """Set each column width to fit its widest non-formula content."""
     col_widths: dict[int, int] = {}
     for row_cells in ws.iter_rows():
         for cell in row_cells:
@@ -887,7 +873,7 @@ def _autosize_columns(ws, padding: int = 2, min_width: int = 8, max_width: int =
                 continue
             val = cell.value
             if isinstance(val, str) and val.startswith("="):
-                continue  # rendered width unknowable; header row sets the floor
+                continue
             col_widths[cell.column] = max(col_widths.get(cell.column, 0), len(str(val)))
     for col_idx, width in col_widths.items():
         ws.column_dimensions[get_column_letter(col_idx)].width = max(
@@ -906,9 +892,6 @@ def _write_tab(ws, df: pd.DataFrame, include_goal_block: bool,
         return
 
     agents = _agents_in_order(df)
-    # Track per-agent (name, data_first, data_last, sum_row) for the
-    # grand-total + per-agent % cells. data_first/last is the row span of
-    # the data rows themselves (excluding the subtotal block).
     agent_sum_rows: list[tuple[str, int, int, int]] = []
     overall_data_first = row
     overall_data_last  = row
@@ -997,37 +980,13 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
                        today_chi: pd.Timestamp) -> None:
     """Smoke test: compute Power-BI's standard X-Trux totals plus an
     apples-to-apples 'PBI with open loads' variant, and compare against
-    the daily upload's own All Loads totals. Logs the side-by-side so a
-    drift is obvious in the run output without needing to open Excel.
-
-    Power BI conventions (from the scorecard's diag block):
-      * Scope: Office in (X-Trux, XFreight) — asset trucking only (no X-Linx)
-      * Date filter: Scheduled Pickup within the current calendar month
-      * Cancelled excluded
-      * Driver Rate > 0 (settled only) — THIS is what we relax for the
-        'with open loads' variant
-      * Mileage = Loaded Miles + Empty Miles (billed columns, NOT dispatch)
-
-    The daily upload's All Loads uses:
-      * X-Trux + XFreight offices (same scope as PBI; X-Linx is on its
-        own tab so it doesn't skew asset-trucking totals)
-      * Same date + Cancelled filters
-      * NO settled filter (open loads included)
-      * Dispatch Mileage columns
-      * 65-mi empty-mileage estimate on open loads (post-normalization)
-
-    The check logs every divergence so we can see exactly where the two
-    methodologies differ on this morning's data — with the X-Trux/XFreight
-    scope now applied, remaining gaps should be the settled vs open-load
-    filter and the dispatch-vs-billed mileage column choice.
-    """
+    the daily upload's own All Loads totals."""
     log.info("=" * 60)
     log.info("POWER BI PARITY SMOKE TEST  (MTD %s..%s)",
              pd.Timestamp(today_chi.year, today_chi.month, 1).date(),
              today_chi.date())
     log.info("=" * 60)
 
-    # --- PBI-style filter set (X-Trux scope, billed mileage, all loads) -----
     date_col = _find_col(loads, ["scheduled pickup", "pickup date"])
     if not date_col:
         log.warning("PBI parity: no date column found, skipping check.")
@@ -1035,7 +994,6 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     sub = loads.copy()
     if "Load Status" in sub.columns:
         sub = sub[sub["Load Status"].astype(str).str.strip().str.lower() != "cancelled"]
-    # X-Trux + XFreight scope (matches scorecard's _alvys_metrics asset filter)
     office_col = _pick_source_col(sub, ["Office", "Office Name", "Division"])
     if office_col:
         xtrux_mask = sub[office_col].astype(str).str.strip().str.lower().str.contains(
@@ -1051,7 +1009,6 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     mtd_end   = pd.Timestamp(today_chi.year, today_chi.month, today_chi.day, 23, 59, 59)
     sub = sub.loc[dates.notna() & (dates >= mtd_start) & (dates <= mtd_end)].copy()
 
-    # Billed mileage columns (Loaded Miles / Empty Miles), NOT dispatch
     loaded_col = _pick_source_col(sub, ["Loaded Miles", "Loaded Mileage"])
     empty_col  = _pick_source_col(sub, ["Empty Miles", "Empty Mileage"])
     rev_col    = _pick_source_col(sub, ["Customer Revenue", "Revenue"])
@@ -1063,17 +1020,13 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
         return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
 
     def _cost(df):
-        """This block is X-Trux/XFreight scoped, where cost = Driver Rate
-        only (Carrier Rate on asset loads is internal allocation)."""
         return _sum(df, rate_col)
 
-    # PBI standard view: settled only — Driver Rate > 0 (asset scope)
     if rate_col:
         settled = sub[pd.to_numeric(sub[rate_col], errors="coerce").fillna(0) > 0]
     else:
         settled = sub.iloc[0:0]
-    # PBI with open loads: drop the settled filter
-    pbi_open = sub  # already X-Trux scoped + date filtered + Cancelled dropped
+    pbi_open = sub
 
     def _block(label: str, df: pd.DataFrame) -> dict:
         loaded = _sum(df, loaded_col)
@@ -1091,8 +1044,6 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     pbi_settled = _block("PBI (settled only)", settled)
     pbi_with_open = _block("PBI + open loads", pbi_open)
 
-    # Daily upload's All Loads — already normalized (dispatch mileage,
-    # 65mi estimate applied, no scope filter)
     du = {
         "label": "Daily Upload All Loads",
         "loads": len(normalized),
@@ -1118,9 +1069,7 @@ def _pbi_parity_check(loads: pd.DataFrame, normalized: pd.DataFrame,
     log.info("-" * 100)
     log.info("Note: 'DU vs PBI+open' should be ~0 for loaded/empty/rev/pay if "
               "the daily upload's All Loads tab matches a PBI view that includes "
-              "open loads. Differences > 1%% likely indicate scope mismatch "
-              "(X-Trux only vs all carriers) or mileage-column choice "
-              "(billed vs dispatch).")
+              "open loads.")
     log.info("=" * 60)
 
 
@@ -1129,8 +1078,6 @@ def main() -> int:
     client = os.environ["AZURE_CLIENT_ID"]
     secret = os.environ["AZURE_CLIENT_SECRET"]
     upn    = os.environ.get("ONEDRIVE_USER_UPN", "jeff@xfreight.net")
-    # Default to the canonical Alvys Master share URL (the exact file Power BI
-    # reads) so the daily upload, scorecard, and report all see the same data.
     share  = os.environ.get("DAILY_UPLOAD_ALVYS_SHARE_URL", "").strip() or ALVYS_MASTER_SHARE_URL
     if not share:
         raise SystemExit("DAILY_UPLOAD_ALVYS_SHARE_URL is required.")
@@ -1138,14 +1085,10 @@ def main() -> int:
     qb_dir = os.environ.get("DAILY_UPLOAD_QB_DIR", "QuickBooks").strip("/")
     to_emails = [e.strip()
                  for e in os.environ.get("DAILY_UPLOAD_TO_EMAILS",
-                                          "jeff@xfreight.net").split(",")
+                                          "jeff@xfreight.net,Dan@xfreight.net").split(",")
                  if e.strip()]
     token = get_token(tenant, client, secret)
 
-    # Idempotency: if today's daily upload was already sent (marker file
-    # present in OneDrive), exit cleanly so a healthcheck-triggered run
-    # doesn't double-send. workflow_dispatch and DAILY_UPLOAD_SKIP_IDEMPOTENCY=1
-    # bypass the check so on-demand resends still work.
     today_key = pd.Timestamp.now(tz=CHI_TZ).strftime("%Y-%m-%d")
     if (os.environ.get("GITHUB_EVENT_NAME", "").strip() != "workflow_dispatch"
             and os.environ.get("DAILY_UPLOAD_SKIP_IDEMPOTENCY", "").strip() != "1"):
@@ -1156,9 +1099,6 @@ def main() -> int:
                      marker_path)
             return 0
         except Exception as e:
-            # 404 / not found → no marker yet, proceed. Any other error
-            # also proceeds (fail-open: we'd rather risk a duplicate send
-            # than skip when we shouldn't have).
             log.info("No sent marker for %s — proceeding (%s).",
                      today_key, type(e).__name__)
 
@@ -1182,13 +1122,8 @@ def main() -> int:
     normalized = _build_normalized(loads, today_chi, trips_df)
     tabs = _split_tabs(normalized)
 
-    # Power-BI parity smoke test — confirms the daily upload's All Loads
-    # grand-total matches what PBI would show IF it didn't filter out
-    # open loads (its standard view excludes them via Driver Rate > 0).
     _pbi_parity_check(loads, normalized, today_chi)
 
-    # Pull the same live goal RPM the scorecard reports so the two emails
-    # don't disagree on what the target is for this month.
     goal_rpm = _live_goal_rpm(token, upn, qb_dir, sheets)
 
     file_label = f"Daily_Upload_{today_chi.strftime('%m%d%Y')}.xlsx"
@@ -1196,10 +1131,6 @@ def main() -> int:
         local_path = Path(tmp) / file_label
         _write_xlsx(tabs, local_path, today_chi, goal_rpm)
 
-        # OneDrive upload is best-effort — if the destination file is
-        # locked (someone has it open in Excel / OneDrive) or any other
-        # upload error fires, log it and continue. The email attachment
-        # is the deliverable; the OneDrive copy is a nice-to-have.
         try:
             if out_folder:
                 ensure_folder(token, upn, out_folder)
@@ -1224,9 +1155,6 @@ def main() -> int:
                 }],
             )
 
-            # Write today's 'sent' marker so the 6:30am healthcheck
-            # short-circuits when the morning send already succeeded.
-            # Marker write failure is non-fatal — at worst we re-send today.
             try:
                 marker_name = f"sent-{today_key}.txt"
                 marker_path_local = Path(tmp) / marker_name

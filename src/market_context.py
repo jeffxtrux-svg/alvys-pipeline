@@ -10,6 +10,11 @@ Live series (FRED — no API key, public CSV):
   • WPU3012    PPI: Truck Transportation of Freight (monthly) — cost inflation
   • TSIFRGHT   BTS Freight Transportation Services Index (monthly) — direct freight volume measure
   • NAPM       ISM Manufacturing PMI (monthly) — leading demand indicator; >50 = expansion
+  • RSAFS      US Retail & Food Services Sales (monthly, billions $, SA) — consumer demand → dry-van loads
+  • TCU        Total Industrial Capacity Utilization (monthly, %) — >80% = tight freight market
+  • ISRATIO    Total Business Inventory/Sales Ratio (monthly) — falling = restocking cycle, leading demand signal
+  • CES4348400003  Avg hourly earnings, truck transportation (monthly, $/hr) — driver pay/recruiting benchmark
+  • NAPMNOI    ISM Manufacturing New Orders Index (monthly) — leads headline PMI by ~4-6wk
 
 Static industry benchmarks (ATRI 2024 report, 2023 operating data):
   • Driver wages + benefits: $0.580/mi
@@ -47,6 +52,16 @@ _FRED_ATA_URL     = _FRED_BASE + "TRUCKD11"    # monthly, SA index (2015=100)
 _FRED_PPI_URL     = _FRED_BASE + "WPU3012"     # monthly, index (2012=100)
 _FRED_TSI_URL     = _FRED_BASE + "TSIFRGHT"    # monthly, BTS Freight TSI (2000=100)
 _FRED_PMI_URL     = _FRED_BASE + "NAPM"        # monthly, ISM Mfg PMI (>50=expansion)
+_FRED_RETAIL_URL  = _FRED_BASE + "RSAFS"       # monthly, US retail & food services sales (billions $, SA)
+_FRED_CAPU_URL    = _FRED_BASE + "TCU"         # monthly, total industrial capacity utilization (%)
+_FRED_ISRATIO_URL = _FRED_BASE + "ISRATIO"     # monthly, total business inventory/sales ratio
+_FRED_WAGES_URL   = _FRED_BASE + "CES4348400003"  # monthly, $/hr, truck transportation avg hourly earnings
+_FRED_NEWORDERS_URL = _FRED_BASE + "NAPMNOI"   # monthly, ISM Mfg New Orders Index (>50=expansion)
+
+# Fuel cost constants
+_ATRI_DIESEL_BASE = 3.994  # avg US retail diesel $/gal in 2023 (ATRI 2024 report period, EIA data)
+_FSC_DIESEL_BASE  = 0.70   # DOE/ATA fuel surcharge formula base $/gal
+_FSC_MPG_AVG      = 6.0    # industry avg mpg used in standard FSC formula
 
 # Static industry benchmarks — ATRI 2024 Annual Operational Costs of Trucking
 # (covers 2023 operating data; for-hire truckload carriers, all sizes)
@@ -252,6 +267,91 @@ def fetch_and_write(out_path: Path | None = None) -> bool:
     except Exception as exc:
         log.warning("FRED NAPM fetch failed: %s — skipping", exc)
 
+    # --- US Retail & Food Services Sales (monthly, secondary) ---
+    try:
+        retail_series = _fetch_fred_csv(_FRED_RETAIL_URL)
+        if retail_series:
+            sources["retail_sales"] = {
+                "label": "US Retail & Food Services Sales (monthly, billions $, SA)",
+                "fred_series": "RSAFS",
+                "unit": "B$",
+                **_summarize(retail_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED RSAFS returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED RSAFS fetch failed: %s — skipping", exc)
+
+    # --- Total Industrial Capacity Utilization (monthly, secondary) ---
+    try:
+        capu_series = _fetch_fred_csv(_FRED_CAPU_URL)
+        if capu_series:
+            sources["capacity_util"] = {
+                "label": "Total Industrial Capacity Utilization (monthly, %)",
+                "fred_series": "TCU",
+                "unit": "%",
+                **_summarize(capu_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED TCU returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED TCU fetch failed: %s — skipping", exc)
+
+    # --- Total Business Inventory/Sales Ratio (monthly, secondary) ---
+    try:
+        isratio_series = _fetch_fred_csv(_FRED_ISRATIO_URL)
+        if isratio_series:
+            sources["inv_sales_ratio"] = {
+                "label": "Total Business Inventory/Sales Ratio (monthly)",
+                "fred_series": "ISRATIO",
+                "unit": "x",
+                **_summarize(isratio_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED ISRATIO returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED ISRATIO fetch failed: %s — skipping", exc)
+
+    # --- Truck Transportation Avg Hourly Earnings (monthly, secondary) ---
+    try:
+        wages_series = _fetch_fred_csv(_FRED_WAGES_URL)
+        if wages_series:
+            sources["trucking_wages"] = {
+                "label": "Truck Transportation Avg Hourly Earnings (monthly, $/hr)",
+                "fred_series": "CES4348400003",
+                "unit": "$/hr",
+                **_summarize(wages_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED CES4348400003 returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED CES4348400003 fetch failed: %s — skipping", exc)
+
+    # --- ISM Manufacturing New Orders Index (monthly, secondary) ---
+    try:
+        neworders_series = _fetch_fred_csv(_FRED_NEWORDERS_URL)
+        if neworders_series:
+            sources["ism_new_orders"] = {
+                "label": "ISM Manufacturing New Orders Index (monthly, >50=expansion)",
+                "fred_series": "NAPMNOI",
+                "unit": "index",
+                **_summarize(neworders_series, short_label="vs 1mo ago",
+                             weeks_short=4, weeks_long=52,
+                             max_gap_short_days=35, max_gap_long_days=60),
+            }
+        else:
+            log.warning("FRED NAPMNOI returned no rows — skipping")
+    except Exception as exc:
+        log.warning("FRED NAPMNOI fetch failed: %s — skipping", exc)
+
     payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "sources": sources,
@@ -283,11 +383,17 @@ def _compute_outlook(sources: dict) -> dict:
     Returns a dict with keys: volume, rates, fuel, summary.
     Each signal has 'label' (display text) and 'tone' (good/bad/neutral).
     """
-    ata    = sources.get("ata_tonnage")    or {}
-    pmi    = sources.get("ism_pmi")        or {}
+    ata    = sources.get("ata_tonnage")     or {}
+    pmi    = sources.get("ism_pmi")         or {}
     tsi    = sources.get("bts_freight_tsi") or {}
-    ppi    = sources.get("ppi_trucking")   or {}
-    diesel = sources.get("diesel_us")      or {}
+    ppi    = sources.get("ppi_trucking")    or {}
+    diesel = sources.get("diesel_us")       or {}
+    wti    = sources.get("wti_crude")       or {}
+    retail = sources.get("retail_sales")    or {}
+    capu   = sources.get("capacity_util")   or {}
+    isr    = sources.get("inv_sales_ratio") or {}
+    wages  = sources.get("trucking_wages")  or {}
+    nords  = sources.get("ism_new_orders")  or {}
 
     def _yoy(s):  return (s.get("yoy_52w")  or {}).get("pct_change")
     def _mom(s):  return (s.get("vs_short") or {}).get("pct_change")
@@ -299,10 +405,16 @@ def _compute_outlook(sources: dict) -> dict:
     ppi_yoy     = _yoy(ppi)
     diesel_yoy  = _yoy(diesel)
     diesel_4w   = _mom(diesel)
+    wti_4w      = _mom(wti)
+    retail_yoy  = _yoy(retail)
+    capu_cur    = _cur(capu)
+    isr_yoy     = _yoy(isr)
+    wages_yoy   = _yoy(wages)
+    nords_cur   = _cur(nords)
 
     signals: dict = {}
 
-    # --- Freight volume signal (ATA tonnage YoY + ISM PMI + BTS TSI YoY) ---
+    # --- Freight volume signal (ATA tonnage YoY + ISM PMI + BTS TSI YoY + retail sales YoY + cap util) ---
     vol_votes: list[str] = []
     if ata_yoy is not None:
         vol_votes.append("expanding" if ata_yoy >= 3 else ("contracting" if ata_yoy < 0 else "flat"))
@@ -310,6 +422,44 @@ def _compute_outlook(sources: dict) -> dict:
         vol_votes.append("expanding" if pmi_cur >= 52 else ("contracting" if pmi_cur < 49 else "neutral"))
     if tsi_yoy is not None:
         vol_votes.append("expanding" if tsi_yoy >= 2 else ("contracting" if tsi_yoy < -1 else "flat"))
+    if retail_yoy is not None:
+        vol_votes.append("expanding" if retail_yoy >= 4 else ("contracting" if retail_yoy < 0 else "flat"))
+        if retail_yoy >= 4:
+            signals["retail_signal"] = f"Retail sales +{retail_yoy:.1f}% YoY — consumer demand driving dry-van loads"
+        elif retail_yoy < 0:
+            signals["retail_signal"] = f"Retail sales {retail_yoy:.1f}% YoY — weak consumer demand, watch for softer load volumes"
+        else:
+            signals["retail_signal"] = f"Retail sales +{retail_yoy:.1f}% YoY — moderate consumer demand"
+    if capu_cur is not None:
+        if capu_cur >= 80:
+            vol_votes.append("expanding")
+            signals["capu_signal"] = f"Industrial capacity utilization {capu_cur:.1f}% (≥80%) — tight industrial freight signal"
+        elif capu_cur < 75:
+            vol_votes.append("contracting")
+            signals["capu_signal"] = f"Industrial capacity utilization {capu_cur:.1f}% (<75%) — slack industrial freight signal"
+        else:
+            vol_votes.append("neutral")
+            signals["capu_signal"] = f"Capacity utilization {capu_cur:.1f}% (75–80% range — neutral)"
+    if isr_yoy is not None:
+        # Falling inventory/sales ratio = leaner inventories = restocking demand ahead (leads retail sales)
+        vol_votes.append("expanding" if isr_yoy < -2 else ("contracting" if isr_yoy > 2 else "flat"))
+        if isr_yoy < -2:
+            signals["isratio_signal"] = f"Inventory/sales ratio {isr_yoy:.1f}% YoY — leaner inventories, restocking cycle ahead"
+        elif isr_yoy > 2:
+            signals["isratio_signal"] = f"Inventory/sales ratio +{isr_yoy:.1f}% YoY — inventories building, fewer reorders likely"
+        else:
+            signals["isratio_signal"] = f"Inventory/sales ratio {isr_yoy:+.1f}% YoY — steady"
+    if nords_cur is not None:
+        # ISM New Orders sub-index leads the headline PMI by ~4-6 weeks
+        vol_votes.append("expanding" if nords_cur >= 52 else ("contracting" if nords_cur < 49 else "neutral"))
+        if nords_cur >= 52:
+            signals["neworders_signal"] = f"ISM New Orders {nords_cur:.1f} (≥52) — leads headline PMI by ~4–6wk, demand building"
+        elif nords_cur < 49:
+            signals["neworders_signal"] = f"ISM New Orders {nords_cur:.1f} (<49) — leads headline PMI by ~4–6wk, demand softening"
+        else:
+            signals["neworders_signal"] = f"ISM New Orders {nords_cur:.1f} — near neutral"
+    if wages_yoy is not None:
+        signals["wages_signal"] = f"Trucking wages {wages_yoy:+.1f}% YoY — driver pay/recruiting benchmark"
     if vol_votes:
         exp = vol_votes.count("expanding")
         con = vol_votes.count("contracting")
@@ -360,6 +510,48 @@ def _compute_outlook(sources: dict) -> dict:
         else:
             signals["pmi_signal"] = f"PMI below 50 ({pmi_cur:.1f}) — manufacturing contracting, watch for softer volumes"
 
+    # --- Margin squeeze: fuel costs rising faster than market rates ---
+    if diesel_yoy is not None and ppi_yoy is not None:
+        squeeze = diesel_yoy - ppi_yoy
+        signals["margin_squeeze"] = {
+            "active": squeeze > 5,
+            "diesel_yoy": diesel_yoy,
+            "ppi_yoy": ppi_yoy,
+            "spread": round(squeeze, 1),
+        }
+
+    # --- WTI → diesel lag signal (item 5): crude moves ~1-2wk ahead of pump price ---
+    if wti_4w is not None and diesel_4w is not None:
+        if wti_4w <= -8 and diesel_4w > -3:
+            signals["wti_lag"] = {
+                "direction": "down",
+                "note": (f"WTI crude fell {abs(wti_4w):.1f}% in 4wk but diesel hasn't followed"
+                         f" — fuel cost relief likely in 1–2 weeks"),
+            }
+        elif wti_4w >= 8 and diesel_4w < 3:
+            signals["wti_lag"] = {
+                "direction": "up",
+                "note": (f"WTI crude up {wti_4w:.1f}% in 4wk but diesel hasn't followed"
+                         f" — fuel cost pressure likely in 1–2 weeks"),
+            }
+
+    # --- Seasonal context (from diesel series date → quarter) ---
+    diesel_date = ((sources.get("diesel_us") or {}).get("current") or {}).get("date")
+    if diesel_date:
+        try:
+            month = int(diesel_date[5:7])
+            quarter = (month - 1) // 3 + 1
+            _SEASONS = {
+                1: ("Q1", "Typically soft — post-holiday inventory correction; expect rate softness"),
+                2: ("Q2", "Spring pickup — freight strengthening; agricultural freight begins"),
+                3: ("Q3", "Historically strong — back-to-school + retail pre-build season; pricing power window"),
+                4: ("Q4", "Peak season — holiday goods + harvest freight; typically highest rates of year"),
+            }
+            q_label, q_note = _SEASONS[quarter]
+            signals["seasonal"] = {"quarter": q_label, "note": q_note}
+        except Exception:
+            pass
+
     # --- One-line summary ---
     parts: list[str] = []
     vol_lbl  = (signals.get("volume") or {}).get("label")
@@ -373,6 +565,49 @@ def _compute_outlook(sources: dict) -> dict:
         parts.append(f"fuel {fuel_lbl.lower()}")
     signals["summary"] = " · ".join(parts)
     return signals
+
+
+def _compute_cost_intel(sources: dict, benchmarks: dict) -> dict:
+    """Fuel sensitivity and FSC guidance from current diesel price.
+
+    Returns est_fuel_cpm (scaled from ATRI base), fsc_per_mile (ATA formula),
+    and metadata for rendering.  Returns {} if diesel price unavailable.
+    """
+    current_diesel = ((sources.get("diesel_us") or {}).get("current") or {}).get("value")
+    if not current_diesel:
+        return {}
+    atri_fuel_cpm  = (benchmarks.get("fuel_cost_per_mile") or {}).get("value") or 0.593
+    atri_total_cpm = (benchmarks.get("total_cost_per_mile") or {}).get("value") or 2.251
+    est_fuel_cpm   = round(atri_fuel_cpm * (current_diesel / _ATRI_DIESEL_BASE), 3)
+    # Break-even: replace fuel component with current-price estimate; all other costs held at ATRI baseline
+    non_fuel_cpm   = atri_total_cpm - atri_fuel_cpm
+
+    # Diesel crack spread: pump price minus WTI-equivalent $/gal (1 bbl = 42 gal).
+    # Approximates the refining/distribution margin baked into the pump price —
+    # widening spread means diesel is staying elevated independent of crude.
+    wti = sources.get("wti_crude") or {}
+    wti_cur     = (wti.get("current")  or {}).get("value")
+    wti_4w_ago  = (wti.get("vs_short") or {}).get("value")
+    diesel_4w_ago = ((sources.get("diesel_us") or {}).get("vs_short") or {}).get("value")
+    crack_spread = None
+    crack_spread_chg = None
+    if wti_cur:
+        crack_spread = round(current_diesel - wti_cur / 42.0, 3)
+        if wti_4w_ago and diesel_4w_ago:
+            spread_4w_ago = diesel_4w_ago - wti_4w_ago / 42.0
+            crack_spread_chg = round(crack_spread - spread_4w_ago, 3)
+
+    return {
+        "current_diesel":    current_diesel,
+        "est_fuel_cpm":      est_fuel_cpm,
+        "atri_fuel_cpm":     atri_fuel_cpm,
+        "atri_diesel_base":  _ATRI_DIESEL_BASE,
+        "fsc_per_mile":      round(max(0.0, (current_diesel - _FSC_DIESEL_BASE) / _FSC_MPG_AVG), 3),
+        "breakeven_rpm":     round(non_fuel_cpm + est_fuel_cpm, 3),
+        "atri_total_cpm":    atri_total_cpm,
+        "crack_spread":      crack_spread,
+        "crack_spread_chg":  crack_spread_chg,
+    }
 
 
 def render_chip_html(ctx: dict | None = None,
@@ -391,7 +626,7 @@ def render_chip_html(ctx: dict | None = None,
     section.  Hidden entirely when no cached data exists.
 
     Args:
-        xfreight_rpm: dict from ``compute_rpm_goal`` -- keys ``actual_rpm``,
+        xfreight_rpm: dict from ``compute_rpm_goal`` — keys ``actual_rpm``,
             ``goal_rpm``, ``cost_per_mile``, ``gap`` (goal minus actual).
     """
     ctx = ctx if ctx is not None else load_cached()
@@ -468,6 +703,70 @@ def render_chip_html(ctx: dict | None = None,
         + _metric_cell("bts_freight_tsi","BTS Freight TSI",  fmt="{:.1f}",  invert=False, border_right=True)
         + _metric_cell("ism_pmi",       "ISM Mfg PMI",       fmt="{:.1f}",  invert=False, border_right=False)
     )
+
+    # Secondary metrics row: US retail sales + capacity utilization (3 cols each)
+    def _wide_cell(key: str, name: str, fmt: str, invert: bool,
+                   colspan: int, border_right: bool) -> str:
+        src     = sources.get(key) or {}
+        current = src.get("current") or {}
+        val     = current.get("value")
+        asof    = current.get("date", "")
+        unit    = src.get("unit", "")
+        border  = f"border-right:1px solid {line};" if border_right else ""
+        if val is None:
+            return (
+                f"<td colspan='{colspan}' style='padding:4px 10px;vertical-align:top;{border}'>"
+                f"<div style='font-size:9px;color:{mute};text-transform:uppercase;"
+                f"letter-spacing:1px;margin-bottom:2px;'>{name}</div>"
+                f"<div style='font-size:11px;color:{mute};'>n/a</div>"
+                f"</td>"
+            )
+        val_str    = fmt.format(val)
+        vs_short   = src.get("vs_short") or {}
+        vs_long    = src.get("yoy_52w") or {}
+        short_lbl  = src.get("short_label", "1mo")
+        short_html = _pct_span(vs_short.get("pct_change"), invert=invert)
+        long_html  = _pct_span(vs_long.get("pct_change"),  invert=invert)
+        return (
+            f"<td colspan='{colspan}' style='padding:4px 10px;vertical-align:top;{border}'>"
+            f"<div style='font-size:9px;color:{mute};text-transform:uppercase;"
+            f"letter-spacing:1px;margin-bottom:2px;'>{name}</div>"
+            f"<div style='font-size:12px;font-weight:700;color:{ink};'>{val_str}"
+            f"<span style='font-size:10px;font-weight:400;color:{mute};'>&nbsp;{unit}</span></div>"
+            f"<div style='font-size:10px;margin-top:2px;line-height:1.5;'>"
+            f"{short_html}&nbsp;<span style='color:{mute};'>{short_lbl}</span>"
+            f"&nbsp;&middot;&nbsp;{long_html}&nbsp;<span style='color:{mute};'>YoY</span></div>"
+            f"<div style='font-size:9px;color:{mute};margin-top:1px;'>{asof}</div>"
+            f"</td>"
+        )
+
+    _SECONDARY_METRICS = [
+        ("retail_sales",     "US Retail Sales",       "${:.1f}", False),
+        ("capacity_util",    "Mfg Capacity Util.",    "{:.1f}",  False),
+        ("inv_sales_ratio",  "Inventory/Sales Ratio", "{:.2f}",  True),
+        ("trucking_wages",   "Trucking Wages",        "${:.2f}", False),
+        ("ism_new_orders",   "ISM New Orders",        "{:.1f}",  False),
+    ]
+    secondary_row = ""
+    for i in range(0, len(_SECONDARY_METRICS), 2):
+        pair = _SECONDARY_METRICS[i:i + 2]
+        if not any(sources.get(p[0]) for p in pair):
+            continue
+        if len(pair) == 2:
+            (k1, n1, f1, inv1), (k2, n2, f2, inv2) = pair
+            secondary_row += (
+                f"<tr style='border-top:1px solid {line};'>"
+                + _wide_cell(k1, n1, f1, inv1, 3, True)
+                + _wide_cell(k2, n2, f2, inv2, 3, False)
+                + "</tr>"
+            )
+        else:
+            k1, n1, f1, inv1 = pair[0]
+            secondary_row += (
+                f"<tr style='border-top:1px solid {line};'>"
+                + _wide_cell(k1, n1, f1, inv1, 6, False)
+                + "</tr>"
+            )
 
     # Industry benchmarks bar
     bm_parts: list[str] = []
@@ -546,7 +845,71 @@ def render_chip_html(ctx: dict | None = None,
                 f"</td></tr>"
             )
 
-    # Market outlook row — rule-based near-term forecast
+    # Cost intelligence row (items 1, 3): fuel sensitivity + FSC guidance
+    ci = _compute_cost_intel(sources, benchmarks)
+    cost_intel_html = ""
+    if ci:
+        est       = ci["est_fuel_cpm"]
+        base      = ci["atri_fuel_cpm"]
+        fsc       = ci["fsc_per_mile"]
+        cur_d     = ci["current_diesel"]
+        abase     = ci["atri_diesel_base"]
+        breakeven = ci.get("breakeven_rpm")
+        atri_tot  = ci.get("atri_total_cpm")
+        crack     = ci.get("crack_spread")
+        crack_chg = ci.get("crack_spread_chg")
+        fuel_color = red if est > base * 1.05 else (green if est < base * 0.97 else mute)
+        breakeven_html = ""
+        if breakeven and atri_tot:
+            breakeven_html = (
+                f"<br><span style='font-size:10px;color:{ink};'>"
+                f"<b>Break-even RPM:</b>&nbsp;"
+                f"<span style='font-weight:700;color:{ink};'>${breakeven:.3f}/mi</span>"
+                f"&nbsp;<span style='color:{mute};'>(ATRI total ${atri_tot:.3f}/mi"
+                f"&nbsp;&middot;&nbsp;fuel component scaled to today"
+                f"&nbsp;&middot;&nbsp;don't take freight below this rate)</span>"
+                f"</span>"
+            )
+        crack_html = ""
+        if crack is not None:
+            if crack_chg is not None and crack_chg > 0.05:
+                chg_note = f"+${crack_chg:.3f}/gal vs 4wk ago — refining margin widening, diesel cost stickier"
+                chg_color = red
+            elif crack_chg is not None and crack_chg < -0.05:
+                chg_note = f"${crack_chg:.3f}/gal vs 4wk ago — refining margin narrowing, cost relief flowing through"
+                chg_color = green
+            else:
+                chg_note = "stable vs 4wk ago" if crack_chg is not None else ""
+                chg_color = mute
+            chg_span = f"&nbsp;<span style='color:{chg_color};'>({chg_note})</span>" if chg_note else ""
+            crack_html = (
+                f"<br><span style='font-size:10px;color:{ink};'>"
+                f"<b>Diesel crack spread:</b>&nbsp;"
+                f"<span style='font-weight:700;color:{ink};'>${crack:.3f}/gal</span>"
+                f"&nbsp;<span style='color:{mute};'>(pump price &minus; WTI-equiv $/gal)</span>"
+                f"{chg_span}"
+                f"</span>"
+            )
+        cost_intel_html = (
+            f"<tr><td colspan='6' style='padding:6px 10px 4px;"
+            f"border-top:1px solid {line};'>"
+            f"<span style='font-size:9px;font-weight:700;color:{mute};"
+            f"text-transform:uppercase;letter-spacing:1px;'>Cost Intelligence</span>"
+            f"<br><span style='font-size:10px;color:{ink};'>"
+            f"<b>Est. fuel cost/mi:</b>&nbsp;"
+            f"<span style='color:{fuel_color};font-weight:700;'>${est:.3f}/mi</span>"
+            f"&nbsp;<span style='color:{mute};'>(ATRI benchmark ${base:.3f}/mi at ${abase:.3f}/gal"
+            f"&nbsp;&middot;&nbsp;scaled to current ${cur_d:.3f}/gal)</span>"
+            f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
+            f"<b>Std FSC:</b>&nbsp;<span style='font-weight:700;color:{ink};'>${fsc:.3f}/mi</span>"
+            f"&nbsp;<span style='color:{mute};'>(ATA: (${cur_d:.3f}&minus;$0.70)&divide;6&nbsp;mpg)</span>"
+            f"</span>"
+            f"{breakeven_html}"
+            f"{crack_html}"
+            f"</td></tr>"
+        )
+
+    # Near-term outlook row (items 2, 4): margin squeeze + seasonal context + signals
     outlook = _compute_outlook(sources)
     outlook_html = ""
     if outlook.get("summary"):
@@ -571,9 +934,75 @@ def render_chip_html(ctx: dict | None = None,
             _sig_chip("rates",  "Rates:"),
             _sig_chip("fuel",   "Fuel:"),
         ] if p]
+
+        # Margin squeeze alert (item 2)
+        ms = outlook.get("margin_squeeze") or {}
+        squeeze_html = ""
+        if ms.get("active"):
+            d_yoy = ms.get("diesel_yoy", 0)
+            p_yoy = ms.get("ppi_yoy", 0)
+            squeeze_html = (
+                f"<br><span style='font-size:10px;color:{red};font-weight:700;'>"
+                f"&#9888;&nbsp;Margin squeeze: fuel +{d_yoy:.1f}% YoY vs rates +{p_yoy:.1f}% YoY"
+                f"&nbsp;&mdash;&nbsp;fuel costs rising faster than market rates</span>"
+            )
+
+        # PMI lead signal
         pmi_note = outlook.get("pmi_signal", "")
         pmi_html = (f"<br><span style='font-size:9px;color:{mute};'>"
                     f"&#8594;&nbsp;{pmi_note}</span>") if pmi_note else ""
+
+        # Seasonal context (item 4)
+        seasonal = outlook.get("seasonal") or {}
+        season_html = ""
+        if seasonal:
+            season_html = (
+                f"<br><span style='font-size:9px;color:{mute};'>"
+                f"&#128197;&nbsp;<b>{seasonal['quarter']}:</b>&nbsp;{seasonal['note']}</span>"
+            )
+
+        # WTI→diesel lag signal (item 5)
+        wti_lag = outlook.get("wti_lag") or {}
+        wti_lag_html = ""
+        if wti_lag:
+            lag_color = green if wti_lag.get("direction") == "down" else red
+            lag_icon  = "&#9660;" if wti_lag.get("direction") == "down" else "&#9650;"
+            wti_lag_html = (
+                f"<br><span style='font-size:9px;color:{lag_color};'>"
+                f"{lag_icon}&nbsp;{wti_lag['note']}</span>"
+            )
+
+        # Retail sales + capacity utilization signals
+        retail_sig = outlook.get("retail_signal", "")
+        retail_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#128722;&nbsp;{retail_sig}</span>"
+        ) if retail_sig else ""
+
+        capu_sig = outlook.get("capu_signal", "")
+        capu_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#127981;&nbsp;{capu_sig}</span>"
+        ) if capu_sig else ""
+
+        isratio_sig = outlook.get("isratio_signal", "")
+        isratio_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#128230;&nbsp;{isratio_sig}</span>"
+        ) if isratio_sig else ""
+
+        neworders_sig = outlook.get("neworders_signal", "")
+        neworders_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#128200;&nbsp;{neworders_sig}</span>"
+        ) if neworders_sig else ""
+
+        wages_sig = outlook.get("wages_signal", "")
+        wages_html = (
+            f"<br><span style='font-size:9px;color:{mute};'>"
+            f"&#128181;&nbsp;{wages_sig}</span>"
+        ) if wages_sig else ""
+
         outlook_html = (
             f"<tr><td colspan='6' style='padding:6px 10px 4px;"
             f"border-top:1px solid {line};'>"
@@ -581,7 +1010,8 @@ def render_chip_html(ctx: dict | None = None,
             f"text-transform:uppercase;letter-spacing:1px;'>Near-Term Outlook</span>"
             f"<br><span style='font-size:10px;color:{ink};'>"
             f"{'&nbsp;&nbsp;&middot;&nbsp;&nbsp;'.join(chips)}"
-            f"</span>{pmi_html}"
+            f"</span>{squeeze_html}{wti_lag_html}{pmi_html}{neworders_html}{retail_html}"
+            f"{capu_html}{isratio_html}{wages_html}{season_html}"
             f"</td></tr>"
         )
 
@@ -589,7 +1019,8 @@ def render_chip_html(ctx: dict | None = None,
     footer_html = (
         f"<tr><td colspan='6' style='padding:4px 10px 0;'>"
         f"<span style='font-size:9px;color:{mute};'>"
-        f"Source: FRED GASDESW · DCOILWTICO · TRUCKD11 · WPU3012 · TSIFRGHT · NAPM"
+        f"Source: FRED GASDESW · DCOILWTICO · TRUCKD11 · WPU3012 · TSIFRGHT · NAPM · RSAFS · TCU · "
+        f"ISRATIO · CES4348400003 · NAPMNOI"
         f"{(' · refreshed ' + generated[:10]) if generated else ''}"
         f"</span></td></tr>"
     )
@@ -603,8 +1034,10 @@ def render_chip_html(ctx: dict | None = None,
         f"Market Context · OTR Truckload{asof_display}</div>"
         f"<table style='width:100%;border-collapse:collapse;'>"
         f"<tr>{metrics_row}</tr>"
+        f"{secondary_row}"
         f"{benchmarks_html}"
         f"{xf_html}"
+        f"{cost_intel_html}"
         f"{outlook_html}"
         f"{footer_html}"
         f"</table>"

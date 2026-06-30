@@ -3,8 +3,11 @@
 # Posts a compact summary of the brief (MTD KPIs + tripped risk signals
 # + decision grades) to an incoming webhook URL right after the
 # scorecard email lands. Source files are written by the scorecard run
-# itself (snapshot, risk-watch-latest.json, decision-grades.json) so
-# this job is pure presentation — no re-compute.
+# itself (snapshot, risk-watch-latest.json, decision-grades.json) and
+# mirrored to OneDrive (Scorecard/*.json) — this job reads them from
+# there, not from git, since Karpathy-Wiki/raw is gitignored and the
+# scorecard workflow's commit step never stages Karpathy-Wiki/wiki either.
+# This job is pure presentation — no re-compute.
 #
 # Required secret to actually post:
 #   SLACK_WEBHOOK_URL  — Slack or Teams incoming-webhook URL.
@@ -12,8 +15,12 @@
 #     Teams:  https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook
 #     Either accepts the Block Kit payload shape this workflow posts.
 #
-# Without the secret, the job still runs and exits cleanly with a log
-# warning (composed but not posted) — useful for dry-running the
+# Also needs the standard Azure/OneDrive secrets (shared with the rest of
+# the pipeline) to read its OneDrive source files:
+#   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, ONEDRIVE_USER_UPN
+#
+# Without SLACK_WEBHOOK_URL, the job still runs and exits cleanly with a
+# log warning (composed but not posted) — useful for dry-running the
 # digest content against a real brief.
 
 name: Slack/Teams morning digest
@@ -49,12 +56,12 @@ jobs:
       - name: Checkout repo (latest main)
         uses: actions/checkout@v4
         with:
-          # Always check out HEAD of main, NOT workflow_run.head_sha.
-          # The scorecard workflow commits + pushes risk-watch-latest.json
-          # and decision-grades.json BEFORE it completes, so main has the
-          # freshest state files by the time this trigger fires. Pinning
-          # to workflow_run.head_sha would check out the pre-scorecard
-          # SHA and read stale (or missing) snapshot files.
+          # Pin to main so this always runs the latest digest code,
+          # independent of which commit triggered the scorecard run.
+          # Source data (snapshot/signals/grades) comes from OneDrive, not
+          # this checkout — see the module docstrings in scorecard_snapshots.py /
+          # risk_watch.py / decision_grader.py for why local files don't survive
+          # past the scorecard job's own runner.
           ref: main
 
       - name: Set up Python
@@ -64,14 +71,18 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        # Only need requests to POST the webhook + the existing project
-        # modules (read JSON, format the payload). Keep this slim so the
-        # digest stays fast.
-        run: pip install requests
+        # requests to POST the webhook + read from OneDrive; python-dotenv
+        # because src.onedrive_upload imports it at module level. Keep this
+        # slim (no full requirements.txt) so the digest stays fast.
+        run: pip install requests python-dotenv
 
       - name: Compose and post digest
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ONEDRIVE_USER_UPN: ${{ secrets.ONEDRIVE_USER_UPN }}
           RUN_URL: ${{ github.event.workflow_run.html_url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
