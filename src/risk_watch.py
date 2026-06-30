@@ -322,7 +322,13 @@ def render_strip_html(results: list[dict],
 def write_signals_snapshot(results: list[dict], path: Path | None = None) -> None:
     """Write the current evaluated signals to a JSON snapshot the Slack
     digest (and other downstream consumers) can read without re-running
-    the full scorecard. Same pattern as decision_grader.write_grades_snapshot."""
+    the full scorecard. Same pattern as decision_grader.write_grades_snapshot.
+
+    `Karpathy-Wiki/wiki/` IS committed to git (unlike `raw/`), but the
+    scorecard workflow's commit step only stages `Karpathy-Wiki/raw` — so
+    this file never reaches main from CI either. Also best-effort mirrors
+    it to OneDrive (Scorecard/risk-watch-latest.json) so the digest has a
+    source that's actually populated."""
     import json
     from datetime import datetime
     target = path or (_SIGNALS_PATH.parent / "risk-watch-latest.json")
@@ -351,3 +357,14 @@ def write_signals_snapshot(results: list[dict], path: Path | None = None) -> Non
         target.write_text(json.dumps(snap, indent=2, default=str))
     except Exception as exc:
         log.warning("risk_watch: failed to write signals snapshot (%s)", exc)
+        return
+    try:
+        from src.onedrive_upload import ensure_folder, get_token_from_env, upload_file
+        token, upn = get_token_from_env()
+        if token:
+            ensure_folder(token, upn, "Scorecard")
+            upload_file(token=token, user_upn=upn, folder_path="Scorecard",
+                       filename="risk-watch-latest.json", file_path=target)
+            log.info("risk_watch: signals snapshot mirrored to OneDrive")
+    except Exception as exc:
+        log.warning("risk_watch: OneDrive mirror failed (%s)", exc)
