@@ -201,6 +201,34 @@ def download_file(token: str, user_upn: str, path: str) -> bytes:
     return resp.content
 
 
+def resolve_site_id(token: str, hostname: str, site_path: str) -> str:
+    """Resolve a SharePoint site's Graph site-id from its hostname + relative
+    site path, e.g. resolve_site_id(token, "xfreightnet.sharepoint.com", "/sites/DispatchFiles").
+
+    SharePoint site drives (as opposed to a user's personal OneDrive, which
+    every other helper in this module addresses by UPN) are addressed by
+    site-id in Graph — this looks that id up so download_file_site() can use it."""
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{GRAPH}/sites/{hostname}:{site_path}"
+    resp = requests.get(url, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        log.error("Site lookup failed [%s]: %s", resp.status_code, resp.text[:500])
+        resp.raise_for_status()
+    return resp.json()["id"]
+
+
+def download_file_site(token: str, site_id: str, path: str) -> bytes:
+    """Download a file's raw bytes from a SharePoint site's default document
+    library ("Shared Documents"), by path relative to that library's root."""
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{GRAPH}/sites/{site_id}/drive/root:/{_enc_path(path.strip('/'))}:/content"
+    resp = requests.get(url, headers=headers, timeout=180)
+    if resp.status_code != 200:
+        log.error("Download %s (site) failed [%s]: %s", path, resp.status_code, resp.text[:300])
+        resp.raise_for_status()
+    return resp.content
+
+
 def _share_id(share_url: str) -> str:
     """Encode a sharing URL into a Graph share id (u!<base64url>, no padding)."""
     import base64
