@@ -180,6 +180,10 @@ def add_suppression(
     log.info("Suppression added: [%s / %s] until %s", cat_norm, drv_norm, until.isoformat())
 
 
+_ACC_LOG_SITE_HOST = "xfreightnet.sharepoint.com"
+_ACC_LOG_SITE_PATH = "/sites/DispatchFiles"
+
+
 def rebuild_from_accountability_log(
     registry: dict,
     tok: str,
@@ -196,12 +200,18 @@ def rebuild_from_accountability_log(
     Accountability Log.xlsx and adds a suppression for any action within the
     last suppress_days days, setting until = action_date + suppress_days.
     Returns the number of suppressions added.
+
+    Accountability Log.xlsx lives in a SharePoint document library (not
+    personal OneDrive, unlike the rest of this file's OneDrive I/O) since
+    it's written by an external Power Automate flow off a Microsoft Form —
+    `acc_folder` is relative to that site's default "Shared Documents" library.
     """
     try:
         import io
         import pandas as pd
-        from src.onedrive_upload import download_file
-        raw = download_file(tok, upn, f"{acc_folder}/{acc_filename}")
+        from src.onedrive_upload import download_file_site, resolve_site_id
+        site_id = resolve_site_id(tok, _ACC_LOG_SITE_HOST, _ACC_LOG_SITE_PATH)
+        raw = download_file_site(tok, site_id, f"{acc_folder}/{acc_filename}")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
         df.columns = [str(c).strip().lower() for c in df.columns]

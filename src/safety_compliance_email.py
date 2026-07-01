@@ -41,8 +41,10 @@ from dotenv import load_dotenv
 
 from src.onedrive_upload import (
     download_file,
+    download_file_site,
     ensure_folder,
     get_token,
+    resolve_site_id,
     upload_file,
 )
 from src.scorecard_email import (
@@ -812,6 +814,14 @@ def _build_carried_forward(items: list) -> str:
 
 _ACC_FOLDER = "Safety"
 
+# Accountability Log.xlsx itself lives in a SharePoint document library (not
+# personal OneDrive, unlike everything else under _ACC_FOLDER) since it's
+# written by an external Power Automate flow off a Microsoft Form. Site
+# drives are addressed by site-id in Graph, resolved once per run.
+_ACC_LOG_SITE_HOST = "xfreightnet.sharepoint.com"
+_ACC_LOG_SITE_PATH = "/sites/DispatchFiles"
+_ACC_LOG_FOLDER = "Safety"  # relative to the site's default "Shared Documents" library
+
 
 def _acc_onedrive_path(d: datetime.date) -> str:
     return f"{_ACC_FOLDER}/accountability-{d.isoformat()}.json"
@@ -1338,7 +1348,8 @@ def _load_accountability_log(
     cdl_dates: dict[str, datetime.date] = {}
     dot_dates: dict[str, datetime.date] = {}
     try:
-        raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
+        site_id = resolve_site_id(tok, _ACC_LOG_SITE_HOST, _ACC_LOG_SITE_PATH)
+        raw = download_file_site(tok, site_id, f"{_ACC_LOG_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
         df.columns = [str(c).strip().lower() for c in df.columns]
