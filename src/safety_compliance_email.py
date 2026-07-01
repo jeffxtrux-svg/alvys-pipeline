@@ -692,7 +692,10 @@ def _build_action_items(m: dict, samsara: dict | None, samba, equipment,
         if _sup("Safety Event — Coaching Needed", driver=drv):
             continue
         n     = c.get("events", 1)
-        types = ", ".join(c.get("types") or []) or "safety event"
+        # type_events carries each occurrence's own date/time (e.g.
+        # "Harsh Brake — 6/28 2:15pm"); falls back to bare type names for
+        # older cached data that doesn't have it yet.
+        types = ", ".join(c.get("type_events") or c.get("types") or []) or "safety event"
         sevs  = ", ".join(c.get("severities") or []) or ""
         units = ", ".join(c.get("units") or []) or ""
         unit_note = f" on unit {units}" if units else ""
