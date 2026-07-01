@@ -5557,7 +5557,7 @@ def compute_drag_attribution(
 # ----------------------------------------------------------------------
 def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str,
                 alvys_ar=None, warnings=None, data_asof=None, rpm_trend=None, rpm_goal=None,
-                rpm_goal_trend=None, drag=None, margin_projection=None, uninvoiced=None,
+                rpm_goal_trend=None, fuel=None, drag=None, margin_projection=None, uninvoiced=None,
                 samba=None, alvys_drivers=None, dso_hist=None,
                 ontime=None, dh_trend=None, customer_rpm=None, equipment=None,
                 risk_watch_html: str = "", decision_grades_html: str = "",
@@ -5872,6 +5872,46 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         else:
             goal_note = _brief("Rate-per-mile cost is pending the QuickBooks P&amp;L this run "
                                "(office overhead comes from X-Trux + X-Linx Total Expenses).", "mute")
+
+    # X-Trux fuel cost — pulled DIRECT from the Alvys API (no Excel staging),
+    # via src.fuel_analytics.compute_fuel(). Rendered as its OWN adjacent
+    # section, not merged into the cost/mile tiles above: whether QuickBooks
+    # "Total Expenses" already includes fuel-card spend, and whether Driver
+    # Rate is gross or net of fuel deductions, are still unconfirmed — folding
+    # this number into the official cost-per-mile risks double-counting (see
+    # fuel_analytics.py module docstring). Renders nothing when fuel is
+    # unavailable (same fail-soft pattern as the goal tiles above).
+    f_ = fuel or {}
+    fuel_tiles = fuel_note = ""
+    if f_:
+        _nat = f_.get("national_diesel_price")
+        _vs_nat = f_.get("price_vs_national")
+        if _isnum(_vs_nat):
+            vs_pill = _pill(
+                (f"+{rpm(_vs_nat)} vs natl" if _vs_nat >= 0 else f"&minus;{rpm(abs(_vs_nat))} vs natl"),
+                ("warn" if _vs_nat > 0 else "good"), nowrap=False)
+        elif _isnum(_nat):
+            vs_pill = _pill(f"natl {rpm2(_nat)}/gal", "mute", nowrap=False)
+        else:
+            vs_pill = _pill("no national comp", "mute", nowrap=False)
+        hc = f_.get("high_cost_drivers") or []
+        threshold = f_.get("high_cost_threshold", 0.55)
+        cpm_pill = (_pill(f"{len(hc)} driver{'s' if len(hc) != 1 else ''} over {rpm(threshold)}",
+                          "bad" if hc else "good", nowrap=False))
+        fuel_tiles = (
+            _tile("Fuel spend &middot; MTD", money(f_.get("spend_mtd")), _pill("X-Trux &middot; direct API", "mute", nowrap=False))
+            + _tile("Gallons &middot; MTD", num(f_.get("gallons_mtd")), _pill("X-Trux", "mute"))
+            + _tile("Avg price / gal", rpm2(f_.get("avg_price_per_gallon")), vs_pill)
+            + _tile("Fuel cost / mile", rpm(f_.get("fuel_cost_per_mile")), cpm_pill))
+        if hc:
+            names = ", ".join(f"{d['driver']} ({rpm(d['cost_per_mile'])}/mi)" for d in hc[:3])
+            more = f" +{len(hc) - 3} more" if len(hc) > 3 else ""
+            fuel_msg = (f"{len(hc)} driver{'s' if len(hc) != 1 else ''} above the {rpm(threshold)}/mi "
+                       f"fuel-cost threshold this month: {names}{more}. Coaching cards posted to the "
+                       f"Safety &amp; Compliance Teams channel.")
+            fuel_note = _brief(fuel_msg, "warn")
+        else:
+            fuel_note = _brief("No drivers above the fuel-cost-per-mile threshold this month.", "good")
 
     # RPM synopsis — secondary bottom line explaining the direction, what's
     # driving it, and where the fleet needs to be. Appears beneath the goal tiles.
@@ -6539,6 +6579,8 @@ def build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara,
         + (f"{_section('X-Trux Rate-per-Mile Goal &middot; cost-out')}<tr>{goal_tiles}</tr>{goal_note}{rpm_synopsis}"
            + (f"<tr>{goal_trend_row}</tr>" if goal_trend_row else "")
            if goal_tiles else "")
+        + (f"{_section('X-Trux Fuel Cost &middot; direct from Alvys')}<tr>{fuel_tiles}</tr>{fuel_note}"
+           if fuel_tiles else "")
         + f"{_section('X-Linx Overview')}<tr>{xlinx_tiles}</tr>"
         + (f"{_section('AR reconciliation &mdash; QuickBooks vs Alvys &middot; X-Trux + X-Linx')}<tr>{recon_row}</tr>"
            f"{_brief(recon_note, recon['kind'])}"
@@ -8242,7 +8284,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
                rpm_trend=None, rpm_goal=None, rpm_goal_trend=None, samba=None, drag=None,
                margin_projection=None, alvys_drivers=None, equipment=None,
                dso_hist=None, avg_fuel_price=None, ontime=None, dh_trend=None,
-               customer_rpm=None, csa=None, refresh_status=None) -> str:
+               customer_rpm=None, csa=None, refresh_status=None, fuel=None) -> str:
     date_str = datetime.now().strftime("%A, %B %d, %Y")
     # Phase 2B — Risk Watch strip: read the machine-readable signal
     # definitions from Karpathy-Wiki/wiki/risk-signals.yml, evaluate each
@@ -8460,9 +8502,9 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
             # The recon_note above carries forward "Variance details on pg X"
             # / "Full AR reconciliation on pg Y and Z" cross-references that
             # auto-resolve to whatever physical pages the targets land on.
-            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, forecast_grades_html=forecast_grades_html, retro_html=retro_html, retro_patterns_html=retro_patterns_html, market_context_html=market_context_html, part='overview'))}{pb}"
+            f"{wrap(note + build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, fuel=fuel, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, risk_watch_html=risk_watch_html, decision_grades_html=decision_grades_html, forecast_grades_html=forecast_grades_html, retro_html=retro_html, retro_patterns_html=retro_patterns_html, market_context_html=market_context_html, part='overview'))}{pb}"
             f"{wrap(_strip(13) + build_page8(qb_ar, alvys_ar, date_str))}{pb}"
-            f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
+            f"{wrap(build_page1(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, date_str, alvys_ar=alvys_ar, warnings=warnings, data_asof=data_asof, rpm_trend=rpm_trend, rpm_goal=rpm_goal, rpm_goal_trend=rpm_goal_trend, fuel=fuel, drag=drag, margin_projection=margin_projection, uninvoiced=uninvoiced, samba=samba, alvys_drivers=alvys_drivers, dso_hist=dso_hist, ontime=ontime, dh_trend=dh_trend, customer_rpm=customer_rpm, equipment=equipment, part='rest'))}{pb}"
             # Logical page ordering (function names build_page<N> kept
             # stable for git history; the integer page-number arg to
             # _header()/_strip() is just an anchor id consumed by
@@ -8529,7 +8571,7 @@ def build_html(alvys, alvys_entities, qb_pnl, qb_ar, ar_hist, ap_hist, samsara, 
 # ----------------------------------------------------------------------
 def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                  alvys_pipeline_sheets=None, data_asof=None, sambasafety_sheets=None,
-                 dso_hist_sheets=None, refresh_status=None) -> str:
+                 dso_hist_sheets=None, refresh_status=None, fuel=None) -> str:
     alvys = compute_alvys(alvys_sheets) if alvys_sheets else None
     alvys_entities = compute_alvys_entities(
         alvys_sheets, pipeline_sheets=alvys_pipeline_sheets
@@ -8583,7 +8625,8 @@ def build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sh
                       margin_projection=margin_projection, alvys_drivers=alvys_drivers,
                       equipment=equipment, dso_hist=dso_hist,
                       avg_fuel_price=avg_fuel_price, ontime=ontime, dh_trend=dh_trend,
-                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status)
+                      customer_rpm=customer_rpm, csa=csa, refresh_status=refresh_status,
+                      fuel=fuel)
     # Write today's snapshot for tomorrow's trend-aware action items.
     # The Karpathy-Wiki commit step in the workflow picks it up automatically.
     try:
@@ -9082,10 +9125,41 @@ def main() -> int:
     # updated (OneDrive file mtime) + its latest refresh-workflow run. Fail-soft.
     refresh_status = compute_refresh_status(token, upn, alvys_share=alvys_share, qb_dir=qb_dir,
                                             samsara_path=samsara_path, samba_path=samba_path)
+
+    # Fuel cost — pulled DIRECT from the Alvys API (no Excel staging), via
+    # src.fuel_analytics. Optional: ALVYS_CLIENT_ID/SECRET unset just means no
+    # fuel section this run, same fail-soft pattern as every other source
+    # above. Informational only — NOT merged into the RPM goal's cost-per-mile
+    # (see fuel_analytics.py module docstring for the open accounting
+    # questions that gate that merge).
+    fuel = None
+    alvys_client_id = os.environ.get("ALVYS_CLIENT_ID")
+    alvys_client_secret = os.environ.get("ALVYS_CLIENT_SECRET")
+    if alvys_client_id and alvys_client_secret:
+        try:
+            from zoneinfo import ZoneInfo
+            from src.alvys_client import AlvysClient
+            from src.fuel_analytics import fetch_and_compute_fuel, read_national_diesel_price
+            alvys_client = AlvysClient(alvys_client_id, alvys_client_secret)
+            now_ct = datetime.now(ZoneInfo("America/Chicago"))
+            fuel_start = (now_ct.replace(day=1) - _dt.timedelta(days=2)).strftime("%Y-%m-%d")
+            fuel = fetch_and_compute_fuel(
+                alvys_client, fuel_start, now=now_ct,
+                national_diesel_price=read_national_diesel_price(),
+            )
+            if fuel:
+                log.info("Fuel: $%.2f MTD spend, $%.3f/mi fleet avg, %d high-cost driver(s)",
+                         fuel.get("spend_mtd", 0), fuel.get("fuel_cost_per_mile") or 0,
+                         len(fuel.get("high_cost_drivers") or []))
+        except Exception as exc:
+            log.warning("Fuel analytics fetch failed — skipping fuel section: %s", exc)
+    else:
+        log.info("ALVYS_CLIENT_ID/SECRET not set — skipping fuel section.")
+
     html = build_report(alvys_sheets, pnl_sheets, ar_sheets, ar_hist_sheets, ap_hist_sheets, samsara_sheets, missing,
                         alvys_pipeline_sheets=alvys_pipeline_sheets, data_asof=data_asof,
                         sambasafety_sheets=samba_sheets, dso_hist_sheets=dso_hist_sheets,
-                        refresh_status=refresh_status)
+                        refresh_status=refresh_status, fuel=fuel)
     # Pre-send review — two layers:
     #   1. scorecard_lint  — rule-based, always on, catches known regressions
     #   2. scorecard_review — LLM-based (Claude), opt-in via ANTHROPIC_API_KEY,

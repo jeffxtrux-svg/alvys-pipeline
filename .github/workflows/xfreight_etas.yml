@@ -31,6 +31,14 @@
 #   TEAMS_ETA_WEBHOOK     — Power Automate webhook URL (optional); posts an Adaptive
 #                           Card to Teams when loads go 45+ min late, updates on each
 #                           state change, and sends an all-clear when all loads clear
+#   TEAMS_ETA_MENTION_EMAILS (optional) — comma-separated emails @mentioned (real Teams
+#                           ping) on the late card and the 90-min-still-late escalation
+#                           card. Default "dan@xfreight.net,jackson@xfreight.net".
+#                           NOTE: resolving an email to a Teams identity needs Graph
+#                           "User.Read.All" (Application permission, admin-consented)
+#                           on the AZURE_CLIENT_ID app registration. If that scope isn't
+#                           granted, resolution fails soft per-user (logged as a
+#                           warning) and the card still posts, just without a real ping.
 
 name: XFreight ETAs (every 30 min)
 
@@ -114,3 +122,43 @@ jobs:
           MAPBOX_TOKEN:        ${{ secrets.MAPBOX_TOKEN }}
           TEAMS_ETA_WEBHOOK:   ${{ secrets.TEAMS_ETA_WEBHOOK }}
         run: python -m src.xfreight_etas
+
+      - name: Post failure alert to Teams
+        if: failure() && env.TEAMS_ETA_WEBHOOK != ''
+        env:
+          TEAMS_ETA_WEBHOOK: ${{ secrets.TEAMS_ETA_WEBHOOK }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests, datetime
+          webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
+          if not webhook:
+              raise SystemExit(0)
+          run_url = (f"https://github.com/{os.environ.get('GITHUB_REPOSITORY','')}"
+                     f"/actions/runs/{os.environ.get('GITHUB_RUN_ID','')}")
+          card = {
+              "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+              "type": "AdaptiveCard",
+              "version": "1.4",
+              "body": [
+                  {"type": "TextBlock",
+                   "text": "🚨 XFreight ETAs — Workflow Failed",
+                   "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
+                  {"type": "TextBlock",
+                   "text": (f"The ETA tracker failed at "
+                            f"{datetime.datetime.utcnow().strftime('%I:%M %p UTC')}. "
+                            "The OneDrive HTML has NOT been updated this cycle. "
+                            "Check Actions for details."),
+                   "size": "Small", "wrap": True},
+                  {"type": "ActionSet",
+                   "actions": [{"type": "Action.OpenUrl",
+                                "title": "View Run", "url": run_url}]},
+              ],
+          }
+          payload = {
+              "type": "message",
+              "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
+                               "content": card}],
+          }
+          resp = requests.post(webhook, json=payload, timeout=15)
+          print(f"Teams failure alert: HTTP {resp.status_code}")
+          EOF

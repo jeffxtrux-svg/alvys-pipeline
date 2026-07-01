@@ -29,7 +29,8 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.scorecard_email import compute_margin_projection, _working_days_in_month  # noqa: E402
+from src.scorecard_email import (compute_margin_projection,  # noqa: E402
+                                 _working_days_in_month, _working_days_elapsed)
 
 DAYS = 80  # default trailing working-day window
 
@@ -60,10 +61,15 @@ def test_empty_inputs_return_empty_dict():
 
 
 def test_basic_projection_math():
-    # Run-rate model:
-    #   daily_run_rate    = trailing_revenue / DAYS (80 working days)
+    # Run-rate model (current contract — MTD revenue pace once the month has
+    # enough working days behind it):
+    #   if working_days_elapsed >= 5 and settled MTD revenue > 0:
+    #       daily_run_rate = settled_mtd_revenue / working_days_elapsed
+    #   else (early month):
+    #       daily_run_rate = trailing_revenue / DAYS (80 working days)
     #   projected_revenue = daily_run_rate * working_days_in_month
-    #   projected_margin  = projected_revenue * trailing_margin_pct (>= settled floor)
+    #   projected_margin  = projected_revenue * MTD margin %,
+    #                       floored at settled_mtd_revenue * MTD margin %
     now = _now()
     # 5 settled MTD loads (rev 5000 / cost 3500 = 30% margin) on the 1st.
     rows = [_row("X-Trux", pd.Timestamp(now.year, now.month, 1), 5000, 3500) for _ in range(5)]
@@ -78,14 +84,21 @@ def test_basic_projection_math():
     assert round(xt["settled_mtd_margin"], 2) == 5 * 1500
     assert round(xt["trailing_margin_pct"], 4) == 0.30
 
-    # All 55 loads are settled and inside the trailing window.
-    t_rev = 55 * 5000
     wdim = _working_days_in_month(now.year, now.month)
-    expected_proj_rev = (t_rev / DAYS) * wdim
+    wd_elapsed = _working_days_elapsed(now)
+    s_rev = 5 * 5000          # settled MTD revenue
+    t_rev = 55 * 5000         # trailing-window revenue (all 55 settled loads)
+    # MTD pace once >= 5 working days have elapsed; trailing pace before that.
+    if wd_elapsed >= 5 and s_rev > 0:
+        expected_proj_rev = (s_rev / wd_elapsed) * wdim
+    else:
+        expected_proj_rev = (t_rev / DAYS) * wdim
     assert abs(xt["projected_revenue"] - expected_proj_rev) < 0.01
 
-    # Projected margin = projected_revenue * 30%, floored at settled MTD margin.
-    expected_pm = max(expected_proj_rev * 0.30, 5 * 1500)
+    # Projected margin = projected_revenue * MTD margin % (30%), floored at
+    # settled_mtd_revenue * MTD margin % (= what this month has already earned).
+    applied_pct = 0.30
+    expected_pm = max(expected_proj_rev * applied_pct, s_rev * applied_pct)
     assert round(xt["projected_margin"], 2) == round(expected_pm, 2)
 
 

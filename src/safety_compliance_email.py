@@ -951,12 +951,20 @@ def _build_accountability_structured(
     equipment,
     alvys_drivers=None,
     samsara_sheets=None,
+    fuel=None,
 ) -> tuple[list[dict], list[dict]]:
     """Build structured accountability items for Teams Adaptive Cards.
 
     Returns (audra_items, ops_items).  Each item is a dict with keys:
         category, severity, driver, unit, detail, prompt
     This mirrors the HTML built by _build_action_items() but in machine-readable form.
+
+    fuel: optional src.fuel_analytics.compute_fuel() result. Drivers in
+    fuel["high_cost_drivers"] (>$0.55/mi, pulled direct from Alvys fuel
+    transactions + trip mileage, no Excel staging) become ops-only coaching
+    items — Jackson + Dan own driver fuel behavior per the responsibility
+    map. Reuses the SAME suppression/persistence registry as every other
+    category here; no new plumbing needed.
     """
     detail     = (samsara or {}).get("detail", {}) or {}
     fleet      = (samsara or {}).get("fleet", {}) or {}
@@ -1334,6 +1342,28 @@ def _build_accountability_structured(
             "detail":   f"{pct_7d:.1f}% time speeding last 7d",
             "prompt":   "Has driver been coached on speeding? What corrective action was taken?",
         })
+
+    # High fuel cost per mile — ops only (Jackson + Dan own driver fuel behavior).
+    # fuel comes straight from src.fuel_analytics.compute_fuel() (direct Alvys
+    # API, no Excel staging). Informational metric only — NOT the official
+    # cost-per-mile/RPM-goal number; see fuel_analytics.py module docstring.
+    if fuel and fuel.get("high_cost_drivers"):
+        from src.fuel_analytics import fuel_talk_track
+        threshold = fuel.get("high_cost_threshold", 0.55)
+        fleet_avg = fuel.get("fuel_cost_per_mile")
+        for r in fuel["high_cost_drivers"]:
+            cpm = r.get("cost_per_mile")
+            if not _isnum(cpm):
+                continue
+            ops_items.append({
+                "category": "High Fuel Cost / Mile",
+                "severity": "medium",
+                "driver":   r.get("driver") or None,
+                "unit":     r.get("truck") or None,
+                "detail":   (f"${cpm:.2f}/mi vs ${threshold:.2f}/mi threshold "
+                            f"(${r.get('spend', 0):,.0f} / {r.get('gallons', 0):,.0f} gal MTD)"),
+                "prompt":   fuel_talk_track(cpm, threshold, fleet_avg=fleet_avg),
+            })
 
     return audra_items, ops_items
 
@@ -3047,6 +3077,34 @@ def main() -> int:
     else:
         log.warning("Alvys Pipeline.xlsx not found — equipment pages will show placeholder.")
 
+    # Fuel cost analytics — pulled DIRECT from the Alvys API (no Excel staging),
+    # via src.fuel_analytics. Optional: ALVYS_CLIENT_ID/SECRET unset just means
+    # no fuel coaching items this run, same fail-soft pattern as the rest of
+    # this function. Informational only — not folded into any official
+    # cost-per-mile figure (see fuel_analytics.py module docstring).
+    fuel = None
+    alvys_client_id = os.environ.get("ALVYS_CLIENT_ID")
+    alvys_client_secret = os.environ.get("ALVYS_CLIENT_SECRET")
+    if alvys_client_id and alvys_client_secret:
+        try:
+            from src.alvys_client import AlvysClient
+            from src.fuel_analytics import fetch_and_compute_fuel, read_national_diesel_price
+            alvys_client = AlvysClient(alvys_client_id, alvys_client_secret)
+            now_ct = datetime.datetime.now(ZoneInfo("America/Chicago"))
+            fuel_start = (now_ct.replace(day=1) - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
+            fuel = fetch_and_compute_fuel(
+                alvys_client, fuel_start, now=now_ct,
+                national_diesel_price=read_national_diesel_price(),
+            )
+            if fuel:
+                log.info("Fuel: $%.2f MTD spend, $%.3f/mi fleet avg, %d high-cost driver(s)",
+                         fuel.get("spend_mtd", 0), fuel.get("fuel_cost_per_mile") or 0,
+                         len(fuel.get("high_cost_drivers") or []))
+        except Exception as exc:
+            log.warning("Fuel analytics fetch failed — skipping fuel coaching items: %s", exc)
+    else:
+        log.info("ALVYS_CLIENT_ID/SECRET not set — skipping fuel coaching items.")
+
     # Read yesterday's scores for trend comparison (missing = first run, no items generated)
     yesterday = today - datetime.timedelta(days=1)
     prev_scores = _read_prev_scores(tok, upn, yesterday)
@@ -3055,7 +3113,7 @@ def main() -> int:
     # Build structured accountability items (for Teams cards + history)
     m_dict = compute_metrics(samsara)
     audra_items, ops_items = _build_accountability_structured(
-        m_dict, samsara, samba, equipment, alvys_drivers, samsara_sheets)
+        m_dict, samsara, samba, equipment, alvys_drivers, samsara_sheets, fuel=fuel)
     log.info("Accountability items: %d audra, %d ops", len(audra_items), len(ops_items))
 
     # Load history for carry-forward + occurrence counting

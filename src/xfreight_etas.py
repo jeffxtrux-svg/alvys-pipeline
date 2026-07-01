@@ -28,6 +28,12 @@ Env vars (all required unless noted):
                                        Card when loads go 45+ min late, updates when
                                        the load set changes, and sends an all-clear
                                        card when all loads deliver
+  TEAMS_ETA_MENTION_EMAILS (optional) — comma-separated emails @mentioned on the late
+                                       card (real Teams ping, not just a channel post)
+                                       and on the 90-min-still-late escalation card.
+                                       Default "dan@xfreight.net,jackson@xfreight.net".
+                                       Resolved to Teams identity via Graph; an email
+                                       that can't be resolved is silently omitted.
   ETA_ONEDRIVE_FOLDER (optional)     — default "ETA"
 """
 
@@ -37,6 +43,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -93,6 +100,26 @@ def _fmt_dt_ct(dt: datetime | None) -> str:
     return dt.astimezone(CT).strftime("%a %b %d, %I:%M%p").replace("AM", "am").replace("PM", "pm")
 
 
+def _fmt_date_local(dt: datetime | None) -> str:
+    """Date only (no time) in the timestamp's OWN zone, e.g. 'Mon Jun 30'.
+
+    For date-only appointments: the receiver gave a calendar date in their local
+    zone, so converting to Central could flip the day (an Eastern midnight is the
+    prior evening in CT). Format the date as written instead of converting.
+    """
+    if dt is None:
+        return ""
+    return dt.strftime("%a %b %d")
+
+
+def _is_midnight(iso: str | None) -> bool:
+    """True when an ISO timestamp falls exactly on midnight in its own offset
+    (i.e. it carries a date but no time-of-day). Alvys emits date-only stop
+    windows as Begin==End==00:00:00 in the stop's local zone."""
+    dt = _parse_iso(iso)
+    return dt is not None and (dt.hour, dt.minute, dt.second) == (0, 0, 0)
+
+
 def _fmt_delta(minutes: int | None) -> tuple[str, str]:
     """Return (display_text, css_color) for the Delta column."""
     if minutes is None:
@@ -106,15 +133,72 @@ def _fmt_delta(minutes: int | None) -> tuple[str, str]:
     return (f"{minutes} min early", INK)
 
 
+def _fmt_appt_age(appt_dt: datetime | None, now: datetime) -> str:
+    """Human 'how long ago' for a past appointment, e.g. '6d ago' / '18h ago'."""
+    if appt_dt is None:
+        return ""
+    hrs = (now - appt_dt).total_seconds() / 3600
+    if hrs < 0:
+        return ""
+    if hrs >= 48:
+        return f"{int(round(hrs / 24))}d ago"
+    return f"{int(round(hrs))}h ago"
+
+
+def _is_appt_stale(appt_dt: datetime | None, now: datetime) -> bool:
+    """True when an appointment is more than _STALE_APPT_HOURS in the past.
+
+    A stale appt means the truck is almost certainly already delivered (with
+    ArrivedAt unset in Alvys) or the appt was never rescheduled — so the precise
+    "Xh late" figure is a data gap, not a live tracking event.
+    """
+    return bool(appt_dt) and appt_dt < now - timedelta(hours=_STALE_APPT_HOURS)
+
+
 # ----------------------------------------------------------------------
 # HOS helpers
 # ----------------------------------------------------------------------
 _HOS_REST_SECONDS = 10 * 3600  # federal property-carrier mandatory break
 
 
+def _norm_name(name: str | None) -> str:
+    """Normalize a person name for matching: lowercase, drop punctuation,
+    digits and common suffixes, collapse whitespace. 'John A. Smith Jr.' →
+    'john a smith'."""
+    s = (name or "").lower()
+    s = re.sub(r"[^a-z\s]", " ", s)                      # drop punctuation/digits
+    s = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", " ", s)        # drop generational suffixes
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _name_keys(name: str | None) -> list[str]:
+    """Match keys for a name, most specific first: full normalized name, then
+    first+last (drops middle names/initials so 'John A Smith' matches 'John
+    Smith'). Deliberately never falls back to last-name-only — that would risk
+    matching the wrong driver and a wrong HOS clock is worse than none."""
+    n = _norm_name(name)
+    if not n:
+        return []
+    keys = [n]
+    parts = n.split()
+    if len(parts) >= 2:
+        fl = f"{parts[0]} {parts[-1]}"
+        if fl != n:
+            keys.append(fl)
+    return keys
+
+
 def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
-    """{driver_name_lower: remaining_drive_seconds} from Samsara HOS clocks."""
-    idx: dict[str, int] = {}
+    """{match_key: remaining_drive_seconds} from Samsara HOS clocks.
+
+    Keyed by the full normalized driver name AND, when unambiguous, a
+    first+last alias — so an Alvys name carrying a middle name/initial still
+    matches the Samsara clock. Ambiguous first+last aliases (two drivers who
+    share them) are dropped rather than risk a wrong match.
+    """
+    by_full: dict[str, int] = {}
+    fl_owners: dict[str, set] = {}   # first_last -> set of distinct full names
+    fl_value: dict[str, int] = {}
     for rec in hos_clocks:
         drv = rec.get("driver") or {}
         name = (drv.get("name") or "").strip()
@@ -126,17 +210,36 @@ def _build_hos_index(hos_clocks: list[dict]) -> dict[str, int]:
                         or drive.get("remainingMs"))
         remaining_s = drive.get("remainingSeconds")
         if remaining_ms is not None:
-            idx[name.lower()] = int(remaining_ms) // 1000
+            val = int(remaining_ms) // 1000
         elif remaining_s is not None:
-            idx[name.lower()] = int(remaining_s)
+            val = int(remaining_s)
+        else:
+            continue
+        full = _norm_name(name)
+        if not full:
+            continue
+        by_full[full] = val
+        parts = full.split()
+        if len(parts) >= 2:
+            fl = f"{parts[0]} {parts[-1]}"
+            fl_owners.setdefault(fl, set()).add(full)
+            fl_value[fl] = val
+    idx = dict(by_full)
+    for fl, owners in fl_owners.items():
+        if len(owners) == 1 and fl not in idx:   # unambiguous, doesn't shadow a full name
+            idx[fl] = fl_value[fl]
     return idx
 
 
 def _hos_remaining(hos_index: dict[str, int], driver_name: str) -> int | None:
-    """Return remaining drive seconds for a driver, or None if not found."""
+    """Return remaining drive seconds for a driver, or None if not found.
+    Tries the full normalized name, then an unambiguous first+last alias."""
     if not driver_name or not hos_index:
         return None
-    return hos_index.get(driver_name.lower().strip())
+    for key in _name_keys(driver_name):
+        if key in hos_index:
+            return hos_index[key]
+    return None
 
 
 def _fmt_hos(remaining_seconds: int | None) -> str:
@@ -166,12 +269,27 @@ def _remaining_undelivered_stops(load: dict) -> list[dict]:
     return [s for s in (load.get("Stops") or []) if not s.get("ArrivedAt")]
 
 
+def _is_date_only_window(begin: str | None, end: str | None) -> bool:
+    """True when a stop window carries a date but no real time-of-day.
+
+    Alvys returns these as Begin==End at midnight (also seen as End-only at
+    midnight). There is no hard time deadline — the receiver gave a date — so
+    tracking lateness against the midnight boundary would make a same-day
+    daytime delivery look hours "late".
+    """
+    if not end or not _is_midnight(end):
+        return False
+    # End is midnight → date-only, unless Begin supplies a real daytime time.
+    return (not begin) or (begin == end) or _is_midnight(begin)
+
+
 def _stop_appt_iso(stop: dict) -> str | None:
     """ISO string used for delta calculation (ETA vs. deadline).
     - APPT  → AppointmentDate (fixed time; truck is late if ETA > appt)
     - WINDOW → StopWindow.End (late only when truck misses the window close)
     - FCFS with End → StopWindow.End (receiver closes at End; arriving later = late)
     - FCFS with no End → None (open-ended FCFS; no hard deadline to track)
+    - Date-only window (Begin==End at midnight) → None (no hard time deadline)
     """
     stype = (stop.get("ScheduleType") or "").upper()
     window = stop.get("StopWindow") or {}
@@ -179,6 +297,9 @@ def _stop_appt_iso(stop: dict) -> str | None:
         return stop.get("AppointmentDate")
     end = window.get("End")
     begin = window.get("Begin")
+    # Date-only window — a date with no time-of-day carries no hard deadline.
+    if _is_date_only_window(begin, end):
+        return None
     if end:
         # Both WINDOW and FCFS: if a window closes, arriving after close = late.
         return end
@@ -191,14 +312,28 @@ def _stop_appt_iso(stop: dict) -> str | None:
 
 def _stop_window_begin_iso(stop: dict) -> str | None:
     """Window open time for display purposes (shown as 'Begin – End' in Appt column).
-    Only returned when End also exists, so the display always shows a complete range."""
+    Only returned when End also exists AND the window is a real time range — never
+    for a date-only window (would render a degenerate '12:00am – 12:00am') or a
+    single fixed time (Begin==End)."""
     stype = (stop.get("ScheduleType") or "").upper()
     if stype == "APPT":
         return None
     window = stop.get("StopWindow") or {}
-    # Show Begin only when End is also present — avoids a half-range like "8am –"
-    if window.get("End") and window.get("Begin"):
-        return window.get("Begin")
+    begin, end = window.get("Begin"), window.get("End")
+    if _is_date_only_window(begin, end):
+        return None
+    # Real range only: End present and Begin is a distinct earlier time.
+    if end and begin and begin != end:
+        return begin
+    return None
+
+
+def _stop_date_only_iso(stop: dict) -> str | None:
+    """For a date-only window, the calendar date to DISPLAY (no time deadline)."""
+    window = stop.get("StopWindow") or {}
+    begin, end = window.get("Begin"), window.get("End")
+    if _is_date_only_window(begin, end):
+        return end or begin
     return None
 
 
@@ -281,6 +416,8 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
         "consignee_state": _g(last_stop, "Address", "State") or "",
         "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
         "appt_window_begin_dt": _parse_iso(_stop_window_begin_iso(last_stop)),
+        # Date-only window (date, no time deadline): the date to display.
+        "_date_only_dt": _parse_iso(_stop_date_only_iso(last_stop)),
         "appt_stype": _stype,          # "APPT" / "WINDOW" / "FCFS" / "—"
         # For FCFS-with-Begin-only: the dock open time, shown as "FCFS 8:00am".
         # Distinct from appt_window_begin_dt (which is the left side of "Begin – End").
@@ -303,8 +440,16 @@ def _extract_load_row(load: dict, trucks_by_id: dict, trips_by_load: dict,
 # Samsara location join
 # ----------------------------------------------------------------------
 def _locations_by_truck_name(samsara_locations: list[dict]) -> dict:
-    """{truck_name: {lat, lng, ts}} from Samsara /fleet/vehicles/locations."""
+    """{truck_name: {lat, lng, ts}} from Samsara /fleet/vehicles/locations.
+
+    Also adds an unambiguous digits-only alias per vehicle (so an Alvys truck
+    number '42187' matches a Samsara name like 'Truck 42187' or '#42187').
+    Aliases never shadow an exact name and are dropped when two vehicles share
+    the same digits.
+    """
     out: dict[str, dict] = {}
+    digit_owners: dict[str, set] = {}
+    digit_val: dict[str, dict] = {}
     for rec in samsara_locations:
         name = rec.get("name") or rec.get("vehicle", {}).get("name")
         loc = rec.get("location") or {}
@@ -312,8 +457,28 @@ def _locations_by_truck_name(samsara_locations: list[dict]) -> dict:
         lng = loc.get("longitude")
         ts = _parse_iso(loc.get("time") or rec.get("time"))
         if name and lat is not None and lng is not None:
-            out[str(name).strip()] = {"lat": float(lat), "lng": float(lng), "ts": ts}
+            key = str(name).strip()
+            val = {"lat": float(lat), "lng": float(lng), "ts": ts}
+            out[key] = val
+            digits = re.sub(r"\D", "", key)
+            if digits:
+                digit_owners.setdefault(digits, set()).add(key)
+                digit_val[digits] = val
+    for digits, owners in digit_owners.items():
+        if len(owners) == 1 and digits not in out:
+            out[digits] = digit_val[digits]
     return out
+
+
+def _lookup_truck_gps(locs_by_truck: dict, truck_name) -> dict | None:
+    """Find a truck's GPS by exact name, then by its digits-only alias."""
+    if not truck_name:
+        return None
+    hit = locs_by_truck.get(str(truck_name).strip())
+    if hit:
+        return hit
+    digits = re.sub(r"\D", "", str(truck_name))
+    return locs_by_truck.get(digits) if digits else None
 
 
 # ----------------------------------------------------------------------
@@ -359,14 +524,89 @@ def _mapbox_duration_seconds(
 # ----------------------------------------------------------------------
 _LATE_THRESHOLD_MIN = -45
 _TEAMS_STATE_FILE = "eta_state.json"
+_ETA_LOG_FILE = "eta_log.csv"
+_ETA_LOG_KEEP_DAYS = 90   # rows older than this are pruned on each run
 _GPS_STALE_MINUTES = 45  # GPS fix older than this is treated as unreliable
+# An appointment more than this many hours in the past is treated as stale: the
+# truck is almost certainly already delivered with ArrivedAt unset in Alvys, or
+# the appt was never rescheduled after the load slipped. Either way the precise
+# "Xh late" figure is misleading, so these are flagged "verify delivery" instead
+# of firing a hard late alert (a delta of −45 min on a same-day appt is real;
+# −9000 min on a 6-day-old appt is a data gap, not a live tracking event).
+_STALE_APPT_HOURS = 24
+
+# @mention support — pings specific people directly in Teams (not just a
+# passive channel post) when a load first goes late, and again if it's STILL
+# late past the escalation threshold without resolving. Configurable via env
+# so the on-call roster can change without a code edit (same hardcoded-literal-
+# fallback pattern used for brief recipients elsewhere in this pipeline).
+_MENTION_EMAILS_DEFAULT = "dan@xfreight.net,jackson@xfreight.net"
+# Minutes a load can sit on the late list, unchanged, before a separate
+# escalation card fires. The main card only re-posts when the late SET or an
+# appointment changes — a load stuck unchanged for hours would otherwise never
+# get a second nudge, so escalation is timed independently of that.
+_ESCALATION_THRESHOLD_MIN = 90
+
+
+# ----------------------------------------------------------------------
+# Teams alert — @mention support (pings specific people, not just a channel post)
+# ----------------------------------------------------------------------
+def _resolve_mention_users(token: str, emails: list[str]) -> list[dict]:
+    """Resolve email/UPN -> {id, name} via Graph for @mention entities.
+
+    Fail-soft PER USER: an email that can't be resolved (missing Graph
+    permission, typo, account not found) is simply omitted from the mention
+    list rather than aborting the card post — worst case the card goes out
+    with fewer/no real pings instead of not going out at all.
+    """
+    resolved: list[dict] = []
+    for email in emails:
+        email = (email or "").strip()
+        if not email:
+            continue
+        try:
+            resp = requests.get(
+                f"{_GRAPH_BASE}/users/{email}",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"$select": "id,displayName"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                u = resp.json()
+                resolved.append({"id": u["id"], "name": u.get("displayName") or email})
+            else:
+                log.warning("Teams mention: could not resolve %s (HTTP %d) — "
+                            "omitting from @mention", email, resp.status_code)
+        except Exception as exc:
+            log.warning("Teams mention: resolving %s failed: %s — omitting from @mention",
+                        email, exc)
+    return resolved
+
+
+def _mention_block(users: list[dict]) -> tuple[dict | None, list[dict]]:
+    """Build (TextBlock, msteams.entities) that pings `users` when the card
+    posts. Returns (None, []) when no users resolved, so callers can skip the
+    block entirely instead of rendering an empty/broken mention line."""
+    if not users:
+        return None, []
+    mention_text = "🔔 " + " ".join(f"<at>{u['name']}</at>" for u in users) + " — needs a response"
+    block = {"type": "TextBlock", "text": mention_text, "wrap": True,
+             "size": "Small", "weight": "Bolder"}
+    entities = [{"type": "mention", "text": f"<at>{u['name']}</at>",
+                "mentioned": {"id": u["id"], "name": u["name"]}} for u in users]
+    return block, entities
 
 
 # ----------------------------------------------------------------------
 # Teams alert — shared card builder
 # ----------------------------------------------------------------------
-def _build_teams_card(late_rows: list[dict]) -> dict:
-    """Build the Adaptive Card dict for the current set of late loads."""
+def _build_teams_card(late_rows: list[dict], mention_users: list[dict] | None = None) -> dict:
+    """Build the Adaptive Card dict for the current set of late loads.
+
+    mention_users: resolved via _resolve_mention_users — pings them directly
+    (e.g. Dan/Jackson) rather than relying on a passive channel post.
+    """
+    mention_block, entities = _mention_block(mention_users or [])
     body: list[dict] = [
         {"type": "TextBlock", "text": "⚠️ Drivers Running Late",
          "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
@@ -375,6 +615,8 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                  f"{datetime.now(CT):%I:%M %p CT}",
          "size": "Small", "spacing": "None", "wrap": True},
     ]
+    if mention_block:
+        body.append(mention_block)
     for idx, r in enumerate(sorted(late_rows, key=lambda x: x.get("delta_min") or 0)):
         mins_late = abs(r["delta_min"])
         hrs, m = divmod(mins_late, 60)
@@ -466,6 +708,7 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
         "type": "AdaptiveCard",
         "version": "1.4",
         "body": body,
+        "msteams": {"width": "Full", **({"entities": entities} if entities else {})},
     }
 
 
@@ -526,6 +769,7 @@ def _build_clear_card() -> dict:
                      f"{datetime.now(CT):%I:%M %p CT}",
              "size": "Small", "spacing": "None", "wrap": True},
         ],
+        "msteams": {"width": "Full"},
     }
 
 
@@ -546,11 +790,56 @@ def _build_resolved_card(resolved_load_nos: set[str]) -> dict:
                      "previous alert for this load is superseded.",
              "size": "Small", "color": "Good", "spacing": "None", "wrap": True},
         ],
+        "msteams": {"width": "Full"},
+    }
+
+
+def _build_escalation_card(escalated_rows: list[dict],
+                           mention_users: list[dict] | None = None) -> dict:
+    """Adaptive Card posted when a load has been on the late list for more
+    than _ESCALATION_THRESHOLD_MIN minutes with no resolution. The main late
+    card only re-posts on a SET or appointment CHANGE — a load stuck
+    unchanged for hours would otherwise never get a second nudge, so this
+    fires independently, once per load (see _sync_teams_webhook's
+    escalated_load_nos tracking)."""
+    mention_block, entities = _mention_block(mention_users or [])
+    body: list[dict] = [
+        {"type": "TextBlock", "text": "🔴 STILL LATE — NEEDS A RESPONSE",
+         "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
+    ]
+    if mention_block:
+        body.append(mention_block)
+    body.append({
+        "type": "TextBlock",
+        "text": (f"{len(escalated_rows)} load(s) have been behind schedule for "
+                f"{_ESCALATION_THRESHOLD_MIN}+ min with no resolution — as of "
+                f"{datetime.now(CT):%I:%M %p CT}"),
+        "size": "Small", "spacing": "None", "wrap": True,
+    })
+    for r in sorted(escalated_rows, key=lambda x: x.get("delta_min") or 0):
+        mins_late = abs(r.get("delta_min") or 0)
+        hrs, m = divmod(mins_late, 60)
+        late_str = f"{hrs}h {m}m late" if hrs else f"{m}m late"
+        dest = (f"{r.get('consignee_city', '')}, {r.get('consignee_state', '')}".strip(", ")
+                or r.get("consignee") or "—")
+        body.append({
+            "type": "TextBlock",
+            "text": (f"**Truck {r.get('truck_name', '—')}** — Load #{r.get('load_no') or '—'} "
+                    f"→ {dest} — **{late_str}**"),
+            "wrap": True, "spacing": "Small",
+        })
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": body,
+        "msteams": {"width": "Full", **({"entities": entities} if entities else {})},
     }
 
 
 def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str,
-                        late_rows: list[dict]) -> None:
+                        late_rows: list[dict],
+                        mention_users: list[dict] | None = None) -> None:
     """Post to the Teams webhook when the set of late loads changes OR an
     appointment is updated for a load that is already in the alerted set.
 
@@ -558,13 +847,22 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
     - Load(s) resolved → POST "✅ Resolved" card for those loads THEN updated list.
     - All late loads cleared → POST "✅ All loads back on schedule" card.
     - Appointment changed for an already-alerted load → POST updated card.
-    - Same late-load set + same appointments → skip (no card posted).
+    - Same late-load set + same appointments → no main card re-posted.
+    - A load that's been on the late list, unchanged, past
+      _ESCALATION_THRESHOLD_MIN minutes → separate one-time escalation card,
+      independent of whether the main card re-posted this run.
+
+    mention_users: resolved via _resolve_mention_users — @mentions them on the
+    main card AND any escalation card, so they're actually pinged rather than
+    relying on someone noticing a channel post.
 
     State is stored in OneDrive (eta_state.json) and persists across 30-min runs.
     """
     state = _load_teams_state(token, user_upn, folder)
     prev_load_nos = set(state.get("alerted_load_nos") or [])
     prev_appts: dict = state.get("alerted_appts") or {}
+    first_seen: dict = dict(state.get("load_first_seen") or {})
+    escalated: set = set(state.get("escalated_load_nos") or [])
 
     curr_load_nos = {str(r["load_no"]) for r in late_rows if r.get("load_no")}
     curr_appts = {
@@ -572,20 +870,23 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         for r in late_rows if r.get("load_no")
     }
 
+    now = datetime.now(timezone.utc)
+    # Carry forward first-seen timestamps for loads still on the list; stamp
+    # new ones with now. This is what lets escalation measure "how long has
+    # THIS load been late" independent of whether the main alert re-posted.
+    for ln in curr_load_nos:
+        first_seen.setdefault(ln, now.isoformat())
+    # Drop bookkeeping for loads no longer late.
+    for ln in list(first_seen):
+        if ln not in curr_load_nos:
+            first_seen.pop(ln, None)
+            escalated.discard(ln)
+
     # Detect appointment changes for loads that are in both sets
     appt_changed_loads = [
         ln for ln in curr_load_nos & prev_load_nos
         if curr_appts.get(ln) != prev_appts.get(ln)
     ]
-
-    if curr_load_nos == prev_load_nos and not appt_changed_loads:
-        log.info("Teams: late-load set unchanged (%d loads) — no card posted",
-                 len(curr_load_nos))
-        return
-
-    if appt_changed_loads:
-        log.info("Teams: appointment changed for load(s) %s — posting updated card",
-                 appt_changed_loads)
 
     resolved_loads = prev_load_nos - curr_load_nos
 
@@ -612,24 +913,168 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         log.info("Teams: posting resolved card for load(s) %s", sorted(resolved_loads))
         _post(_build_resolved_card(resolved_loads))
 
-    if curr_load_nos:
-        card = _build_teams_card(late_rows)
-        new_state: dict = {
-            "alerted_load_nos": sorted(curr_load_nos),
-            "alerted_appts": curr_appts,
-            "last_alerted": datetime.now(timezone.utc).isoformat(),
-        }
-        log_msg = "Teams: posted updated alert for %d late load(s)"
+    if curr_load_nos == prev_load_nos and not appt_changed_loads:
+        log.info("Teams: late-load set unchanged (%d loads) — no main alert re-posted",
+                 len(curr_load_nos))
     else:
-        card = _build_clear_card()
-        new_state = {}
-        log_msg = "Teams: posted all-clear notification (%d loads cleared)"
+        if appt_changed_loads:
+            log.info("Teams: appointment changed for load(s) %s — posting updated card",
+                     appt_changed_loads)
+        if curr_load_nos:
+            card = _build_teams_card(late_rows, mention_users)
+            log.info("Teams: posted updated alert for %d late load(s)", len(curr_load_nos))
+        else:
+            card = _build_clear_card()
+            log.info("Teams: posted all-clear notification (%d loads cleared)",
+                     len(prev_load_nos - curr_load_nos))
+        _post(card)
 
-    if not _post(card):
-        return
-    log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
-             else len(curr_load_nos))
+    # Escalation: loads that have been late past the threshold and haven't
+    # been escalated yet get a separate, one-time ping — fires regardless of
+    # whether the main card re-posted this run (see docstring).
+    escalation_rows = []
+    for r in late_rows:
+        ln = str(r.get("load_no") or "")
+        if not ln or ln not in first_seen or ln in escalated:
+            continue
+        seen_at = datetime.fromisoformat(first_seen[ln])
+        if (now - seen_at).total_seconds() / 60 >= _ESCALATION_THRESHOLD_MIN:
+            escalation_rows.append(r)
+            escalated.add(ln)
+
+    if escalation_rows:
+        log.info("Teams: escalating %d load(s) still late past %d min: %s",
+                 len(escalation_rows), _ESCALATION_THRESHOLD_MIN,
+                 [r.get("load_no") for r in escalation_rows])
+        _post(_build_escalation_card(escalation_rows, mention_users))
+
+    # Always persist — first_seen/escalated bookkeeping must survive even on
+    # runs where the main card didn't re-post, or escalation timing/dedup
+    # breaks on the next run.
+    new_state = {
+        "alerted_load_nos": sorted(curr_load_nos),
+        "alerted_appts": curr_appts,
+        "load_first_seen": first_seen,
+        "escalated_load_nos": sorted(escalated),
+        "last_alerted": now.isoformat(),
+    }
     _save_teams_state(token, user_upn, folder, new_state)
+
+
+# ----------------------------------------------------------------------
+# Historical ETA log
+# ----------------------------------------------------------------------
+def _append_eta_log(token: str, user_upn: str, folder: str,
+                    run_ts: datetime,
+                    rows_with_eta: list[dict],
+                    untracked: list[dict]) -> None:
+    """Append this run's load snapshots to a rolling CSV on OneDrive.
+
+    One row per load per run — both tracked (ETA computed) and untracked
+    (ETA blank, reason filled). Rows older than _ETA_LOG_KEEP_DAYS are
+    pruned on each write so the file stays bounded.
+
+    Columns: run_ts, load_no, truck, driver, consignee, consignee_city,
+             consignee_state, appt_iso, eta_iso, delta_min, late_45plus,
+             gps_stale, appt_stale, untracked, reason
+    """
+    import csv as _csv
+    import io as _io
+
+    _FIELDS = [
+        "run_ts", "load_no", "truck", "driver", "consignee",
+        "consignee_city", "consignee_state", "appt_iso", "eta_iso",
+        "delta_min", "late_45plus", "gps_stale", "appt_stale", "untracked", "reason",
+    ]
+
+    path = f"{folder}/{_ETA_LOG_FILE}"
+    url = f"{_GRAPH_BASE}/users/{user_upn}/drive/root:/{path}:/content"
+    cutoff = run_ts - timedelta(days=_ETA_LOG_KEEP_DAYS)
+
+    # Download and prune existing log
+    existing: list[dict] = []
+    try:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
+        if resp.status_code == 200:
+            reader = _csv.DictReader(_io.StringIO(resp.text))
+            for row in reader:
+                try:
+                    if datetime.fromisoformat(row["run_ts"]) >= cutoff:
+                        existing.append(row)
+                except (KeyError, ValueError):
+                    pass
+            log.info("ETA log: loaded %d existing rows (after 90d prune)", len(existing))
+        elif resp.status_code != 404:
+            log.warning("ETA log download HTTP %d — starting fresh", resp.status_code)
+    except Exception as exc:
+        log.warning("ETA log download failed: %s — starting fresh", exc)
+
+    # Build new rows for this run
+    run_ts_iso = run_ts.isoformat()
+    new_rows: list[dict] = []
+
+    for r in rows_with_eta:
+        delta = r.get("delta_min")
+        new_rows.append({
+            "run_ts": run_ts_iso,
+            "load_no": str(r.get("load_no") or ""),
+            "truck": str(r.get("truck_name") or ""),
+            "driver": str(r.get("driver_name") or ""),
+            "consignee": str(r.get("consignee") or ""),
+            "consignee_city": str(r.get("consignee_city") or ""),
+            "consignee_state": str(r.get("consignee_state") or ""),
+            "appt_iso": r["appt_dt"].isoformat() if r.get("appt_dt") else "",
+            "eta_iso": r["eta_dt"].isoformat() if r.get("eta_dt") else "",
+            "delta_min": str(delta) if delta is not None else "",
+            "late_45plus": "1" if (delta is not None and delta <= _LATE_THRESHOLD_MIN) else "0",
+            "gps_stale": "1" if r.get("gps_stale") else "0",
+            "appt_stale": "1" if r.get("appt_stale") else "0",
+            "untracked": "0",
+            "reason": "",
+        })
+
+    for r in untracked:
+        new_rows.append({
+            "run_ts": run_ts_iso,
+            "load_no": str(r.get("load_no") or ""),
+            "truck": str(r.get("truck") or ""),
+            "driver": str(r.get("driver") or ""),
+            "consignee": str(r.get("consignee") or ""),
+            "consignee_city": str(r.get("consignee_city") or ""),
+            "consignee_state": str(r.get("consignee_state") or ""),
+            "appt_iso": r["appt_dt"].isoformat() if r.get("appt_dt") else "",
+            "eta_iso": "",
+            "delta_min": "",
+            "late_45plus": "",
+            "gps_stale": "",
+            "appt_stale": "",
+            "untracked": "1",
+            "reason": str(r.get("reason") or ""),
+        })
+
+    all_rows = existing + new_rows
+
+    # Serialize and upload
+    buf = _io.StringIO()
+    writer = _csv.DictWriter(buf, fieldnames=_FIELDS, lineterminator="\r\n",
+                             extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(all_rows)
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    try:
+        resp = requests.put(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "text/csv"},
+            data=csv_bytes,
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            log.info("ETA log: %d total rows (%d new) → %s", len(all_rows), len(new_rows), path)
+        else:
+            log.warning("ETA log upload HTTP %d: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        log.warning("ETA log upload failed: %s", exc)
 
 
 # ----------------------------------------------------------------------
@@ -643,6 +1088,7 @@ def _fmt_appt_cell(row: dict) -> str:
     - APPT          → fixed time   e.g. "Tue Jun 23, 08:00am"
     - WINDOW/FCFS with End → "Begin – End"  e.g. "8:00am – 5:00pm"
     - FCFS with Begin only (no End) → "FCFS 8:00am"  (dock open time, no close deadline)
+    - Date-only window → "Mon Jun 30 (any time)"  (a date, no hard time deadline)
     - No schedule info → "—"
     """
     end_str = _fmt_dt_ct(row.get("appt_dt"))
@@ -657,6 +1103,11 @@ def _fmt_appt_cell(row: dict) -> str:
         win_begin = row.get("_fcfs_open_dt")
         if win_begin:
             return f"FCFS&nbsp;{_fmt_dt_ct(win_begin)}"
+    # Date-only window — show the date and make clear there is no time deadline.
+    date_only = row.get("_date_only_dt")
+    if date_only:
+        return (f"{_fmt_date_local(date_only)}&nbsp;"
+                f"<span style='color:{MUTE};font-size:10px;'>(any time)</span>")
     return "—"
 MUTE = "#6b6b6b"
 AMBER = "#d97706"
@@ -667,7 +1118,35 @@ FONT = ("font-family:-apple-system,'Helvetica Neue',Helvetica,Arial,sans-serif;"
         "font-size:13px;color:#1a1a1a;")
 
 
-def _render_html(rows: list[dict], generated_at: datetime) -> str:
+def _render_html(rows: list[dict], generated_at: datetime,
+                 untracked: list[dict] | None = None) -> str:
+    untracked = untracked or []
+    # Live-late count EXCLUDES stale appointments — a 6-day-old appt isn't a live
+    # late event (see _STALE_APPT_HOURS), so it must not inflate the red banner.
+    late_count = sum(1 for r in rows
+                     if (r.get("delta_min") or 0) <= _LATE_THRESHOLD_MIN
+                     and not r.get("appt_stale"))
+    stale_count = sum(1 for r in rows if r.get("appt_stale"))
+
+    if late_count:
+        strip_bg = RED
+        strip_msg = f"⚠ {late_count} load{'s' if late_count != 1 else ''} 45+ min late"
+    elif stale_count and rows:
+        strip_bg = AMBER
+        strip_msg = (f"{stale_count} load{'s' if stale_count != 1 else ''} with a stale "
+                     f"appointment — verify delivery")
+    elif rows:
+        strip_bg = "#16a34a"
+        strip_msg = "All loads on schedule"
+    else:
+        strip_bg = MUTE
+        strip_msg = "No active X-Trux loads"
+
+    untracked_badge = (f" &middot; {len(untracked)} untracked" if untracked else "")
+    # Show the stale chip on the sub-line unless the strip already leads with it.
+    stale_badge = (f" &middot; {stale_count} stale appt"
+                   if (stale_count and late_count) else "")
+
     if not rows:
         body = (f"<div style='padding:40px;text-align:center;color:{MUTE};font-size:14px;'>"
                 f"No active X-Trux loads to display.</div>")
@@ -690,6 +1169,7 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
         )
 
         tbody_rows = ""
+        _now_ct = generated_at
         for r in rows:
             delta_txt, delta_color = _fmt_delta(r.get("delta_min"))
             shipper_loc = f"{r['shipper_city']}, {r['shipper_state']}".strip(", ")
@@ -704,6 +1184,14 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
                            f"<span style='color:{AMBER};font-size:10px;font-weight:400;'>"
                            f"&#9888; GPS {r['gps_age_min']}m old</span>")
                 delta_txt = f"~{delta_txt}"
+
+            # Stale appointment: don't show a precise (and misleading) "Xh late".
+            # The appt is days old → the load is almost certainly already
+            # delivered or never rescheduled. Flag for a status check instead.
+            if r.get("appt_stale"):
+                _age = _fmt_appt_age(r.get("appt_dt"), _now_ct)
+                delta_txt = f"&#9888; verify delivery (appt {_age})" if _age else "&#9888; verify delivery"
+                delta_color = AMBER
 
             tbody_rows += (
                 f"<tr style='border-bottom:1px solid {LINE};'>"
@@ -726,30 +1214,86 @@ def _render_html(rows: list[dict], generated_at: datetime) -> str:
             f"{thead}<tbody>{tbody_rows}</tbody></table>"
         )
 
+    # Untracked loads section (active loads with no GPS / no truck assigned)
+    if untracked:
+        ut_thead = (
+            f"<thead><tr style='background:{TILEBG};border-bottom:1px solid {INK};'>"
+            + "".join(
+                f"<th style='padding:6px 10px;text-align:left;font-size:10px;"
+                f"text-transform:uppercase;letter-spacing:0.8px;color:{MUTE};'>{h}</th>"
+                for h in ("Load #", "Truck", "Driver", "Consignee", "City", "Appt", "Reason"))
+            + "</tr></thead>"
+        )
+        ut_rows = ""
+        for r in untracked:
+            ut_city = (f"{r.get('consignee_city', '')}, {r.get('consignee_state', '')}"
+                       .strip(", ") or "—")
+            ut_rows += (
+                f"<tr style='border-bottom:1px solid {LINE};'>"
+                f"<td style='padding:6px 10px;font-weight:700;'>{r['load_no'] or '—'}</td>"
+                f"<td style='padding:6px 10px;'>{r.get('truck') or '—'}</td>"
+                f"<td style='padding:6px 10px;color:{MUTE};'>{r.get('driver') or '—'}</td>"
+                f"<td style='padding:6px 10px;'>{r.get('consignee') or '—'}</td>"
+                f"<td style='padding:6px 10px;color:{MUTE};'>{ut_city}</td>"
+                f"<td style='padding:6px 10px;white-space:nowrap;'>"
+                f"{_fmt_dt_ct(r.get('appt_dt')) or '—'}</td>"
+                f"<td style='padding:6px 10px;color:{AMBER};font-size:12px;'>"
+                f"{r.get('reason', '—')}</td>"
+                f"</tr>"
+            )
+        untracked_section = (
+            f"<div style='padding:16px 24px 4px;border-top:2px solid {LINE};'>"
+            f"<div style='font-weight:700;text-transform:uppercase;font-size:11px;"
+            f"letter-spacing:0.8px;color:{MUTE};'>Untracked Loads ({len(untracked)})</div>"
+            f"<div style='color:{MUTE};font-size:11px;margin-top:2px;'>"
+            f"Active X-Trux loads with no ETA — GPS not reporting or truck not yet assigned"
+            f"</div></div>"
+            f"<div style='padding:0 24px 20px;'>"
+            f"<table cellpadding='0' cellspacing='0' style='width:100%;border-collapse:collapse;'>"
+            f"{ut_thead}<tbody>{ut_rows}</tbody></table></div>"
+        )
+    else:
+        untracked_section = ""
+
+    gen_iso = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    staleness_js = (
+        f"<script>(function(){{"
+        f"var t=new Date('{gen_iso}');"
+        f"function upd(){{var m=Math.round((Date.now()-t)/60000);"
+        f"document.getElementById('age').textContent=m<1?'just now':m+' min ago';}};"
+        f"upd();setInterval(upd,30000);}})();</script>"
+    )
+
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta http-equiv='refresh' content='180'>"
+        "<meta http-equiv='refresh' content='1800'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<style>body{{margin:0;background:#fff;{FONT}}}</style>"
         "</head><body>"
+        f"<div style='background:{strip_bg};color:#fff;padding:8px 24px;"
+        f"font-size:12px;font-weight:700;letter-spacing:0.3px;'>"
+        f"{strip_msg} &middot; {len(rows)} tracked{stale_badge}{untracked_badge}</div>"
         f"<div style='padding:20px 24px;border-bottom:3px solid {RED};'>"
         f"<div style='font-weight:700;letter-spacing:1.5px;font-size:11px;"
         f"color:{RED};text-transform:uppercase;'>XFreight &middot; ETAs</div>"
         f"<div style='font-size:22px;font-weight:700;margin-top:4px;'>"
         f"Active X-Trux Loads &mdash; Live ETA</div>"
         f"<div style='color:{MUTE};font-size:12px;margin-top:6px;'>"
-        f"Generated {generated_at.astimezone(CT):%a %b %d, %I:%M %p} CT &middot; "
-        f"refreshes every 30 min &middot; {len(rows)} active load(s)"
-        f"</div></div>"
+        f"Generated {generated_at.astimezone(CT):%a %b %d, %I:%M %p} CT"
+        f" &middot; <span id='age'></span>"
+        f" &middot; refreshes every 30 min</div>"
+        f"</div>"
         f"<div style='padding:20px 24px;'>{body}</div>"
-        f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};'>"
+        + untracked_section
+        + f"<div style='padding:14px 24px;color:{MUTE};font-size:11px;border-top:1px solid {LINE};'>"
         f"Delta = ETA &minus; appointment. Red = &ge;45 min late &middot; "
         f"amber = late (under 45 min) &middot; green = within 30 min early. "
         f"ETA from Samsara GPS &rarr; Mapbox driving-traffic (full remaining route). "
         f"&#9888; on ETA = GPS fix &gt;{_GPS_STALE_MINUTES} min old; delta prefixed ~ is approximate. "
         f"HOS Left = driver&rsquo;s remaining legal drive time from Samsara; "
         f"* means a 10-hour mandatory rest was added to ETA.</div>"
-        "</body></html>"
+        + staleness_js
+        + "</body></html>"
     )
 
 
@@ -955,7 +1499,7 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     rows_with_eta: list[dict] = []
     for row in load_rows:
-        gps = locs_by_truck.get(row["truck_name"])
+        gps = _lookup_truck_gps(locs_by_truck, row["truck_name"])
         if not gps:
             log.info("SKIP load %s (truck %s): no Samsara GPS",
                      row["load_no"], row["truck_name"])
@@ -1000,11 +1544,20 @@ def main() -> int:
         delta_min = None
         if row["appt_dt"]:
             delta_min = int(round((row["appt_dt"] - eta_dt).total_seconds() / 60))
-        log.info("load %s truck %-6s  gps=%s  hos=%s  appt=%s  eta=%s  delta=%s min",
+
+        # Stale-appointment guard: an appt > _STALE_APPT_HOURS in the past means
+        # the truck is almost certainly already delivered (ArrivedAt unset in
+        # Alvys) or the appt was never rescheduled — not a live "Xh late" event.
+        # Flag it so it shows as "verify delivery" instead of firing a hard alert.
+        appt_stale = _is_appt_stale(row["appt_dt"], now)
+
+        log.info("load %s truck %-6s  gps=%s  hos=%s  appt=%s  eta=%s  delta=%s min%s",
                  row["load_no"], row["truck_name"],
                  f"{gps_age_min}m old" if gps_age_min is not None else "fresh",
                  _fmt_hos(hos_remaining_s),
-                 _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min)
+                 _fmt_dt_ct(row["appt_dt"]), _fmt_dt_ct(eta_dt), delta_min,
+                 f"  [STALE APPT {_fmt_appt_age(row['appt_dt'], now)} — verify delivery]"
+                 if appt_stale else "")
         rows_with_eta.append({
             **row,
             "eta_dt": eta_dt,
@@ -1013,9 +1566,48 @@ def main() -> int:
             "hos_delay": hos_delay_s > 0,
             "gps_age_min": gps_age_min,
             "gps_stale": gps_stale,
+            "appt_stale": appt_stale,
         })
 
     log.info("Computed ETAs for %d active loads", len(rows_with_eta))
+
+    # --- Build untracked list for the HTML "Untracked Loads" section ----
+    tracked_load_nos = {str(r["load_no"]) for r in rows_with_eta}
+    load_rows_by_ln = {str(r["load_no"]): r for r in load_rows}
+    untracked: list[dict] = []
+    for L in active:
+        ln = str(L.get("LoadNumber") or "")
+        if ln in tracked_load_nos:
+            continue
+        stops = L.get("Stops") or []
+        last_stop = stops[-1] if stops else {}
+        trip = trips_by_load.get(ln)
+        truck_obj = (trip.get("Truck") or {}) if trip else {}
+        truck = (truck_obj.get("TruckNum") or truck_obj.get("TruckNumber")
+                 or truck_obj.get("Number") or truck_obj.get("Name") or "")
+        driver_obj = (trip.get("Driver1") or {}) if trip else {}
+        driver = (driver_obj.get("FullName") or driver_obj.get("Name") or "")
+        if ln in load_rows_by_ln:
+            row_r = load_rows_by_ln[ln]
+            reason = ("No GPS fix" if not _lookup_truck_gps(locs_by_truck, row_r["truck_name"])
+                      else "No Mapbox route")
+        elif not trip:
+            reason = "No trip found"
+        elif not truck:
+            reason = "No truck assigned"
+        else:
+            reason = "No stop coordinates"
+        untracked.append({
+            "load_no": ln,
+            "truck": truck,
+            "driver": driver,
+            "consignee": _g(last_stop, "CompanyName") or "",
+            "consignee_city": _g(last_stop, "Address", "City") or "",
+            "consignee_state": _g(last_stop, "Address", "State") or "",
+            "appt_dt": _parse_iso(_stop_appt_iso(last_stop)),
+            "reason": reason,
+        })
+    log.info("Untracked active loads (no ETA computed): %d", len(untracked))
 
     # --- OneDrive token + folder (needed for Teams state AND file upload) ---
     folder = os.environ.get("ETA_ONEDRIVE_FOLDER", "ETA").strip("/")
@@ -1023,19 +1615,37 @@ def main() -> int:
     ensure_folder(tok, user_upn, folder)
 
     # --- Teams alert for loads 45+ min late -----------------------------
+    # Exclude stale GPS (ETA may be wrong) AND stale appointments (the load is
+    # almost certainly already delivered / never rescheduled — a hard "153h late"
+    # card would just be alert noise on an already-serviced stop).
     late = [r for r in rows_with_eta
             if r.get("delta_min") is not None
             and r["delta_min"] <= _LATE_THRESHOLD_MIN
-            and not r.get("gps_stale")]  # don't alert on stale GPS — ETA may be wrong
+            and not r.get("gps_stale")
+            and not r.get("appt_stale")]
+    stale_appt_rows = [r for r in rows_with_eta if r.get("appt_stale")]
+    if stale_appt_rows:
+        log.info("Suppressed %d stale-appt load(s) from the Teams late alert "
+                 "(appt > %dh old — verify delivery/reschedule): %s",
+                 len(stale_appt_rows), _STALE_APPT_HOURS,
+                 ", ".join(f"#{r['load_no']} ({_fmt_appt_age(r['appt_dt'], now)})"
+                           for r in stale_appt_rows))
     webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
     if webhook:
-        _sync_teams_webhook(webhook, tok, user_upn, folder, late)
+        mention_users: list[dict] = []
+        if late:   # only spend the Graph lookups on runs where there's something to ping about
+            mention_emails = [e.strip() for e in
+                              os.environ.get("TEAMS_ETA_MENTION_EMAILS",
+                                            _MENTION_EMAILS_DEFAULT).split(",")
+                              if e.strip()]
+            mention_users = _resolve_mention_users(tok, mention_emails)
+        _sync_teams_webhook(webhook, tok, user_upn, folder, late, mention_users)
     else:
         log.info("TEAMS_ETA_WEBHOOK not set — skipping Teams alert")
 
     # --- Render + upload ------------------------------------------------
     generated_at = datetime.now(timezone.utc)
-    html = _render_html(rows_with_eta, generated_at)
+    html = _render_html(rows_with_eta, generated_at, untracked)
     xlsx_bytes = _render_xlsx(rows_with_eta, generated_at)
 
     out_dir = Path("output/eta")
@@ -1048,6 +1658,9 @@ def main() -> int:
     upload_file(tok, user_upn, folder, html_path.name, html_path)
     upload_file(tok, user_upn, folder, xlsx_path.name, xlsx_path)
     log.info("Published %s/XFreight_ETAs.{html,xlsx} to OneDrive", folder)
+
+    # --- Append to rolling 90-day ETA log on OneDrive -------------------
+    _append_eta_log(tok, user_upn, folder, generated_at, rows_with_eta, untracked)
 
     return 0
 

@@ -470,6 +470,11 @@ def post_adaptive_cards(
     """Read accountability JSON and POST Adaptive Cards to Teams.
 
     Posting priority (first success wins):
+      0. Dedicated owner webhook (TEAMS_OPERATIONS_WEBHOOK for Jackson + Dan's
+         card) — when set, AUTHORITATIVE for that owner: posts straight there
+         and skips every other method below, so a deliberately-configured
+         separate channel always wins regardless of what else is configured.
+         Unset = no behavior change, falls through to 1-4 exactly as before.
       1. OneDrive trigger (TEAMS_PA_ONEDRIVE=1) — writes a JSON file that a
          Power Automate flow watches; PA handles delete-old + post-new using
          free standard connectors.
@@ -487,6 +492,11 @@ def post_adaptive_cards(
         print(f"Accountability JSON not found at {acc_path} — skipping.")
         return
 
+    # Dedicated "Operations" channel webhook for Jackson + Dan's card — set up
+    # as a plain Incoming Webhook connector on that channel (Teams: channel
+    # ... -> Connectors -> Incoming Webhook). Separate from the shared
+    # `webhook` arg (Audra's Safety & Compliance channel).
+    webhook_ops  = os.environ.get("TEAMS_OPERATIONS_WEBHOOK", "").strip()
     pa_url_audra = os.environ.get("TEAMS_PA_URL_AUDRA", "").strip()
     pa_url_ops   = os.environ.get("TEAMS_PA_URL_OPS",   "").strip()
     use_pa_od    = os.environ.get("TEAMS_PA_ONEDRIVE", "").strip().lower() in ("1", "true", "yes")
@@ -550,7 +560,7 @@ def post_adaptive_cards(
             out.append(item)
         return out
 
-    def _post(label: str, items: list[dict], pa_url: str = "") -> None:
+    def _post(label: str, items: list[dict], pa_url: str = "", dedicated_webhook: str = "") -> None:
         items = _stamp_actioned(items)
         if not items:
             print(f"{label}: no action items today — skipping card.")
@@ -559,6 +569,17 @@ def post_adaptive_cards(
         if not payload:
             return
         card = payload["attachments"][0]["content"]
+
+        # 0. Dedicated webhook for this owner (e.g. Jackson+Dan -> Operations
+        # channel) — authoritative when set. Skips PA/Graph/shared-webhook
+        # entirely so a deliberately-configured separate channel always wins,
+        # regardless of what else happens to be configured for the other owner.
+        if dedicated_webhook:
+            resp = _requests.post(dedicated_webhook, json=payload, timeout=30)
+            print(f"{label} card (dedicated webhook): HTTP {resp.status_code} ({len(items)} items)")
+            if resp.status_code not in range(200, 300):
+                print(f"  Response body: {resp.text[:400]}")
+            return
 
         # 1. OneDrive trigger — write file for PA flow (future card management).
         # Does NOT early-return: webhook below always fires so cards reliably appear.
@@ -597,7 +618,7 @@ def post_adaptive_cards(
             print(f"  Response body: {resp.text[:400]}")
 
     _post("AUDRA",         data.get("audra", []), pa_url_audra)
-    _post("JACKSON + DAN", data.get("ops",   []), pa_url_ops)
+    _post("JACKSON + DAN", data.get("ops",   []), pa_url_ops, webhook_ops)
 
     if new_ids and od_tok and upn:
         _save_card_ids(od_tok, upn, new_ids)

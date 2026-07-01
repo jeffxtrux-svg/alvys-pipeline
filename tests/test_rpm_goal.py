@@ -216,7 +216,7 @@ def test_pay_window_widens_when_sample_is_thin():
 def test_no_fallback_with_a_rich_sample():
     g = compute_rpm_goal(_rich_sheets(), _qb_pnl())
     assert g["pay_window_fallback"] is False
-    assert g["pay_window_used"] == 10
+    assert g["pay_window_used"] == g["pay_window_days"]        # no fallback: used == configured
     assert g["pay_loads"] == 6
     assert _rpm_goal_health(g) == []                           # clean: no banner warnings
 
