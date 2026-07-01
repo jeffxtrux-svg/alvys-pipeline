@@ -25,9 +25,16 @@ try:
 except ImportError:
     _requests = None  # type: ignore
 
-from src.onedrive_upload import download_file, get_token
+from src.onedrive_upload import download_file, download_file_site, get_token, resolve_site_id
 
 _ACC_FOLDER = "Safety"
+
+# Accountability Log.xlsx lives in a SharePoint document library (not personal
+# OneDrive, unlike everything else under _ACC_FOLDER) since it's written by
+# an external Power Automate flow off a Microsoft Form.
+_ACC_LOG_SITE_HOST = "xfreightnet.sharepoint.com"
+_ACC_LOG_SITE_PATH = "/sites/DispatchFiles"
+_ACC_LOG_FOLDER = "Safety"  # relative to the site's default "Shared Documents" library
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +60,8 @@ def _load_log_entries(tok: str, upn: str, today: datetime.date) -> list[dict]:
     """Return rows from Accountability Log.xlsx logged on today's date."""
     entries: list[dict] = []
     try:
-        raw = download_file(tok, upn, f"{_ACC_FOLDER}/Accountability Log.xlsx")
+        site_id = resolve_site_id(tok, _ACC_LOG_SITE_HOST, _ACC_LOG_SITE_PATH)
+        raw = download_file_site(tok, site_id, f"{_ACC_LOG_FOLDER}/Accountability Log.xlsx")
         xl  = pd.ExcelFile(io.BytesIO(raw))
         df  = xl.parse(xl.sheet_names[0])
         df.columns = [str(c).strip().lower() for c in df.columns]
