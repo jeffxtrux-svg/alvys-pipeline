@@ -2856,13 +2856,20 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     "types": set(), "severities": set(),
                     "units": set(), "last_ts": None,
                     "all_coached": True, "ack_ts": None,
-                    "coaches": {},
+                    "coaches": {}, "type_events": [],
                 })
                 slot["events"] += 1
+                ts = _7d_dates.loc[idx]
                 if et_col:
                     et = str(r.get(et_col, "") or "").strip()
                     if et:
                         slot["types"].add(et)
+                        # Keep each occurrence's own timestamp (types is a
+                        # deduped set so a repeated type would otherwise lose
+                        # which specific time each instance happened) — lets
+                        # callers pin coaching/safety-event action items to
+                        # the exact date/time (e.g. "Harsh Brake — 6/28 2:15pm").
+                        slot["type_events"].append((et, ts))
                 if sev_col:
                     sv = str(r.get(sev_col, "") or "").strip()
                     if sv:
@@ -2871,7 +2878,6 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                     u = str(r.get(unit_col, "") or "").strip()
                     if u:
                         slot["units"].add(u)
-                ts = _7d_dates.loc[idx]
                 if pd.notna(ts) and (slot["last_ts"] is None or ts > slot["last_ts"]):
                     slot["last_ts"] = ts
                 # Ack-state tracking: a driver is "acked" only when every
@@ -2906,10 +2912,23 @@ def compute_samsara(sheets: dict[str, pd.DataFrame] | None) -> dict | None:
                             cn = user_map[cid]
                     if cn:
                         slot["coaches"][cn] = slot["coaches"].get(cn, 0) + 1
+            def _fmt_type_events(pairs: list) -> list[str]:
+                """One 'Type — 6/28 2:15pm' string per individual event,
+                oldest first, so a repeated type (e.g. two Harsh Brakes)
+                still shows each occurrence's own time."""
+                out_list = []
+                for et, ts in sorted(pairs, key=lambda p: p[1] if pd.notna(p[1]) else pd.Timestamp.min):
+                    if pd.notna(ts):
+                        out_list.append(f"{et} — {ts.strftime('%-m/%-d %-I:%M%p').lower()}")
+                    else:
+                        out_list.append(et)
+                return out_list
+
             out["coaching_list"] = [
                 {
                     "driver": s["driver"], "events": s["events"],
                     "types": sorted(s["types"]),
+                    "type_events": _fmt_type_events(s["type_events"]),
                     "severities": sorted(s["severities"]),
                     "units": sorted(s["units"]),
                     "last": s["last_ts"].strftime("%Y-%m-%d %H:%M") if s["last_ts"] is not None else "",
