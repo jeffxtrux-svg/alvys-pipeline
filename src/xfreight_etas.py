@@ -28,6 +28,12 @@ Env vars (all required unless noted):
                                        Card when loads go 45+ min late, updates when
                                        the load set changes, and sends an all-clear
                                        card when all loads deliver
+  TEAMS_ETA_MENTION_EMAILS (optional) — comma-separated emails @mentioned on the late
+                                       card (real Teams ping, not just a channel post)
+                                       and on the 90-min-still-late escalation card.
+                                       Default "dan@xfreight.net,jackson@xfreight.net".
+                                       Resolved to Teams identity via Graph; an email
+                                       that can't be resolved is silently omitted.
   ETA_ONEDRIVE_FOLDER (optional)     — default "ETA"
 """
 
@@ -529,12 +535,78 @@ _GPS_STALE_MINUTES = 45  # GPS fix older than this is treated as unreliable
 # −9000 min on a 6-day-old appt is a data gap, not a live tracking event).
 _STALE_APPT_HOURS = 24
 
+# @mention support — pings specific people directly in Teams (not just a
+# passive channel post) when a load first goes late, and again if it's STILL
+# late past the escalation threshold without resolving. Configurable via env
+# so the on-call roster can change without a code edit (same hardcoded-literal-
+# fallback pattern used for brief recipients elsewhere in this pipeline).
+_MENTION_EMAILS_DEFAULT = "dan@xfreight.net,jackson@xfreight.net"
+# Minutes a load can sit on the late list, unchanged, before a separate
+# escalation card fires. The main card only re-posts when the late SET or an
+# appointment changes — a load stuck unchanged for hours would otherwise never
+# get a second nudge, so escalation is timed independently of that.
+_ESCALATION_THRESHOLD_MIN = 90
+
+
+# ----------------------------------------------------------------------
+# Teams alert — @mention support (pings specific people, not just a channel post)
+# ----------------------------------------------------------------------
+def _resolve_mention_users(token: str, emails: list[str]) -> list[dict]:
+    """Resolve email/UPN -> {id, name} via Graph for @mention entities.
+
+    Fail-soft PER USER: an email that can't be resolved (missing Graph
+    permission, typo, account not found) is simply omitted from the mention
+    list rather than aborting the card post — worst case the card goes out
+    with fewer/no real pings instead of not going out at all.
+    """
+    resolved: list[dict] = []
+    for email in emails:
+        email = (email or "").strip()
+        if not email:
+            continue
+        try:
+            resp = requests.get(
+                f"{_GRAPH_BASE}/users/{email}",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"$select": "id,displayName"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                u = resp.json()
+                resolved.append({"id": u["id"], "name": u.get("displayName") or email})
+            else:
+                log.warning("Teams mention: could not resolve %s (HTTP %d) — "
+                            "omitting from @mention", email, resp.status_code)
+        except Exception as exc:
+            log.warning("Teams mention: resolving %s failed: %s — omitting from @mention",
+                        email, exc)
+    return resolved
+
+
+def _mention_block(users: list[dict]) -> tuple[dict | None, list[dict]]:
+    """Build (TextBlock, msteams.entities) that pings `users` when the card
+    posts. Returns (None, []) when no users resolved, so callers can skip the
+    block entirely instead of rendering an empty/broken mention line."""
+    if not users:
+        return None, []
+    mention_text = "🔔 " + " ".join(f"<at>{u['name']}</at>" for u in users) + " — needs a response"
+    block = {"type": "TextBlock", "text": mention_text, "wrap": True,
+             "size": "Small", "weight": "Bolder"}
+    entities = [{"type": "mention", "text": f"<at>{u['name']}</at>",
+                "mentioned": {"id": u["id"], "name": u["name"]}} for u in users]
+    return block, entities
+
 
 # ----------------------------------------------------------------------
 # Teams alert — shared card builder
 # ----------------------------------------------------------------------
-def _build_teams_card(late_rows: list[dict]) -> dict:
-    """Build the Adaptive Card dict for the current set of late loads."""
+def _build_teams_card(late_rows: list[dict], mention_users: list[dict] | None = None) -> dict:
+    """Build the Adaptive Card dict for the current set of late loads.
+
+    mention_users: resolved via _resolve_mention_users — pings them directly
+    (e.g. Dan/Jackson) rather than relying on a passive channel post.
+    """
+    mention_block, entities = _mention_block(mention_users or [])
     body: list[dict] = [
         {"type": "TextBlock", "text": "⚠️ Drivers Running Late",
          "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
@@ -543,6 +615,8 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
                  f"{datetime.now(CT):%I:%M %p CT}",
          "size": "Small", "spacing": "None", "wrap": True},
     ]
+    if mention_block:
+        body.append(mention_block)
     for idx, r in enumerate(sorted(late_rows, key=lambda x: x.get("delta_min") or 0)):
         mins_late = abs(r["delta_min"])
         hrs, m = divmod(mins_late, 60)
@@ -634,7 +708,7 @@ def _build_teams_card(late_rows: list[dict]) -> dict:
         "type": "AdaptiveCard",
         "version": "1.4",
         "body": body,
-        "msteams": {"width": "Full"},
+        "msteams": {"width": "Full", **({"entities": entities} if entities else {})},
     }
 
 
@@ -720,8 +794,52 @@ def _build_resolved_card(resolved_load_nos: set[str]) -> dict:
     }
 
 
+def _build_escalation_card(escalated_rows: list[dict],
+                           mention_users: list[dict] | None = None) -> dict:
+    """Adaptive Card posted when a load has been on the late list for more
+    than _ESCALATION_THRESHOLD_MIN minutes with no resolution. The main late
+    card only re-posts on a SET or appointment CHANGE — a load stuck
+    unchanged for hours would otherwise never get a second nudge, so this
+    fires independently, once per load (see _sync_teams_webhook's
+    escalated_load_nos tracking)."""
+    mention_block, entities = _mention_block(mention_users or [])
+    body: list[dict] = [
+        {"type": "TextBlock", "text": "🔴 STILL LATE — NEEDS A RESPONSE",
+         "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
+    ]
+    if mention_block:
+        body.append(mention_block)
+    body.append({
+        "type": "TextBlock",
+        "text": (f"{len(escalated_rows)} load(s) have been behind schedule for "
+                f"{_ESCALATION_THRESHOLD_MIN}+ min with no resolution — as of "
+                f"{datetime.now(CT):%I:%M %p CT}"),
+        "size": "Small", "spacing": "None", "wrap": True,
+    })
+    for r in sorted(escalated_rows, key=lambda x: x.get("delta_min") or 0):
+        mins_late = abs(r.get("delta_min") or 0)
+        hrs, m = divmod(mins_late, 60)
+        late_str = f"{hrs}h {m}m late" if hrs else f"{m}m late"
+        dest = (f"{r.get('consignee_city', '')}, {r.get('consignee_state', '')}".strip(", ")
+                or r.get("consignee") or "—")
+        body.append({
+            "type": "TextBlock",
+            "text": (f"**Truck {r.get('truck_name', '—')}** — Load #{r.get('load_no') or '—'} "
+                    f"→ {dest} — **{late_str}**"),
+            "wrap": True, "spacing": "Small",
+        })
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "body": body,
+        "msteams": {"width": "Full", **({"entities": entities} if entities else {})},
+    }
+
+
 def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str,
-                        late_rows: list[dict]) -> None:
+                        late_rows: list[dict],
+                        mention_users: list[dict] | None = None) -> None:
     """Post to the Teams webhook when the set of late loads changes OR an
     appointment is updated for a load that is already in the alerted set.
 
@@ -729,13 +847,22 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
     - Load(s) resolved → POST "✅ Resolved" card for those loads THEN updated list.
     - All late loads cleared → POST "✅ All loads back on schedule" card.
     - Appointment changed for an already-alerted load → POST updated card.
-    - Same late-load set + same appointments → skip (no card posted).
+    - Same late-load set + same appointments → no main card re-posted.
+    - A load that's been on the late list, unchanged, past
+      _ESCALATION_THRESHOLD_MIN minutes → separate one-time escalation card,
+      independent of whether the main card re-posted this run.
+
+    mention_users: resolved via _resolve_mention_users — @mentions them on the
+    main card AND any escalation card, so they're actually pinged rather than
+    relying on someone noticing a channel post.
 
     State is stored in OneDrive (eta_state.json) and persists across 30-min runs.
     """
     state = _load_teams_state(token, user_upn, folder)
     prev_load_nos = set(state.get("alerted_load_nos") or [])
     prev_appts: dict = state.get("alerted_appts") or {}
+    first_seen: dict = dict(state.get("load_first_seen") or {})
+    escalated: set = set(state.get("escalated_load_nos") or [])
 
     curr_load_nos = {str(r["load_no"]) for r in late_rows if r.get("load_no")}
     curr_appts = {
@@ -743,20 +870,23 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         for r in late_rows if r.get("load_no")
     }
 
+    now = datetime.now(timezone.utc)
+    # Carry forward first-seen timestamps for loads still on the list; stamp
+    # new ones with now. This is what lets escalation measure "how long has
+    # THIS load been late" independent of whether the main alert re-posted.
+    for ln in curr_load_nos:
+        first_seen.setdefault(ln, now.isoformat())
+    # Drop bookkeeping for loads no longer late.
+    for ln in list(first_seen):
+        if ln not in curr_load_nos:
+            first_seen.pop(ln, None)
+            escalated.discard(ln)
+
     # Detect appointment changes for loads that are in both sets
     appt_changed_loads = [
         ln for ln in curr_load_nos & prev_load_nos
         if curr_appts.get(ln) != prev_appts.get(ln)
     ]
-
-    if curr_load_nos == prev_load_nos and not appt_changed_loads:
-        log.info("Teams: late-load set unchanged (%d loads) — no card posted",
-                 len(curr_load_nos))
-        return
-
-    if appt_changed_loads:
-        log.info("Teams: appointment changed for load(s) %s — posting updated card",
-                 appt_changed_loads)
 
     resolved_loads = prev_load_nos - curr_load_nos
 
@@ -783,23 +913,51 @@ def _sync_teams_webhook(webhook_url: str, token: str, user_upn: str, folder: str
         log.info("Teams: posting resolved card for load(s) %s", sorted(resolved_loads))
         _post(_build_resolved_card(resolved_loads))
 
-    if curr_load_nos:
-        card = _build_teams_card(late_rows)
-        new_state: dict = {
-            "alerted_load_nos": sorted(curr_load_nos),
-            "alerted_appts": curr_appts,
-            "last_alerted": datetime.now(timezone.utc).isoformat(),
-        }
-        log_msg = "Teams: posted updated alert for %d late load(s)"
+    if curr_load_nos == prev_load_nos and not appt_changed_loads:
+        log.info("Teams: late-load set unchanged (%d loads) — no main alert re-posted",
+                 len(curr_load_nos))
     else:
-        card = _build_clear_card()
-        new_state = {}
-        log_msg = "Teams: posted all-clear notification (%d loads cleared)"
+        if appt_changed_loads:
+            log.info("Teams: appointment changed for load(s) %s — posting updated card",
+                     appt_changed_loads)
+        if curr_load_nos:
+            card = _build_teams_card(late_rows, mention_users)
+            log.info("Teams: posted updated alert for %d late load(s)", len(curr_load_nos))
+        else:
+            card = _build_clear_card()
+            log.info("Teams: posted all-clear notification (%d loads cleared)",
+                     len(prev_load_nos - curr_load_nos))
+        _post(card)
 
-    if not _post(card):
-        return
-    log.info(log_msg, len(prev_load_nos - curr_load_nos) if not curr_load_nos
-             else len(curr_load_nos))
+    # Escalation: loads that have been late past the threshold and haven't
+    # been escalated yet get a separate, one-time ping — fires regardless of
+    # whether the main card re-posted this run (see docstring).
+    escalation_rows = []
+    for r in late_rows:
+        ln = str(r.get("load_no") or "")
+        if not ln or ln not in first_seen or ln in escalated:
+            continue
+        seen_at = datetime.fromisoformat(first_seen[ln])
+        if (now - seen_at).total_seconds() / 60 >= _ESCALATION_THRESHOLD_MIN:
+            escalation_rows.append(r)
+            escalated.add(ln)
+
+    if escalation_rows:
+        log.info("Teams: escalating %d load(s) still late past %d min: %s",
+                 len(escalation_rows), _ESCALATION_THRESHOLD_MIN,
+                 [r.get("load_no") for r in escalation_rows])
+        _post(_build_escalation_card(escalation_rows, mention_users))
+
+    # Always persist — first_seen/escalated bookkeeping must survive even on
+    # runs where the main card didn't re-post, or escalation timing/dedup
+    # breaks on the next run.
+    new_state = {
+        "alerted_load_nos": sorted(curr_load_nos),
+        "alerted_appts": curr_appts,
+        "load_first_seen": first_seen,
+        "escalated_load_nos": sorted(escalated),
+        "last_alerted": now.isoformat(),
+    }
     _save_teams_state(token, user_upn, folder, new_state)
 
 
@@ -1474,7 +1632,14 @@ def main() -> int:
                            for r in stale_appt_rows))
     webhook = os.environ.get("TEAMS_ETA_WEBHOOK", "").strip()
     if webhook:
-        _sync_teams_webhook(webhook, tok, user_upn, folder, late)
+        mention_users: list[dict] = []
+        if late:   # only spend the Graph lookups on runs where there's something to ping about
+            mention_emails = [e.strip() for e in
+                              os.environ.get("TEAMS_ETA_MENTION_EMAILS",
+                                            _MENTION_EMAILS_DEFAULT).split(",")
+                              if e.strip()]
+            mention_users = _resolve_mention_users(tok, mention_emails)
+        _sync_teams_webhook(webhook, tok, user_upn, folder, late, mention_users)
     else:
         log.info("TEAMS_ETA_WEBHOOK not set — skipping Teams alert")
 

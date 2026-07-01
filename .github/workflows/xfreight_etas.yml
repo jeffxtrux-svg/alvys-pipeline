@@ -31,6 +31,14 @@
 #   TEAMS_ETA_WEBHOOK     — Power Automate webhook URL (optional); posts an Adaptive
 #                           Card to Teams when loads go 45+ min late, updates on each
 #                           state change, and sends an all-clear when all loads clear
+#   TEAMS_ETA_MENTION_EMAILS (optional) — comma-separated emails @mentioned (real Teams
+#                           ping) on the late card and the 90-min-still-late escalation
+#                           card. Default "dan@xfreight.net,jackson@xfreight.net".
+#                           NOTE: resolving an email to a Teams identity needs Graph
+#                           "User.Read.All" (Application permission, admin-consented)
+#                           on the AZURE_CLIENT_ID app registration. If that scope isn't
+#                           granted, resolution fails soft per-user (logged as a
+#                           warning) and the card still posts, just without a real ping.
 
 name: XFreight ETAs (every 30 min)
 
