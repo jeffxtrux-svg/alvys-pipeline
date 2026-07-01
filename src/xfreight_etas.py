@@ -34,6 +34,18 @@ Env vars (all required unless noted):
                                        Default "dan@xfreight.net,jackson@xfreight.net".
                                        Resolved to Teams identity via Graph; an email
                                        that can't be resolved is silently omitted.
+  TEAMS_DETENTION_WEBHOOK (optional) — webhook for detention cards (driver at a
+                                       pickup/delivery 2h+ → collect-detention card;
+                                       departure → billable-closeout card). Falls back
+                                       to TEAMS_OPERATIONS_WEBHOOK; when neither is set
+                                       the detention step is skipped. See
+                                       src/detention_alerts.py.
+  TEAMS_OPERATIONS_WEBHOOK (optional) — the Operations channel incoming webhook,
+                                       fallback target for detention cards.
+  TEAMS_DETENTION_MENTION_EMAILS (optional) — @mentions on the detention alert card;
+                                       falls back to TEAMS_ETA_MENTION_EMAILS, then
+                                       the same Dan/Jackson default.
+  DETENTION_THRESHOLD_MIN (optional) — detention free-time minutes, default 120.
   ETA_ONEDRIVE_FOLDER (optional)     — default "ETA"
 """
 
@@ -1642,6 +1654,45 @@ def main() -> int:
         _sync_teams_webhook(webhook, tok, user_upn, folder, late, mention_users)
     else:
         log.info("TEAMS_ETA_WEBHOOK not set — skipping Teams alert")
+
+    # --- Detention alerts (driver 2h+ at a pickup/delivery) -------------
+    # Piggybacks on this run's Alvys pull; posts a collect-detention card to
+    # the Operations channel when a stop crosses the free-time window and a
+    # billable-closeout card when the driver departs. Fail-soft: a detention
+    # error must never block the ETA publish below.
+    try:
+        detention_webhook = (os.environ.get("TEAMS_DETENTION_WEBHOOK", "").strip()
+                             or os.environ.get("TEAMS_OPERATIONS_WEBHOOK", "").strip())
+        if detention_webhook:
+            from src.detention_alerts import sync_detention_alerts
+
+            # All X-Trux loads in the 7d window, not just active ones — a load
+            # can flip to Delivered while the driver is still sitting at the
+            # dock, and the closeout needs the DepartedAt that lands after.
+            xtrux_loads = [L for L in all_loads if _entity_is_xtrux(L.get("InvoiceAs"))]
+
+            def _resolve_detention_mentions() -> list[dict]:
+                emails = [e.strip() for e in
+                          os.environ.get("TEAMS_DETENTION_MENTION_EMAILS",
+                                         os.environ.get("TEAMS_ETA_MENTION_EMAILS",
+                                                        _MENTION_EMAILS_DEFAULT)).split(",")
+                          if e.strip()]
+                return _resolve_mention_users(tok, emails)
+
+            sync_detention_alerts(
+                detention_webhook, tok, user_upn, folder,
+                loads=xtrux_loads,
+                trips_by_load=trips_by_load,
+                trucks_by_id=trucks_by_id,
+                drivers_by_id=drivers_by_id,
+                users_by_id=users_by_id,
+                resolve_mentions=_resolve_detention_mentions,
+            )
+        else:
+            log.info("TEAMS_DETENTION_WEBHOOK / TEAMS_OPERATIONS_WEBHOOK not set "
+                     "— skipping detention alerts")
+    except Exception:
+        log.exception("Detention alert step failed — continuing with ETA publish")
 
     # --- Render + upload ------------------------------------------------
     generated_at = datetime.now(timezone.utc)

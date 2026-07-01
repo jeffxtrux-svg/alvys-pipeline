@@ -144,9 +144,23 @@ XFreight ETA tracker** — every 30 min at **:15/:45** it dispatches
 `xfreight_etas.yml` directly, interleaving with that workflow's own **:00/:30**
 GitHub cron so two independent schedulers give a 15-min effective cadence and a
 GitHub cron outage can't stop the refresh (the ETA run is idempotent — rewrites
-the OneDrive file, Teams posts only on a late-load-set change). Setup (a
-fine-grained PAT scoped to Actions:RW on this repo, stored as a Cloudflare
-secret) is in `ops/cron-trigger/README.md`.
+the OneDrive file, Teams posts only on a late-load-set or detention-state
+change). Setup (a fine-grained PAT scoped to Actions:RW on this repo, stored as
+a Cloudflare secret) is in `ops/cron-trigger/README.md`.
+
+**Detention cards (`src/detention_alerts.py`, runs inside the ETA refresh).**
+When an Alvys stop has `ArrivedAt` set with no `DepartedAt` for 2+ hours (the
+free-time window — same convention as `settlement_checker._detect_detention_hours`),
+a collect-detention Adaptive Card posts to the Operations channel with
+customer/broker, driver, truck, load #, facility + city, appt vs. actual
+arrival (⚠️ flagged when the driver arrived after the appt — customers contest
+those), and the running detention clock. When `DepartedAt` lands, a closeout
+card posts the final arrive→depart times and billable detention (total dwell −
+2h free) for invoicing. One alert + one closeout per stop, deduped via
+`detention_state.json` in `OneDrive/ETA`; arrivals >24h old with no departure
+are data gaps (never alerted). Webhook: `TEAMS_DETENTION_WEBHOOK`, falling back
+to `TEAMS_OPERATIONS_WEBHOOK`; free time configurable via
+`DETENTION_THRESHOLD_MIN` (default 120).
 
 The daily brief (`src/scorecard_email.py`) is 13 pages scoped to **X-Trux + X-Linx** (JW Logistics excluded throughout via a hardened name matcher in `_is_ar_excluded`). Page 1 is the executive overview; the detail pages 2–13 are grouped into four sections (a `SAFETY` / `OPERATIONAL` / `CSA SCORECARD` / `ACCOUNTING` banner is rendered above each page title by `_header(..., section=...)`):
 

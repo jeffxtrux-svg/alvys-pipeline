@@ -39,6 +39,15 @@
 #                           on the AZURE_CLIENT_ID app registration. If that scope isn't
 #                           granted, resolution fails soft per-user (logged as a
 #                           warning) and the card still posts, just without a real ping.
+#   TEAMS_OPERATIONS_WEBHOOK (optional) — Operations channel incoming webhook. Used for
+#                           detention cards: when a driver sits at a pickup/delivery
+#                           past the 2h free-time window, a collect-detention card
+#                           posts (customer, driver, truck, load #, appt vs arrival,
+#                           time on site); when the driver departs, a closeout card
+#                           posts the billable detention. One card per stop —
+#                           detention_state.json in OneDrive/ETA dedupes across runs.
+#   TEAMS_DETENTION_WEBHOOK (optional) — overrides TEAMS_OPERATIONS_WEBHOOK as the
+#                           target for detention cards only.
 
 name: XFreight ETAs (every 30 min)
 
@@ -46,13 +55,14 @@ on:
   workflow_dispatch:
     inputs:
       wipe_state:
-        description: 'Delete eta_state.json from OneDrive (clears Teams alert state)'
+        description: 'Delete eta_state.json + detention_state.json from OneDrive (clears Teams alert state)'
         type: boolean
         default: false
   push:
     paths:
       - .github/workflows/xfreight_etas.yml
       - src/xfreight_etas.py
+      - src/detention_alerts.py
   schedule:
     # Every 30 min, around the clock. The script itself is fast (~10–20s)
     # so total weekly CI usage is well under the free Actions allotment.
@@ -99,14 +109,15 @@ jobs:
                   "scope":"https://graph.microsoft.com/.default"})
           token = r.json()["access_token"]
           upn = os.environ['ONEDRIVE_USER_UPN']
-          url = f"https://graph.microsoft.com/v1.0/users/{upn}/drive/root:/ETA/eta_state.json:/content"
-          resp = requests.delete(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
-          if resp.status_code == 204:
-            print("eta_state.json deleted — Teams alert state wiped")
-          elif resp.status_code == 404:
-            print("eta_state.json not found (already clear)")
-          else:
-            print(f"Unexpected status {resp.status_code}: {resp.text[:200]}")
+          for fname in ("eta_state.json", "detention_state.json"):
+            url = f"https://graph.microsoft.com/v1.0/users/{upn}/drive/root:/ETA/{fname}:/content"
+            resp = requests.delete(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if resp.status_code == 204:
+              print(f"{fname} deleted — Teams alert state wiped")
+            elif resp.status_code == 404:
+              print(f"{fname} not found (already clear)")
+            else:
+              print(f"{fname}: unexpected status {resp.status_code}: {resp.text[:200]}")
           EOF
 
       - name: Build and publish XFreight ETAs
@@ -121,6 +132,8 @@ jobs:
           SAMSARA_API_TOKEN:   ${{ secrets.SAMSARA_API_TOKEN }}
           MAPBOX_TOKEN:        ${{ secrets.MAPBOX_TOKEN }}
           TEAMS_ETA_WEBHOOK:   ${{ secrets.TEAMS_ETA_WEBHOOK }}
+          TEAMS_OPERATIONS_WEBHOOK: ${{ secrets.TEAMS_OPERATIONS_WEBHOOK }}
+          TEAMS_DETENTION_WEBHOOK:  ${{ secrets.TEAMS_DETENTION_WEBHOOK }}
         run: python -m src.xfreight_etas
 
       - name: Post failure alert to Teams

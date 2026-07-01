@@ -45,3 +45,4 @@ jobs:
           python tests/test_safety_accountability_fuel.py
           python tests/test_teams_operations_routing.py
           python tests/test_xfreight_teams_mentions.py
+          python tests/test_detention_alerts.py
