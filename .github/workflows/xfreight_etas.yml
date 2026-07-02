@@ -44,7 +44,10 @@
 #                           past the 2h free-time window, a collect-detention card
 #                           posts (customer, driver, truck, load #, appt vs arrival,
 #                           time on site); when the driver departs, a closeout card
-#                           posts the billable detention. One card per stop —
+#                           posts the billable detention. A LATE arrival voids
+#                           detention — no card (APPT: must arrive by appt time;
+#                           FCFS/WINDOW: by window End; early arrivals start the
+#                           clock at appt/window open). One card per stop —
 #                           detention_state.json in OneDrive/ETA dedupes across runs.
 #   TEAMS_DETENTION_WEBHOOK (optional) — overrides TEAMS_OPERATIONS_WEBHOOK as the
 #                           target for detention cards only.

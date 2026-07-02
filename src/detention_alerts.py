@@ -1,14 +1,22 @@
 """Detention alerts — Teams card when a driver sits at a pickup/delivery 2+ hours.
 
 Detection is from Alvys stop timestamps: a stop with ArrivedAt set and no
-DepartedAt means the driver is on site; dwell = now − ArrivedAt. When dwell
+DepartedAt means the driver is on site. When time on the detention clock
 crosses the 2-hour free-time window (industry standard — the same convention
 settlement_checker._detect_detention_hours already uses) a card posts to the
 Operations Teams channel with everything needed to pursue detention with the
 customer: customer/broker name, driver, truck, load #, facility + city,
-appointment vs. actual arrival (with a ⚠️ flag when the driver arrived after
-the appt — customers contest detention on late arrivals), time on site so
-far, and when the free-time window ended.
+appointment vs. actual arrival, time on site so far, and when the free-time
+window ended.
+
+Eligibility (owner rule, 2026-07-02): a LATE arrival voids detention — no
+card fires.
+  - APPT stop: the driver must arrive at/before the appointment time.
+  - FCFS / WINDOW stop: the driver must arrive by the window End. Open-ended
+    FCFS (no End) and date-only windows have no hard deadline — can't be late.
+  - Early arrival never voids, but the detention clock starts at the
+    appointment / window-open time, not at the early arrival — you can't bill
+    a customer for a driver waiting before the dock was due to see him.
 
 When the stop closes out (DepartedAt gets set) a follow-up card posts the
 final arrive → depart times, total time on site, and the billable detention
@@ -109,10 +117,12 @@ def _g(d: dict | None, *path: str, default=None):
 # ----------------------------------------------------------------------
 # Stop schedule helpers
 # ----------------------------------------------------------------------
-def _stop_appt_deadline(stop: dict) -> datetime | None:
-    """The time the driver had to arrive BY — used for the arrived-late flag.
-    APPT → AppointmentDate; window → End (Begin as fallback); date-only
-    window → None (a calendar date carries no hard time to be late against)."""
+def _stop_arrival_deadline(stop: dict) -> datetime | None:
+    """Latest on-time arrival for detention eligibility. Arriving after this
+    VOIDS detention (owner rule — customers don't pay when the driver was
+    late). APPT → the appointment time; WINDOW/FCFS → the window End when one
+    exists. None = can't be late (open-ended FCFS, window with no End,
+    date-only window — a calendar date carries no hard time to be late by)."""
     stype = (stop.get("ScheduleType") or "").upper()
     if stype == "APPT":
         return _parse_iso(stop.get("AppointmentDate"))
@@ -120,7 +130,21 @@ def _stop_appt_deadline(stop: dict) -> datetime | None:
     begin, end = win.get("Begin"), win.get("End")
     if _is_date_only_window(begin, end):
         return None
-    return _parse_iso(end or begin or stop.get("AppointmentDate"))
+    return _parse_iso(end) if end else None
+
+
+def _stop_scheduled_open(stop: dict) -> datetime | None:
+    """Earliest the detention clock can start: the APPT time, or the window
+    Begin. A driver who arrives before this waits on his own time — free time
+    counts from here, not from the early arrival."""
+    stype = (stop.get("ScheduleType") or "").upper()
+    if stype == "APPT":
+        return _parse_iso(stop.get("AppointmentDate"))
+    win = stop.get("StopWindow") or {}
+    begin, end = win.get("Begin"), win.get("End")
+    if _is_date_only_window(begin, end):
+        return None
+    return _parse_iso(begin) if begin else None
 
 
 def _stop_appt_display(stop: dict) -> str:
@@ -198,9 +222,12 @@ def find_detention_stops(loads: list[dict], trips_by_load: dict,
                          users_by_id: dict | None = None,
                          now: datetime | None = None,
                          free_time_min: int = _FREE_TIME_MIN_DEFAULT) -> list[dict]:
-    """All stops currently in detention: ArrivedAt set, no DepartedAt, and
-    dwell ≥ free_time_min. Arrivals older than _STALE_ARRIVAL_HOURS are data
-    gaps (never marked departed), not live events — skipped with a log line."""
+    """All stops currently in billable detention: ArrivedAt set, no
+    DepartedAt, driver arrived ON TIME (a late arrival voids detention — no
+    card), and detention-clock time ≥ free_time_min. The clock starts at the
+    later of arrival and the appointment / window-open time. Arrivals older
+    than _STALE_ARRIVAL_HOURS are data gaps (never marked departed), not live
+    events — skipped with a log line."""
     now = now or datetime.now(timezone.utc)
     rows: list[dict] = []
     for load in loads:
@@ -214,17 +241,28 @@ def find_detention_stops(loads: list[dict], trips_by_load: dict,
             if arrived is None or stop.get("DepartedAt"):
                 continue
             dwell_min = int((now - arrived).total_seconds() // 60)
-            if dwell_min < free_time_min:
-                continue
             if dwell_min > _STALE_ARRIVAL_HOURS * 60:
                 log.info("detention: load %s stop %d arrived %.1fh ago with no "
                          "departure — stale data, not alerting", load_no, idx,
                          dwell_min / 60)
                 continue
+            deadline = _stop_arrival_deadline(stop)
+            if deadline and arrived > deadline:
+                # Late arrival voids detention: an APPT missed, or an
+                # FCFS/WINDOW arrival after the window closed. Never card.
+                log.info("detention: load %s stop %d — driver arrived %s, after "
+                         "the %s deadline %s; detention void, not alerting",
+                         load_no, idx, _fmt_dt_ct(arrived),
+                         (stop.get("ScheduleType") or "stop"), _fmt_dt_ct(deadline))
+                continue
+            open_dt = _stop_scheduled_open(stop)
+            clock_start = max(arrived, open_dt) if open_dt else arrived
+            clock_min = int((now - clock_start).total_seconds() // 60)
+            if clock_min < free_time_min:
+                continue
             if ctx is None:
                 ctx = _trip_context(load, trips_by_load, trucks_by_id,
                                     drivers_by_id, users_by_id)
-            deadline = _stop_appt_deadline(stop)
             rows.append({
                 "key": f"{load_no}#{idx}",
                 "load_no": load_no,
@@ -240,10 +278,11 @@ def find_detention_stops(loads: list[dict], trips_by_load: dict,
                 "stop_state": _g(stop, "Address", "State") or "",
                 "appt_display": _stop_appt_display(stop),
                 "arrived_dt": arrived,
-                "arrived_late": bool(deadline and arrived > deadline),
+                "clock_start_dt": clock_start,
+                "early_arrival": clock_start > arrived,
                 "dwell_min": dwell_min,
-                "detention_min": dwell_min - free_time_min,
-                "free_end_dt": arrived + timedelta(minutes=free_time_min),
+                "detention_min": clock_min - free_time_min,
+                "free_end_dt": clock_start + timedelta(minutes=free_time_min),
             })
     return rows
 
@@ -267,8 +306,8 @@ def _row_facts(r: dict) -> list[dict]:
     loc = f"{r.get('city', '')}, {r.get('stop_state', '')}".strip(", ")
     stop_desc = " — ".join(x for x in (r.get("stop_type"), r.get("facility")) if x) or "—"
     arrived = _fmt_dt_ct(r.get("arrived_dt")) or "—"
-    if r.get("arrived_late"):
-        arrived += "  ⚠️ after appt"
+    if r.get("early_arrival"):
+        arrived += "  (early — clock from appt/window open)"
     return [
         {"title": "Load #", "value": str(r.get("load_no") or "—")},
         {"title": "Broker" if r.get("brokered") else "Customer",
@@ -292,7 +331,8 @@ def build_detention_card(rows: list[dict], free_time_min: int,
          "weight": "Bolder", "size": "Large", "color": "Attention", "wrap": True},
         {"type": "TextBlock",
          "text": (f"{len(rows)} driver(s) on site past the {free_str} free-time "
-                  f"window — document the times below and pursue detention with "
+                  f"window, all arrived on time (late arrivals never fire this "
+                  f"card) — document the times below and pursue detention with "
                   f"the customer — as of {datetime.now(CT):%I:%M %p CT}"),
          "size": "Small", "spacing": "None", "wrap": True},
     ]
@@ -318,17 +358,14 @@ def build_detention_card(rows: list[dict], free_time_min: int,
             },
             {"type": "FactSet", "spacing": "Small",
              "facts": _row_facts(r) + [
+                 {"title": "Clock started", "value": _fmt_dt_ct(r.get("clock_start_dt")) or "—"},
                  {"title": "Free time ended", "value": _fmt_dt_ct(r.get("free_end_dt")) or "—"},
                  {"title": "Detention so far", "value": _fmt_mins(r.get("detention_min"))},
              ]},
+            {"type": "TextBlock",
+             "text": "✅ On-time arrival — detention is billable.",
+             "wrap": True, "size": "Small", "color": "Good", "spacing": "Small"},
         ]
-        if r.get("arrived_late"):
-            items.append({
-                "type": "TextBlock",
-                "text": ("⚠️ Driver arrived after the appointment — customer may "
-                         "contest detention; confirm before billing."),
-                "wrap": True, "size": "Small", "color": "Warning", "spacing": "Small",
-            })
         items.extend([
             {"type": "ActionSet", "spacing": "Small", "actions": [
                 {"type": "Action.ToggleVisibility", "title": "📞 Notified Customer",
@@ -373,6 +410,7 @@ def build_closeout_card(rows: list[dict], free_time_min: int) -> dict:
     ]
     for r in sorted(rows, key=lambda x: -(x.get("billable_min") or 0)):
         facts = _row_facts(r) + [
+            {"title": "Clock started", "value": _fmt_dt_ct(r.get("clock_start_dt")) or "—"},
             {"title": "Departed", "value": _fmt_dt_ct(r.get("departed_dt")) or "—"},
             {"title": "Total on site", "value": _fmt_mins(r.get("total_min"))},
         ]
@@ -386,7 +424,7 @@ def build_closeout_card(rows: list[dict], free_time_min: int) -> dict:
                 {"type": "FactSet", "spacing": "Small", "facts": facts},
                 {"type": "TextBlock",
                  "text": (f"**Billable detention: {_fmt_mins(r.get('billable_min'))}** "
-                          f"(time beyond {free_h:g}h free)"),
+                          f"(beyond {free_h:g}h free from clock start)"),
                  "wrap": True, "color": "Attention", "spacing": "Small"},
             ],
         })
@@ -441,6 +479,7 @@ def _state_entry(r: dict, now: datetime) -> dict:
         "load_no": r["load_no"],
         "stop_idx": r["stop_idx"],
         "arrived": r["arrived_dt"].isoformat() if r.get("arrived_dt") else "",
+        "clock_start": r["clock_start_dt"].isoformat() if r.get("clock_start_dt") else "",
         "alerted_at": now.isoformat(),
         "customer_name": r.get("customer_name", ""),
         "brokered": bool(r.get("brokered")),
@@ -452,7 +491,7 @@ def _state_entry(r: dict, now: datetime) -> dict:
         "city": r.get("city", ""),
         "stop_state": r.get("stop_state", ""),
         "appt_display": r.get("appt_display", ""),
-        "arrived_late": bool(r.get("arrived_late")),
+        "early_arrival": bool(r.get("early_arrival")),
     }
 
 
@@ -515,12 +554,17 @@ def sync_detention_alerts(webhook_url: str, token: str, user_upn: str, folder: s
         arrived = (_parse_iso((stop or {}).get("ArrivedAt"))
                    or _parse_iso(info.get("arrived")))
         if departed and arrived:
+            # Bill from the detention clock start (appt/window open when the
+            # driver arrived early), not the raw arrival.
+            clock_start = _parse_iso(info.get("clock_start")) or arrived
             total_min = int((departed - arrived).total_seconds() // 60)
+            clock_total = int((departed - clock_start).total_seconds() // 60)
             closeouts.append({
                 **info, "key": key,
                 "arrived_dt": arrived, "departed_dt": departed,
+                "clock_start_dt": clock_start,
                 "total_min": total_min,
-                "billable_min": max(0, total_min - free_time_min),
+                "billable_min": max(0, clock_total - free_time_min),
             })
         else:
             expired.append(key)

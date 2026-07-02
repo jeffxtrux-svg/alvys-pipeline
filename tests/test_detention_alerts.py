@@ -32,14 +32,18 @@ def _load(load_no="1001", customer="ACME Foods", brokered=False, stops=None):
 
 def _stop(arrived_hours_ago=None, departed_hours_ago=None, stop_type="Delivery",
           company="Cold Storage KC", city="Kansas City", state="MO",
-          appt_iso=None):
+          appt_iso=None, schedule_type="APPT", window=None):
+    # Default appt 15:00 UTC == the arrived_hours_ago=3 arrival → on time.
     s = {
         "StopType": stop_type,
         "CompanyName": company,
         "Address": {"City": city, "State": state},
-        "ScheduleType": "APPT",
-        "AppointmentDate": appt_iso or "2026-07-01T14:00:00+00:00",
+        "ScheduleType": schedule_type,
+        "AppointmentDate": appt_iso or "2026-07-01T15:00:00+00:00",
     }
+    if window is not None:
+        s["StopWindow"] = window
+        s.pop("AppointmentDate", None)
     if arrived_hours_ago is not None:
         s["ArrivedAt"] = (NOW - timedelta(hours=arrived_hours_ago)).isoformat()
     if departed_hours_ago is not None:
@@ -92,15 +96,50 @@ def test_stale_arrival_skipped():
     assert rows == []
 
 
-def test_arrived_late_flagged():
-    # Appt 14:00 UTC, arrived 15:00 UTC (3h before NOW=18:00) → late arrival.
+def test_late_to_appointment_voids_detention():
+    # Appt 14:00 UTC, arrived 15:00 UTC (3h before NOW=18:00) → late arrival:
+    # detention is void, no card no matter how long the driver sits.
     rows = _find([_load(stops=[_stop(arrived_hours_ago=3,
                                      appt_iso="2026-07-01T14:00:00+00:00")])])
-    assert rows[0]["arrived_late"] is True
-    # Appt 16:00 UTC, arrived 15:00 → on time.
+    assert rows == []
+
+
+def test_early_to_appointment_clock_starts_at_appt():
+    # Arrived 15:00, appt 15:30 → clock starts 15:30. By NOW=18:00 the clock
+    # has run 2h30m → 30m of detention; on-site display still shows 3h.
     rows = _find([_load(stops=[_stop(arrived_hours_ago=3,
-                                     appt_iso="2026-07-01T16:00:00+00:00")])])
-    assert rows[0]["arrived_late"] is False
+                                     appt_iso="2026-07-01T15:30:00+00:00")])])
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["early_arrival"] is True
+    assert r["dwell_min"] == 180
+    assert r["detention_min"] == 30
+    assert r["clock_start_dt"].hour == 15 and r["clock_start_dt"].minute == 30
+
+
+def test_fcfs_inside_window_is_billable():
+    # FCFS window 12:00–20:00, arrived 15:00 (inside) → good, card fires.
+    win = {"Begin": "2026-07-01T12:00:00+00:00", "End": "2026-07-01T20:00:00+00:00"}
+    rows = _find([_load(stops=[_stop(arrived_hours_ago=3, schedule_type="FCFS",
+                                     window=win)])])
+    assert len(rows) == 1
+    assert rows[0]["detention_min"] == 60   # clock from arrival (after Begin)
+
+
+def test_fcfs_after_window_end_voids_detention():
+    # FCFS window closed 14:00, arrived 15:00 → late to the window, void.
+    win = {"Begin": "2026-07-01T08:00:00+00:00", "End": "2026-07-01T14:00:00+00:00"}
+    rows = _find([_load(stops=[_stop(arrived_hours_ago=3, schedule_type="FCFS",
+                                     window=win)])])
+    assert rows == []
+
+
+def test_open_ended_fcfs_cannot_be_late():
+    # FCFS with no End — dock is open, first come first served: never late.
+    win = {"Begin": "2026-07-01T08:00:00+00:00"}
+    rows = _find([_load(stops=[_stop(arrived_hours_ago=3, schedule_type="FCFS",
+                                     window=win)])])
+    assert len(rows) == 1
 
 
 def test_multiple_stops_keyed_independently():
